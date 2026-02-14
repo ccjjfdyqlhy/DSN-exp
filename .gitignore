@@ -1,0 +1,10 @@
+*.key
+*.enc
+*.pem
+*.crt
+*.wav
+*.jpg
+*.db
+logs/*
+__pycache__/*
+config.py
