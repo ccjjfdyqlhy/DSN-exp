@@ -1,8 +1,7 @@
 
 # DSN-exp/app.py
-# UPD v1_260214
+# UPD v2_260308
 
-# app.py
 import os
 import base64
 import logging
@@ -104,6 +103,7 @@ def chat_send():
     message = data["message"]
     chat_id = data.get("chat_id")
     chat_name = data.get("chat_name", "未命名")
+    tts_enabled = data.get("tts_enabled", True)  # 获取 TTS 开关，默认启用
 
     user_id = g.user["uid"]
 
@@ -145,31 +145,32 @@ def chat_send():
         app.logger.error("追加消息失败: %s", e)
         return jsonify({"error": "Database error"}), 500
 
-    # --- TTS 合成 ---
+    # --- TTS 合成（仅在启用时执行）---
     audio_data = None
     tts_error = None
-    try:
-        # 构造 TTS 请求参数（可根据需要从数据库或配置获取参考音频等）
-        # 这里使用示例参数，实际应让客户端选择或使用默认配置
-        REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
-        PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
+    if tts_enabled:
+        try:
+            # 构造 TTS 请求参数（可根据需要从数据库或配置获取参考音频等）
+            # 这里使用示例参数，实际应让客户端选择或使用默认配置
+            REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
+            PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
 
-        params = {
-            "text": reply,
-            "text_lang": "zh",                     # 假设回复为中文
-            "ref_audio_path": REF_AUDIO_PATH,
-            "prompt_lang": "en",
-            "prompt_text": PROMPT_TEXT,
-            "media_type": "wav",
-            "streaming_mode": False,
-        }
-        audio_data = tts_client.tts(**params)
-    except TTSRequestError as e:
-        tts_error = f"TTS 服务请求失败: {e}"
-        app.logger.error(tts_error)
-    except Exception as e:
-        tts_error = f"TTS 未知错误: {e}"
-        app.logger.exception("TTS 异常")
+            params = {
+                "text": reply,
+                "text_lang": "zh",                     # 假设回复为中文
+                "ref_audio_path": REF_AUDIO_PATH,
+                "prompt_lang": "en",
+                "prompt_text": PROMPT_TEXT,
+                "media_type": "wav",
+                "streaming_mode": False,
+            }
+            audio_data = tts_client.tts(**params)
+        except TTSRequestError as e:
+            tts_error = f"TTS 服务请求失败: {e}"
+            app.logger.error(tts_error)
+        except Exception as e:
+            tts_error = f"TTS 未知错误: {e}"
+            app.logger.exception("TTS 异常")
 
     # 准备响应
     response = {
