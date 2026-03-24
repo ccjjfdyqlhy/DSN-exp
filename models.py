@@ -1,6 +1,6 @@
 
 # DSN-exp/models.py
-# UPD v1_260214
+# UPD v2_260324
 
 import requests
 import json
@@ -155,3 +155,97 @@ class DeepSeekChat:
 
     def __repr__(self):
         return f"<DeepSeekChat model={self.model} history_len={len(self.messages)}>"
+
+
+class LMSummaryModel:
+    """本地 LMStudio 摘要模型，用于对话记忆压缩。"""
+
+    SUMMARY_PROMPT = '''
+你是一个专门擅长概括对话内容的AI，你的任务是根据输入的对话内容，提取出其中的关键信息，并用一句100字以内的话进行概括，作为回答输出。
+你管理着系统的长期记忆。你生成的概括语句必须以AI的视角概括描述输入的对话内容。
+需要你概括的对话内容如下：\n
+'''
+
+    def __init__(
+        self,
+        base_url: str = None,
+        model_name: str = None,
+        summary_length: int = 100,
+        timeout: int = 60,
+        logger: Optional[logging.Logger] = None,
+    ):
+        from config import Config
+
+        self.base_url = base_url or Config.LMSTUDIO_BASE_URL
+        self.model_name = model_name or Config.MEMORY_MODEL
+        self.summary_length = summary_length
+        self.timeout = timeout
+        self.logger = logger or logging.getLogger(self.__class__.__name__)
+
+    def summarize_text(self, text: str, max_length: Optional[int] = None) -> str:
+        """调用 LMStudio 生成摘要。"""
+        if not text or not isinstance(text, str):
+            raise ValueError("text 必须是非空字符串")
+
+        if max_length is None:
+            max_length = self.summary_length
+
+        prompt = self.SUMMARY_PROMPT.strip() + "\n" + text
+        self.logger.debug("生成摘要的输入文本: %s", text[:200] + "..." if len(text) > 200 else text)
+
+        # 使用HTTP请求而不是lmstudio库（更可靠）
+        import requests
+
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_length,
+            "temperature": 0.3,
+            "stream": False
+        }
+
+        try:
+            self.logger.debug("发送请求到 LMStudio: %s", url)
+            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            result = response.json()
+
+            if "choices" in result and result["choices"]:
+                summary = result["choices"][0]["message"]["content"].strip()
+                summary = summary.replace("\n", " ")
+                # 限制长度
+                if len(summary) > max_length:
+                    summary = summary[:max_length].rstrip() + "..."
+                self.logger.info("生成摘要: %s", summary[:80] + ("..." if len(summary) > 80 else ""))
+                return summary
+            else:
+                raise ValueError("LMStudio响应格式异常")
+
+        except requests.exceptions.Timeout:
+            self.logger.error("LMStudio请求超时 (%d秒)", self.timeout)
+            raise
+        except requests.exceptions.ConnectionError:
+            self.logger.error("无法连接到LMStudio服务器: %s", self.base_url)
+            raise
+        except requests.exceptions.RequestException as e:
+            self.logger.error("LMStudio请求失败: %s", str(e))
+            raise
+        except (KeyError, ValueError) as e:
+            self.logger.error("LMStudio响应解析失败: %s", str(e))
+            raise
+
+    def summarize_dialog(self, messages: List[Dict[str, str]], max_length: Optional[int] = None) -> str:
+        """根据消息列表生成一条整体摘要。"""
+        combined = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            prefix = "用户" if role == "user" else "助手" if role == "assistant" else role
+            combined.append(f"{prefix}:{content}")
+
+        text = "\n".join(combined)
+        return self.summarize_text(text, max_length=max_length)

@@ -1,9 +1,6 @@
 
 # DSN-exp/chatdbmgr.py
-# UPD v1_260214
-
-# chatdbmgr.py
-# 服务端聊天记录数据库管理器（SQLite，支持多线程）
+# UPD v2_260324
 
 import sqlite3
 import logging
@@ -89,6 +86,18 @@ class ChatDBManager:
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS memories (
+                        memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        round_index INTEGER NOT NULL,
+                        summary TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_chat_id ON memories(chat_id)")
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
             except sqlite3.Error as e:
@@ -109,6 +118,65 @@ class ChatDBManager:
             self.logger.info("用户 %d (%s) 已同步", uid, nickname)
         except sqlite3.Error as e:
             self.logger.error("添加/更新用户失败: %s", e)
+            conn.rollback()
+            raise
+
+    def save_memory(self, user_id: int, chat_id: int, round_index: int, summary: str) -> int:
+        """保存某轮对话的摘要记忆"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO memories (user_id, chat_id, round_index, summary) VALUES (?, ?, ?, ?)",
+                (user_id, chat_id, round_index, summary),
+            )
+            conn.commit()
+            self.logger.info("保存记忆: chat_id=%d round=%d", chat_id, round_index)
+            return cursor.lastrowid
+        except sqlite3.Error as e:
+            self.logger.error("保存记忆失败: %s", e)
+            conn.rollback()
+            raise
+
+    def get_memories(self, user_id: int, chat_id: int):
+        """获取会话的记忆条目，按轮次升序"""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT round_index, summary FROM memories WHERE user_id = ? AND chat_id = ? ORDER BY round_index ASC",
+                (user_id, chat_id),
+            ).fetchall()
+            return [{"round_index": r["round_index"], "summary": r["summary"]} for r in rows]
+        except sqlite3.Error as e:
+            self.logger.error("获取记忆条目失败: %s", e)
+            raise
+
+    def get_memory_count(self, user_id: int, chat_id: int) -> int:
+        """统计会话记忆条数"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ? AND chat_id = ?",
+                (user_id, chat_id),
+            ).fetchone()
+            return row["cnt"] if row else 0
+        except sqlite3.Error as e:
+            self.logger.error("统计记忆条目失败: %s", e)
+            raise
+
+    def delete_oldest_memory(self, user_id: int, chat_id: int, n: int = 1) -> int:
+        """删除最旧n条记忆"""
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                '''DELETE FROM memories WHERE memory_id IN (
+                    SELECT memory_id FROM memories WHERE user_id = ? AND chat_id = ? ORDER BY round_index ASC LIMIT ?
+                )''',
+                (user_id, chat_id, n),
+            )
+            conn.commit()
+            return conn.total_changes
+        except sqlite3.Error as e:
+            self.logger.error("删除旧记忆失败: %s", e)
             conn.rollback()
             raise
 
