@@ -6,7 +6,8 @@ import os
 
 class Config:
     # LittleSkin OAuth2 配置
-    LITTLESKIN_CLIENT_ID = 
+    # 注意：回调URL必须设置为 http://localhost:<服务端运行端口>/api/auth/callback/
+    LITTLESKIN_CLIENT_ID = None # 填入 int
     LITTLESKIN_CLIENT_SECRET = ""
 
     # JWT 密钥（生产环境务必修改）

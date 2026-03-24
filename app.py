@@ -10,7 +10,6 @@ from datetime import datetime
 from flask import Flask, request, jsonify, g
 from functools import wraps
 
-from config import Config
 from usermgr import init_usermgr, auth_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel
@@ -50,12 +49,19 @@ def setup_logging(app):
     app.logger.addHandler(console_handler)
     app.logger.setLevel(logging.INFO)
 
-    logging.getLogger('werkzeug').handlers.clear()
-    logging.getLogger('werkzeug').addHandler(file_handler)
-    logging.getLogger('werkzeug').addHandler(console_handler)
+    logging.getLogger('server').handlers.clear()
+    logging.getLogger('server').addHandler(file_handler)
+    logging.getLogger('server').addHandler(console_handler)
 
 # ---------- 创建应用 ----------
 app = Flask(__name__)
+
+try:
+    from config import Config
+except ImportError:
+    app.logger.warning("配置未初始化，请根据config.py.example创建config.py并配置相关参数")
+    exit(1)
+
 app.config.from_object(Config)
 
 setup_logging(app)
@@ -109,6 +115,7 @@ def chat_send():
     message = data["message"]
     chat_id = data.get("chat_id")
     chat_name = data.get("chat_name", "未命名")
+    tts_enabled = data.get("tts_enabled", True)  # 获取 TTS 开关，默认启用
 
     user_id = g.user["uid"]
 

@@ -40,6 +40,7 @@ def get_or_create_key() -> bytes:
 
 cipher = Fernet(get_or_create_key())
 local_server: Optional[HTTPServer] = None
+tts_enabled = True  # 默认启用 TTS
 
 
 class TokenHandler(BaseHTTPRequestHandler):
@@ -156,8 +157,8 @@ def play_audio(audio_bytes: bytes):
     except Exception as e:
         print(f"播放音频失败: {e}")
 
-def send_message(chat_id: Optional[int], chat_name: str, message: str) -> Dict[str, Any]:
-    payload = {"message": message, "chat_name": chat_name}
+def send_message(chat_id: Optional[int], chat_name: str, message: str, tts_enabled: bool = True) -> Dict[str, Any]:
+    payload = {"message": message, "chat_name": chat_name, "tts_enabled": tts_enabled}
     if chat_id is not None:
         payload["chat_id"] = chat_id
     resp = requests.post(
@@ -202,6 +203,7 @@ def main():
     else:
         print("已使用本地 token 登录。")
 
+    global tts_enabled
     current_chat_id = None
     current_chat_name = None
 
@@ -216,7 +218,7 @@ def main():
             name = input("请输入对话名称（留空为'未命名'）: ").strip()
             if not name:
                 name = "未命名"
-            print(f"进入新对话 '{name}'，输入 /exit 返回主菜单")
+            print(f"进入新对话 '{name}'，输入 /exit 返回主菜单，输入 /tts {{on/off}} 切换 TTS")
             current_chat_id = None
             current_chat_name = name
 
@@ -224,8 +226,17 @@ def main():
                 user_msg = input("你: ")
                 if user_msg.lower() == "/exit":
                     break
+                if user_msg.lower().startswith("/tts"):
+                    parts = user_msg.split()
+                    if len(parts) == 2 and parts[1].lower() in ["on", "off"]:
+                        tts_enabled = parts[1].lower() == "on"
+                        status = "启用" if tts_enabled else "禁用"
+                        print(f"[TTS 已{status}]")
+                    else:
+                        print("[用法] /tts {{on|off}}")
+                    continue
                 try:
-                    result = send_message(current_chat_id, current_chat_name, user_msg)
+                    result = send_message(current_chat_id, current_chat_name, user_msg, tts_enabled)
                     print(f"助手: {result['reply']}")
                     if result.get("tts_error"):
                         print(f"[TTS 错误] {result['tts_error']}")
@@ -258,6 +269,7 @@ def main():
                         chat_name = chat["chat_name"]
                         history = get_chat_history(chat_id)
                         print(f"\n===== 进入对话 '{chat_name}' =====")
+                        print(f"[提示] 输入 /exit 返回主菜单，输入 /tts {{on/off}} 切换 TTS")
                         print_history(history)
 
                         current_chat_id = chat_id
@@ -266,8 +278,17 @@ def main():
                             user_msg = input("你: ")
                             if user_msg.lower() == "/exit":
                                 break
+                            if user_msg.lower().startswith("/tts"):
+                                parts = user_msg.split()
+                                if len(parts) == 2 and parts[1].lower() in ["on", "off"]:
+                                    tts_enabled = parts[1].lower() == "on"
+                                    status = "启用" if tts_enabled else "禁用"
+                                    print(f"[TTS 已{status}]")
+                                else:
+                                    print("[用法] /tts {{on|off}}")
+                                continue
                             try:
-                                result = send_message(current_chat_id, current_chat_name, user_msg)
+                                result = send_message(current_chat_id, current_chat_name, user_msg, tts_enabled)
                                 print(f"助手: {result['reply']}")
                                 if result.get("tts_error"):
                                     print(f"[TTS 错误] {result['tts_error']}")

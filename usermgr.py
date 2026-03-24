@@ -11,7 +11,12 @@ from typing import Optional, Dict, Any
 import jwt
 from flask import Blueprint, request, redirect, jsonify, current_app, url_for
 
-from config import Config
+logger = logging.getLogger(__name__)
+
+try:
+    from config import Config
+except ImportError:
+    pass # Warning 已在 app.py 中处理，此处不再重复提示，继续执行
 
 DEFAULT_BASE_URL = "https://littleskin.cn"
 JWT_ALGORITHM = "HS256"
