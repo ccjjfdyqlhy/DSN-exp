@@ -1,6 +1,6 @@
 
 # DSN-exp/app.py
-# UPD v2_260324
+# UPD v2_260326
 
 import os
 import base64
@@ -31,6 +31,7 @@ def setup_logging(app):
     log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log"
     log_path = os.path.join(log_dir, log_filename)
 
+    # 创建文件处理器
     file_handler = RotatingFileHandler(
         log_path, maxBytes=10*1024*1024, backupCount=30, encoding='utf-8'
     )
@@ -40,6 +41,7 @@ def setup_logging(app):
     )
     file_handler.setFormatter(file_formatter)
 
+    # 创建控制台处理器
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter(
@@ -47,14 +49,25 @@ def setup_logging(app):
     )
     console_handler.setFormatter(console_formatter)
 
+    # 配置根日志记录器，这样所有模块的日志都会同时记录到文件和控制台
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()  # 清除现有的处理器
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    root_logger.setLevel(logging.INFO)
+
+    # 同时配置Flask应用日志记录器
     app.logger.handlers.clear()
     app.logger.addHandler(file_handler)
     app.logger.addHandler(console_handler)
     app.logger.setLevel(logging.INFO)
 
-    logging.getLogger('server').handlers.clear()
-    logging.getLogger('server').addHandler(file_handler)
-    logging.getLogger('server').addHandler(console_handler)
+    # 禁用werkzeug的默认处理器，避免重复日志
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.handlers.clear()
+    werkzeug_logger.addHandler(file_handler)
+    werkzeug_logger.addHandler(console_handler)
+    werkzeug_logger.setLevel(logging.INFO)
 
 # ---------- 创建应用 ----------
 app = Flask(__name__)

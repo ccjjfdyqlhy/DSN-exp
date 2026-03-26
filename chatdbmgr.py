@@ -1,6 +1,6 @@
 
 # DSN-exp/chatdbmgr.py
-# UPD v2_260324
+# UPD v2_260326
 
 import sqlite3
 import logging
@@ -29,13 +29,8 @@ class ChatDBManager:
             self.logger = logger
         else:
             self.logger = logging.getLogger("ChatDBManager")
-            if not self.logger.handlers:
-                handler = logging.StreamHandler()
-                handler.setFormatter(logging.Formatter(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-                ))
-                self.logger.addHandler(handler)
-                self.logger.setLevel(logging.INFO)
+            # 不再添加StreamHandler，因为根日志记录器已经配置了处理器
+            self.logger.setLevel(logging.INFO)
 
         self._init_db()
 

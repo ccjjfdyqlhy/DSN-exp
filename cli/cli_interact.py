@@ -1,3 +1,6 @@
+
+# 支持给你的AI打电话了！
+
 import numpy as np
 import threading
 import queue
@@ -11,7 +14,7 @@ import requests
 from pvrecorder import PvRecorder
 from funasr import AutoModel
 
-# ---------- 配置（从 cli.py 复制）----------
+# ---------- 配置 ----------
 SERVER_BASE_URL = "http://localhost:5000"
 TOKEN_FILE = "token.enc"
 KEY_FILE = "secret.key"

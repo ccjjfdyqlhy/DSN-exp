@@ -1,4 +1,7 @@
-#!/usr/bin/env python3
+
+# tests/test_lmstudio.py
+# PASSED v1_260326
+
 """
 LMStudio连接测试脚本
 """

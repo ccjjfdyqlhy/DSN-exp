@@ -49,7 +49,8 @@ class MemoryManager:
             return memory_id
         except Exception as e:
             # 仅记录错误，不抛给主流程
-            print(f"MemoryManager 生成摘要失败: {e}")
+            import logging
+            logging.getLogger(__name__).error(f"MemoryManager 生成摘要失败: {e}")
             return None
 
     def assemble_context(self, user_id: int, chat_id: int, full_history: List[Dict[str, str]]) -> List[Dict[str, str]]:

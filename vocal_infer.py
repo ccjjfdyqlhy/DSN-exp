@@ -6,6 +6,7 @@ import requests
 import logging
 from typing import Optional, Any, Dict, Union, List, Generator
 
+# 模块级日志记录器，不再单独配置处理器
 logger = logging.getLogger(__name__)
 
 

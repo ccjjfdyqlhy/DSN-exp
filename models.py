@@ -1,6 +1,6 @@
 
 # DSN-exp/models.py
-# UPD v2_260324
+# UPD v2_260326
 
 import requests
 import json
@@ -57,14 +57,8 @@ class DeepSeekChat:
             self.logger = logger
         else:
             self.logger = logging.getLogger(self.__class__.__name__)
-            if not self.logger.handlers:
-                handler = logging.StreamHandler()
-                formatter = logging.Formatter(
-                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-                )
-                handler.setFormatter(formatter)
-                self.logger.addHandler(handler)
-                self.logger.setLevel(logging.INFO)
+            # 不再添加StreamHandler，因为根日志记录器已经配置了处理器
+            self.logger.setLevel(logging.INFO)
 
         self.logger.info("DeepSeekChat客户端初始化完成，模型：%s", self.model)
 
