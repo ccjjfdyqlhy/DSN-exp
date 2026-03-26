@@ -21,6 +21,9 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))  # 确保 vocal_infer 可导入
 from vocal_infer import VocalExp, TTSRequestError
 
+# 导入 ASR 过滤模块
+from ASR_filter import LMFilterModel
+
 # ---------- 日志配置 ----------
 def setup_logging(app):
     log_dir = app.config["LOG_DIR"]
@@ -82,6 +85,11 @@ else:
 
 # 初始化 TTS 客户端
 tts_client = VocalExp(app.config["TTS_BASE_URL"])
+
+# 初始化 ASR 过滤模型（根据配置启用）
+filter_model = None
+if app.config.get("ASR_FILTER_ENABLED", True):
+    filter_model = LMFilterModel()
 # ---------- 认证装饰器 ----------
 def login_required(f):
     @wraps(f)
@@ -116,6 +124,7 @@ def chat_send():
     chat_id = data.get("chat_id")
     chat_name = data.get("chat_name", "未命名")
     tts_enabled = data.get("tts_enabled", True)  # 获取 TTS 开关，默认启用
+    is_asr_input = data.get("is_asr_input", False)  # 新增：是否为ASR输入
 
     user_id = g.user["uid"]
 
@@ -135,6 +144,25 @@ def chat_send():
         except Exception as e:
             app.logger.error("创建聊天失败: %s", e)
             return jsonify({"error": "Database error"}), 500
+
+    # 如果是ASR输入且启用过滤，先通过过滤模型判断
+    if is_asr_input and filter_model is not None:
+        decision = filter_model.filter_input(message)
+        if decision == "HOLD":
+            # 不转发给主模型，但生成记忆
+            memory_content = f"听到：{message}"
+            try:
+                # 立即生成记忆并插入聊天列表
+                round_index = db.get_memory_count(user_id, chat_id) + 1
+                memory_id = db.save_memory(user_id, chat_id, round_index, memory_content)
+                # 将记忆作为系统消息插入聊天历史
+                db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{memory_content}"}])
+                app.logger.info("ASR输入被过滤，生成记忆: %s", memory_content)
+                return jsonify({"reply": "", "chat_id": chat_id, "filtered": True})
+            except Exception as e:
+                app.logger.error("生成ASR记忆失败: %s", e)
+                return jsonify({"error": "Memory error"}), 500
+        # 如果是FORWARD，继续正常流程
 
     # 构建包含系统提示词的完整历史，并基于记忆规则替换远端内容
     system_prompt = prompt.get_system_prompt(g.user)
