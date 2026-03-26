@@ -210,17 +210,51 @@ def chat_send():
     audio_data = None
     tts_error = None
 
-    # 检查是否包含<text>标签，如果有则跳过TTS合成
+    # 检查是否包含<text>标签
     import re
     text_tag_pattern = r'<text>(.*?)</text>'
     text_matches = re.findall(text_tag_pattern, reply, re.DOTALL | re.IGNORECASE)
 
     if text_matches:
-        # 包含<text>标签，跳过TTS合成
-        app.logger.info("检测到<text>标签，跳过TTS合成")
+        # 包含<text>标签，提取标签内的内容用于显示
+        app.logger.info("检测到<text>标签，提取标签内内容用于显示")
         # 从回复中移除<text>标签，保留纯文本内容用于显示
         clean_reply = re.sub(text_tag_pattern, r'\1', reply, flags=re.DOTALL | re.IGNORECASE)
         reply = clean_reply.strip()
+        
+        # 检查是否有不在标签里的部分，如果有则进行TTS合成
+        # 获取标签外的内容：先移除所有<text>标签及其内容
+        text_content_only = re.sub(text_tag_pattern, '', reply, flags=re.DOTALL | re.IGNORECASE)
+        # 获取原始回复中标签外的内容
+        outside_text = re.sub(r'<text>.*?</text>', '', original_reply, flags=re.DOTALL | re.IGNORECASE)
+        outside_text = outside_text.strip()
+        
+        if outside_text:
+            app.logger.info(f"检测到标签外内容，进行TTS合成: {outside_text}")
+            try:
+                # 构造 TTS 请求参数
+                REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
+                PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
+
+                params = {
+                    "text": outside_text,
+                    "text_lang": "zh",                     # 假设回复为中文
+                    "ref_audio_path": REF_AUDIO_PATH,
+                    "prompt_lang": "en",
+                    "prompt_text": PROMPT_TEXT,
+                    "media_type": "wav",
+                    "streaming_mode": False,
+                }
+                audio_data = tts_client.tts(**params)
+                app.logger.info("标签外内容TTS合成成功")
+            except TTSRequestError as e:
+                tts_error = f"TTS 服务请求失败: {e}"
+                app.logger.error(tts_error)
+            except Exception as e:
+                tts_error = f"TTS 未知错误: {e}"
+                app.logger.exception("TTS 异常")
+        else:
+            app.logger.info("没有检测到标签外内容，跳过TTS合成")
     else:
         # 不包含<text>标签，进行正常TTS合成
         try:
