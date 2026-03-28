@@ -1,6 +1,6 @@
 
 # DSN-exp/models.py
-# UPD v2_260326
+# UPD v3_260328
 
 import requests
 import json
@@ -21,6 +21,7 @@ class DeepSeekChat:
     # 默认API地址和模型
     DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
     DEFAULT_MODEL = "deepseek-chat"
+    REASONER_MODEL = "deepseek-reasoner"
 
     def __init__(
         self,
@@ -29,6 +30,7 @@ class DeepSeekChat:
         api_url: str = DEFAULT_API_URL,
         logger: Optional[logging.Logger] = None,
         timeout: int = 30,
+        use_reasoner: bool = False,
     ):
         """
         初始化DeepSeek聊天客户端。
@@ -38,6 +40,7 @@ class DeepSeekChat:
         :param api_url: API端点URL
         :param logger: 日志记录器实例，若不提供则创建默认logger
         :param timeout: 请求超时时间（秒）
+        :param use_reasoner: 是否使用reasoner模型
         """
         self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
         if not self.api_key:
@@ -48,6 +51,7 @@ class DeepSeekChat:
         self.model = model
         self.api_url = api_url
         self.timeout = timeout
+        self.use_reasoner = use_reasoner
 
         # 初始化对话历史
         self.messages: List[Dict[str, str]] = []
@@ -60,6 +64,10 @@ class DeepSeekChat:
             # 不再添加StreamHandler，因为根日志记录器已经配置了处理器
             self.logger.setLevel(logging.INFO)
 
+        # 如果指定使用reasoner，则切换模型
+        if use_reasoner:
+            self.model = self.REASONER_MODEL
+        
         self.logger.info("DeepSeekChat客户端初始化完成，模型：%s", self.model)
 
     def send_message(self, message: str) -> str:

@@ -1,10 +1,14 @@
 
 # DSN-exp/app.py
-# UPD v2_260326
+# UPD v3_260328
 
 import os
 import base64
+import json
+import re
 import logging
+import threading
+import queue
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from flask import Flask, request, jsonify, g
@@ -14,6 +18,7 @@ from usermgr import init_usermgr, auth_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel
 from memory import MemoryManager
+from tasks import TaskManager, TaskType, TaskStatus, ComplexityAnalyzer, get_task_manager
 import prompt
 
 # 导入 TTS 模块
@@ -24,8 +29,241 @@ from vocal_infer import VocalExp, TTSRequestError
 # 导入 ASR 过滤模块
 from ASR_filter import LMFilterModel
 
+# ---------- 全局变量 ----------
+task_manager = None
+completion_queue = queue.Queue()
+complexity_analyzer = ComplexityAnalyzer()
+notification_thread = None
+
+# ---------- 辅助函数 ----------
+def parse_task_instructions(text: str):
+    """解析回复中的<task>指令"""
+    task_pattern = r'<task>(.*?)</task>'
+    matches = re.findall(task_pattern, text, re.DOTALL | re.IGNORECASE)
+    
+    tasks = []
+    for match in matches:
+        try:
+            task_data = json.loads(match.strip())
+            tasks.append(task_data)
+        except json.JSONDecodeError as e:
+            app.logger.error("解析任务JSON失败: %s, 内容: %s", e, match[:100])
+    
+    return tasks
+
+def handle_complex_question(user_id: int, chat_id: int, message: str, history: list) -> dict:
+    """处理复杂问题：创建异步推理任务并返回初步回复"""
+    if not task_manager:
+        return {"error": "任务管理器未初始化"}
+    
+    # 分析问题复杂度
+    context_length = len(history)
+    complexity_result = complexity_analyzer.analyze_complexity(message, context_length)
+    
+    app.logger.info("问题复杂度分析: %s", complexity_result)
+    
+    if not complexity_result["is_complex"]:
+        return {"should_use_reasoner": False}
+    
+    # 创建推理任务
+    task_params = {
+        "question": message,
+        "context": "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-5:]])  # 最近5条消息作为上下文
+    }
+    
+    try:
+        task_id = task_manager.create_task(
+            task_type=TaskType.REASONER,
+            user_id=user_id,
+            chat_id=chat_id,
+            params=task_params,
+            priority=1  # 正常优先级
+        )
+        
+        # 立即执行任务
+        task_manager.execute_task(task_id)
+        
+        return {
+            "should_use_reasoner": True,
+            "task_id": task_id,
+            "complexity_score": complexity_result["score"],
+            "preliminary_reply": "这个问题看起来比较复杂，我需要一些时间来深入思考。让我先分析一下，稍后给您详细的解答。在此期间，您可以继续问我其他问题。"
+        }
+    except Exception as e:
+        app.logger.error("创建推理任务失败: %s", e)
+        return {"error": f"创建推理任务失败: {str(e)}"}
+
+def process_task_completion():
+    """处理任务完成通知的线程函数"""
+    while True:
+        try:
+            task_id, result = completion_queue.get()
+            if task_id is None:  # 退出信号
+                break
+                
+            app.logger.info("收到任务完成通知: task_id=%s", task_id)
+            
+            # 获取任务信息
+            task = task_manager.get_task(task_id)
+            if not task:
+                app.logger.error("任务不存在: %s", task_id)
+                continue
+            
+            app.logger.info("任务 %s 完成，用户 %d 需要被通知", task_id, task.user_id)
+            
+            # 处理不同类型的任务完成通知
+            if task.task_type == TaskType.REMINDER:
+                # 处理提醒任务：触发AI提醒用户
+                _handle_reminder_completion(task, result)
+            elif task.task_type == TaskType.REASONER:
+                # 处理推理任务：保存结果供用户查询
+                _handle_reasoner_completion(task, result)
+            else:
+                # 其他类型任务
+                app.logger.info("任务类型 %s 完成，结果: %s", task.task_type.value, result)
+            
+            # 将任务结果保存到数据库，供后续查询
+            try:
+                conn = db._get_connection()
+                conn.execute(
+                    "INSERT INTO task_notifications (task_id, user_id, chat_id, result, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, task.user_id, task.chat_id, json.dumps(result), datetime.now().isoformat())
+                )
+                conn.commit()
+                app.logger.info("任务通知已保存到数据库")
+            except Exception as e:
+                app.logger.error("保存任务通知失败: %s", e)
+                
+        except Exception as e:
+            app.logger.error("处理任务完成通知失败: %s", e)
+            import time
+            time.sleep(1)
+
+def _generate_ai_reminder_message(task, reminder_text):
+    """调用AI生成自然的提醒消息"""
+    try:
+        # 获取聊天历史作为上下文
+        history = db.get_chat_history(task.user_id, task.chat_id)
+        
+        # 构建系统提示词
+        from prompt import get_system_prompt
+        # 创建一个临时的用户信息字典
+        temp_user_info = {"uid": task.user_id, "nickname": f"用户{task.user_id}"}
+        system_prompt = get_system_prompt(temp_user_info)
+        
+        # 构建更自然的提醒提示词 - 让AI像主动想起一样提醒用户
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        reminder_prompt = f"""
+现在是 {current_time}，我想起你之前设置了一个提醒。
+
+提醒内容：{reminder_text}
+
+请像一个朋友一样自然地提醒我这件事。不要使用"【提醒】"或"提醒："这样的标签，就像你突然想起这件事并主动告诉我一样。
+
+例如：
+"嘿，我突然想起来，你之前说要在下午3点开会，时间快到了！"
+"哦对了，你之前提醒过我要记得吃药，现在是时候了。"
+"你之前设置的那个提醒，现在时间到了，该去处理了！"
+
+请用自然的口语生成提醒消息：
+"""
+        
+        # 创建DeepSeek聊天客户端
+        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        
+        # 构建完整的消息历史
+        full_history = [{"role": "system", "content": system_prompt}]
+        
+        # 添加最近的历史消息作为上下文（最多5条）
+        recent_history = history[-5:] if len(history) > 5 else history
+        for msg in recent_history:
+            full_history.append(msg)
+        
+        # 添加提醒提示词（带时间戳）
+        full_history.append({"role": "user", "content": reminder_prompt})
+        
+        # 设置消息历史并发送
+        chat.messages = full_history
+        ai_response = chat.send_message("请生成一个自然的提醒消息")
+        
+        app.logger.info("AI生成的提醒消息: %s", ai_response[:100])
+        return ai_response
+        
+    except Exception as e:
+        app.logger.error("生成AI提醒消息失败: %s", e)
+        # 如果AI调用失败，返回一个默认的自然提醒消息
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return f"嘿，现在是 {current_time}，你之前设置的提醒时间到了：{reminder_text}。记得去处理哦！"
+
+def _handle_reminder_completion(task, result):
+    """处理提醒任务完成：调用AI生成自然提醒消息"""
+    app.logger.info("处理提醒任务完成: task_id=%s, user_id=%d, chat_id=%d", 
+                   task.task_id, task.user_id, task.chat_id)
+    
+    # 检查是否需要AI通知
+    if result.get("requires_ai_notification", False):
+        reminder_text = result.get("reminder_text", "提醒时间到了！")
+        skip_memory = result.get("skip_memory", False)
+        
+        app.logger.info("需要AI生成自然提醒消息: %s", reminder_text)
+        
+        try:
+            # 调用AI生成自然提醒消息
+            ai_message = _generate_ai_reminder_message(task, reminder_text)
+            
+            # 将AI生成的提醒消息保存到聊天历史
+            reminder_message = {
+                "role": "assistant",
+                "content": ai_message,
+                "skip_memory": skip_memory  # 添加标记，跳过记忆化
+            }
+            
+            # 将提醒消息追加到聊天历史
+            db.append_messages(task.user_id, task.chat_id, [reminder_message])
+            app.logger.info("AI提醒消息已保存到聊天历史: %s", ai_message[:100])
+            
+            # 这里可以添加其他通知机制，如WebSocket推送、邮件通知等
+            # 例如：通过WebSocket实时推送提醒
+            # _send_websocket_notification(task.user_id, task.chat_id, ai_message)
+            
+        except Exception as e:
+            app.logger.error("生成或保存AI提醒消息失败: %s", e)
+
+def _handle_reasoner_completion(task, result):
+    """处理推理任务完成"""
+    app.logger.info("处理推理任务完成: task_id=%s, user_id=%d, chat_id=%d", 
+                   task.task_id, task.user_id, task.chat_id)
+    
+    # 保存推理结果到聊天历史
+    reasoning_result = result.get("reasoning", "")
+    conclusion = result.get("conclusion", "")
+    
+    if conclusion:
+        ai_message = f"【推理完成】\n\n经过深入分析，我得出的结论是：\n{conclusion}\n\n详细的推理过程已保存。"
+        
+        try:
+            reminder_message = {
+                "role": "assistant",
+                "content": ai_message
+            }
+            
+            db.append_messages(task.user_id, task.chat_id, [reminder_message])
+            app.logger.info("推理结果已保存到聊天历史")
+        except Exception as e:
+            app.logger.error("保存推理结果失败: %s", e)
+
 # ---------- 日志配置 ----------
+# 全局变量，用于跟踪日志是否已配置
+_logging_configured = False
+
 def setup_logging(app):
+    global _logging_configured
+    
+    # 检查是否已经配置过日志，避免在Flask调试模式重启时重复配置
+    if _logging_configured:
+        app.logger.debug("日志系统已经配置，跳过重复配置")
+        return
+    
     log_dir = app.config["LOG_DIR"]
     os.makedirs(log_dir, exist_ok=True)
     log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log"
@@ -49,25 +287,42 @@ def setup_logging(app):
     )
     console_handler.setFormatter(console_formatter)
 
-    # 配置根日志记录器，这样所有模块的日志都会同时记录到文件和控制台
+    # 只配置根日志记录器，这样所有子日志记录器都会继承处理器
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()  # 清除现有的处理器
+    
+    # 清除所有现有的处理器，确保不会重复
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
     root_logger.setLevel(logging.INFO)
-
-    # 同时配置Flask应用日志记录器
-    app.logger.handlers.clear()
-    app.logger.addHandler(file_handler)
-    app.logger.addHandler(console_handler)
+    
+    # 重要：禁用传播，避免日志被父日志记录器重复处理
+    # 这样每个日志记录器只使用根日志记录器的处理器
+    root_logger.propagate = False
+    
+    # 配置Flask应用日志记录器，但不添加处理器，让它使用根日志记录器的处理器
+    for handler in app.logger.handlers[:]:
+        app.logger.removeHandler(handler)
+    
+    # 不添加处理器到app.logger，让它使用根日志记录器的处理器
     app.logger.setLevel(logging.INFO)
+    app.logger.propagate = True  # 允许传播到根日志记录器
 
-    # 禁用werkzeug的默认处理器，避免重复日志
+    # 配置werkzeug日志记录器
     werkzeug_logger = logging.getLogger('werkzeug')
-    werkzeug_logger.handlers.clear()
-    werkzeug_logger.addHandler(file_handler)
-    werkzeug_logger.addHandler(console_handler)
+    for handler in werkzeug_logger.handlers[:]:
+        werkzeug_logger.removeHandler(handler)
+    
+    # 不添加处理器到werkzeug_logger，让它使用根日志记录器的处理器
     werkzeug_logger.setLevel(logging.INFO)
+    werkzeug_logger.propagate = True  # 允许传播到根日志记录器
+    
+    # 标记日志已配置
+    _logging_configured = True
+    
+    app.logger.info("日志系统初始化完成")
 
 # ---------- 创建应用 ----------
 app = Flask(__name__)
@@ -83,6 +338,25 @@ app.config.from_object(Config)
 setup_logging(app)
 init_usermgr(app)
 db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
+
+# 初始化任务管理器
+if app.config.get("TASK_MANAGER_ENABLED", True):
+    try:
+        task_manager = TaskManager(db=db, max_workers=app.config.get("TASK_MAX_WORKERS", 5))
+        # 设置完成队列
+        task_manager.completion_queue = completion_queue
+        app.logger.info("任务管理器初始化完成")
+        
+        # 启动任务完成通知线程
+        notification_thread = threading.Thread(target=process_task_completion, daemon=True)
+        notification_thread.start()
+        app.logger.info("任务完成通知线程已启动")
+    except Exception as e:
+        app.logger.error("任务管理器初始化失败: %s", e)
+        task_manager = None
+else:
+    task_manager = None
+    app.logger.info("任务管理器已禁用")
 
 # 初始化 记忆与摘要模块
 if app.config.get("MEMORY_ENABLED", True):
@@ -189,8 +463,14 @@ def chat_send():
     # 下面调用 DeepSeek API
     try:
         chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        
+        # 在用户消息前添加时间戳
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamped_message = f"[{current_time}] {message}"
+        
         chat.messages = full_history.copy()
-        reply = chat.send_message(message)
+        reply = chat.send_message(timestamped_message)
     except Exception as e:
         app.logger.error("DeepSeek API 调用失败: %s", e)
         return jsonify({"error": "AI service error"}), 500
@@ -206,65 +486,95 @@ def chat_send():
     # 保存原始回复用于记忆摘要
     original_reply = reply
 
+    # --- 解析并执行任务 ---
+    if task_manager:
+        tasks = parse_task_instructions(original_reply)
+        for task_data in tasks:
+            try:
+                task_type = task_data.get("type")
+                params = task_data.get("params", {})
+                
+                if task_type == "reminder":
+                    # 解析提醒时间
+                    time_str = params.get("time")
+                    if time_str:
+                        from datetime import datetime
+                        scheduled_time = datetime.fromisoformat(time_str)
+                        
+                        task_id = task_manager.create_task(
+                            task_type=TaskType.REMINDER,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            params=params,
+                            priority=1,
+                            scheduled_time=scheduled_time
+                        )
+                        app.logger.info("已创建提醒任务: %s, 时间: %s", task_id, scheduled_time)
+                        
+                elif task_type == "reasoner":
+                    # 创建推理任务
+                    task_id = task_manager.create_task(
+                        task_type=TaskType.REASONER,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        params=params,
+                        priority=1
+                    )
+                    # 立即执行推理任务
+                    task_manager.execute_task(task_id)
+                    app.logger.info("已创建并执行推理任务: %s", task_id)
+                    
+            except Exception as e:
+                app.logger.error("处理任务失败: %s, 任务数据: %s", e, task_data)
+
     # --- TTS 合成 ---
     audio_data = None
     tts_error = None
 
-    # 检查是否包含<text>标签
+    # 在TTS合成之前，需要移除所有标签，包括<text>和<task>标签
+    # 首先提取用于显示的回复（移除所有标签）
     import re
+    
+    # 移除<text>标签，保留标签内的内容用于显示
     text_tag_pattern = r'<text>(.*?)</text>'
-    text_matches = re.findall(text_tag_pattern, reply, re.DOTALL | re.IGNORECASE)
-
-    if text_matches:
-        # 包含<text>标签，提取标签内的内容用于显示
-        app.logger.info("检测到<text>标签，提取标签内内容用于显示")
-        # 从回复中移除<text>标签，保留纯文本内容用于显示
-        clean_reply = re.sub(text_tag_pattern, r'\1', reply, flags=re.DOTALL | re.IGNORECASE)
-        reply = clean_reply.strip()
-        
-        # 检查是否有不在标签里的部分，如果有则进行TTS合成
-        # 获取标签外的内容：先移除所有<text>标签及其内容
-        text_content_only = re.sub(text_tag_pattern, '', reply, flags=re.DOTALL | re.IGNORECASE)
-        # 获取原始回复中标签外的内容
-        outside_text = re.sub(r'<text>.*?</text>', '', original_reply, flags=re.DOTALL | re.IGNORECASE)
-        outside_text = outside_text.strip()
-        
-        if outside_text:
-            app.logger.info(f"检测到标签外内容，进行TTS合成: {outside_text}")
-            try:
-                # 构造 TTS 请求参数
-                REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
-                PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
-
-                params = {
-                    "text": outside_text,
-                    "text_lang": "zh",                     # 假设回复为中文
-                    "ref_audio_path": REF_AUDIO_PATH,
-                    "prompt_lang": "en",
-                    "prompt_text": PROMPT_TEXT,
-                    "media_type": "wav",
-                    "streaming_mode": False,
-                }
-                audio_data = tts_client.tts(**params)
-                app.logger.info("标签外内容TTS合成成功")
-            except TTSRequestError as e:
-                tts_error = f"TTS 服务请求失败: {e}"
-                app.logger.error(tts_error)
-            except Exception as e:
-                tts_error = f"TTS 未知错误: {e}"
-                app.logger.exception("TTS 异常")
-        else:
-            app.logger.info("没有检测到标签外内容，跳过TTS合成")
-    else:
-        # 不包含<text>标签，进行正常TTS合成
+    display_reply = re.sub(text_tag_pattern, r'\1', original_reply, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除<task>标签及其内容（完全移除）
+    task_tag_pattern = r'<task>.*?</task>'
+    display_reply = re.sub(task_tag_pattern, '', display_reply, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除其他可能的标签
+    display_reply = re.sub(r'<[^>]+>', '', display_reply)  # 移除所有HTML标签
+    
+    # 清理多余的空格和换行
+    display_reply = re.sub(r'\s+', ' ', display_reply).strip()
+    reply = display_reply
+    
+    # 准备用于TTS合成的文本：移除所有标签，只保留纯文本
+    tts_text = original_reply
+    
+    # 移除<text>标签及其内容（完全移除）
+    tts_text = re.sub(text_tag_pattern, '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除<task>标签及其内容（完全移除）
+    tts_text = re.sub(task_tag_pattern, '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 移除其他可能的标签
+    tts_text = re.sub(r'<[^>]+>', '', tts_text)  # 移除所有HTML标签
+    
+    # 清理多余的空格和换行
+    tts_text = re.sub(r'\s+', ' ', tts_text).strip()
+    
+    # 如果有内容才进行TTS合成
+    if tts_text:
+        app.logger.info(f"进行TTS合成，文本: {tts_text[:100]}...")
         try:
-            # 构造 TTS 请求参数（可根据需要从数据库或配置获取参考音频等）
-            # 这里使用示例参数，实际应让客户端选择或使用默认配置
+            # 构造 TTS 请求参数
             REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
             PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
 
             params = {
-                "text": reply,
+                "text": tts_text,
                 "text_lang": "zh",                     # 假设回复为中文
                 "ref_audio_path": REF_AUDIO_PATH,
                 "prompt_lang": "en",
@@ -273,12 +583,15 @@ def chat_send():
                 "streaming_mode": False,
             }
             audio_data = tts_client.tts(**params)
+            app.logger.info("TTS合成成功")
         except TTSRequestError as e:
             tts_error = f"TTS 服务请求失败: {e}"
             app.logger.error(tts_error)
         except Exception as e:
             tts_error = f"TTS 未知错误: {e}"
             app.logger.exception("TTS 异常")
+    else:
+        app.logger.info("没有可用于TTS合成的文本内容，跳过TTS合成")
 
     # 写入记忆模块（异步摘要）- 使用原始reply内容
     if memory_manager:

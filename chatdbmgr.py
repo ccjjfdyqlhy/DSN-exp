@@ -1,6 +1,6 @@
 
 # DSN-exp/chatdbmgr.py
-# UPD v2_260326
+# UPD v3_260328
 
 import sqlite3
 import logging
@@ -93,6 +93,22 @@ class ChatDBManager:
                     )
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_chat_id ON memories(chat_id)")
+                
+                # 任务通知表
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS task_notifications (
+                        notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        task_id TEXT NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        result TEXT NOT NULL,
+                        status TEXT DEFAULT 'unread' CHECK(status IN ('unread', 'read')),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_task_notifications_user_id ON task_notifications(user_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id ON task_notifications(task_id)")
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
             except sqlite3.Error as e:
@@ -289,13 +305,14 @@ class ChatDBManager:
             conn.rollback()
             raise
 
-    def append_messages(self, user_id: int, chat_id: int, messages: List[Dict[str, str]]) -> None:
+    def append_messages(self, user_id: int, chat_id: int, messages: List[Dict[str, str]], skip_memory_check: bool = False) -> None:
         """
         向指定聊天会话追加消息（需验证用户所有权）。
 
         :param user_id: 用户ID
         :param chat_id: 聊天会话ID
         :param messages: 消息列表，格式 [{"role": "user"/"assistant", "content": "..."}]
+        :param skip_memory_check: 是否跳过记忆化检查（用于系统触发的AI提醒消息）
         :raises ValueError: 如果聊天不属于该用户
         :raises sqlite3.Error: 数据库错误
         """
@@ -312,13 +329,22 @@ class ChatDBManager:
             for msg in messages:
                 role = msg.get("role")
                 content = msg.get("content")
+                skip_memory = msg.get("skip_memory", False) or skip_memory_check
+                
                 if role not in ("user", "assistant") or not isinstance(content, str):
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
+                
+                # 插入消息到数据库
                 conn.execute(
                     "INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)",
                     (chat_id, role, content),
                 )
+                
+                # 如果消息标记为跳过记忆化，记录日志
+                if skip_memory:
+                    self.logger.info("消息标记为跳过记忆化: role=%s, content_preview=%s", role, content[:50])
+                
             conn.commit()
             self.logger.info("向聊天 %d 追加 %d 条消息", chat_id, len(messages))
         except sqlite3.Error as e:

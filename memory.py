@@ -1,6 +1,6 @@
 
 # DSN-exp/memory.py
-# UPD v2_260326
+# UPD v3_260328
 
 import threading
 import logging
@@ -32,6 +32,12 @@ class MemoryManager:
                                   messages: List[Dict[str, str]],
                                   async_mode: bool = True) -> Optional[Future]:
         """在保存对话后生成摘要记忆。"""
+        # 检查消息是否标记为跳过记忆化
+        for msg in messages:
+            if msg.get("skip_memory", False):
+                self.logger.info(f"消息标记为跳过记忆化，不生成摘要 - 用户ID: {user_id}, 聊天ID: {chat_id}, 轮次: {round_index}")
+                return None
+        
         if async_mode and Config.MEMORY_ASYNC_ENABLED:
             return self.executor.submit(self._do_summary, user_id, chat_id, round_index, messages)
         else:
@@ -88,16 +94,16 @@ class MemoryManager:
             for i, msg in enumerate(old_segment[:3]):  # 只记录前3条被替换的消息
                 role = msg.get('role', 'unknown')
                 content_preview = msg.get('content', '')[:50] + ('...' if len(msg.get('content', '')) > 50 else '')
-                self.logger.info(f"被替换消息 {i+1}: [{role}] {content_preview}")
-            if len(old_segment) > 3:
-                self.logger.info(f"... 还有 {len(old_segment) - 3} 条消息被替换")
+                # self.logger.info(f"被替换消息 {i+1}: [{role}] {content_preview}")
+            # if len(old_segment) > 3:
+                # self.logger.info(f"... 还有 {len(old_segment) - 3} 条消息被替换")
 
         memory_msgs = []
         for mem in memories:
             memory_msgs.append({"role": "system", "content": f"记忆摘要：{mem['summary']}"})
             # 记录记忆摘要内容
             summary_preview = mem['summary'][:80] + ('...' if len(mem['summary']) > 80 else '')
-            self.logger.info(f"记忆摘要 {len(memory_msgs)}: {summary_preview}")
+            # self.logger.info(f"记忆摘要 {len(memory_msgs)}: {summary_preview}")
 
         self.logger.info(f"拼接完成 - 最终上下文: {len(memory_msgs)} 条记忆 + {len(remain)} 条近期消息 = {len(memory_msgs) + len(remain)} 条消息")
         return memory_msgs + remain
