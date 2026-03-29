@@ -138,8 +138,36 @@ HTML_INDEX = """
             30%, 70% { background-color: rgba(255, 255, 255, 0.1); }
         }
 
-        .loading-container { width: 100%; height: 3px; background: rgba(0, 122, 255, 0.1); overflow: hidden; border-radius: 2px; margin: 15px 0; }
-        .loading-bar { width: 35%; height: 100%; background: var(--primary); animation: googleProgress 1.6s infinite ease-in-out; }
+        /* 底部动态卡片和进度条集成样式 */
+        .inline-status-card {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 18px; margin-top: 10px; margin-bottom: 5px;
+            background: var(--glass-bg); backdrop-filter: blur(25px);
+            border: 1px solid var(--border-highlight);
+            border-radius: 12px; position: relative; overflow: hidden;
+            width: fit-content; max-width: 100%;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            transition: opacity 0.3s ease;
+        }
+        .status-icon {
+            color: var(--primary); display: flex; align-items: center; justify-content: center;
+            animation: statusPulse 1.5s infinite alternate;
+        }
+        @keyframes statusPulse {
+            from { opacity: 1; transform: scale(1); }
+            to { opacity: 0.6; transform: scale(1.1); }
+        }
+        .status-text { font-size: 0.95rem; color: var(--text-main); font-weight: 500; }
+        
+        .progress-bottom {
+            position: absolute; bottom: 0; left: 0;
+            width: 100%; height: 3px; background: rgba(0, 122, 255, 0.15);
+            overflow: hidden;
+        }
+        .progress-bottom-bar {
+            width: 40%; height: 100%; background: var(--primary);
+            animation: googleProgress 1.6s infinite ease-in-out; border-radius: 3px;
+        }
         @keyframes googleProgress { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 
         #welcome-text {
@@ -191,25 +219,6 @@ HTML_INDEX = """
         .nav-item:hover { background: rgba(255,255,255,0.15); border: 1px solid var(--border-highlight); }
         .nav-item.active { background: var(--primary); color: white; }
 
-        /* 状态指示器面板 */
-        #status-panel {
-            position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
-            display: flex; gap: 24px; padding: 12px 28px; border-radius: 30px;
-            background: var(--glass-bg); backdrop-filter: blur(25px);
-            border: 1px solid var(--border-highlight);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            opacity: 0; pointer-events: none; transition: opacity 0.3s, transform 0.3s;
-            z-index: 10;
-        }
-        #status-panel.active { opacity: 1; transform: translateX(-50%) translateY(-10px); }
-        .status-stage { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.9rem; transition: 0.3s; }
-        .status-stage.current { color: var(--primary); font-weight: 600; }
-        .status-stage.done { color: #34c759; }
-        .status-indicator { width: 10px; height: 10px; border-radius: 50%; background: currentColor; opacity: 0.3; transition: 0.3s; }
-        .status-stage.current .status-indicator { opacity: 1; box-shadow: 0 0 10px currentColor; animation: pulse 1s infinite alternate; }
-        .status-stage.done .status-indicator { opacity: 1; }
-        @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.3); } }
-
         /* 麦克风正在录音闪烁动画 */
         .recording-pulse { color: #ff3b30 !important; animation: recPulse 1s infinite alternate; }
         @keyframes recPulse { from { opacity: 1; } to { opacity: 0.4; } }
@@ -232,13 +241,6 @@ HTML_INDEX = """
     
     <div id="main">
         <div id="chat-env"></div>
-
-        <div id="status-panel">
-            <div class="status-stage" id="stage-parsing"><div class="status-indicator"></div><span>解析</span></div>
-            <div class="status-stage" id="stage-request"><div class="status-indicator"></div><span>请求</span></div>
-            <div class="status-stage" id="stage-execution"><div class="status-indicator"></div><span>执行</span></div>
-            <div class="status-stage" id="stage-tts"><div class="status-indicator"></div><span>合成语音</span></div>
-        </div>
 
         <div id="input-container">
             <div id="welcome-text">今天可以怎么帮到你？</div>
@@ -313,7 +315,7 @@ HTML_INDEX = """
                         const data = await res.json();
                         if (data.text) {
                             document.getElementById('userInput').value = data.text;
-                            send(true); // 传入 isAsr = true 自动发送
+                            send(true); 
                         }
                     } catch(e) { console.error("ASR 错误", e); }
                     micBtn.style.opacity = '1';
@@ -327,33 +329,38 @@ HTML_INDEX = """
             }
         }
 
-        // --- UI状态面板控制 ---
-        const stages = ['parsing', 'request', 'execution', 'tts'];
-        function updateStatus(activeStage) {
-            const panel = document.getElementById('status-panel');
-            if (!activeStage || activeStage === 'completed') {
-                panel.classList.remove('active');
-                return;
+        // --- 状态指示卡片控制 ---
+        const statusMap = {
+            'parsing': { text: '进行模态转换', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>' },
+            'request': { text: '构建回答', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M12 12v9"></path><path d="M8 17l4 4 4-4"></path></svg>' },
+            'execution': { text: '执行任务', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>' },
+            'tts': { text: '正在合成语音', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>' }
+        };
+
+        function updateInlineStatus(loaderId, stage) {
+            if (!statusMap[stage]) return;
+            const iconEl = document.getElementById(`icon_${loaderId}`);
+            const textEl = document.getElementById(`text_${loaderId}`);
+            if(iconEl && textEl) {
+                iconEl.innerHTML = statusMap[stage].icon;
+                textEl.innerText = statusMap[stage].text;
+                scrollToBottom();
             }
-            panel.classList.add('active');
-            let reached = true;
-            stages.forEach(s => {
-                const el = document.getElementById('stage-' + s);
-                el.className = 'status-stage';
-                if (s === activeStage) { el.classList.add('current'); reached = false; }
-                else if (reached) { el.classList.add('done'); }
-            });
         }
 
         // --- 逐行渲染渲染器 ---
         function applyTypewriterEffect(containerElem, rawText) {
-            containerElem.innerHTML = `<div class="bot-content">${formatAiMessage(rawText)}</div>`;
-            const contentDiv = containerElem.querySelector('.bot-content');
-            // 获取顶层块级元素作为行
+            let contentDiv = containerElem.querySelector('.bot-content');
+            if(!contentDiv) {
+                contentDiv = document.createElement('div');
+                contentDiv.className = 'bot-content';
+                containerElem.insertBefore(contentDiv, containerElem.firstChild);
+            }
+            contentDiv.innerHTML = formatAiMessage(rawText);
+            
             const lines = Array.from(contentDiv.children);
             if(lines.length === 0) return;
             
-            // 先全部施加遮罩/透明
             lines.forEach(line => {
                 line.style.opacity = '0';
                 line.style.transform = 'translateY(10px)';
@@ -364,7 +371,6 @@ HTML_INDEX = """
             const interval = setInterval(() => {
                 if (i >= lines.length) {
                     clearInterval(interval);
-                    // 渲染公式
                     if (window.MathJax && window.MathJax.typesetPromise) { MathJax.typesetPromise([containerElem]); }
                     return;
                 }
@@ -372,12 +378,11 @@ HTML_INDEX = """
                 lines[i].style.transform = 'translateY(0)';
                 scrollToBottom();
                 i++;
-            }, 500); // 要求：每0.5秒显示1行
+            }, 500);
         }
 
         async function send(isAsr = false) {
             const input = document.getElementById('userInput');
-            // 此处兼容原生传参或点击事件没传参的情况
             const text = input.value.trim();
             if(!text) return;
             
@@ -385,7 +390,6 @@ HTML_INDEX = """
             const dStr = now.toLocaleDateString('en-CA');
             const tStr = now.toTimeString().split(' ')[0];
             
-            // 立即显示用户消息
             appendMsgObj({role: 'user', content: `[${dStr} ${tStr}] ${text}`}, false, false);
             
             input.value = '';
@@ -395,7 +399,18 @@ HTML_INDEX = """
             const loaderDiv = document.createElement('div');
             loaderDiv.id = loaderId;
             loaderDiv.className = 'msg-container bot-container animate-up';
-            loaderDiv.innerHTML = `<div class="bot"><div class="loading-container"><div class="loading-bar"></div></div></div>`;
+            // 加入行内状态卡片及底部进度条
+            loaderDiv.innerHTML = `
+                <div class="bot">
+                    <div class="bot-content"></div>
+                    <div class="inline-status-card" id="status_${loaderId}">
+                        <div class="status-icon" id="icon_${loaderId}">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        </div>
+                        <div class="status-text" id="text_${loaderId}">准备处理...</div>
+                        <div class="progress-bottom"><div class="progress-bottom-bar"></div></div>
+                    </div>
+                </div>`;
             document.getElementById('chat-env').appendChild(loaderDiv);
             scrollToBottom();
 
@@ -424,31 +439,33 @@ HTML_INDEX = """
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
                             const data = JSON.parse(line.substring(6));
-                            updateStatus(data.status);
+                            updateInlineStatus(loaderId, data.status);
                             
                             if (data.status === 'text_ready') {
                                 currentChatId = data.chat_id;
-                                // 文字就绪，移除加载条，使用逐行动画
                                 document.getElementById(loaderId).classList.remove('animate-up');
                                 applyTypewriterEffect(targetContainer, data.reply);
                             } 
                             else if (data.status === 'completed') {
-                                updateStatus('completed');
+                                const card = document.getElementById(`status_${loaderId}`);
+                                if(card) {
+                                    card.style.opacity = '0';
+                                    setTimeout(() => card.remove(), 300);
+                                }
                                 if(data.filtered) {
-                                    // 拦截情况
                                     document.getElementById(loaderId).remove();
                                 }
                                 if(ttsEnabled && data.audio) {
                                     new Audio("data:audio/wav;base64," + data.audio).play();
                                 }
-                                loadHistory(); // 刷新左侧边栏
+                                loadHistory(); 
                             }
                         }
                     }
                 }
             } catch(e) { 
-                // document.getElementById(loaderId).innerHTML = "<div class='bot' style='color:#ff3b30;'>连接失败。</div>";
-                updateStatus('completed');
+                const card = document.getElementById(`status_${loaderId}`);
+                if(card) card.remove();
             }
         }
 
@@ -483,7 +500,6 @@ HTML_INDEX = """
             container.appendChild(msgDiv);
             env.appendChild(container);
 
-            // 触发 MathJax 渲染
             if (window.MathJax && window.MathJax.typesetPromise) {
                 MathJax.typesetPromise([msgDiv]).then(() => scrollToBottom());
             } else {
