@@ -29,7 +29,7 @@ class DeepSeekChat:
         model: str = DEFAULT_MODEL,
         api_url: str = DEFAULT_API_URL,
         logger: Optional[logging.Logger] = None,
-        timeout: int = 30,
+        timeout: int = 114514,
         use_reasoner: bool = False,
     ):
         """
