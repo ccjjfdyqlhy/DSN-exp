@@ -93,8 +93,23 @@ HTML_INDEX = """
             transition: var(--transition); overflow: hidden; position: relative;
         }
         body.collapsed #sidebar { width: 0; border-right: none; }
-        #sidebar-content { width: var(--sidebar-width); transition: opacity 0.2s; padding-top: 60px; }
+        #sidebar-content { 
+            width: var(--sidebar-width); 
+            transition: opacity 0.2s; 
+            padding-top: 60px;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
         body.collapsed #sidebar-content { opacity: 0; pointer-events: none; }
+        
+        /* 对话列表滚动条 */
+        #history-list {
+            flex: 1;
+            overflow-y: auto;
+            padding-bottom: 20px;
+        }
 
         #toggle-btn {
             position: absolute; left: 12px; top: 12px; z-index: 100;
@@ -138,37 +153,66 @@ HTML_INDEX = """
             30%, 70% { background-color: rgba(255, 255, 255, 0.1); }
         }
 
-        /* 底部动态卡片和进度条集成样式 */
+        /* 状态卡片样式 - 放大面积 */
         .inline-status-card {
-            display: flex; align-items: center; gap: 10px;
-            padding: 10px 18px; margin-top: 10px; margin-bottom: 5px;
-            background: var(--glass-bg); backdrop-filter: blur(25px);
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 24px;          /* 增加内边距 */
+            margin-bottom: 16px;          /* 与下方内容保持间距 */
+            background: var(--glass-bg);
+            backdrop-filter: blur(25px);
             border: 1px solid var(--border-highlight);
-            border-radius: 12px; position: relative; overflow: hidden;
-            width: fit-content; max-width: 100%;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            border-radius: 28px;          /* 更大圆角 */
+            width: fit-content;
+            max-width: 100%;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
             transition: opacity 0.3s ease;
-        }
-        .status-icon {
-            color: var(--primary); display: flex; align-items: center; justify-content: center;
-            animation: statusPulse 1.5s infinite alternate;
-        }
-        @keyframes statusPulse {
-            from { opacity: 1; transform: scale(1); }
-            to { opacity: 0.6; transform: scale(1.1); }
-        }
-        .status-text { font-size: 0.95rem; color: var(--text-main); font-weight: 500; }
-        
-        .progress-bottom {
-            position: absolute; bottom: 0; left: 0;
-            width: 100%; height: 3px; background: rgba(0, 122, 255, 0.15);
+            position: relative;
             overflow: hidden;
         }
-        .progress-bottom-bar {
-            width: 40%; height: 100%; background: var(--primary);
-            animation: googleProgress 1.6s infinite ease-in-out; border-radius: 3px;
+        .status-icon {
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        @keyframes googleProgress { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+        .status-text {
+            font-size: 1rem;
+            color: var(--text-main);
+            font-weight: 500;
+        }
+        
+        /* 进度条 - 流动电表效果 */
+        .progress-bottom {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: rgba(0, 122, 255, 0.2);
+            overflow: hidden;
+        }
+        .progress-strip {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 200%;
+            height: 100%;
+            background: repeating-linear-gradient(
+                90deg,
+                var(--primary) 0px,
+                var(--primary) 20px,
+                rgba(0, 122, 255, 0.3) 20px,
+                rgba(0, 122, 255, 0.3) 40px
+            );
+            animation: flowStrip 1.5s linear infinite;
+        }
+        @keyframes flowStrip {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+        /* 速度控制通过动态改变 animation-duration 实现 */
 
         #welcome-text {
             position: absolute; top: -55px; left: 50%; transform: translateX(-50%);
@@ -222,6 +266,16 @@ HTML_INDEX = """
         /* 麦克风正在录音闪烁动画 */
         .recording-pulse { color: #ff3b30 !important; animation: recPulse 1s infinite alternate; }
         @keyframes recPulse { from { opacity: 1; } to { opacity: 0.4; } }
+        
+        /* 用时数据样式 */
+        .elapsed-time {
+            margin-top: 16px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-align: right;
+            border-top: 1px dashed var(--border-highlight);
+            padding-top: 8px;
+        }
     </style>
 </head>
 <body class="is-new-chat">
@@ -329,7 +383,31 @@ HTML_INDEX = """
             }
         }
 
-        // --- 状态指示卡片控制 ---
+        // --- 进度条速度控制（流动电表）---
+        function setProgressSpeed(stage) {
+            const strip = document.querySelector(`.progress-strip`);
+            if (!strip) return;
+            let duration = '1.5s'; // 默认中速
+            switch(stage) {
+                case 'parsing':
+                    duration = '2.8s';  // 慢
+                    break;
+                case 'request':
+                    duration = '0.8s';  // 快（约5圈/秒？0.8s完成一次循环，半圈？实际视觉上足够快）
+                    break;
+                case 'execution':
+                    duration = '0.7s';
+                    break;
+                case 'tts':
+                    duration = '2.2s';  // 慢
+                    break;
+                default:
+                    duration = '1.5s';
+            }
+            strip.style.animationDuration = duration;
+        }
+
+        // --- 状态指示卡片控制，增加进度条速度更新---
         const statusMap = {
             'parsing': { text: '进行模态转换', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>' },
             'request': { text: '构建思路，准备回答', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M12 12v9"></path><path d="M8 17l4 4 4-4"></path></svg>' },
@@ -338,18 +416,28 @@ HTML_INDEX = """
         };
 
         function updateInlineStatus(loaderId, stage) {
-            if (!statusMap[stage]) return;
             const iconEl = document.getElementById(`icon_${loaderId}`);
             const textEl = document.getElementById(`text_${loaderId}`);
-            if(iconEl && textEl) {
+            if(iconEl && textEl && statusMap[stage]) {
                 iconEl.innerHTML = statusMap[stage].icon;
                 textEl.innerText = statusMap[stage].text;
+                setProgressSpeed(stage);
                 scrollToBottom();
             }
         }
 
-        // --- 逐行渲染渲染器 ---
-        function applyTypewriterEffect(containerElem, rawText) {
+        // --- 滚动到元素，使其位于输入框上方一定距离（避免遮挡）---
+        function scrollToElementSmooth(element, offsetFromBottom = 180) {
+            const chatEnv = document.getElementById('chat-env');
+            const elementRect = element.getBoundingClientRect();
+            const containerRect = chatEnv.getBoundingClientRect();
+            // 目标：元素顶部距离容器底部 offsetFromBottom 像素
+            const targetScrollTop = chatEnv.scrollTop + (elementRect.top - containerRect.top) - (containerRect.height - offsetFromBottom);
+            chatEnv.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
+        }
+
+        // --- 逐行渲染器（滚动位置优化）---
+        function applyTypewriterEffect(containerElem, rawText, onComplete) {
             let contentDiv = containerElem.querySelector('.bot-content');
             if(!contentDiv) {
                 contentDiv = document.createElement('div');
@@ -359,7 +447,10 @@ HTML_INDEX = """
             contentDiv.innerHTML = formatAiMessage(rawText);
             
             const lines = Array.from(contentDiv.children);
-            if(lines.length === 0) return;
+            if(lines.length === 0) {
+                if(onComplete) onComplete();
+                return;
+            }
             
             lines.forEach(line => {
                 line.style.opacity = '0';
@@ -372,15 +463,20 @@ HTML_INDEX = """
                 if (i >= lines.length) {
                     clearInterval(interval);
                     if (window.MathJax && window.MathJax.typesetPromise) { MathJax.typesetPromise([containerElem]); }
+                    if (onComplete) onComplete();
                     return;
                 }
                 lines[i].style.opacity = '1';
                 lines[i].style.transform = 'translateY(0)';
-                scrollToBottom();
+                // 滚动当前行到输入框上方（距底部180px，适应输入框位置）
+                scrollToElementSmooth(lines[i], 180);
                 i++;
             }, 500);
         }
 
+        // 记录开始时间
+        let startTime = null;
+        
         async function send(isAsr = false) {
             const input = document.getElementById('userInput');
             const text = input.value.trim();
@@ -394,26 +490,59 @@ HTML_INDEX = """
             
             input.value = '';
             autoHeight(input);
+            
+            startTime = Date.now();
 
             const loaderId = 'loader_' + Date.now();
             const loaderDiv = document.createElement('div');
             loaderDiv.id = loaderId;
             loaderDiv.className = 'msg-container bot-container animate-up';
-            // 加入行内状态卡片及底部进度条
+            // 卡片置于内容之上
             loaderDiv.innerHTML = `
                 <div class="bot">
-                    <div class="bot-content"></div>
                     <div class="inline-status-card" id="status_${loaderId}">
                         <div class="status-icon" id="icon_${loaderId}">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                         </div>
                         <div class="status-text" id="text_${loaderId}">准备处理...</div>
-                        <div class="progress-bottom"><div class="progress-bottom-bar"></div></div>
+                        <div class="progress-bottom"><div class="progress-strip"></div></div>
                     </div>
+                    <div class="bot-content"></div>
                 </div>`;
             document.getElementById('chat-env').appendChild(loaderDiv);
             scrollToBottom();
 
+            let typewriterCompleted = false;
+            let completedReceived = false;
+            let targetContainerElem = document.getElementById(loaderId).querySelector('.bot');
+            
+            const finishAction = () => {
+                if (typewriterCompleted && completedReceived) {
+                    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                    const botContentDiv = targetContainerElem.querySelector('.bot-content');
+                    if (botContentDiv && !botContentDiv.querySelector('.elapsed-time')) {
+                        const timeDiv = document.createElement('div');
+                        timeDiv.className = 'elapsed-time';
+                        timeDiv.innerHTML = `⏱️ 用时 ${elapsed} 秒`;
+                        botContentDiv.appendChild(timeDiv);
+                    }
+                    const statusCard = document.getElementById(`status_${loaderId}`);
+                    if (statusCard) {
+                        const iconDiv = statusCard.querySelector('.status-icon');
+                        const textDiv = statusCard.querySelector('.status-text');
+                        if (iconDiv) iconDiv.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+                        if (textDiv) textDiv.innerText = '完成！';
+                        // 移除进度条流动效果
+                        const progressStrip = statusCard.querySelector('.progress-strip');
+                        if (progressStrip) progressStrip.style.animation = 'none';
+                        setTimeout(() => {
+                            if (statusCard) statusCard.style.opacity = '0';
+                            setTimeout(() => statusCard && statusCard.remove(), 300);
+                        }, 1000);
+                    }
+                }
+            };
+            
             try {
                 const res = await fetch('/chat_stream', {
                     method: 'POST',
@@ -428,7 +557,6 @@ HTML_INDEX = """
 
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder('utf-8');
-                let targetContainer = document.getElementById(loaderId).querySelector('.bot');
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -444,21 +572,22 @@ HTML_INDEX = """
                             if (data.status === 'text_ready') {
                                 currentChatId = data.chat_id;
                                 document.getElementById(loaderId).classList.remove('animate-up');
-                                applyTypewriterEffect(targetContainer, data.reply);
+                                applyTypewriterEffect(targetContainerElem, data.reply, () => {
+                                    typewriterCompleted = true;
+                                    finishAction();
+                                });
                             } 
                             else if (data.status === 'completed') {
-                                const card = document.getElementById(`status_${loaderId}`);
-                                if(card) {
-                                    card.style.opacity = '0';
-                                    setTimeout(() => card.remove(), 300);
-                                }
+                                completedReceived = true;
                                 if(data.filtered) {
                                     document.getElementById(loaderId).remove();
+                                    return;
                                 }
                                 if(ttsEnabled && data.audio) {
                                     new Audio("data:audio/wav;base64," + data.audio).play();
                                 }
-                                loadHistory(); 
+                                loadHistory();
+                                finishAction();
                             }
                         }
                     }
