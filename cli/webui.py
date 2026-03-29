@@ -38,12 +38,26 @@ HTML_INDEX = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['\\\\(', '\\\\)'], ['$', '$']],
+                displayMath: [['\\\\[', '\\\\]'], ['$$', '$$']],
+                processEscapes: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            },
+            startup: { typeset: false }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
     <style>
         :root { 
             --primary: #007aff; 
             --sidebar-width: 260px;
-            --transition: 0.3s ease; /* 改为标准平滑过渡 */
-            
+            --transition: 0.3s ease;
             --glass-bg: rgba(255, 255, 255, 0.45);
             --sidebar-bg: rgba(255, 255, 255, 0.6);
             --text-main: #1d1d1f;
@@ -79,7 +93,6 @@ HTML_INDEX = """
             transition: var(--transition); overflow: hidden; position: relative;
         }
         body.collapsed #sidebar { width: 0; border-right: none; }
-        
         #sidebar-content { width: var(--sidebar-width); transition: opacity 0.2s; padding-top: 60px; }
         body.collapsed #sidebar-content { opacity: 0; pointer-events: none; }
 
@@ -92,16 +105,12 @@ HTML_INDEX = """
         #toggle-btn:hover { background: rgba(255,255,255,0.2); backdrop-filter: blur(5px); }
 
         #main { flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; }
-        
         #chat-env { 
             flex: 1; overflow-y: auto; padding: 20px 18% 180px 18%; 
             display: flex; flex-direction: column; scroll-behavior: smooth;
         }
 
-        /* 消息上浮动画 - 仅在新消息产生时使用 */
-        .animate-up {
-            animation: floatUp 0.4s ease-out forwards;
-        }
+        .animate-up { animation: floatUp 0.4s ease-out forwards; }
         @keyframes floatUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
         .msg-container { display: flex; flex-direction: column; width: 100%; margin-bottom: 28px; }
@@ -151,14 +160,12 @@ HTML_INDEX = """
             box-shadow: 0 15px 45px rgba(0, 0, 0, 0.15);
             padding: 10px 20px;
             border-radius: 40px;
-            /* 去掉 cubic-bezier 换成平稳的过渡，消除回弹感 */
             transition: bottom 0.3s ease, transform 0.3s ease, border-radius 0.3s ease, width 0.3s ease;
         }
         .is-new-chat #input-container { bottom: 42%; }
         #input-container.multiline { border-radius: 20px; }
 
         #input-wrapper { display: flex; align-items: flex-end; gap: 12px; min-height: 48px; }
-        
         textarea { 
             flex: 1; border: none; outline: none; background: transparent;
             font-size: 1.15rem; color: var(--text-main);
@@ -183,6 +190,29 @@ HTML_INDEX = """
         }
         .nav-item:hover { background: rgba(255,255,255,0.15); border: 1px solid var(--border-highlight); }
         .nav-item.active { background: var(--primary); color: white; }
+
+        /* 状态指示器面板 */
+        #status-panel {
+            position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 24px; padding: 12px 28px; border-radius: 30px;
+            background: var(--glass-bg); backdrop-filter: blur(25px);
+            border: 1px solid var(--border-highlight);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            opacity: 0; pointer-events: none; transition: opacity 0.3s, transform 0.3s;
+            z-index: 10;
+        }
+        #status-panel.active { opacity: 1; transform: translateX(-50%) translateY(-10px); }
+        .status-stage { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.9rem; transition: 0.3s; }
+        .status-stage.current { color: var(--primary); font-weight: 600; }
+        .status-stage.done { color: #34c759; }
+        .status-indicator { width: 10px; height: 10px; border-radius: 50%; background: currentColor; opacity: 0.3; transition: 0.3s; }
+        .status-stage.current .status-indicator { opacity: 1; box-shadow: 0 0 10px currentColor; animation: pulse 1s infinite alternate; }
+        .status-stage.done .status-indicator { opacity: 1; }
+        @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.3); } }
+
+        /* 麦克风正在录音闪烁动画 */
+        .recording-pulse { color: #ff3b30 !important; animation: recPulse 1s infinite alternate; }
+        @keyframes recPulse { from { opacity: 1; } to { opacity: 0.4; } }
     </style>
 </head>
 <body class="is-new-chat">
@@ -203,11 +233,21 @@ HTML_INDEX = """
     <div id="main">
         <div id="chat-env"></div>
 
+        <div id="status-panel">
+            <div class="status-stage" id="stage-parsing"><div class="status-indicator"></div><span>解析</span></div>
+            <div class="status-stage" id="stage-request"><div class="status-indicator"></div><span>请求</span></div>
+            <div class="status-stage" id="stage-execution"><div class="status-indicator"></div><span>执行</span></div>
+            <div class="status-stage" id="stage-tts"><div class="status-indicator"></div><span>合成语音</span></div>
+        </div>
+
         <div id="input-container">
             <div id="welcome-text">今天可以怎么帮到你？</div>
             <div id="input-wrapper">
                 <button id="tts-btn" class="icon-btn" onclick="toggleTTS()" title="用语音回复" style="color: var(--primary);">
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                </button>
+                <button id="mic-btn" class="icon-btn" onclick="toggleRecording()" title="按住录音" style="color: var(--text-muted);">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
                 </button>
                 <textarea id="userInput" rows="1" placeholder="键入消息..." oninput="autoHeight(this)"></textarea>
                 <button class="icon-btn btn-send" onclick="send()">
@@ -231,33 +271,122 @@ HTML_INDEX = """
 
         function formatAiMessage(raw) {
             let text = raw.replace(/<text>|<\/text>/g, '');
-            text = text.replace(/<action>([\s\S]*?)<\/action>/g, (_, p1) => `<details><summary>执行动作</summary><pre>${p1}</pre></details>`);
-            text = text.replace(/<task>([\s\S]*?)<\/task>/g, (_, p1) => `<details><summary>设定任务</summary><pre>${p1}</pre></details>`);
+            text = text.replace(/<action>([\s\S]*?)<\/action>/g, (_, p1) => `<details><summary>执行了动作</summary><pre>${p1}</pre></details>`);
+            text = text.replace(/<task>([\s\S]*?)<\/task>/g, (_, p1) => `<details><summary>执行了任务</summary><pre>${p1}</pre></details>`);
             return marked.parse(text);
         }
 
         function parseMessage(content, role) {
             let datePart = null, timePart = null, cleanText = content;
-            if (role === 'user') {
-                const match = content.match(/^\[(.*?)\]\s*([\s\S]*)/);
-                if (match) {
-                    const dt = match[1].split(' ');
-                    cleanText = match[2];
-                    if (dt.length >= 2) { datePart = dt[0]; timePart = dt[1]; }
-                }
+            const match = content.match(/^\[(.*?)\s+(.*?)\]\s*([\s\S]*)/);
+            if (match) {
+                datePart = match[1];
+                timePart = match[2];
+                cleanText = match[3];
             }
             return { datePart, timePart, cleanText };
         }
 
-        async function send() {
+        // --- 录音逻辑 ---
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+
+        async function toggleRecording() {
+            const micBtn = document.getElementById('mic-btn');
+            if (isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                micBtn.classList.remove('recording-pulse');
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.addEventListener("dataavailable", event => audioChunks.push(event.data));
+                mediaRecorder.addEventListener("stop", async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    micBtn.style.opacity = '0.5';
+                    try {
+                        const res = await fetch('/asr', { method: 'POST', body: audioBlob });
+                        const data = await res.json();
+                        if (data.text) {
+                            document.getElementById('userInput').value = data.text;
+                            send(true); // 传入 isAsr = true 自动发送
+                        }
+                    } catch(e) { console.error("ASR 错误", e); }
+                    micBtn.style.opacity = '1';
+                    stream.getTracks().forEach(t => t.stop());
+                });
+                mediaRecorder.start();
+                isRecording = true;
+                micBtn.classList.add('recording-pulse');
+            } catch(e) {
+                alert("无法获取麦克风权限。");
+            }
+        }
+
+        // --- UI状态面板控制 ---
+        const stages = ['parsing', 'request', 'execution', 'tts'];
+        function updateStatus(activeStage) {
+            const panel = document.getElementById('status-panel');
+            if (!activeStage || activeStage === 'completed') {
+                panel.classList.remove('active');
+                return;
+            }
+            panel.classList.add('active');
+            let reached = true;
+            stages.forEach(s => {
+                const el = document.getElementById('stage-' + s);
+                el.className = 'status-stage';
+                if (s === activeStage) { el.classList.add('current'); reached = false; }
+                else if (reached) { el.classList.add('done'); }
+            });
+        }
+
+        // --- 逐行渲染渲染器 ---
+        function applyTypewriterEffect(containerElem, rawText) {
+            containerElem.innerHTML = `<div class="bot-content">${formatAiMessage(rawText)}</div>`;
+            const contentDiv = containerElem.querySelector('.bot-content');
+            // 获取顶层块级元素作为行
+            const lines = Array.from(contentDiv.children);
+            if(lines.length === 0) return;
+            
+            // 先全部施加遮罩/透明
+            lines.forEach(line => {
+                line.style.opacity = '0';
+                line.style.transform = 'translateY(10px)';
+                line.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+            });
+
+            let i = 0;
+            const interval = setInterval(() => {
+                if (i >= lines.length) {
+                    clearInterval(interval);
+                    // 渲染公式
+                    if (window.MathJax && window.MathJax.typesetPromise) { MathJax.typesetPromise([containerElem]); }
+                    return;
+                }
+                lines[i].style.opacity = '1';
+                lines[i].style.transform = 'translateY(0)';
+                scrollToBottom();
+                i++;
+            }, 500); // 要求：每0.5秒显示1行
+        }
+
+        async function send(isAsr = false) {
             const input = document.getElementById('userInput');
+            // 此处兼容原生传参或点击事件没传参的情况
             const text = input.value.trim();
             if(!text) return;
             
             const now = new Date();
-            const optimisticText = `[${now.toLocaleDateString().replace(/\//g,'-')} ${now.toTimeString().split(' ')[0]}] ${text}`;
-            // 发送新消息：isHistory = false，开启上浮动画
-            appendMsgObj({role: 'user', content: optimisticText}, false, false);
+            const dStr = now.toLocaleDateString('en-CA');
+            const tStr = now.toTimeString().split(' ')[0];
+            
+            // 立即显示用户消息
+            appendMsgObj({role: 'user', content: `[${dStr} ${tStr}] ${text}`}, false, false);
             
             input.value = '';
             autoHeight(input);
@@ -265,38 +394,64 @@ HTML_INDEX = """
             const loaderId = 'loader_' + Date.now();
             const loaderDiv = document.createElement('div');
             loaderDiv.id = loaderId;
-            loaderDiv.className = 'msg-container bot-container animate-up'; // 加载器显示上浮
+            loaderDiv.className = 'msg-container bot-container animate-up';
             loaderDiv.innerHTML = `<div class="bot"><div class="loading-container"><div class="loading-bar"></div></div></div>`;
             document.getElementById('chat-env').appendChild(loaderDiv);
             scrollToBottom();
 
             try {
-                const res = await fetch('/chat', {
+                const res = await fetch('/chat_stream', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         message: text,
                         chat_id: currentChatId,
-                        tts_enabled: ttsEnabled 
+                        tts_enabled: ttsEnabled,
+                        is_asr_input: isAsr === true
                     })
                 });
-                const data = await res.json();
-                currentChatId = data.chat_id;
-                
-                // 只有在 TTS 开启的情况下才播放音频
-                if(ttsEnabled && data.audio) {
-                    new Audio("data:audio/wav;base64," + data.audio).play();
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let targetContainer = document.getElementById(loaderId).querySelector('.bot');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, {stream: true});
+                    const lines = chunk.split('\\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = JSON.parse(line.substring(6));
+                            updateStatus(data.status);
+                            
+                            if (data.status === 'text_ready') {
+                                currentChatId = data.chat_id;
+                                // 文字就绪，移除加载条，使用逐行动画
+                                document.getElementById(loaderId).classList.remove('animate-up');
+                                applyTypewriterEffect(targetContainer, data.reply);
+                            } 
+                            else if (data.status === 'completed') {
+                                updateStatus('completed');
+                                if(data.filtered) {
+                                    // 拦截情况
+                                    document.getElementById(loaderId).remove();
+                                }
+                                if(ttsEnabled && data.audio) {
+                                    new Audio("data:audio/wav;base64," + data.audio).play();
+                                }
+                                loadHistory(); // 刷新左侧边栏
+                            }
+                        }
+                    }
                 }
-                
-                document.getElementById(loaderId).remove();
-                await reloadCurrentChat(true); 
-                loadHistory();
             } catch(e) { 
-                document.getElementById(loaderId).innerHTML = "<div class='bot' style='color:#ff3b30;'>连接失败。</div>";
+                // document.getElementById(loaderId).innerHTML = "<div class='bot' style='color:#ff3b30;'>连接失败。</div>";
+                updateStatus('completed');
             }
         }
 
-        // 核心改动：增加 isHistory 参数
         function appendMsgObj(msgObj, isFlash = false, isHistory = true) {
             document.body.classList.remove('is-new-chat');
             const env = document.getElementById('chat-env');
@@ -311,7 +466,6 @@ HTML_INDEX = """
             }
 
             const container = document.createElement('div');
-            // 如果是历史加载，不带动画类；如果是新产生消息，带上上浮动画
             container.className = `msg-container ${msgObj.role === 'user' ? 'user-container' : 'bot-container'} ${isHistory ? '' : 'animate-up'}`;
 
             let innerHtml = (msgObj.role === 'user' && timePart) ? `<div class="time-label">${timePart}</div>` : '';
@@ -328,7 +482,13 @@ HTML_INDEX = """
             container.innerHTML = innerHtml;
             container.appendChild(msgDiv);
             env.appendChild(container);
-            scrollToBottom();
+
+            // 触发 MathJax 渲染
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                MathJax.typesetPromise([msgDiv]).then(() => scrollToBottom());
+            } else {
+                scrollToBottom();
+            }
         }
 
         async function reloadCurrentChat(flashLast = false) {
@@ -339,15 +499,13 @@ HTML_INDEX = """
             globalLastDate = null;
             hData.messages.forEach((m, idx) => {
                 const isLast = idx === hData.messages.length - 1;
-                // 加载历史或重刷列表时，isHistory 为 true，禁用上浮动画
                 appendMsgObj(m, flashLast && isLast, true);
             });
-            scrollToBottom();
         }
 
         function scrollToBottom() {
             const env = document.getElementById('chat-env');
-            env.scrollTo({top: env.scrollHeight, behavior: 'auto'});
+            env.scrollTo({top: env.scrollHeight, behavior: 'smooth'});
         }
 
         function autoHeight(elem) {
@@ -377,6 +535,7 @@ HTML_INDEX = """
                 d.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
                                <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.chat_name}</span>`;
                 d.onclick = async () => {
+                    if(currentChatId === c.chat_id) return;
                     currentChatId = c.chat_id;
                     await reloadCurrentChat(false);
                     loadHistory();
@@ -395,7 +554,7 @@ HTML_INDEX = """
 </html>
 """
 
-# ---------- 后端逻辑保持不变 ----------
+# ---------- 后端逻辑 ----------
 class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
@@ -413,7 +572,34 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_json(resp.json())
 
     def do_POST(self):
-        if self.path == "/chat":
+        if self.path == "/chat_stream":
+            content_length = int(self.headers['Content-Length'])
+            post_data = json.loads(self.rfile.read(content_length))
+            payload = {
+                "message": post_data["message"],
+                "chat_name": "Web会话",
+                "chat_id": post_data.get("chat_id"),
+                "tts_enabled": post_data.get("tts_enabled", True),
+                "is_asr_input": post_data.get("is_asr_input", False)
+            }
+            # 代理流式请求给 app.py /api/chat/stream_send
+            resp = requests.post(f"{SERVER_BASE_URL}/api/chat/stream_send", json=payload, headers=self.get_headers(), stream=True)
+            self.send_response(200)
+            self.send_header("Content-type", "text/event-stream")
+            self.end_headers()
+            for chunk in resp.iter_content(chunk_size=None):
+                if chunk:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    
+        elif self.path == "/asr":
+            content_length = int(self.headers['Content-Length'])
+            audio_bytes = self.rfile.read(content_length)
+            files = {'audio': ('audio.webm', audio_bytes, 'audio/webm')}
+            resp = requests.post(f"{SERVER_BASE_URL}/api/asr/recognize", files=files, headers=self.get_headers())
+            self.send_json(resp.json())
+            
+        elif self.path == "/chat":
             content_length = int(self.headers['Content-Length'])
             post_data = json.loads(self.rfile.read(content_length))
             payload = {

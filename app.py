@@ -29,6 +29,11 @@ from vocal_infer import VocalExp, TTSRequestError
 # 导入 ASR 过滤模块
 from ASR_filter import LMFilterModel
 
+# 导入 ASR 依赖
+from flask import Response, stream_with_context
+from funasr import AutoModel
+import io
+
 # ---------- 全局变量 ----------
 task_manager = None
 completion_queue = queue.Queue()
@@ -377,6 +382,22 @@ tts_client = VocalExp(app.config["TTS_BASE_URL"])
 filter_model = None
 if app.config.get("ASR_FILTER_ENABLED", True):
     filter_model = LMFilterModel()
+
+# ---------- 初始化ASR ----------
+app.logger.info("正在加载FunASR模型...")
+asr_model = AutoModel(
+    model="paraformer-zh",
+    model_revision="v2.0.4",
+    vad_model="fsmn-vad",
+    vad_model_revision="v2.0.4",
+    punc_model="ct-punc-c",
+    punc_model_revision="v2.0.4",
+    device="cuda", # 如果没有GPU请改为 "cpu"
+    disable_update=True,
+    disable_pbar=True
+)
+app.logger.info("FunASR模型加载完成")
+
 # ---------- 认证装饰器 ----------
 def login_required(f):
     @wraps(f)
@@ -617,6 +638,116 @@ def chat_send():
     }
     return jsonify(response)
 
+@app.route("/api/chat/stream_send", methods=["POST"])
+@login_required
+def chat_stream_send():
+    """流式发送消息并同步处理状态"""
+    data = request.get_json()
+    if not data or "message" not in data:
+        return jsonify({"error": "Missing message"}), 400
+
+    message = data["message"]
+    chat_id = data.get("chat_id")
+    chat_name = data.get("chat_name", "未命名")
+    tts_enabled = data.get("tts_enabled", True)
+    is_asr_input = data.get("is_asr_input", False)
+    user_id = g.user["uid"]
+
+    def generate_stream():
+        nonlocal chat_id
+        # --- [阶段 1: 解析] ---
+        yield f"data: {json.dumps({'status': 'parsing'})}\n\n"
+        
+        history = []
+        if chat_id:
+            history = db.get_chat_history(user_id, chat_id)
+        else:
+            chat_id = db.create_chat(user_id, chat_name)
+
+        if is_asr_input and filter_model is not None:
+            decision = filter_model.filter_input(message)
+            if decision == "HOLD":
+                memory_content = f"听到：{message}"
+                round_index = db.get_memory_count(user_id, chat_id) + 1
+                db.save_memory(user_id, chat_id, round_index, memory_content)
+                db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{memory_content}"}])
+                yield f"data: {json.dumps({'status': 'completed', 'reply': '', 'chat_id': chat_id, 'filtered': True})}\n\n"
+                return
+
+        system_prompt = prompt.get_system_prompt(g.user)
+        if memory_manager:
+            assembled = memory_manager.assemble_context(g.user["uid"], chat_id, history)
+        else:
+            assembled = history
+        full_history = [{"role": "system", "content": system_prompt}] + assembled
+
+        # --- [阶段 2: 请求] ---
+        yield f"data: {json.dumps({'status': 'request'})}\n\n"
+        
+        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamped_message = f"[{current_time}] {message}"
+        
+        chat.messages = full_history.copy()
+        reply = chat.send_message(timestamped_message)
+        db.append_messages(user_id, chat_id, chat.messages[-2:])
+        original_reply = reply
+
+        # 请求完成，立即把文字回复推给前端进行逐行打字机渲染
+        yield f"data: {json.dumps({'status': 'text_ready', 'reply': original_reply, 'chat_id': chat_id})}\n\n"
+
+        # --- [阶段 3: 执行] ---
+        yield f"data: {json.dumps({'status': 'execution'})}\n\n"
+        if task_manager:
+            tasks = parse_task_instructions(original_reply)
+            for task_data in tasks:
+                try:
+                    task_type = task_data.get("type")
+                    params = task_data.get("params", {})
+                    if task_type == "reminder":
+                        time_str = params.get("time")
+                        if time_str:
+                            task_manager.create_task(TaskType.REMINDER, user_id, chat_id, params, 1, datetime.fromisoformat(time_str))
+                    elif task_type == "reasoner":
+                        task_id = task_manager.create_task(TaskType.REASONER, user_id, chat_id, params, 1)
+                        task_manager.execute_task(task_id)
+                except Exception as e:
+                    app.logger.error("处理任务失败: %s", e)
+
+        # --- [阶段 4: TTS] ---
+        audio_b64 = None
+        tts_error = None
+        if tts_enabled:
+            yield f"data: {json.dumps({'status': 'tts'})}\n\n"
+            text_tag_pattern = r'<text>(.*?)</text>'
+            task_tag_pattern = r'<task>.*?</task>'
+            tts_text = re.sub(text_tag_pattern, '', original_reply, flags=re.DOTALL | re.IGNORECASE)
+            tts_text = re.sub(task_tag_pattern, '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+            tts_text = re.sub(r'<[^>]+>', '', tts_text)
+            tts_text = re.sub(r'\s+', ' ', tts_text).strip()
+            
+            if tts_text:
+                try:
+                    params = {
+                        "text": tts_text, "text_lang": "zh", 
+                        "ref_audio_path": os.path.join(os.path.dirname(__file__), "tests", "ref.wav"),
+                        "prompt_lang": "en", "prompt_text": "Many people may feel lost at times.",
+                        "media_type": "wav", "streaming_mode": False,
+                    }
+                    audio_data = tts_client.tts(**params)
+                    audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+                except Exception as e:
+                    tts_error = str(e)
+
+        if memory_manager:
+            round_index = db.get_memory_count(user_id, chat_id) + 1
+            memory_manager.record_dialog_and_summary(user_id, chat_id, round_index, [{"role": "user", "content": message}, {"role": "assistant", "content": original_reply}], async_mode=True)
+
+        # --- [阶段 5: 完成] ---
+        yield f"data: {json.dumps({'status': 'completed', 'audio': audio_b64, 'tts_error': tts_error})}\n\n"
+
+    return Response(stream_with_context(generate_stream()), mimetype="text/event-stream")
+
 @app.route("/api/chat/list", methods=["GET"])
 @login_required
 def chat_list():
@@ -636,6 +767,29 @@ def chat_history(chat_id):
     except Exception as e:
         app.logger.error("获取历史失败: %s", e)
         return jsonify({"error": "Database error"}), 500
+
+@app.route("/api/asr/recognize", methods=["POST"])
+@login_required
+def asr_recognize():
+    """接收客户端音频文件进行服务端识别"""
+    if 'audio' not in request.files:
+        return jsonify({"error": "Missing audio file"}), 400
+    
+    file = request.files['audio']
+    audio_bytes = file.read()
+    
+    try:
+        res = asr_model.generate(
+            input=audio_bytes,
+            use_itn=True,
+            batch_size_s=60,
+            language="zh"
+        )
+        text = res[0].get("text", "").strip() if res and len(res) > 0 else ""
+        return jsonify({"text": text})
+    except Exception as e:
+        app.logger.error("ASR识别错误: %s", e)
+        return jsonify({"error": "ASR processing failed"}), 500
 
 if __name__ == "__main__":
     app.run(
