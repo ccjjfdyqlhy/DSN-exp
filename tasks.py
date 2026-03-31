@@ -24,6 +24,7 @@ class TaskType(Enum):
     REMINDER = "reminder"  # 提醒任务
     REASONER = "reasoner"  # 推理任务
     ANALYSIS = "analysis"  # 分析任务
+    ACTION = "action"      # 动作执行任务（系统指令、Python代码、文件操作等）
 
 
 class TaskStatus(Enum):
@@ -384,6 +385,8 @@ class TaskManager:
                 return self._execute_reminder_task(task)
             elif task.task_type == TaskType.ANALYSIS:
                 return self._execute_analysis_task(task)
+            elif task.task_type == TaskType.ACTION:
+                return self._execute_action_task(task)
             else:
                 raise ValueError(f"未知的任务类型: {task.task_type}")
         except Exception as e:
@@ -475,6 +478,171 @@ class TaskManager:
         }
         
         self._save_task_result(task.task_id, result["analysis_result"])
+        
+        return result
+    
+    def _execute_action_task(self, task: Task) -> Dict[str, Any]:
+        """执行动作任务（系统指令、Python代码、文件操作等）"""
+        self.logger.info("开始执行动作任务: %s", task.task_id)
+        
+        # 获取动作参数
+        action_type = task.params.get("action_type", "")
+        content = task.params.get("content", "")
+        
+        result = {
+            "action_type": action_type,
+            "timestamp": datetime.now().isoformat(),
+            "task_type": "action",
+            "requires_ai_notification": True,  # 标记需要AI通知
+            "skip_memory": True  # 标记跳过记忆化
+        }
+        
+        try:
+            if action_type == "shell":
+                # 执行系统指令
+                import subprocess
+                self.logger.info("执行shell命令: %s", content[:100] + "..." if len(content) > 100 else content)
+                process = subprocess.run(
+                    content,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5分钟超时
+                    cwd=os.path.expanduser("~")  # 在家目录执行
+                )
+                output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
+                exit_code = process.returncode
+                
+                result.update({
+                    "success": exit_code == 0,
+                    "exit_code": exit_code,
+                    "output": output,
+                    "content_preview": content[:200]
+                })
+                
+            elif action_type == "python":
+                # 执行Python代码段
+                self.logger.info("执行Python代码段")
+                
+                # 创建一个临时文件来执行代码
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                    f.write(content)
+                    temp_file = f.name
+                
+                try:
+                    import subprocess
+                    process = subprocess.run(
+                        ["python", temp_file],
+                        capture_output=True,
+                        text=True,
+                        timeout=300,  # 5分钟超时
+                        cwd=os.path.dirname(temp_file)
+                    )
+                    output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
+                    exit_code = process.returncode
+                    
+                    result.update({
+                        "success": exit_code == 0,
+                        "exit_code": exit_code,
+                        "output": output,
+                        "content_preview": content[:200]
+                    })
+                finally:
+                    # 清理临时文件
+                    try:
+                        os.unlink(temp_file)
+                    except:
+                        pass
+                        
+            elif action_type == "write_file":
+                # 写入文件
+                file_path = task.params.get("file_path", "")
+                overwrite = task.params.get("overwrite", True)
+                
+                if not file_path:
+                    raise ValueError("文件路径不能为空")
+                
+                # 确保文件路径安全（相对路径转为绝对路径）
+                if not os.path.isabs(file_path):
+                    file_path = os.path.join(os.path.expanduser("~"), file_path)
+                
+                self.logger.info("写入文件: %s (长度: %d 字符)", file_path, len(content))
+                
+                # 检查文件是否存在
+                if os.path.exists(file_path) and not overwrite:
+                    raise FileExistsError(f"文件已存在: {file_path}")
+                
+                # 确保目录存在
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                
+                # 写入文件
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                
+                result.update({
+                    "success": True,
+                    "file_path": file_path,
+                    "file_size": len(content),
+                    "content_preview": content[:200]
+                })
+                
+            elif action_type == "edit_file":
+                # 编辑文件
+                file_path = task.params.get("file_path", "")
+                pattern = task.params.get("pattern", "")
+                replacement = task.params.get("replacement", "")
+                
+                if not file_path:
+                    raise ValueError("文件路径不能为空")
+                
+                # 确保文件路径安全
+                if not os.path.isabs(file_path):
+                    file_path = os.path.join(os.path.expanduser("~"), file_path)
+                
+                self.logger.info("编辑文件: %s", file_path)
+                
+                # 检查文件是否存在
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"文件不存在: {file_path}")
+                
+                # 读取文件内容
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                
+                # 执行替换
+                if pattern and replacement is not None:
+                    import re
+                    new_content = re.sub(pattern, replacement, file_content, flags=re.DOTALL | re.MULTILINE)
+                else:
+                    new_content = content  # 如果没有pattern，则用content直接替换
+                
+                # 写入文件
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                
+                result.update({
+                    "success": True,
+                    "file_path": file_path,
+                    "old_size": len(file_content),
+                    "new_size": len(new_content),
+                    "content_preview": new_content[:200]
+                })
+                
+            else:
+                raise ValueError(f"未知的动作类型: {action_type}")
+            
+            self.logger.info("动作任务执行成功: %s", task.task_id)
+            
+        except Exception as e:
+            self.logger.error("动作任务执行失败 (task_id=%s): %s", task.task_id, e)
+            result.update({
+                "success": False,
+                "error": str(e)
+            })
+        
+        # 保存结果到数据库
+        self._save_task_result(task.task_id, json.dumps(result, ensure_ascii=False))
         
         return result
     

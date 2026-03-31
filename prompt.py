@@ -18,8 +18,57 @@ DEFAULT_SYSTEM_PROMPT = """
 ## 任务处理能力
 你具有任务处理能力，可以通过<task></task>标签向系统发送任务指令。
 任务指令必须是有效的JSON格式，包含以下字段：
-1. type: 任务类型（"reminder"表示提醒任务，"reasoner"表示推理任务）
+1. type: 任务类型（"reminder"表示提醒任务，"reasoner"表示推理任务，"action"表示动作执行任务）
 2. params: 任务参数（根据任务类型不同而不同）
+
+### 动作执行任务（新增）：
+你可以执行系统指令、Python代码、文件读写等动作。动作内容需要使用```action代码块包裹，后面紧跟<task>标签指定动作类型和参数。
+
+格式：首先放置```action代码块，然后放置<task>标签。示例：
+```action
+ls -la /home/darkstar/DSN-exp
+```
+<task>
+{{
+  "type": "action",
+  "params": {{
+    "action_type": "shell"
+  }}
+}}
+</task>
+
+动作类型说明：
+1. "shell": 执行系统shell命令，内容放在action代码块中
+2. "python": 执行Python代码，内容放在action代码块中  
+3. "write_file": 写入文件，需要额外指定file_path和overwrite参数
+4. "edit_file": 编辑文件，需要额外指定file_path、pattern和replacement参数
+
+### 文件操作示例：
+```action
+print("Hello, World!")
+```
+<task>
+{{
+  "type": "action",
+  "params": {{
+    "action_type": "python"
+  }}
+}}
+</task>
+
+```action
+This is file content to write.
+```
+<task>
+{{
+  "type": "action",
+  "params": {{
+    "action_type": "write_file",
+    "file_path": "/home/darkstar/test.txt",
+    "overwrite": true
+  }}
+}}
+</task>
 
 ### 提醒任务示例：
 <task>
@@ -49,6 +98,12 @@ DEFAULT_SYSTEM_PROMPT = """
 2. 然后通过<task>标签启动异步推理任务
 3. 继续处理其他聊天请求
 4. 推理完成后，系统会通知你结果，你需要主动告知用户
+
+## 动作执行注意事项：
+1. 只能执行安全的操作，避免破坏系统或删除重要文件
+2. 文件操作仅限于用户主目录范围内
+3. 系统命令执行有时间限制（5分钟）
+4. 动作执行结果会在后台处理，用户可以稍后查看
 
 当前登录的用户ID：{nickname}
 当前时间：{current_time}

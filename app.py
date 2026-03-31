@@ -42,17 +42,72 @@ notification_thread = None
 
 # ---------- 辅助函数 ----------
 def parse_task_instructions(text: str):
-    """解析回复中的<task>指令"""
-    task_pattern = r'<task>(.*?)</task>'
-    matches = re.findall(task_pattern, text, re.DOTALL | re.IGNORECASE)
-    
+    """解析回复中的<task>指令，支持动作代码块"""
     tasks = []
-    for match in matches:
-        try:
-            task_data = json.loads(match.strip())
-            tasks.append(task_data)
-        except json.JSONDecodeError as e:
-            app.logger.error("解析任务JSON失败: %s, 内容: %s", e, match[:100])
+    
+    # 查找所有 ```action 代码块
+    action_pattern = r'```action\s*\n(.*?)```'
+    action_matches = list(re.finditer(action_pattern, text, re.DOTALL | re.IGNORECASE))
+    
+    # 查找所有 <task> 标签
+    task_pattern = r'<task>(.*?)</task>'
+    task_matches = list(re.finditer(task_pattern, text, re.DOTALL | re.IGNORECASE))
+    
+    # 按在文本中的位置排序
+    action_matches.sort(key=lambda m: m.start())
+    task_matches.sort(key=lambda m: m.start())
+    
+    # 配对：假设每个代码块后面跟着一个task标签
+    paired_tasks = []
+    action_index = 0
+    task_index = 0
+    
+    while action_index < len(action_matches) and task_index < len(task_matches):
+        action_match = action_matches[action_index]
+        task_match = task_matches[task_index]
+        
+        # 确保task标签在代码块之后（允许中间有内容）
+        if task_match.start() > action_match.start():
+            try:
+                task_data = json.loads(task_match.group(1).strip())
+                if task_data.get("type") == "action":
+                    # 将代码块内容添加到params中
+                    if "params" not in task_data:
+                        task_data["params"] = {}
+                    task_data["params"]["content"] = action_match.group(1).strip()
+                    tasks.append(task_data)
+                    paired_tasks.append(task_match)
+                else:
+                    # 非action类型，直接添加
+                    tasks.append(task_data)
+                    paired_tasks.append(task_match)
+            except json.JSONDecodeError as e:
+                app.logger.error("解析任务JSON失败: %s, 内容: %s", e, task_match.group(1)[:100])
+                paired_tasks.append(task_match)
+            
+            action_index += 1
+            task_index += 1
+        else:
+            # task标签在代码块之前，可能是普通任务
+            try:
+                task_data = json.loads(task_match.group(1).strip())
+                if task_data.get("type") != "action":  # 非action类型
+                    tasks.append(task_data)
+                paired_tasks.append(task_match)
+            except json.JSONDecodeError as e:
+                app.logger.error("解析任务JSON失败: %s, 内容: %s", e, task_match.group(1)[:100])
+                paired_tasks.append(task_match)
+            task_index += 1
+    
+    # 处理剩余的未配对的task标签（非action类型）
+    for j in range(task_index, len(task_matches)):
+        if task_matches[j] not in paired_tasks:
+            try:
+                task_data = json.loads(task_matches[j].group(1).strip())
+                if task_data.get("type") != "action":  # 跳过没有代码块的action类型
+                    tasks.append(task_data)
+            except json.JSONDecodeError as e:
+                app.logger.error("解析任务JSON失败: %s, 内容: %s", e, task_matches[j].group(1)[:100])
     
     return tasks
 
@@ -123,6 +178,9 @@ def process_task_completion():
             elif task.task_type == TaskType.REASONER:
                 # 处理推理任务：保存结果供用户查询
                 _handle_reasoner_completion(task, result)
+            elif task.task_type == TaskType.ACTION:
+                # 处理动作任务：触发AI生成结果消息
+                _handle_action_completion(task, result)
             else:
                 # 其他类型任务
                 app.logger.info("任务类型 %s 完成，结果: %s", task.task_type.value, result)
@@ -256,6 +314,155 @@ def _handle_reasoner_completion(task, result):
             app.logger.info("推理结果已保存到聊天历史")
         except Exception as e:
             app.logger.error("保存推理结果失败: %s", e)
+
+def _generate_action_result_message(task, result):
+    """调用AI生成动作执行结果的回复消息"""
+    try:
+        # 获取聊天历史作为上下文
+        history = db.get_chat_history(task.user_id, task.chat_id)
+        
+        # 构建系统提示词
+        from prompt import get_system_prompt
+        # 创建一个临时的用户信息字典
+        temp_user_info = {"uid": task.user_id, "nickname": f"用户{task.user_id}"}
+        system_prompt = get_system_prompt(temp_user_info)
+        
+        # 构建动作结果的提示词
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 根据动作类型和结果构建提示词
+        action_type = result.get("action_type", "unknown")
+        success = result.get("success", False)
+        error = result.get("error")
+        output = result.get("output", "")
+        
+        if action_type == "shell":
+            prompt_text = f"""
+现在是 {current_time}，我之前执行的系统命令已经完成。
+
+命令预览：{result.get('content_preview', '')[:100]}...
+
+执行结果：
+- 成功：{success}
+- 退出码：{result.get('exit_code', 'N/A')}
+- 输出：{output[:500] if output else '无输出'}
+
+请根据这个结果生成一个自然的回复，告诉用户命令执行的结果。如果成功，可以说命令执行完成并简要说明结果；如果失败，说明遇到了什么问题。
+"""
+        elif action_type == "python":
+            prompt_text = f"""
+现在是 {current_time}，我之前执行的Python代码已经完成。
+
+代码预览：{result.get('content_preview', '')[:100]}...
+
+执行结果：
+- 成功：{success}
+- 退出码：{result.get('exit_code', 'N/A')}
+- 输出：{output[:500] if output else '无输出'}
+
+请根据这个结果生成一个自然的回复，告诉用户代码执行的结果。
+"""
+        elif action_type == "write_file":
+            prompt_text = f"""
+现在是 {current_time}，我之前执行的文件写入操作已经完成。
+
+文件路径：{result.get('file_path', '')}
+文件大小：{result.get('file_size', 0)} 字符
+
+执行结果：
+- 成功：{success}
+- 错误：{error if error else '无'}
+
+请根据这个结果生成一个自然的回复，告诉用户文件写入的结果。
+"""
+        elif action_type == "edit_file":
+            prompt_text = f"""
+现在是 {current_time}，我之前执行的文件编辑操作已经完成。
+
+文件路径：{result.get('file_path', '')}
+原始大小：{result.get('old_size', 0)} 字符
+新大小：{result.get('new_size', 0)} 字符
+
+执行结果：
+- 成功：{success}
+- 错误：{error if error else '无'}
+
+请根据这个结果生成一个自然的回复，告诉用户文件编辑的结果。
+"""
+        else:
+            prompt_text = f"""
+现在是 {current_time}，我之前执行的操作已经完成。
+
+操作类型：{action_type}
+执行结果：
+- 成功：{success}
+- 错误：{error if error else '无'}
+- 输出：{output[:500] if output else '无输出'}
+
+请根据这个结果生成一个自然的回复，告诉用户操作执行的结果。
+"""
+        
+        # 创建DeepSeek聊天客户端
+        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        
+        # 构建完整的消息历史
+        full_history = [{"role": "system", "content": system_prompt}]
+        
+        # 添加最近的历史消息作为上下文（最多5条）
+        recent_history = history[-5:] if len(history) > 5 else history
+        for msg in recent_history:
+            full_history.append(msg)
+        
+        # 添加动作结果提示词
+        full_history.append({"role": "user", "content": prompt_text})
+        
+        # 设置消息历史并发送
+        chat.messages = full_history
+        ai_response = chat.send_message("请生成一个自然的回复消息")
+        
+        app.logger.info("AI生成的动作结果消息: %s", ai_response[:100])
+        return ai_response
+        
+    except Exception as e:
+        app.logger.error("生成AI动作结果消息失败: %s", e)
+        # 如果AI调用失败，返回一个默认的回复消息
+        action_type = result.get("action_type", "操作")
+        success = result.get("success", False)
+        
+        if success:
+            return f"我之前执行的{action_type}操作已经成功完成了！"
+        else:
+            error = result.get("error", "未知错误")
+            return f"我之前执行的{action_type}操作失败了：{error}"
+
+def _handle_action_completion(task, result):
+    """处理动作任务完成：调用AI生成自然结果消息"""
+    app.logger.info("处理动作任务完成: task_id=%s, user_id=%d, chat_id=%d, action_type=%s", 
+                   task.task_id, task.user_id, task.chat_id, result.get("action_type"))
+    
+    # 检查是否需要AI通知
+    if result.get("requires_ai_notification", True):
+        skip_memory = result.get("skip_memory", True)
+        
+        app.logger.info("需要AI生成动作结果消息")
+        
+        try:
+            # 调用AI生成自然结果消息
+            ai_message = _generate_action_result_message(task, result)
+            
+            # 将AI生成的消息保存到聊天历史
+            action_message = {
+                "role": "assistant",
+                "content": ai_message,
+                "skip_memory": skip_memory  # 添加标记，跳过记忆化
+            }
+            
+            # 将消息追加到聊天历史
+            db.append_messages(task.user_id, task.chat_id, [action_message])
+            app.logger.info("AI动作结果消息已保存到聊天历史: %s", ai_message[:100])
+            
+        except Exception as e:
+            app.logger.error("生成或保存AI动作结果消息失败: %s", e)
 
 # ---------- 日志配置 ----------
 # 全局变量，用于跟踪日志是否已配置
@@ -545,6 +752,24 @@ def chat_send():
                     task_manager.execute_task(task_id)
                     app.logger.info("已创建并执行推理任务: %s", task_id)
                     
+                elif task_type == "action":
+                    # 创建动作执行任务
+                    # 确保有action_type参数
+                    if "action_type" not in params:
+                        app.logger.warning("action类型任务缺少action_type参数")
+                        params["action_type"] = "shell"  # 默认类型
+                    
+                    task_id = task_manager.create_task(
+                        task_type=TaskType.ACTION,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        params=params,
+                        priority=1
+                    )
+                    # 立即执行动作任务
+                    task_manager.execute_task(task_id)
+                    app.logger.info("已创建并执行动作任务: %s (类型: %s)", task_id, params.get("action_type"))
+                    
             except Exception as e:
                 app.logger.error("处理任务失败: %s, 任务数据: %s", e, task_data)
 
@@ -711,6 +936,22 @@ def chat_stream_send():
                     elif task_type == "reasoner":
                         task_id = task_manager.create_task(TaskType.REASONER, user_id, chat_id, params, 1)
                         task_manager.execute_task(task_id)
+                    elif task_type == "action":
+                        # 确保有action_type参数
+                        if "action_type" not in params:
+                            app.logger.warning("action类型任务缺少action_type参数")
+                            params["action_type"] = "shell"  # 默认类型
+                        
+                        task_id = task_manager.create_task(
+                            task_type=TaskType.ACTION,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            params=params,
+                            priority=1
+                        )
+                        # 立即执行动作任务
+                        task_manager.execute_task(task_id)
+                        app.logger.info("已创建并执行动作任务: %s (类型: %s)", task_id, params.get("action_type"))
                 except Exception as e:
                     app.logger.error("处理任务失败: %s", e)
 
