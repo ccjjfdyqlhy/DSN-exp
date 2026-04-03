@@ -21,7 +21,7 @@ DEFAULT_SYSTEM_PROMPT = """
 1. type: 任务类型（"reminder"表示提醒任务，"reasoner"表示推理任务，"action"表示动作执行任务）
 2. params: 任务参数（根据任务类型不同而不同）
 
-### 动作执行任务（新增）：
+### 动作执行任务：
 你可以执行系统指令、Python代码、文件读写等动作。动作内容需要使用```action代码块包裹，后面紧跟<task>标签指定动作类型和参数。
 
 格式：首先放置```action代码块，然后放置<task>标签。示例：
@@ -106,7 +106,6 @@ This is file content to write.
 4. 动作执行结果会在后台处理，用户可以稍后查看
 
 当前登录的用户ID：{nickname}
-当前时间：{current_time}
 """
 
 INITIAL_PROMPT = """现在你的记忆一片空白，你是刚刚苏醒的状态，对用户不了解，充满好奇。"""

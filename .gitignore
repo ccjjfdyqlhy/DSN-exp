@@ -5,6 +5,8 @@
 *.wav
 *.jpg
 *.db
+*.pyc
+.vscode/*
 logs/*
 instances/models/*
 __pycache__/*

@@ -159,6 +159,138 @@ class DeepSeekChat:
         return f"<DeepSeekChat model={self.model} history_len={len(self.messages)}>"
 
 
+class LMStudioChat:
+    """
+    本地 LMStudio 聊天客户端类，支持多轮对话历史管理。
+    与 DeepSeekChat 接口兼容，可作为主模型的替代方案。
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:4501",
+        model_name: str = None,
+        timeout: int = 300,
+        logger: Optional[logging.Logger] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ):
+        """
+        初始化 LMStudio 聊天客户端。
+
+        :param base_url: LMStudio 服务地址
+        :param model_name: 模型名称，若为None则使用服务器默认模型
+        :param timeout: 请求超时时间（秒）
+        :param logger: 日志记录器实例
+        :param temperature: 生成温度
+        :param max_tokens: 最大生成token数
+        """
+        self.base_url = base_url.rstrip('/')
+        self.model_name = model_name
+        self.timeout = timeout
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+        self.messages: List[Dict[str, str]] = []
+
+        if logger is not None:
+            self.logger = logger
+        else:
+            self.logger = logging.getLogger(self.__class__.__name__)
+            self.logger.setLevel(logging.INFO)
+
+        self.logger.info("LMStudioChat客户端初始化完成，地址：%s，模型：%s", self.base_url, self.model_name or "默认")
+
+    def send_message(self, message: str) -> str:
+        """
+        发送一条用户消息，获取模型回复。
+
+        :param message: 用户输入的消息文本
+        :return: 模型的回复内容
+        """
+        if not message or not isinstance(message, str):
+            raise ValueError("消息内容必须为非空字符串")
+
+        self.messages.append({"role": "user", "content": message})
+        self.logger.info("发送用户消息: %s", message[:50] + "..." if len(message) > 50 else message)
+
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "messages": self.messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": False
+        }
+        
+        if self.model_name:
+            payload["model"] = self.model_name
+
+        try:
+            self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False))
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False))
+
+            assistant_message = result["choices"][0]["message"]["content"]
+            self.messages.append({"role": "assistant", "content": assistant_message})
+            self.logger.info("收到助手回复: %s", assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
+
+            return assistant_message
+
+        except requests.exceptions.Timeout:
+            self.logger.error("请求超时（%d秒）", self.timeout)
+            raise
+        except requests.exceptions.ConnectionError:
+            self.logger.error("无法连接到LMStudio服务器: %s", self.base_url)
+            raise
+        except requests.exceptions.RequestException as e:
+            self.logger.error("网络请求失败: %s", str(e))
+            raise
+        except KeyError as e:
+            self.logger.error("响应格式异常，缺少字段: %s", str(e))
+            raise ValueError("API返回的数据格式不正确") from e
+        except json.JSONDecodeError as e:
+            self.logger.error("JSON解析失败: %s", str(e))
+            raise
+
+    def reset_conversation(self):
+        """清空当前对话历史"""
+        self.messages.clear()
+        self.logger.info("对话历史已重置")
+
+    def get_history(self) -> List[Dict[str, str]]:
+        """
+        获取当前对话历史的副本。
+
+        :return: 包含所有消息的列表
+        """
+        return self.messages.copy()
+
+    def set_model(self, model_name: str):
+        """
+        切换使用的模型。
+
+        :param model_name: 新模型名称
+        """
+        self.model_name = model_name
+        self.logger.info("模型切换为: %s", self.model_name)
+
+    def set_base_url(self, base_url: str):
+        """更新服务地址"""
+        self.base_url = base_url.rstrip('/')
+        self.logger.info("服务地址已更新为: %s", self.base_url)
+
+    def __repr__(self):
+        return f"<LMStudioChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
+
+
 class LMSummaryModel:
     """本地 LMStudio 摘要模型，用于对话记忆压缩。"""
 

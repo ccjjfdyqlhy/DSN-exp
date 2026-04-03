@@ -5,40 +5,61 @@
 import os
 
 class Config:
-    # LittleSkin OAuth2 配置
-    # 注意：回调URL必须设置为 http://localhost:<服务端运行端口>/api/auth/callback/
+    # 验证系统
+    # LittleSkin回调URL必须设置为 http://localhost:<服务端运行端口>/api/auth/callback/
     LITTLESKIN_CLIENT_ID = None # 填入 int
     LITTLESKIN_CLIENT_SECRET = ""
-
-    # JWT 密钥（生产环境务必修改）
     JWT_SECRET = os.environ.get("JWT_SECRET", "dev-jwt-secret-change-me")
 
-    # DeepSeek API 密钥
+    # DeepSeek API
     DEEPSEEK_API_KEY = "sk-"
+    REASONER_ENABLED = True
+    REASONER_MODEL = "deepseek-reasoner"
+    REASONER_TIMEOUT = 1200
 
-    # 数据库文件路径
+    # 本地服务 API
+    LMSTUDIO_BASE_URL = "http://localhost:4501"
+    TTS_BASE_URL = "http://127.0.0.1:9880"
+
+    # 可选值: "deepseek" 或 "lmstudio"
+    MAIN_MODEL_TYPE = "deepseek"
+    # LMStudio 主模型名称（当 MAIN_MODEL_TYPE = "lmstudio" 时使用）
+    # 如果为空，则使用 LMStudio 服务器默认模型
+    MAIN_MODEL_NAME = ""
+    
+    # LMStudio 主模型参数
+    LMSTUDIO_TEMPERATURE = 0.7
+    LMSTUDIO_MAX_TOKENS = 4096
+    LMSTUDIO_TIMEOUT = 300
+    
+    # 存储
     DATABASE_PATH = "chats.db"
-
-    # 日志目录
     LOG_DIR = os.environ.get("LOG_DIR", "logs")
 
-    # TTS 服务地址（vocal_infer 服务）
-    TTS_BASE_URL = os.environ.get("TTS_BASE_URL", "http://127.0.0.1:9880")
-
-    # 本地回调服务器端口（客户端用）
+    # 服务
+    SERVER_HOST = "0.0.0.0"
+    SERVER_PORT = 5000
     LOCAL_CALLBACK_PORT = 5001
 
-    # 服务端运行端口
-    SERVER_PORT = 5000
-    SERVER_HOST = "0.0.0.0"
-
-    # 记忆与摘要配置
+    # 记忆与摘要
+    MEMORY_ENABLED = True 
+    MEMORY_MODEL = "meta-llama-3.1-8b-instruct"
     MEMORY_SUMMARY_LENGTH = 100
     MEMORY_CONTEXT_WINDOW_SIZE = 40
     MEMORY_REPLACE_THRESHOLD_RATIO = 0.5
     MEMORY_ASYNC_ENABLED = True
-    MEMORY_ENABLED = True 
-
-    # 本地LMStudio地址
-    LMSTUDIO_BASE_URL = "http://localhost:4501"
-    MEMORY_MODEL = ""
+    
+    # ASR 配置
+    ASR_ENABLED = True
+    ASR_DEVICE = "cuda"  # 可选: "cuda" 或 "cpu"
+    
+    # ASR 过滤
+    ASR_FILTER_ENABLED = False
+    FILTER_MODEL = "llama-3.2-1b-instruct"
+    
+    # 任务管理
+    TASK_MANAGER_ENABLED = True
+    TASK_MAX_WORKERS = 5
+    TASK_COMPLEXITY_THRESHOLD = 0.4  # 复杂度阈值，超过此值使用reasoner
+    REMINDER_CHECK_INTERVAL = 60  # 提醒任务检查间隔（秒）
+    TASK_NOTIFICATION_ENABLED = True

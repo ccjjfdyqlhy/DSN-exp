@@ -238,6 +238,22 @@ HTML_INDEX = """
         #input-container.multiline { border-radius: 20px; }
 
         #input-wrapper { display: flex; align-items: flex-end; gap: 12px; min-height: 48px; }
+        #input-wrapper { display: flex; align-items: flex-end; gap: 12px; min-height: 48px; }
+        
+        #model-select {
+            padding: 8px 14px;
+            border-radius: 20px;
+            border: 1px solid var(--border-highlight);
+            background: rgba(255,255,255,0.15);
+            color: var(--text-main);
+            font-size: 0.9rem;
+            cursor: pointer;
+            outline: none;
+            backdrop-filter: blur(10px);
+            transition: 0.2s;
+        }
+        #model-select:hover { background: rgba(255,255,255,0.25); }
+        #model-select:focus { border-color: var(--primary); }
         textarea { 
             flex: 1; border: none; outline: none; background: transparent;
             font-size: 1.15rem; color: var(--text-main);
@@ -306,6 +322,10 @@ HTML_INDEX = """
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
                 </button>
                 <textarea id="userInput" rows="1" placeholder="键入消息..." oninput="autoHeight(this)"></textarea>
+                <select id="model-select" title="选择模式">
+                    <option value="fast">快速 (本地)</option>
+                    <option value="deep">深度 (DeepSeek)</option>
+                </select>
                 <button class="icon-btn btn-send" onclick="send()">
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
                 </button>
@@ -544,6 +564,7 @@ HTML_INDEX = """
             };
             
             try {
+                const modelType = document.getElementById('model-select').value;
                 const res = await fetch('/chat_stream', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -551,7 +572,8 @@ HTML_INDEX = """
                         message: text,
                         chat_id: currentChatId,
                         tts_enabled: ttsEnabled,
-                        is_asr_input: isAsr === true
+                        is_asr_input: isAsr === true,
+                        model_type: modelType
                     })
                 });
 
@@ -725,9 +747,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 "chat_name": "Web会话",
                 "chat_id": post_data.get("chat_id"),
                 "tts_enabled": post_data.get("tts_enabled", True),
-                "is_asr_input": post_data.get("is_asr_input", False)
+                "is_asr_input": post_data.get("is_asr_input", False),
+                "model_type": post_data.get("model_type", "deep")
             }
-            # 代理流式请求给 app.py /api/chat/stream_send
             resp = requests.post(f"{SERVER_BASE_URL}/api/chat/stream_send", json=payload, headers=self.get_headers(), stream=True)
             self.send_response(200)
             self.send_header("Content-type", "text/event-stream")

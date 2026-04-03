@@ -16,7 +16,7 @@ from functools import wraps
 
 from usermgr import init_usermgr, auth_bp
 from chatdbmgr import ChatDBManager
-from models import DeepSeekChat, LMSummaryModel
+from models import DeepSeekChat, LMSummaryModel, LMStudioChat
 from memory import MemoryManager
 from tasks import TaskManager, TaskType, TaskStatus, ComplexityAnalyzer, get_task_manager
 import prompt
@@ -39,6 +39,29 @@ task_manager = None
 completion_queue = queue.Queue()
 complexity_analyzer = ComplexityAnalyzer()
 notification_thread = None
+
+# ---------- 模型工厂函数 ----------
+def create_chat_client(model_type: str = None):
+    """
+    根据配置或参数创建聊天客户端实例。
+    
+    :param model_type: 模型类型，可选值: "fast"(本地LMStudio) 或 "deep"(DeepSeek)
+                       如果为 None，则使用配置文件中的默认值
+    :return: DeepSeekChat 或 LMStudioChat 实例
+    """
+    if model_type is None:
+        model_type = app.config.get("MAIN_MODEL_TYPE", "deepseek")
+    
+    if model_type == "fast" or model_type == "lmstudio":
+        return LMStudioChat(
+            base_url=app.config.get("LMSTUDIO_BASE_URL", "http://localhost:4501"),
+            model_name=app.config.get("MAIN_MODEL_NAME"),
+            temperature=app.config.get("LMSTUDIO_TEMPERATURE", 0.7),
+            max_tokens=app.config.get("LMSTUDIO_MAX_TOKENS", 4096),
+            timeout=app.config.get("LMSTUDIO_TIMEOUT", 300),
+        )
+    else:
+        return DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
 
 # ---------- 辅助函数 ----------
 def parse_task_instructions(text: str):
@@ -217,22 +240,13 @@ def _generate_ai_reminder_message(task, reminder_text):
         # 构建更自然的提醒提示词 - 让AI像主动想起一样提醒用户
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         reminder_prompt = f"""
-现在是 {current_time}，我想起你之前设置了一个提醒。
-
+现在是 {current_time}，你之前设置了一个提醒。
 提醒内容：{reminder_text}
-
-请像一个朋友一样自然地提醒我这件事。不要使用"【提醒】"或"提醒："这样的标签，就像你突然想起这件事并主动告诉我一样。
-
-例如：
-"嘿，我突然想起来，你之前说要在下午3点开会，时间快到了！"
-"哦对了，你之前提醒过我要记得吃药，现在是时候了。"
-"你之前设置的那个提醒，现在时间到了，该去处理了！"
-
-请用自然的口语生成提醒消息：
+自然地提醒用户这件事。
 """
         
-        # 创建DeepSeek聊天客户端
-        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        # 创建聊天客户端
+        chat = create_chat_client()
         
         # 构建完整的消息历史
         full_history = [{"role": "system", "content": system_prompt}]
@@ -402,8 +416,8 @@ def _generate_action_result_message(task, result):
 请根据这个结果生成一个自然的回复，告诉用户操作执行的结果。
 """
         
-        # 创建DeepSeek聊天客户端
-        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        # 创建聊天客户端
+        chat = create_chat_client()
         
         # 构建完整的消息历史
         full_history = [{"role": "system", "content": system_prompt}]
@@ -591,19 +605,23 @@ if app.config.get("ASR_FILTER_ENABLED", True):
     filter_model = LMFilterModel()
 
 # ---------- 初始化ASR ----------
-app.logger.info("正在加载FunASR模型...")
-asr_model = AutoModel(
-    model="paraformer-zh",
-    model_revision="v2.0.4",
-    vad_model="fsmn-vad",
-    vad_model_revision="v2.0.4",
-    punc_model="ct-punc-c",
-    punc_model_revision="v2.0.4",
-    device="cuda", # 如果没有GPU请改为 "cpu"
-    disable_update=True,
-    disable_pbar=True
-)
-app.logger.info("FunASR模型加载完成")
+asr_model = None
+if app.config.get("ASR_ENABLED", True):
+    app.logger.info("正在加载FunASR模型...")
+    asr_model = AutoModel(
+        model="paraformer-zh",
+        model_revision="v2.0.4",
+        vad_model="fsmn-vad",
+        vad_model_revision="v2.0.4",
+        punc_model="ct-punc-c",
+        punc_model_revision="v2.0.4",
+        device=app.config.get("ASR_DEVICE", "cuda"), # 如果没有GPU请改为 "cpu"
+        disable_update=True,
+        disable_pbar=True
+    )
+    app.logger.info("FunASR模型加载完成")
+else:
+    app.logger.info("ASR功能已禁用，跳过FunASR模型加载")
 
 # ---------- 认证装饰器 ----------
 def login_required(f):
@@ -638,8 +656,9 @@ def chat_send():
     message = data["message"]
     chat_id = data.get("chat_id")
     chat_name = data.get("chat_name", "未命名")
-    tts_enabled = data.get("tts_enabled", True)  # 获取 TTS 开关，默认启用
-    is_asr_input = data.get("is_asr_input", False)  # 新增：是否为ASR输入
+    tts_enabled = data.get("tts_enabled", True)
+    is_asr_input = data.get("is_asr_input", False)
+    model_type = data.get("model_type")
 
     user_id = g.user["uid"]
 
@@ -688,9 +707,9 @@ def chat_send():
     full_history = [{"role": "system", "content": system_prompt}] + assembled
     # 这样我们避开把系统提示词给记忆化。
 
-    # 下面调用 DeepSeek API
+    # 下面调用主模型 API
     try:
-        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        chat = create_chat_client(model_type)
         
         # 在用户消息前添加时间戳
         from datetime import datetime
@@ -700,7 +719,7 @@ def chat_send():
         chat.messages = full_history.copy()
         reply = chat.send_message(timestamped_message)
     except Exception as e:
-        app.logger.error("DeepSeek API 调用失败: %s", e)
+        app.logger.error("主模型 API 调用失败: %s", e)
         return jsonify({"error": "AI service error"}), 500
 
     # 将新消息存入数据库
@@ -876,6 +895,7 @@ def chat_stream_send():
     chat_name = data.get("chat_name", "未命名")
     tts_enabled = data.get("tts_enabled", True)
     is_asr_input = data.get("is_asr_input", False)
+    model_type = data.get("model_type")
     user_id = g.user["uid"]
 
     def generate_stream():
@@ -909,7 +929,7 @@ def chat_stream_send():
         # --- [阶段 2: 请求] ---
         yield f"data: {json.dumps({'status': 'request'})}\n\n"
         
-        chat = DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+        chat = create_chat_client(model_type)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         timestamped_message = f"[{current_time}] {message}"
         
@@ -1013,6 +1033,9 @@ def chat_history(chat_id):
 @login_required
 def asr_recognize():
     """接收客户端音频文件进行服务端识别"""
+    if not app.config.get("ASR_ENABLED", True):
+        return jsonify({"error": "ASR service is disabled"}), 403
+        
     if 'audio' not in request.files:
         return jsonify({"error": "Missing audio file"}), 400
     
