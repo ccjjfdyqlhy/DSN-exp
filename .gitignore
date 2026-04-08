@@ -8,6 +8,7 @@
 *.pyc
 .vscode/*
 logs/*
+plans/*
 instances/models/*
 __pycache__/*
 config.py
