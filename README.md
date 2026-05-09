@@ -1,5 +1,7 @@
 ## DSN-exp
 
+Vibe coding now intergrated
+
 ## Avaliable APIs
 - `POST /api/chat/send`
 - `POST /api/chat/stream_send`
