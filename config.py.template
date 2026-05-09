@@ -1,65 +1,81 @@
 
-# DSN-exp/config.py
-# --- IGNORE ---
+# DSN-exp/config.py.template — 复制为 config.py 并填入实际值。
+# 或者创建 .env 文件（推荐），参见 .env.example。
 
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).parent / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path)
+except ImportError:
+    pass
+
+
+def _env(key: str, default=None, required: bool = False):
+    val = os.environ.get(key, default)
+    if required and not val:
+        raise EnvironmentError(
+            f"缺少必需的环境变量: {key}\n"
+            f"请参考 .env.example 创建 .env 文件，或直接设置环境变量。"
+        )
+    return val
+
 
 class Config:
-    # 验证系统
-    # LittleSkin回调URL必须设置为 http://localhost:<服务端运行端口>/api/auth/callback/
-    LITTLESKIN_CLIENT_ID = None # 填入 int
-    LITTLESKIN_CLIENT_SECRET = ""
-    JWT_SECRET = os.environ.get("JWT_SECRET", "dev-jwt-secret-change-me")
+    # ==================== 验证系统 ====================
+    LITTLESKIN_CLIENT_ID = _env("LITTLESKIN_CLIENT_ID", "")
+    LITTLESKIN_CLIENT_SECRET = _env("LITTLESKIN_CLIENT_SECRET", required=True)
 
-    # DeepSeek API
-    DEEPSEEK_API_KEY = "sk-"
-    REASONER_ENABLED = True
-    REASONER_MODEL = "deepseek-reasoner"
-    REASONER_TIMEOUT = 1200
+    JWT_SECRET = _env("JWT_SECRET", required=True)
 
-    # 本地服务 API
-    LMSTUDIO_BASE_URL = "http://localhost:4501"
-    TTS_BASE_URL = "http://127.0.0.1:9880"
+    # ==================== DeepSeek API ====================
+    DEEPSEEK_API_KEY = _env("DEEPSEEK_API_KEY", required=True)
+    REASONER_ENABLED = _env("REASONER_ENABLED", "true").lower() == "true"
+    REASONER_MODEL = _env("REASONER_MODEL", "deepseek-reasoner")
+    REASONER_TIMEOUT = int(_env("REASONER_TIMEOUT", "1200"))
 
-    # 可选值: "deepseek" 或 "lmstudio"
-    MAIN_MODEL_TYPE = "deepseek"
-    # LMStudio 主模型名称（当 MAIN_MODEL_TYPE = "lmstudio" 时使用）
-    # 如果为空，则使用 LMStudio 服务器默认模型
-    MAIN_MODEL_NAME = ""
-    
-    # LMStudio 主模型参数
-    LMSTUDIO_TEMPERATURE = 0.7
-    LMSTUDIO_MAX_TOKENS = 4096
-    LMSTUDIO_TIMEOUT = 300
-    
-    # 存储
-    DATABASE_PATH = "chats.db"
-    LOG_DIR = os.environ.get("LOG_DIR", "logs")
+    # ==================== 本地服务 API ====================
+    LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://localhost:4501")
+    TTS_BASE_URL = _env("TTS_BASE_URL", "http://127.0.0.1:9880")
 
-    # 服务
-    SERVER_HOST = "0.0.0.0"
-    SERVER_PORT = 5000
-    LOCAL_CALLBACK_PORT = 5001
+    # ==================== 主模型配置 ====================
+    MAIN_MODEL_TYPE = _env("MAIN_MODEL_TYPE", "deepseek")
+    MAIN_MODEL_NAME = _env("MAIN_MODEL_NAME", "")
+    LMSTUDIO_TEMPERATURE = float(_env("LMSTUDIO_TEMPERATURE", "0.7"))
+    LMSTUDIO_MAX_TOKENS = int(_env("LMSTUDIO_MAX_TOKENS", "4096"))
+    LMSTUDIO_TIMEOUT = int(_env("LMSTUDIO_TIMEOUT", "300"))
 
-    # 记忆与摘要
-    MEMORY_ENABLED = True 
-    MEMORY_MODEL = "meta-llama-3.1-8b-instruct"
-    MEMORY_SUMMARY_LENGTH = 100
-    MEMORY_CONTEXT_WINDOW_SIZE = 40
-    MEMORY_REPLACE_THRESHOLD_RATIO = 0.5
-    MEMORY_ASYNC_ENABLED = True
-    
-    # ASR 配置
-    ASR_ENABLED = True
-    ASR_DEVICE = "cuda"  # 可选: "cuda" 或 "cpu"
-    
-    # ASR 过滤
-    ASR_FILTER_ENABLED = False
-    FILTER_MODEL = "llama-3.2-1b-instruct"
-    
-    # 任务管理
-    TASK_MANAGER_ENABLED = True
-    TASK_MAX_WORKERS = 5
-    TASK_COMPLEXITY_THRESHOLD = 0.4  # 复杂度阈值，超过此值使用reasoner
-    REMINDER_CHECK_INTERVAL = 60  # 提醒任务检查间隔（秒）
-    TASK_NOTIFICATION_ENABLED = True
+    # ==================== 存储配置 ====================
+    DATABASE_PATH = _env("DATABASE_PATH", "chats.db")
+    LOG_DIR = _env("LOG_DIR", "logs")
+
+    # ==================== 服务配置 ====================
+    SERVER_HOST = _env("SERVER_HOST", "0.0.0.0")
+    SERVER_PORT = int(_env("SERVER_PORT", "5000"))
+    LOCAL_CALLBACK_PORT = int(_env("LOCAL_CALLBACK_PORT", "5001"))
+
+    # ==================== 记忆与摘要 ====================
+    MEMORY_ENABLED = _env("MEMORY_ENABLED", "true").lower() == "true"
+    MEMORY_MODEL = _env("MEMORY_MODEL", "deepseek-chat")
+    MEMORY_SUMMARY_LENGTH = int(_env("MEMORY_SUMMARY_LENGTH", "100"))
+    MEMORY_CONTEXT_WINDOW_SIZE = int(_env("MEMORY_CONTEXT_WINDOW_SIZE", "40"))
+    MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.5"))
+    MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
+
+    # ==================== ASR 配置 ====================
+    ASR_ENABLED = _env("ASR_ENABLED", "false").lower() == "true"
+    ASR_DEVICE = _env("ASR_DEVICE", "cuda")
+
+    # ==================== ASR 过滤 ====================
+    ASR_FILTER_ENABLED = _env("ASR_FILTER_ENABLED", "false").lower() == "true"
+    FILTER_MODEL = _env("FILTER_MODEL", "llama-3.2-1b-instruct")
+
+    # ==================== 任务管理 ====================
+    TASK_MANAGER_ENABLED = _env("TASK_MANAGER_ENABLED", "true").lower() == "true"
+    TASK_MAX_WORKERS = int(_env("TASK_MAX_WORKERS", "5"))
+    TASK_COMPLEXITY_THRESHOLD = float(_env("TASK_COMPLEXITY_THRESHOLD", "0.4"))
+    REMINDER_CHECK_INTERVAL = int(_env("REMINDER_CHECK_INTERVAL", "60"))
+    TASK_NOTIFICATION_ENABLED = _env("TASK_NOTIFICATION_ENABLED", "true").lower() == "true"

@@ -14,6 +14,12 @@ from datetime import datetime
 from flask import Flask, request, jsonify, g
 from functools import wraps
 
+try:
+    from config import Config
+except ImportError:
+    logging.warning("配置未初始化，请根据config.py.example创建config.py并配置相关参数")
+    exit(1)
+
 from usermgr import init_usermgr, auth_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat
@@ -31,7 +37,8 @@ from ASR_filter import LMFilterModel
 
 # 导入 ASR 依赖
 from flask import Response, stream_with_context
-from funasr import AutoModel
+if Config.ASR_ENABLED: # 启动的更快
+    from funasr import AutoModel
 import io
 
 # ---------- 全局变量 ----------
@@ -552,13 +559,6 @@ def setup_logging(app):
 
 # ---------- 创建应用 ----------
 app = Flask(__name__)
-
-try:
-    from config import Config
-except ImportError:
-    app.logger.warning("配置未初始化，请根据config.py.example创建config.py并配置相关参数")
-    exit(1)
-
 app.config.from_object(Config)
 
 setup_logging(app)
@@ -1059,5 +1059,5 @@ if __name__ == "__main__":
     app.run(
         host=app.config["SERVER_HOST"],
         port=app.config["SERVER_PORT"],
-        debug=True
+        debug=False
     )
