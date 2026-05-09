@@ -12,4 +12,5 @@ plans/*
 instances/models/*
 __pycache__/*
 config.py
+.env
 note.txt
