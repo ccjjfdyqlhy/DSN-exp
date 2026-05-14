@@ -1,0 +1,62 @@
+name: file_manager
+display_name: "文件管理"
+description: "管理文件系统：读取、写入、编辑、列出文件"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 62
+
+tools:
+  - name: read_file
+    display_name: "读取文件"
+    description: "读取指定路径的文件内容"
+    module: "tools.file_ops"
+    class: "FileOpsTool"
+    methods:
+      - name: read_file
+        description: "读取文件内容"
+        parameters:
+          path:
+            type: string
+            description: "文件相对路径"
+            required: true
+  - name: list_dir
+    display_name: "列出目录"
+    description: "列出指定目录下的文件和子目录"
+    module: "tools.file_ops"
+    class: "FileOpsTool"
+    methods:
+      - name: list_dir
+        description: "列出目录内容"
+        parameters:
+          path:
+            type: string
+            description: "目录相对路径，默认当前目录"
+            required: false
+  - name: write_file
+    display_name: "写入文件"
+    description: "将内容写入文件"
+    module: "tools.file_ops"
+    class: "FileOpsTool"
+    methods:
+      - name: write_file
+        description: "写入文件内容"
+        parameters:
+          path:
+            type: string
+            description: "文件相对路径"
+            required: true
+          content:
+            type: string
+            description: "要写入的文件内容"
+            required: true
+
+activation:
+  keywords: ["文件", "目录", "读取", "写入", "列出", "保存"]
+  auto_activate: false
+
+dependencies: []
+tags: [files, io, system]

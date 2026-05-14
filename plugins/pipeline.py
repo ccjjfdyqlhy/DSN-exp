@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncGenerator, Callable, Awaitable
+from typing import AsyncGenerator, Callable, Awaitable, Optional
 
 from .base import HookPoint, PluginContext
 from .manager import PluginManager
@@ -18,13 +18,21 @@ class ChatPipeline:
     对话处理管道。
 
     编排流程:
-      PRE_FILTER → PRE_PROCESS → MODEL_INVOKE → POST_PROCESS → POST_TTS
+      PRE_FILTER → PRE_PROCESS → [PromptEngine] → MODEL_INVOKE → POST_PROCESS → POST_TTS
 
     app.py 只调用 pipeline.process(ctx)，拿到结果后构造 HTTP 响应。
+
+    prompt_engine 在 PRE_PROCESS 和 MODEL_INVOKE 之间被调用，
+    根据 user_info 组装最终的 system_prompt。
     """
 
-    def __init__(self, plugin_manager: PluginManager):
+    def __init__(
+        self,
+        plugin_manager: PluginManager,
+        prompt_engine=None,  # Optional[PromptEngine]
+    ):
         self.pm = plugin_manager
+        self._prompt_engine = prompt_engine
 
     # ---- 完整管道 ----
 
@@ -34,10 +42,11 @@ class ChatPipeline:
 
         各阶段:
         1. PRE_FILTER  — ctx.filtered=True 则短路
-        2. PRE_PROCESS — system_prompt + 上下文组装
-        3. MODEL_INVOKE— LLM 调用
-        4. POST_PROCESS— 任务解析 + 对话保存
-        5. POST_TTS    — TTS 语音合成
+        2. PRE_PROCESS — 上下文组装 (history + memories)
+        3. [PromptEngine] — 构建 system_prompt
+        4. MODEL_INVOKE— LLM 调用
+        5. POST_PROCESS— 任务解析 + 对话保存
+        6. POST_TTS    — TTS 语音合成
         """
         # 1
         ctx = await self.pm.dispatch(HookPoint.PRE_FILTER, ctx)
@@ -49,6 +58,9 @@ class ChatPipeline:
         if ctx.filtered:
             return ctx
 
+        # 2.5 — PromptEngine 组装 system prompt
+        self._assemble_prompt(ctx)
+
         # 3
         ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
 
@@ -59,6 +71,19 @@ class ChatPipeline:
         ctx = await self.pm.dispatch(HookPoint.POST_TTS, ctx)
 
         return ctx
+
+    def _assemble_prompt(self, ctx: PluginContext) -> None:
+        """调用 PromptEngine 构建 system_prompt，写入 ctx"""
+        if ctx.system_prompt:
+            return  # 已有预设的 system_prompt，不覆盖
+        if self._prompt_engine is None:
+            return
+
+        user_info = {
+            "uid": ctx.user_id,
+            "nickname": ctx.nickname,
+        }
+        ctx.system_prompt = self._prompt_engine.build_system_prompt(user_info)
 
     # ---- 流式管道（SSE） ----
 

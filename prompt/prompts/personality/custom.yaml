@@ -1,0 +1,31 @@
+# 自定义性格模板 — 复制此文件并修改为你喜欢的配置
+name: custom
+display_name: "自定义"
+description: "用户自定义性格模板"
+
+traits:
+  openness: 0.5
+  conscientiousness: 0.5
+  extraversion: 0.5
+  agreeableness: 0.5
+  neuroticism: 0.5
+
+emotion_baseline:
+  energy: 0.5
+  positivity: 0.5
+  patience: 0.5
+  curiosity: 0.5
+
+speech_style:
+  formality: 0.5
+  verbosity: 0.5
+  humor: 0.3
+  sarcasm: 0.1
+
+catchphrases: []
+habits: []
+
+relationship:
+  initial_distance: 0.5
+  warming_rate: 0.02
+  max_intimacy: 0.9
