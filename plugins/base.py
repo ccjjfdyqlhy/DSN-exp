@@ -43,6 +43,12 @@ class PluginContext:
     filtered: bool = False       # PRE_FILTER 短路标记
     tts_error: Optional[str] = None
 
+    # ---- Agent 循环状态 (AgentPlugin 使用) ----
+    agent_active: bool = False            # 是否启用了 agent 循环
+    agent_step_count: int = 0             # 当前步数
+    agent_max_steps: int = 5             # 最大步数
+    agent_token_budget: int = 8000       # token 预算（按消息字符数简单估算）
+
     # ---- 扩展 ----
     extra: dict = field(default_factory=dict)
 
