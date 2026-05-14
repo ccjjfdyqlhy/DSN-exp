@@ -6,6 +6,7 @@ from .task_plugin import TaskPlugin
 from .models_plugin import ModelsPlugin
 from .skills_plugin import SkillsPlugin
 from .distill_plugin import DistillPlugin
+from .agent_plugin import AgentPlugin
 
 __all__ = [
     "TTSPlugin",
@@ -15,4 +16,5 @@ __all__ = [
     "ModelsPlugin",
     "SkillsPlugin",
     "DistillPlugin",
+    "AgentPlugin",
 ]

@@ -119,3 +119,18 @@ class ModelsPlugin(Plugin):
         # 压缩空白
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned
+
+    # ---- Agent 循环用 LLM 调用 ----
+
+    def invoke(self, messages: list[dict], ctx: PluginContext | None = None) -> str:
+        """
+        供 AgentPlugin 直接调用 LLM，不修改 ctx。
+        返回 LLM 生成的完整回复文本（含原始标签）。
+
+        消息列表中应已包含 system prompt、历史、工具结果等。
+        """
+        effective_type = ctx.model_type if ctx and ctx.model_type else self._model_type
+
+        chat = self._create_chat(effective_type)
+        chat.messages = list(messages)
+        return chat.send_message("继续")
