@@ -1,11 +1,15 @@
-
 # DSN-exp/prompt.py
-# UPD v3_260328
+# UPD v4 — 兼容包装层，对旧调用者透明，底层委托给新的 Prompt 生态
+#
+# app.py 仍可 `from prompt import get_system_prompt` 无需改动。
+# 当 prompt.engine.PromptEngine 被初始化后，自动切换。
+# 否则回退到硬编码的 DEFAULT_SYSTEM_PROMPT。
 
 from datetime import datetime
 from typing import Dict, Any
 
-# 默认系统提示词模板
+# ---- 旧版回退提示词 (仅在新引擎未初始化时使用) ----
+
 DEFAULT_SYSTEM_PROMPT = """
 你是一个名为EXA的人工智能系统。你运行在一个名为DSN-exp的系统架构中，运行在用户的电脑上。
 你的输出要符合人类日常对话的习惯，但是又不过于口语化。可以使用情绪表达。
@@ -39,7 +43,7 @@ ls -la /home/darkstar/DSN-exp
 
 动作类型说明：
 1. "shell": 执行系统shell命令，内容放在action代码块中
-2. "python": 执行Python代码，内容放在action代码块中  
+2. "python": 执行Python代码，内容放在action代码块中
 3. "write_file": 写入文件，需要额外指定file_path和overwrite参数
 4. "edit_file": 编辑文件，需要额外指定file_path、pattern和replacement参数
 
@@ -84,7 +88,7 @@ This is file content to write.
 ### 推理任务示例：
 <task>
 {{
-  "type": "reasoner", 
+  "type": "reasoner",
   "params": {{
     "question": "需要深入分析的问题",
     "context": "相关上下文"
@@ -110,17 +114,41 @@ This is file content to write.
 
 INITIAL_PROMPT = """现在你的记忆一片空白，你是刚刚苏醒的状态，对用户不了解，充满好奇。"""
 
+_using_new_engine = False
+
+def _get_new_engine():
+    """获取已初始化的 PromptEngine 实例（如果有）"""
+    global _using_new_engine
+    if _using_new_engine:
+        from prompt.engine import _default_engine
+        if _default_engine is not None:
+            return _default_engine
+        _using_new_engine = False
+
+    try:
+        from prompt.engine import PromptEngine, init_prompt_engine
+        from prompt.engine import _default_engine
+        if _default_engine is not None:
+            _using_new_engine = True
+            return _default_engine
+    except Exception:
+        pass
+    return None
+
+
 def get_system_prompt(user_info: Dict[str, Any]) -> str:
     """
     根据用户信息生成系统提示词。
+    优先使用新的 Prompt 生态，否则回退到旧模板。
 
     :param user_info: 包含用户信息的字典，至少应有 uid 和 nickname
-    :return: 格式化后的系统提示词字符串
     """
+    engine = _get_new_engine()
+    if engine is not None:
+        return engine.build_system_prompt(user_info)
+
+    # 回退
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return DEFAULT_SYSTEM_PROMPT.format(
         nickname=user_info.get("nickname", "用户"),
-        current_time=current_time
     )
-
-# 可在此添加其他模板或根据不同条件返回不同提示词

@@ -1,0 +1,36 @@
+name: web_search
+display_name: "网页搜索"
+description: "搜索互联网获取最新信息，支持多关键词搜索"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 60
+
+tools:
+  - name: search
+    display_name: "搜索"
+    description: "执行网页搜索获取信息"
+    module: "tools.search"
+    class: "WebSearchTool"
+    methods:
+      - name: search
+        description: "执行网页搜索"
+        parameters:
+          query:
+            type: string
+            description: "搜索关键词"
+            required: true
+          max_results:
+            type: integer
+            description: "最大结果数"
+            default: 5
+
+activation:
+  keywords: ["搜索", "查找", "最新", "新闻", "搜一下", "帮我查"]
+  auto_activate: false
+
+dependencies: []
+tags: [search, web, information]
