@@ -20,8 +20,8 @@ class DeepSeekChat:
 
     # 默认API地址和模型
     DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
-    DEFAULT_MODEL = "deepseek-chat"
-    REASONER_MODEL = "deepseek-reasoner"
+    DEFAULT_MODEL = "deepseek-v4-flash"
+    REASONER_MODEL = "deepseek-v4-pro"
 
     def __init__(
         self,

@@ -404,7 +404,7 @@ class TaskManager:
         # 创建DeepSeek Reasoner客户端
         from config import Config
         chat = DeepSeekChat(api_key=Config.DEEPSEEK_API_KEY)
-        chat.set_model("deepseek-reasoner")  # 切换到reasoner模型
+        chat.set_model("deepseek-v4-pro")  # 切换到reasoner模型
         
         # 构建提示词
         system_prompt = """你是一个专业的推理AI，需要深入分析复杂问题，给出详细的思考过程和最终结论。
@@ -428,7 +428,7 @@ class TaskManager:
         result = {
             "reasoning": reasoning_result,
             "conclusion": conclusion,
-            "model": "deepseek-reasoner",
+            "model": "deepseek-v4-pro",
             "timestamp": datetime.now().isoformat()
         }
         

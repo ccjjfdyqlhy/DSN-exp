@@ -7,6 +7,8 @@ from .models_plugin import ModelsPlugin
 from .skills_plugin import SkillsPlugin
 from .distill_plugin import DistillPlugin
 from .agent_plugin import AgentPlugin
+from .todo_plugin import TodoPlugin
+from .todo_store import TodoStore, get_todo_store
 
 __all__ = [
     "TTSPlugin",
@@ -17,4 +19,7 @@ __all__ = [
     "SkillsPlugin",
     "DistillPlugin",
     "AgentPlugin",
+    "TodoPlugin",
+    "TodoStore",
+    "get_todo_store",
 ]
