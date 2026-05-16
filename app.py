@@ -735,6 +735,16 @@ def chat_send():
     # 保存原始回复用于记忆摘要
     original_reply = reply
 
+    # --- 处理记忆召回 (<recall> 标签) ---
+    if memory_manager:
+        try:
+            recall_processed = memory_manager.process_recall_tags(user_id, chat_id, original_reply)
+            if recall_processed != original_reply:
+                reply = recall_processed
+                app.logger.info("记忆召回已处理，回复已更新")
+        except Exception as e:
+            app.logger.error("记忆召回处理失败: %s", e)
+
     # --- 解析并执行任务 ---
     if task_manager:
         tasks = parse_task_instructions(original_reply)
@@ -939,6 +949,16 @@ def chat_stream_send():
         reply = chat.send_message(timestamped_message)
         db.append_messages(user_id, chat_id, chat.messages[-2:])
         original_reply = reply
+
+        # --- 处理记忆召回 (<recall> 标签) ---
+        if memory_manager:
+            try:
+                recall_processed = memory_manager.process_recall_tags(user_id, chat_id, original_reply)
+                if recall_processed != original_reply:
+                    reply = recall_processed
+                    app.logger.info("记忆召回已处理，回复已更新")
+            except Exception as e:
+                app.logger.error("记忆召回处理失败: %s", e)
 
         # 请求完成，立即把文字回复推给前端进行逐行打字机渲染
         yield f"data: {json.dumps({'status': 'text_ready', 'reply': original_reply, 'chat_id': chat_id})}\n\n"

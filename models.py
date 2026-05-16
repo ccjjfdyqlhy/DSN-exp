@@ -297,7 +297,13 @@ class LMSummaryModel:
     SUMMARY_PROMPT = '''
 你是一个专门擅长概括对话内容的AI，你的任务是根据输入的对话内容，提取出其中的关键信息，并用一句100字以内的话进行概括，作为回答输出。
 你管理着系统的长期记忆。你生成的概括语句必须以AI的视角概括描述输入的对话内容。
-不要输出“概括如下”或者“总结：”等引导语。你必须仅仅输出概括的内容。
+不要输出"概括如下"或者"总结："等引导语。你必须仅仅输出概括的内容。
+
+此外，请在概括语句后换行，输出一行关键词标签，格式为:
+概括语句
+[关键词: kw1, kw2, kw3, kw4, kw5]
+关键词必须是对话中讨论的核心主题词（中文或英文，3~5个，逗号分隔）。
+
 需要你概括的对话内容如下：\n
 '''
 
@@ -349,10 +355,9 @@ class LMSummaryModel:
 
             if "choices" in result and result["choices"]:
                 summary = result["choices"][0]["message"]["content"].strip()
-                summary = summary.replace("\n", " ")
-                # 限制长度
-                if len(summary) > max_length:
-                    summary = summary[:max_length].rstrip() + "..."
+                # 保留换行以便关键词提取，但限制最大长度
+                if len(summary) > max_length * 2:
+                    summary = summary[:max_length * 2].rstrip() + "..."
                 self.logger.info("生成摘要: %s", summary[:80] + ("..." if len(summary) > 80 else ""))
                 return summary
             else:
