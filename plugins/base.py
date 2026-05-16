@@ -51,6 +51,7 @@ class PluginContext:
 
     # ---- 扩展 ----
     extra: dict = field(default_factory=dict)
+    recall_engine: Optional[Any] = None  # MemoryRecallEngine 实例
 
 
 class Plugin(ABC):

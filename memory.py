@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 from config import Config
 from chatdbmgr import ChatDBManager
 from models import LMSummaryModel
+from memory_recall import MemoryRecallEngine
 
 
 class MemoryManager:
@@ -21,6 +22,7 @@ class MemoryManager:
     ):
         self.db = db
         self.summary_model = summary_model or LMSummaryModel()
+        self.recall_engine = MemoryRecallEngine(db)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
@@ -52,6 +54,25 @@ class MemoryManager:
             summary = self.summary_model.summarize_dialog(messages, max_length=Config.MEMORY_SUMMARY_LENGTH)
             if not summary:
                 return None
+
+            keywords = MemoryRecallEngine.extract_keywords_from_summary(summary)
+            clean_summary = MemoryRecallEngine.strip_keywords_from_summary(summary)
+
+            msg_start_id, msg_end_id = self.db.get_last_message_ids(chat_id, count=len(messages))
+
+            with self.lock:
+                memory_id = self.db.save_memory(
+                    user_id, chat_id, round_index,
+                    clean_summary if clean_summary else summary,
+                    keywords=keywords,
+                    message_start_id=msg_start_id,
+                    message_end_id=msg_end_id,
+                )
+            return memory_id
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("MemoryManager 生成摘要失败: %s", e)
+            return None
             with self.lock:
                 memory_id = self.db.save_memory(user_id, chat_id, round_index, summary)
             return memory_id
@@ -80,33 +101,56 @@ class MemoryManager:
             return payload
 
         # 从最远消息开始替换，将最旧 round 替换为 memory.summary，并以 role=system表示记忆
-        # 这里策略：将远部区段清掉并转为一个或多个记忆消息
         replace_count = len(payload) - threshold
         remain = payload[replace_count:]
         old_segment = payload[:replace_count]
 
-        # 记录替换详情
         self.logger.info(f"触发记忆替换 - 将替换 {replace_count} 条远端消息，保留 {len(remain)} 条近期消息")
         self.logger.info(f"已记忆化位于前 {replace_count} 轮的 {len(memories)} 条消息摘要")
         
-        # 记录被替换的消息摘要（前几条）
         if old_segment:
-            for i, msg in enumerate(old_segment[:3]):  # 只记录前3条被替换的消息
+            for i, msg in enumerate(old_segment[:3]):
                 role = msg.get('role', 'unknown')
                 content_preview = msg.get('content', '')[:50] + ('...' if len(msg.get('content', '')) > 50 else '')
-                # self.logger.info(f"被替换消息 {i+1}: [{role}] {content_preview}")
-            # if len(old_segment) > 3:
-                # self.logger.info(f"... 还有 {len(old_segment) - 3} 条消息被替换")
 
         memory_msgs = []
         for mem in memories:
-            memory_msgs.append({"role": "system", "content": f"记忆摘要：{mem['summary']}"})
-            # 记录记忆摘要内容
-            summary_preview = mem['summary'][:80] + ('...' if len(mem['summary']) > 80 else '')
-            # self.logger.info(f"记忆摘要 {len(memory_msgs)}: {summary_preview}")
+            summary_text = MemoryRecallEngine.strip_keywords_from_summary(mem.get("summary", ""))
+            memory_msgs.append({"role": "system", "content": f"记忆摘要：{summary_text}"})
 
         self.logger.info(f"拼接完成 - 最终上下文: {len(memory_msgs)} 条记忆 + {len(remain)} 条近期消息 = {len(memory_msgs) + len(remain)} 条消息")
         return memory_msgs + remain
+
+    def process_recall_tags(self, user_id: int, chat_id: int, reply_text: str) -> str:
+        """
+        处理回复文本中的 <recall> 标签，替换为检索/细节结果。
+        供 app.py 和 RecallPlugin 共用。
+        """
+        import re as re_mod
+        import json as json_mod
+
+        recall_re = re_mod.compile(r"<recall>\s*(.*?)\s*</recall>", re_mod.DOTALL)
+        matches = list(recall_re.finditer(reply_text))
+        if not matches:
+            return reply_text
+
+        results = []
+        for match in matches:
+            try:
+                payload = json_mod.loads(match.group(1).strip())
+            except json_mod.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            result = self.recall_engine.handle_recall(user_id, chat_id, payload)
+            if result:
+                results.append(result)
+
+        cleaned = recall_re.sub("", reply_text).strip()
+        if results:
+            cleaned += "\n\n" + "\n\n".join(results)
+        return cleaned
 
     def shutdown(self):
         self.executor.shutdown(wait=False)
