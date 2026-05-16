@@ -21,6 +21,7 @@ except ImportError:
     exit(1)
 
 from usermgr import init_usermgr, auth_bp
+from todo_api import todo_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat
 from memory import MemoryManager
@@ -563,6 +564,7 @@ app.config.from_object(Config)
 
 setup_logging(app)
 init_usermgr(app)
+app.register_blueprint(todo_bp)
 db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
 
 # 初始化任务管理器
