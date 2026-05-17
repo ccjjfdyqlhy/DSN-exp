@@ -627,6 +627,42 @@ if app.config.get("ASR_ENABLED", True):
 else:
     app.logger.info("ASR功能已禁用，跳过FunASR模型加载")
 
+# ---------- 初始化 Prompt 生态 ----------
+import os as _os
+_prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt", "prompts")
+prompt_engine = prompt.init_prompt_engine(
+    library_dirs=[
+        _os.path.join(_prompt_dir, "core"),
+        _os.path.join(_prompt_dir, "capabilities"),
+        _os.path.join(_prompt_dir, "extensions"),
+    ],
+    personality_dir=_os.path.join(_prompt_dir, "personality"),
+)
+app.logger.info("PromptEngine 初始化完成 (条目: %d)", len(prompt_engine.library.entries))
+
+# ---------- 初始化技能系统 ----------
+try:
+    _skills_dir = _os.path.join(_os.path.dirname(__file__), "skills")
+    from skills.registry import SkillRegistry
+    from skills.manager import SkillManager
+
+    skill_registry = SkillRegistry()
+    skill_manager = SkillManager(
+        skill_dirs=[
+            _os.path.join(_skills_dir, "builtin"),
+            _os.path.join(_skills_dir, "custom"),
+        ],
+        registry=skill_registry,
+    )
+    loaded = skill_manager.scan_and_load()
+    prompt_engine.set_skill_registry(skill_registry)
+    app.logger.info("技能系统初始化完成 (加载: %d 技能, 工具: %s)",
+                     loaded, skill_registry.list_active_tools())
+except Exception as e:
+    app.logger.warning("技能系统初始化失败: %s", e)
+    skill_registry = None
+    skill_manager = None
+
 # ---------- 认证装饰器 ----------
 def login_required(f):
     @wraps(f)

@@ -307,6 +307,39 @@ a { color: var(--accent-light); text-decoration: none; }
   .msg-row { max-width: 90%; }
 }
 
+/* ── SSE Stream Card ── */
+.stream-card {
+  position: fixed; bottom: 100px; left: 300px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 18px;
+  box-shadow: var(--shadow); z-index: 5;
+  display: none; min-width: 260px; max-width: 360px;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+.stream-card.visible { display: block; opacity: 1; transform: translateY(0); }
+.stream-card .card-status { font-size: 13px; color: var(--text); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.stream-card .card-status .spinner {
+  width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.stream-card .progress-bar {
+  height: 3px; background: var(--border); border-radius: 3px; overflow: hidden;
+}
+.stream-card .progress-bar .fill {
+  height: 100%; width: 35%; background: linear-gradient(90deg, var(--accent), var(--cyan));
+  border-radius: 3px; animation: progress-scroll 1.6s ease-in-out infinite;
+}
+@keyframes progress-scroll {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+@media (max-width: 768px) {
+  .stream-card { left: 12px; right: 12px; bottom: 90px; min-width: auto; max-width: none; }
+}
+
 /* ── Toast ── */
 .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
 .toast {
@@ -382,7 +415,7 @@ a { color: var(--accent-light); text-decoration: none; }
         <button class="btn-mic" id="btn-mic" onclick="toggleRecording()" title="语音输入">🎤</button>
         <textarea id="message-input" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
         <button class="btn-tts active" id="btn-tts" onclick="toggleTTS()" title="语音播报">🔊</button>
-        <button class="btn-send" id="btn-send" onclick="sendMessage()" disabled>
+        <button class="btn-send" id="btn-send" onclick="sendMessage()">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22,2 11,13"/><polygon points="22,2 15,22 11,13 2,9"/></svg>
         </button>
       </div>
@@ -391,6 +424,10 @@ a { color: var(--accent-light); text-decoration: none; }
 </div>
 
 <div class="toast-container" id="toast-container"></div>
+<div class="stream-card" id="stream-card">
+  <div class="card-status"><span class="spinner"></span><span id="stream-status-text">准备中...</span></div>
+  <div class="progress-bar"><div class="fill"></div></div>
+</div>
 
 <script>
 // ═══════════════════════════════════════════
@@ -534,7 +571,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
-  input.addEventListener('input', autoResizeInput);
+  input.addEventListener('input', () => { autoResizeInput(); updateSendButton(); });
+  updateSendButton();
 });
 
 function parseJWT(token) {
@@ -769,10 +807,11 @@ async function sendMessage() {
 
   state.streaming = true;
   input.value = ''; input.style.height = 'auto';
-  document.getElementById('btn-send').disabled = true;
+  updateSendButton();
 
   addUserMessage(message);
   showTyping();
+  showStreamCard();
 
   try {
     const body = { message, tts_enabled: state.ttsEnabled };
@@ -786,8 +825,8 @@ async function sendMessage() {
       body: JSON.stringify(body)
     });
 
-    if (res.status === 401) { handleLogout(); return; }
-    if (!res.ok) { removeTyping(); addAssistantMessage('❌ 请求失败 (HTTP ' + res.status + ')'); toast('请求失败', 'error'); return; }
+    if (res.status === 401) { handleLogout(); hideStreamCard(); updateSendButton(); return; }
+    if (!res.ok) { removeTyping(); addAssistantMessage('❌ 请求失败 (HTTP ' + res.status + ')'); toast('请求失败', 'error'); hideStreamCard(); updateSendButton(); return; }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -837,7 +876,8 @@ async function sendMessage() {
     removeTyping(); addAssistantMessage('❌ 网络错误: ' + e.message); toast(e.message, 'error');
   } finally {
     state.streaming = false;
-    document.getElementById('btn-send').disabled = false;
+    hideStreamCard();
+    updateSendButton();
     focusInput();
   }
 }
@@ -845,15 +885,15 @@ async function sendMessage() {
 function handleSSEEvent(ev) {
   removeTyping();
   switch (ev.status) {
-    case 'parsing': addStatusTag('⏳ 正在解析请求...'); break;
-    case 'request': addStatusTag('🚀 正在调用 AI 模型...'); break;
+    case 'parsing': updateStreamCard('⏳ 正在解析请求...'); break;
+    case 'request': updateStreamCard('🚀 正在调用 AI 模型...'); break;
     case 'text_ready':
       if (ev.reply && !ev.filtered) addAssistantMessage(ev.reply);
       break;
-    case 'execution': addStatusTag('⚡ 正在执行任务...'); break;
-    case 'tts': addStatusTag('🔊 正在合成语音...'); break;
+    case 'execution': updateStreamCard('⚡ 正在执行任务...'); break;
+    case 'tts': updateStreamCard('🔊 正在合成语音...'); break;
     case 'completed':
-      if (ev.tts_error) addStatusTag('⚠ TTS 错误: ' + ev.tts_error);
+      if (ev.tts_error) updateStreamCard('⚠ TTS 错误: ' + ev.tts_error);
       break;
   }
 }
@@ -940,6 +980,24 @@ function onModelChange(value) {
 function scrollToBottom() { const c = document.getElementById('messages'); setTimeout(() => { c.scrollTop = c.scrollHeight; }, 50); }
 function focusInput() { document.getElementById('message-input').focus(); }
 function autoResizeInput() { const i = document.getElementById('message-input'); i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 160) + 'px'; }
+
+function updateSendButton() {
+  const btn = document.getElementById('btn-send');
+  const input = document.getElementById('message-input');
+  btn.disabled = state.streaming || !input.value.trim();
+}
+
+function showStreamCard() {
+  document.getElementById('stream-card').classList.add('visible');
+}
+function updateStreamCard(status) {
+  const card = document.getElementById('stream-card');
+  card.classList.add('visible');
+  document.getElementById('stream-status-text').textContent = status;
+}
+function hideStreamCard() {
+  document.getElementById('stream-card').classList.remove('visible');
+}
 
 function toggleSidebar(force) {
   const open = force !== undefined ? force : !state.sidebarOpen;
