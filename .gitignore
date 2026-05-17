@@ -14,3 +14,5 @@ __pycache__/*
 config.py
 .env
 note.txt
+/cli/webui/.credentials
+/cli/webui/.secret_key
