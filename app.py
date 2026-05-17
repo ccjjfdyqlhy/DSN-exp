@@ -648,6 +648,25 @@ def login_required(f):
 def close_db_connection(exception=None):
     db.close_connection()
 
+# ---------- CORS 支持 ----------
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Max-Age"] = "3600"
+    return response
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        resp = jsonify({"ok": True})
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+        resp.headers["Access-Control-Max-Age"] = "3600"
+        return resp, 200
+
 # ---------- API 路由 ----------
 @app.route("/api/chat/send", methods=["POST"])
 @login_required
@@ -1078,6 +1097,20 @@ def asr_recognize():
     except Exception as e:
         app.logger.error("ASR识别错误: %s", e)
         return jsonify({"error": "ASR processing failed"}), 500
+
+@app.route("/api/chat/<int:chat_id>", methods=["DELETE"])
+@login_required
+def chat_delete(chat_id):
+    """删除聊天会话"""
+    try:
+        success = db.delete_chat(g.user["uid"], chat_id)
+        if success:
+            return jsonify({"success": True})
+        else:
+            return jsonify({"error": "Chat not found or access denied"}), 404
+    except Exception as e:
+        app.logger.error("删除聊天失败: %s", e)
+        return jsonify({"error": "Database error"}), 500
 
 if __name__ == "__main__":
     app.run(
