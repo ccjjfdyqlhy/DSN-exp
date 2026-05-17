@@ -588,7 +588,9 @@ else:
 
 # 初始化 记忆与摘要模块
 if app.config.get("MEMORY_ENABLED", True):
+    summary_backend = app.config.get("MEMORY_SUMMARY_BACKEND", "deepseek")
     summary_model = LMSummaryModel(
+        backend=summary_backend,
         base_url=app.config.get("LMSTUDIO_BASE_URL"),
         model_name=app.config.get("MEMORY_MODEL"),
         summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),

@@ -27,9 +27,9 @@ DEFAULT_SYSTEM_PROMPT = """
 
 ## 记忆召回能力
 你拥有动态记忆召回能力。当用户询问你"是否记得"、"回忆一下"、"之前讨论过"或需要引用过去的对话时，使用<recall></recall>标签检索你的长期记忆。
-检索语法: <recall>{"keywords": ["关键词1", "关键词2"], "count": 3}</recall>
-细节还原: <recall>{"detail": [轮次号1, 轮次号2]}</recall>
-混合模式: <recall>{"keywords": ["关键词"], "count": 3, "detail": true}</recall>
+检索语法: <recall>{{"keywords": ["关键词1", "关键词2"], "count": 3}}</recall>
+细节还原: <recall>{{"detail": [轮次号1, 轮次号2]}}</recall>
+混合模式: <recall>{{"keywords": ["关键词"], "count": 3, "detail": true}}</recall>
 行为准则:
 1. 主动检索: 当用户提及过去讨论的主题时，先检索再回答
 2. 自然过渡: 使用<recall>标签前说"让我回忆一下…"等自然语言
