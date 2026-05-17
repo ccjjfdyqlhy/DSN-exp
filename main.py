@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 import signal
@@ -13,6 +12,13 @@ import threading
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
+from collections import deque
+
+try:
+    import msvcrt
+    _HAS_MSVCRT = True
+except ImportError:
+    _HAS_MSVCRT = False
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -24,6 +30,72 @@ from rich.align import Align
 from rich import box
 
 console = Console()
+
+# ═══════════════════════════════════════════════════════════════
+# 系统状态 & 日志缓冲区
+# ═══════════════════════════════════════════════════════════════
+
+SYSTEM_STATUS = "待命"
+SYSTEM_STATUS_COLORS = {
+    "待命":       "green",
+    "处理请求":   "bold yellow",
+    "出现问题":   "bold red",
+}
+SYSTEM_STATUS_ICONS = {
+    "待命":       "●",
+    "处理请求":   "◉",
+    "出现问题":   "◉",
+}
+
+LOG_BUFFER: deque = deque(maxlen=200)
+LOG_LOCK = threading.Lock()
+_current_page = 0  # 0 = dashboard, 1 = logs
+_PAGE_LOCK = threading.Lock()
+_LOG_HANDLER_INSTALLED = False
+
+
+def set_system_status(status: str):
+    global SYSTEM_STATUS
+    if status in SYSTEM_STATUS_COLORS:
+        SYSTEM_STATUS = status
+
+
+def append_log(module: str, level: str, message: str):
+    ts = datetime.now().strftime("%H:%M:%S")
+    with LOG_LOCK:
+        LOG_BUFFER.append((ts, module, level, message))
+
+
+def get_logs_snapshot() -> list:
+    with LOG_LOCK:
+        return list(LOG_BUFFER)
+
+
+def get_current_page() -> int:
+    with _PAGE_LOCK:
+        return _current_page
+
+
+def set_current_page(page: int):
+    global _current_page
+    with _PAGE_LOCK:
+        _current_page = page
+
+
+def _install_log_handler():
+    global _LOG_HANDLER_INSTALLED
+    if _LOG_HANDLER_INSTALLED:
+        return
+    _LOG_HANDLER_INSTALLED = True
+
+    class _DashboardHandler(logging.Handler):
+        def emit(self, record):
+            append_log(record.name, record.levelname, self.format(record))
+
+    handler = _DashboardHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logging.root.addHandler(handler)
 
 # ═══════════════════════════════════════════════════════════════
 # 组件跟踪
@@ -200,14 +272,24 @@ def _make_server_panel(config: Any) -> Panel:
 
 def build_dashboard(components: list[ComponentInfo], stats: dict, config: Any, title: str = "") -> Layout:
     layout = Layout()
-    layout.split(Layout(name="header", size=3),
+    layout.split(Layout(name="header", size=5),
                  Layout(name="body"),
                  Layout(name="footer", size=3))
     layout["body"].split_row(Layout(name="left", ratio=2), Layout(name="right", ratio=2))
     layout["right"].split(Layout(name="right_stats"), Layout(name="right_server"))
 
+    status = SYSTEM_STATUS
+    status_color = SYSTEM_STATUS_COLORS.get(status, "white")
+    status_icon = SYSTEM_STATUS_ICONS.get(status, "●")
+    status_bar = Text()
+    status_bar.append(f"  {status_icon}  ", style=f"{status_color}")
+    status_bar.append(f"{status}  ", style=f"bold {status_color} on black")
+    header_inner = Group(
+        Align.center(Text(title, style="bold cyan")),
+        Align.center(status_bar),
+    )
     layout["header"].update(Panel(
-        Align.center(f"[bold cyan]{title}[/]", vertical="middle"),
+        header_inner,
         box=box.HEAVY, border_style="cyan"))
     layout["left"].update(_make_component_panel(components))
     layout["right_stats"].update(_make_stats_panel(stats))
@@ -216,9 +298,34 @@ def build_dashboard(components: list[ComponentInfo], stats: dict, config: Any, t
     host = getattr(config, 'SERVER_HOST', '0.0.0.0')
     port = getattr(config, 'SERVER_PORT', 5000)
     layout["footer"].update(Panel(
-        Align.center(Text(f"Ctrl+C Quit  |  http://{host}:{port}/api/  |  DSN-exp v4", style="dim"), vertical="middle"),
+        Align.center(Text(f"Tab 切换页面  |  Ctrl+C 退出  |  http://{host}:{port}/api/  |  DSN-exp v4", style="dim"), vertical="middle"),
         box=box.SIMPLE, border_style="dim"))
     return layout
+
+
+_console_handler = None
+_console_handler_lock = threading.Lock()
+
+
+def _enable_console_logging():
+    global _console_handler
+    with _console_handler_lock:
+        if _console_handler is not None:
+            return
+        _console_handler = logging.StreamHandler(sys.stderr)
+        _console_handler.setLevel(logging.INFO)
+        _console_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            "%H:%M:%S"))
+        logging.root.addHandler(_console_handler)
+
+
+def _disable_console_logging():
+    global _console_handler
+    with _console_handler_lock:
+        if _console_handler is not None:
+            logging.root.removeHandler(_console_handler)
+            _console_handler = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -337,11 +444,16 @@ def main():
     console.clear()
     console.print(Text(BANNER, style="bold cyan"))
 
-    def _refresh():
+    _install_log_handler()
+    append_log("system", "INFO", "DSN-exp 系统启动完成，仪表盘已激活")
+    set_system_status("待命")
+
+    def _dashboard_refresh():
         return build_dashboard(components, data.snapshot(), Config,
                                "DSN-exp  System Dashboard")
 
     def _shutdown(sig, frame):
+        _disable_console_logging()
         console.print("\n[yellow]Shutting down...[/]")
         if server:
             server.shutdown()
@@ -350,18 +462,75 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    console.print("[green]All systems ready. Dashboard active.[/]\n")
+    keyboard_stop = threading.Event()
+    page_changed = threading.Event()
+
+    def _keyboard_listener():
+        if not _HAS_MSVCRT:
+            return
+        while not keyboard_stop.is_set():
+            try:
+                if msvcrt.kbhit():
+                    ch = msvcrt.getch()
+                    if ch == b'\t':
+                        new_page = 1 if get_current_page() == 0 else 0
+                        set_current_page(new_page)
+                        page_changed.set()
+                        page_name = "面板" if new_page == 0 else "日志"
+                        append_log("system", "INFO", f"切换到{page_name}页面")
+                    elif ch == b'1':
+                        set_current_page(0)
+                        set_system_status("待命")
+                        page_changed.set()
+                        append_log("system", "INFO", "系统状态切换为: 待命")
+                    elif ch == b'2':
+                        set_system_status("处理请求")
+                        append_log("system", "INFO", "系统状态切换为: 处理请求")
+                    elif ch == b'3':
+                        set_system_status("出现问题")
+                        append_log("system", "WARNING", "系统状态手动切换为: 出现问题")
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    kb_thread = threading.Thread(target=_keyboard_listener, daemon=True, name="kb-listener")
+    kb_thread.start()
+
+    console.print("[green]All systems ready. Dashboard active.[/]")
+    console.print("[dim]  Tab  切换 面板/日志  |  1/2/3 切换系统状态  |  Ctrl+C 退出[/]\n")
+
+    def _run_live_loop():
+        with Live(_dashboard_refresh(), refresh_per_second=2, screen=True) as live:
+            page_changed.clear()
+            while not page_changed.is_set():
+                time.sleep(0.5)
+                live.update(_dashboard_refresh())
+
+    def _run_console_log_loop():
+        _enable_console_logging()
+        print(f"=== DSN-exp Module Logs ===  Status: {SYSTEM_STATUS}  [Tab=return, Ctrl+C=quit] ===")
+        print("-" * 70)
+        page_changed.clear()
+        try:
+            while not page_changed.is_set():
+                time.sleep(0.5)
+        finally:
+            _disable_console_logging()
 
     try:
-        with Live(_refresh(), refresh_per_second=2, screen=True) as live:
-            while True:
-                time.sleep(0.5)
-                live.update(_refresh())
+        while True:
+            page = get_current_page()
+            if page == 0:
+                _run_live_loop()
+            else:
+                _run_console_log_loop()
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted. Shutting down...[/]")
     except Exception as e:
         console.print(f"\n[red]Dashboard error: {e}[/]")
     finally:
+        keyboard_stop.set()
+        _disable_console_logging()
         try:
             if server:
                 server.shutdown()
