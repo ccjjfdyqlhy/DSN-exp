@@ -73,73 +73,49 @@ def create_chat_client(model_type: str = None):
 
 # ---------- 辅助函数 ----------
 def parse_task_instructions(text: str):
-    """解析回复中的<task>指令，支持动作代码块"""
+    """解析回复中的<task>指令，支持动作代码块。支持两种顺序:<task>在前或```action在前。"""
     tasks = []
-    
-    # 查找所有 ```action 代码块
+
     action_pattern = r'```action\s*\n(.*?)```'
     action_matches = list(re.finditer(action_pattern, text, re.DOTALL | re.IGNORECASE))
-    
-    # 查找所有 <task> 标签
+
     task_pattern = r'<task>(.*?)</task>'
     task_matches = list(re.finditer(task_pattern, text, re.DOTALL | re.IGNORECASE))
-    
-    # 按在文本中的位置排序
+
+    if not task_matches:
+        return tasks
+
     action_matches.sort(key=lambda m: m.start())
     task_matches.sort(key=lambda m: m.start())
-    
-    # 配对：假设每个代码块后面跟着一个task标签
-    paired_tasks = []
-    action_index = 0
-    task_index = 0
-    
-    while action_index < len(action_matches) and task_index < len(task_matches):
-        action_match = action_matches[action_index]
-        task_match = task_matches[task_index]
-        
-        # 确保task标签在代码块之后（允许中间有内容）
-        if task_match.start() > action_match.start():
-            try:
-                task_data = json.loads(task_match.group(1).strip())
-                if task_data.get("type") == "action":
-                    # 将代码块内容添加到params中
-                    if "params" not in task_data:
-                        task_data["params"] = {}
-                    task_data["params"]["content"] = action_match.group(1).strip()
-                    tasks.append(task_data)
-                    paired_tasks.append(task_match)
-                else:
-                    # 非action类型，直接添加
-                    tasks.append(task_data)
-                    paired_tasks.append(task_match)
-            except json.JSONDecodeError as e:
-                app.logger.error("解析任务JSON失败: %s, 内容: %s", e, task_match.group(1)[:100])
-                paired_tasks.append(task_match)
-            
-            action_index += 1
-            task_index += 1
-        else:
-            # task标签在代码块之前，可能是普通任务
-            try:
-                task_data = json.loads(task_match.group(1).strip())
-                if task_data.get("type") != "action":  # 非action类型
-                    tasks.append(task_data)
-                paired_tasks.append(task_match)
-            except json.JSONDecodeError as e:
-                app.logger.error("解析任务JSON失败: %s, 内容: %s", e, task_match.group(1)[:100])
-                paired_tasks.append(task_match)
-            task_index += 1
-    
-    # 处理剩余的未配对的task标签（非action类型）
-    for j in range(task_index, len(task_matches)):
-        if task_matches[j] not in paired_tasks:
-            try:
-                task_data = json.loads(task_matches[j].group(1).strip())
-                if task_data.get("type") != "action":  # 跳过没有代码块的action类型
-                    tasks.append(task_data)
-            except json.JSONDecodeError as e:
-                app.logger.error("解析任务JSON失败: %s, 内容: %s", e, task_matches[j].group(1)[:100])
-    
+    used_actions = [False] * len(action_matches)
+
+    for tm in task_matches:
+        try:
+            task_data = json.loads(tm.group(1).strip())
+        except json.JSONDecodeError as e:
+            app.logger.error("解析任务JSON失败: %s, 内容: %s", e, tm.group(1)[:100])
+            continue
+
+        if task_data.get("type") != "action":
+            tasks.append(task_data)
+            continue
+
+        nearest_idx = -1
+        nearest_dist = float("inf")
+        for i, am in enumerate(action_matches):
+            if used_actions[i]:
+                continue
+            dist = abs(am.start() - tm.start())
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_idx = i
+
+        if nearest_idx >= 0:
+            used_actions[nearest_idx] = True
+            task_data.setdefault("params", {})
+            task_data["params"]["content"] = action_matches[nearest_idx].group(1).strip()
+            tasks.append(task_data)
+
     return tasks
 
 def handle_complex_question(user_id: int, chat_id: int, message: str, history: list) -> dict:
@@ -211,7 +187,14 @@ def process_task_completion():
                 _handle_reasoner_completion(task, result)
             elif task.task_type == TaskType.ACTION:
                 # 处理动作任务：触发AI生成结果消息
-                _handle_action_completion(task, result)
+                retry_depth = 0
+                if task_manager and hasattr(task_manager, '_retry_depths'):
+                    if hasattr(task_manager, '_retry_lock'):
+                        with task_manager._retry_lock:
+                            retry_depth = task_manager._retry_depths.pop(task_id, 0)
+                    else:
+                        retry_depth = task_manager._retry_depths.pop(task_id, 0)
+                _handle_action_completion(task, result, retry_depth=retry_depth)
             else:
                 # 其他类型任务
                 app.logger.info("任务类型 %s 完成，结果: %s", task.task_type.value, result)
@@ -457,34 +440,88 @@ def _generate_action_result_message(task, result):
             error = result.get("error", "未知错误")
             return f"我之前执行的{action_type}操作失败了：{error}"
 
-def _handle_action_completion(task, result):
-    """处理动作任务完成：调用AI生成自然结果消息"""
-    app.logger.info("处理动作任务完成: task_id=%s, user_id=%d, chat_id=%d, action_type=%s", 
+# 动作自纠正最大轮数（防止无限循环）
+_MAX_AUTO_RETRY_DEPTH = 3
+
+def _handle_action_completion(task, result, retry_depth: int = 0):
+    """处理动作任务完成：调用AI生成自然结果消息，并重新解析纠正后的代码"""
+    app.logger.info("处理动作任务完成: task_id=%s, user_id=%d, chat_id=%d, action_type=%s",
                    task.task_id, task.user_id, task.chat_id, result.get("action_type"))
-    
-    # 检查是否需要AI通知
-    if result.get("requires_ai_notification", True):
-        skip_memory = result.get("skip_memory", True)
-        
-        app.logger.info("需要AI生成动作结果消息")
-        
-        try:
-            # 调用AI生成自然结果消息
-            ai_message = _generate_action_result_message(task, result)
-            
-            # 将AI生成的消息保存到聊天历史
-            action_message = {
-                "role": "assistant",
-                "content": ai_message,
-                "skip_memory": skip_memory  # 添加标记，跳过记忆化
-            }
-            
-            # 将消息追加到聊天历史
-            db.append_messages(task.user_id, task.chat_id, [action_message])
-            app.logger.info("AI动作结果消息已保存到聊天历史: %s", ai_message[:100])
-            
-        except Exception as e:
-            app.logger.error("生成或保存AI动作结果消息失败: %s", e)
+
+    if not result.get("requires_ai_notification", True):
+        return
+
+    skip_memory = result.get("skip_memory", True)
+
+    try:
+        ai_message = _generate_action_result_message(task, result)
+
+        action_message = {
+            "role": "assistant",
+            "content": ai_message,
+            "skip_memory": skip_memory,
+        }
+        db.append_messages(task.user_id, task.chat_id, [action_message])
+        app.logger.info("AI动作结果消息已保存到聊天历史: %s", ai_message[:100])
+
+        if not result.get("success", False) and retry_depth < _MAX_AUTO_RETRY_DEPTH:
+            _retry_failed_action(ai_message, task, retry_depth)
+
+    except Exception as e:
+        app.logger.error("生成或保存AI动作结果消息失败: %s", e)
+
+
+def _retry_failed_action(ai_message: str, task, retry_depth: int):
+    """解析AI纠正后的回复中的新动作任务并执行"""
+    from tasks import TaskType
+
+    tasks = parse_task_instructions(ai_message)
+    if not tasks:
+        return
+
+    app.logger.info("发现AI自纠正动作 %d 个 (深度=%d)", len(tasks), retry_depth + 1)
+
+    for task_data in tasks:
+        task_type = task_data.get("type")
+        params = task_data.get("params", {})
+
+        if task_type == "action":
+            if "action_type" not in params:
+                params["action_type"] = "shell"
+            new_task_id = task_manager.create_task(
+                task_type=TaskType.ACTION,
+                user_id=task.user_id,
+                chat_id=task.chat_id,
+                params=params,
+                priority=1,
+            )
+            task_manager.execute_task(new_task_id)
+            app.logger.info("已创建并执行自纠正动作: %s (类型: %s)", new_task_id, params.get("action_type"))
+
+            _patch_task_completion_for_retry(new_task_id, task, retry_depth + 1)
+
+        elif task_type == "reasoner":
+            new_task_id = task_manager.create_task(
+                task_type=TaskType.REASONER,
+                user_id=task.user_id,
+                chat_id=task.chat_id,
+                params=params,
+                priority=1,
+            )
+            task_manager.execute_task(new_task_id)
+
+
+def _patch_task_completion_for_retry(new_task_id: str, original_task, retry_depth: int):
+    """
+    将新创建的自纠正任务注入完成回调，使其完成后也能递归解析。
+    """
+    if not hasattr(task_manager, '_retry_depths'):
+        task_manager._retry_depths = {}
+    if not hasattr(task_manager, '_retry_lock'):
+        import threading
+        task_manager._retry_lock = threading.Lock()
+    with task_manager._retry_lock:
+        task_manager._retry_depths[new_task_id] = retry_depth
 
 # ---------- 日志配置 ----------
 # 全局变量，用于跟踪日志是否已配置

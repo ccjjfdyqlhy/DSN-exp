@@ -52,7 +52,7 @@ class EngineConfig:
     memory_enabled: bool = True
     memory_summary_backend: str = "deepseek"
     memory_summary_length: int = 100
-    task_manager_enabled: bool = False
+    task_manager_enabled: bool = True
     task_max_workers: int = 5
     agent_max_steps: int = 5
     agent_token_budget: int = 8000
@@ -71,7 +71,7 @@ class EngineConfig:
             database_path=cfg.database_path or f"subapp_{cfg.name}.db",
             memory_enabled=cfg.memory_enabled,
             memory_summary_length=cfg.memory_summary_length,
-            task_manager_enabled=False,
+            task_manager_enabled=True,
             agent_max_steps=cfg.agent_max_steps,
             agent_token_budget=cfg.agent_token_budget,
             agent_timeout=cfg.agent_timeout,
@@ -118,6 +118,7 @@ class DSNEngine:
         self._engine_cfg = EngineConfig.from_subapp(self._cfg)
 
         self._init_database()
+        self._init_tasks()
         self._init_memory()
         self._init_skills()
         self._init_prompt()
@@ -130,6 +131,134 @@ class DSNEngine:
         db_path = self._engine_cfg.database_path
         abs_path = self._cfg.resolve_path(db_path) if self._cfg else db_path
         self.db = ChatDBManager(db_path=abs_path)
+
+    def _init_tasks(self):
+        if not self._engine_cfg.task_manager_enabled:
+            return
+        try:
+            import queue
+            self._completion_queue = queue.Queue()
+            self.task_manager = TaskManager(
+                db=self.db,
+                max_workers=self._engine_cfg.task_max_workers,
+            )
+            self.task_manager.completion_queue = self._completion_queue
+            self._task_completion_thread = threading.Thread(
+                target=self._process_task_completion, daemon=True
+            )
+            self._task_completion_thread.start()
+            self._logger.info("TaskManager 初始化完成 (max_workers=%d)", self._engine_cfg.task_max_workers)
+        except Exception as e:
+            self._logger.warning("TaskManager 初始化失败: %s", e)
+
+    _TASK_MAX_RETRY_DEPTH = 3
+
+    def _process_task_completion(self):
+        from tasks import TaskType
+        while True:
+            try:
+                item = self._completion_queue.get()
+                if item is None:
+                    break
+                task_id, result = item
+                task = self.task_manager.get_task(task_id)
+                if not task:
+                    continue
+                self._logger.info("任务完成: %s (type=%s)", task_id, task.task_type.value)
+                if task.task_type == TaskType.ACTION:
+                    retry_depth = 0
+                    if hasattr(self.task_manager, '_retry_depths'):
+                        if hasattr(self.task_manager, '_retry_lock'):
+                            with self.task_manager._retry_lock:
+                                retry_depth = self.task_manager._retry_depths.pop(task_id, 0)
+                        else:
+                            retry_depth = self.task_manager._retry_depths.pop(task_id, 0)
+                    self._handle_engine_action_completion(task, result, retry_depth)
+            except Exception as e:
+                self._logger.error("任务完成通知处理失败: %s", e)
+
+    def _handle_engine_action_completion(self, task, result, retry_depth: int = 0):
+        if not result.get("requires_ai_notification", True):
+            return
+        try:
+            ai_message = self._generate_result_message(task, result)
+            if not ai_message:
+                return
+            self.db.append_messages(
+                task.user_id, task.chat_id,
+                [{"role": "assistant", "content": ai_message}],
+            )
+            if not result.get("success", False) and retry_depth < self._TASK_MAX_RETRY_DEPTH:
+                self._retry_engine_action(ai_message, task, retry_depth)
+        except Exception as e:
+            self._logger.error("处理动作完成失败: %s", e)
+
+    def _generate_result_message(self, task, result) -> str | None:
+        try:
+            from datetime import datetime
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            action_type = result.get("action_type", "unknown")
+            success = result.get("success", False)
+            output = result.get("output", "")
+            error = result.get("error")
+            preview = result.get("content_preview", "")[:100]
+
+            prompt_text = f"""
+现在时间是 {now}，之前执行的 {action_type} 操作已经完成。
+
+命令预览：{preview}
+执行结果：
+- 成功：{success}
+- 退出码：{result.get('exit_code', 'N/A')}
+- 输出：{output[:500] if output else '无输出'}
+- 错误：{error if error else '无'}
+
+请根据这个结果生成回复。如果失败且可以纠正，使用 <task> 和 ```action``` 提供修正后的代码。
+"""
+            history = self.db.get_chat_history(task.user_id, task.chat_id)
+            system_prompt = self.prompt_engine.build_system_prompt(
+                {"uid": task.user_id, "nickname": f"用户{task.user_id}"}
+            ) if self.prompt_engine else ""
+
+            from models import DeepSeekChat
+            chat = DeepSeekChat(api_key=self._engine_cfg.deepseek_api_key)
+            chat.messages = [{"role": "system", "content": system_prompt}]
+            recent = history[-5:] if len(history) > 5 else history
+            for msg in recent:
+                chat.messages.append(msg)
+            chat.messages.append({"role": "user", "content": prompt_text})
+            return chat.send_message("请生成回复")
+        except Exception as e:
+            self._logger.error("生成结果消息失败: %s", e)
+            return None
+
+    def _retry_engine_action(self, ai_message: str, task, retry_depth: int):
+        from plugins.builtin.task_plugin import TaskPlugin
+        from tasks import TaskType
+        tasks = TaskPlugin._parse_tasks(ai_message)
+        if not tasks:
+            return
+        self._logger.info("引擎自纠正: %d 个任务 (深度=%d)", len(tasks), retry_depth + 1)
+        for task_data in tasks:
+            if task_data.get("type") != "action":
+                continue
+            params = task_data.get("params", {})
+            if "action_type" not in params:
+                params["action_type"] = "shell"
+            new_id = self.task_manager.create_task(
+                task_type=TaskType.ACTION,
+                user_id=task.user_id,
+                chat_id=task.chat_id,
+                params=params, priority=1,
+            )
+            self.task_manager.execute_task(new_id)
+            if not hasattr(self.task_manager, '_retry_depths'):
+                self.task_manager._retry_depths = {}
+            if not hasattr(self.task_manager, '_retry_lock'):
+                import threading as _thr
+                self.task_manager._retry_lock = _thr.Lock()
+            with self.task_manager._retry_lock:
+                self.task_manager._retry_depths[new_id] = retry_depth + 1
 
     def _init_memory(self):
         if not self._engine_cfg.memory_enabled:
@@ -277,6 +406,15 @@ class DSNEngine:
                 max_steps=ec.agent_max_steps,
                 token_budget=ec.agent_token_budget,
                 agent_timeout=ec.agent_timeout,
+            ))
+
+        # 5b. TaskPlugin (POST_PROCESS, priority 40)
+        if enabled("task") and self.task_manager:
+            from plugins.builtin.task_plugin import TaskPlugin
+            self.plugin_manager.register(TaskPlugin(
+                task_manager=self.task_manager,
+                db=self.db,
+                skill_registry=self.skill_registry,
             ))
 
         # 6. DistillPlugin (POST_PROCESS, priority 100)
