@@ -1,0 +1,58 @@
+# self_evolution
+# 每日自动向指定仓库推送 PR 的 AI 子应用
+
+meta:
+  name: self_evolution
+  version: "1.0.0"
+  description: "每日自动向指定仓库推送优质代码 PR 的 AI 贡献者"
+  author: "community"
+
+# 模型配置 — 用推理模型做高质量代码
+model:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.3
+  max_tokens: 8192
+  timeout: 600
+
+# 人格配置
+personality:
+  file: personality.yaml
+
+# 插件 — 只启用核心
+plugins:
+  enable:
+    - models
+    - skills
+    - agent
+
+# 技能目录
+skills_dirs:
+  - skills
+
+# 提示词目录
+prompts_dirs:
+  - prompts
+
+# 运行模式
+mode: scheduled
+
+schedule:
+  cron: "0 9 * * *"
+  prompt: |
+    请完成今日的代码贡献任务：
+    1. 克隆或拉取目标仓库
+    2. 检查是否有可以改进的代码（lint 问题、代码风格、性能优化等）
+    3. 选出最有价值的改进点，编写代码修复
+    4. 提交并推送分支，创建 Pull Request
+
+# Agent 配置
+agent:
+  max_steps: 10
+  token_budget: 16000
+  timeout: 300.0
+
+# 存储
+database_path: subapp_self_evolution.db
+
+memory_enabled: false
