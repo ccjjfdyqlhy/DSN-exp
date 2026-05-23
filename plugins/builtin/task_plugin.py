@@ -57,53 +57,45 @@ class TaskPlugin(Plugin):
 
     @classmethod
     def _parse_tasks(cls, text: str) -> list[dict]:
-        """解析回复中的 <task> 指令，支持 action 代码块配对"""
-        from tasks import TaskType  # deferred import to avoid circular at module level
-        _ = TaskType  # referenced below
+        """解析回复中的 <task> 指令，支持两种顺序的 action 代码块配对"""
         tasks: list[dict] = []
 
         action_matches = list(cls._ACTION_RE.finditer(text))
         task_matches = list(cls._TASK_RE.finditer(text))
-        paired_indices: set[int] = set()
 
-        action_idx = 0
-        task_idx = 0
+        if not task_matches:
+            return tasks
 
-        while action_idx < len(action_matches) and task_idx < len(task_matches):
-            am = action_matches[action_idx]
-            tm = task_matches[task_idx]
+        action_matches.sort(key=lambda m: m.start())
+        task_matches.sort(key=lambda m: m.start())
+        used_actions: list[bool] = [False] * len(action_matches)
 
-            if tm.start() > am.start():
-                try:
-                    task_data = json.loads(tm.group(1).strip())
-                    if task_data.get("type") == "action":
-                        task_data.setdefault("params", {})
-                        task_data["params"]["content"] = am.group(1).strip()
-                    tasks.append(task_data)
-                    paired_indices.add(task_idx)
-                except json.JSONDecodeError:
-                    logger.error("JSON 解析失败: %s", tm.group(1)[:100])
-                action_idx += 1
-                task_idx += 1
-            else:
-                try:
-                    task_data = json.loads(tm.group(1).strip())
-                    if task_data.get("type") != "action":
-                        tasks.append(task_data)
-                    paired_indices.add(task_idx)
-                except json.JSONDecodeError:
-                    logger.error("JSON 解析失败: %s", tm.group(1)[:100])
-                task_idx += 1
+        for tm in task_matches:
+            try:
+                task_data = json.loads(tm.group(1).strip())
+            except json.JSONDecodeError:
+                logger.error("JSON 解析失败: %s", tm.group(1)[:100])
+                continue
 
-        # 处理未配对的 task 标签
-        for j in range(task_idx, len(task_matches)):
-            if j not in paired_indices:
-                try:
-                    task_data = json.loads(task_matches[j].group(1).strip())
-                    if task_data.get("type") != "action":
-                        tasks.append(task_data)
-                except json.JSONDecodeError:
-                    logger.error("JSON 解析失败: %s", task_matches[j].group(1)[:100])
+            if task_data.get("type") != "action":
+                tasks.append(task_data)
+                continue
+
+            nearest_idx = -1
+            nearest_dist = float("inf")
+            for i, am in enumerate(action_matches):
+                if used_actions[i]:
+                    continue
+                dist = abs(am.start() - tm.start())
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_idx = i
+
+            if nearest_idx >= 0:
+                used_actions[nearest_idx] = True
+                task_data.setdefault("params", {})
+                task_data["params"]["content"] = action_matches[nearest_idx].group(1).strip()
+                tasks.append(task_data)
 
         return tasks
 
