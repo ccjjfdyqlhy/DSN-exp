@@ -1,0 +1,90 @@
+name: github_pr
+display_name: "GitHub PR 工具"
+description: "提供 Git 和 GitHub 操作能力：克隆仓库、创建分支、提交代码、推送、创建 Pull Request"
+version: "1.0.0"
+author: "community"
+source: "custom"
+status: "active"
+enabled: true
+
+tags:
+  - git
+  - github
+  - coding
+  - contribution
+
+activation:
+  keywords:
+    - PR
+    - pull request
+    - 推送
+    - 提交
+    - git
+    - github
+    - 分支
+    - 克隆
+
+tools:
+  - name: clone
+    display_name: "克隆仓库"
+    description: "git clone 一个仓库到本地"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - clone
+
+  - name: branch
+    display_name: "创建分支"
+    description: "创建并切换到新分支"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - branch
+
+  - name: status
+    display_name: "查看状态"
+    description: "查看当前仓库 git status"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - status
+
+  - name: write_file
+    display_name: "写入文件"
+    description: "在仓库中写入或修改文件"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - write_file
+
+  - name: commit
+    display_name: "提交更改"
+    description: "git add 并 commit 所有更改"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - commit
+
+  - name: push
+    display_name: "推送分支"
+    description: "推送当前分支到远程"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - push
+
+  - name: create_pr
+    display_name: "创建 PR"
+    description: "在 GitHub 上创建 Pull Request"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - create_pr
+
+  - name: list_issues
+    display_name: "查看 Issues"
+    description: "列出仓库的 open issues"
+    module: tools.pr_tool
+    class: GitHubPRTool
+    methods:
+      - list_issues

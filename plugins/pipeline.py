@@ -121,6 +121,9 @@ class ChatPipeline:
             status = self._HOOK_SSE_STATUS.get(hook, hook.value)
             yield f"data: {json.dumps({'status': status})}\n\n"
 
+            if hook == HookPoint.MODEL_INVOKE:
+                self._assemble_prompt(ctx)
+
             ctx = await self.pm.dispatch(hook, ctx)
 
             if on_phase:
@@ -128,6 +131,13 @@ class ChatPipeline:
                     await on_phase(hook.value, ctx)
                 except Exception:
                     logger.exception("on_phase 回调异常")
+
+            if hook == HookPoint.MODEL_INVOKE and ctx.original_reply:
+                yield f"data: {json.dumps({
+                    'status': 'text_ready',
+                    'reply': ctx.original_reply,
+                    'chat_id': ctx.chat_id,
+                })}\n\n"
 
             if ctx.filtered:
                 yield f"data: {json.dumps({
