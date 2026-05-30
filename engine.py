@@ -26,7 +26,7 @@ from plugins.base import PluginContext
 from plugins.manager import PluginManager
 from plugins.pipeline import ChatPipeline
 
-from prompt import PromptEngine, PromptLibrary, PersonalitySystem
+from prompt import PromptEngine, PromptLibrary, PersonalitySystemV2
 
 from skills.registry import SkillRegistry
 from skills.manager import SkillManager
@@ -298,45 +298,44 @@ class DSNEngine:
 
     def _init_prompt(self):
         lib = PromptLibrary()
-        peers = PersonalitySystem()
+        peers = PersonalitySystemV2(db=self.db)
 
-        # 加载 core prompts
-        core_dir = Path(__file__).parent / "prompt" / "prompts"
+        core_dir = Path(__file__).parent / "prompt"
+
         lib.scan_and_load(
-            str(core_dir / "core"),
-            str(core_dir / "capabilities"),
+            str(core_dir / "prompts" / "core"),
+            str(core_dir / "prompts" / "capabilities"),
         )
 
-        # 加载 subapp 自定义 prompts
         if self._cfg and self._cfg.prompts_dirs:
             for d in self._cfg.prompts_dirs:
                 abs_dir = self._cfg.resolve_path(d)
                 if Path(abs_dir).exists():
                     lib.scan_and_load(abs_dir)
 
-        # 加载人格
+        v2_presets_dir = str(core_dir / "personality_v2" / "presets")
+        peers.scan_presets(v2_presets_dir)
+        peers.load_rules_from_files()
+
         loaded_preset = False
         if self._cfg and self._cfg.personality_file:
             pers_file = self._cfg.resolve_path(self._cfg.personality_file)
             if Path(pers_file).exists():
-                peers.scan_presets(str(Path(pers_file).parent))
-                # 从 YAML 读取实际 preset name
                 try:
                     with open(pers_file, "r", encoding='utf-8-sig') as f:
                         pers_data = yaml.safe_load(f) or {}
                     preset_name = pers_data.get("name", Path(pers_file).stem)
-                    if peers.load_preset(preset_name):
+                    if preset_name in [p["name"] for p in peers.list_presets()]:
+                        peers.load_preset(0, preset_name)
                         loaded_preset = True
                 except Exception:
                     pass
         if not loaded_preset and self._cfg and self._cfg.personality_preset:
-            peers.scan_presets(str(core_dir / "personality"))
-            loaded_preset = peers.load_preset(self._cfg.personality_preset)
+            loaded_preset = peers.load_preset(0, self._cfg.personality_preset)
         if not loaded_preset:
-            peers.scan_presets(str(core_dir / "personality"))
-            peers.load_preset("default")
+            peers.load_preset(0, "default")
 
-        self.prompt_engine = PromptEngine(library=lib, personality=peers)
+        self.prompt_engine = PromptEngine(library=lib, personality_v2=peers)
         self.prompt_engine.set_skill_registry(self.skill_registry)
 
     def _init_plugins(self):
@@ -600,7 +599,7 @@ def create_engine_with_defaults(
     无需重新初始化。
     """
     import os as _os
-    from prompt import init_prompt_engine, PromptLibrary, PersonalitySystem
+    from prompt import init_prompt_engine, PromptLibrary, PersonalitySystemV2
 
     engine = DSNEngine()
     engine.db = db
@@ -613,18 +612,18 @@ def create_engine_with_defaults(
     if skill_manager:
         engine.skill_manager = skill_manager
 
-    # PromptEngine
-    _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt", "prompts")
-    peers = PersonalitySystem()
-    peers.scan_presets(_os.path.join(_prompt_dir, "personality"))
-    peers.load_preset("default")
+    # PromptEngine — v2
+    _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt")
+    pers_v2 = PersonalitySystemV2(db=db)
+    pers_v2.scan_presets(_os.path.join(_prompt_dir, "personality_v2", "presets"))
+    pers_v2.load_rules_from_files()
     lib = PromptLibrary()
     lib.scan_and_load(
-        _os.path.join(_prompt_dir, "core"),
-        _os.path.join(_prompt_dir, "capabilities"),
-        _os.path.join(_prompt_dir, "extensions"),
+        _os.path.join(_prompt_dir, "prompts", "core"),
+        _os.path.join(_prompt_dir, "prompts", "capabilities"),
+        _os.path.join(_prompt_dir, "prompts", "extensions"),
     )
-    engine.prompt_engine = PromptEngine(library=lib, personality=peers)
+    engine.prompt_engine = PromptEngine(library=lib, personality_v2=pers_v2)
     if skill_registry:
         engine.prompt_engine.set_skill_registry(skill_registry)
 

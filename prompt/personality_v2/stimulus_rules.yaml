@@ -1,0 +1,67 @@
+# prompt/personality_v2/stimulus_rules.yaml
+# 情绪刺激规则 — 用户消息 → 情绪刺激向量
+# 可热重载，无需改代码即可调整情绪响应
+
+rules:
+  - id: praise
+    pattern: ["厉害", "聪明", "太强了", "太棒了", "真厉害", "好厉害", "nb", "绝了"]
+    target: ai
+    stimulus:
+      delta_joly: 0.06
+      delta_sorw: -0.02
+      delta_meta: -0.02
+
+  - id: thanks
+    pattern: ["谢谢", "感谢", "多谢", "谢谢啦", "3q", "thx"]
+    stimulus:
+      delta_joly: 0.04
+
+  - id: insult
+    pattern: []
+    require_emotion: [angry, hostile]
+    stimulus:
+      delta_joly: -0.05
+      delta_sorw: 0.02
+      delta_angr: 0.06
+      delta_meta: 0.03
+
+  - id: user_sadness
+    pattern: ["难过", "伤心", "失落", "郁闷", "不开心", "沮丧", "好累", "崩溃", "撑不住"]
+    stimulus:
+      delta_joly: -0.02
+      delta_sorw: 0.05
+
+  - id: complex_task
+    pattern: []
+    require_min_length: 200
+    stimulus:
+      delta_fear: 0.03
+      delta_meta: 0.02
+
+  - id: dismiss
+    pattern: []
+    require_max_length: 10
+    stimulus:
+      delta_joly: -0.01
+      delta_angr: 0.01
+
+  - id: user_share_secret
+    pattern: ["跟你说", "只告诉你", "偷偷", "别告诉别人", "秘密", "心里话"]
+    stimulus:
+      delta_joly: 0.05
+      delta_fear: -0.03
+      delta_meta: -0.02
+
+  - id: user_correct_ai
+    pattern: ["不对", "错了", "不是", "搞错了"]
+    stimulus:
+      delta_joly: -0.03
+      delta_angr: 0.02
+      delta_fear: 0.04
+      delta_meta: 0.01
+
+  - id: user_encourage
+    pattern: ["加油", "没关系", "不急", "慢慢来", "辛苦了"]
+    stimulus:
+      delta_joly: 0.03
+      delta_sorw: -0.01

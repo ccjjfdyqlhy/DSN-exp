@@ -1,0 +1,31 @@
+# 自定义性格模板 v2 — 复制修改为你喜欢的配置
+name: custom
+display_name: "自定义"
+description: "用户自定义性格模板"
+
+emotion_baseline:
+  joly: 0.50
+  sorw: 0.25
+  angr: 0.20
+  fear: 0.20
+  meta: 0.65
+
+emotion_inertia:
+  joly: 0.5
+  sorw: 0.5
+  angr: 0.5
+  fear: 0.5
+  meta: 0.6
+
+innate_habits:
+  catchphrases: []
+  patterns: []
+  tones: []
+
+affinity:
+  initial: 20.0
+  decay_enabled: false
+
+learning:
+  innate_weight_init: 1.0
+  innate_weight_min: 0.3

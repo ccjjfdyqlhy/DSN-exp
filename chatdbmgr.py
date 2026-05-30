@@ -158,6 +158,10 @@ class ChatDBManager:
                 
                 # 迁移: 移除 messages 表 role 列的 CHECK 约束，允许 'system' role
                 self._migrate_messages_role(conn)
+
+                # 人格系统 v2 状态表
+                from prompt.personality_v2.persistence import CREATE_PERSONALITY_TABLE
+                conn.execute(CREATE_PERSONALITY_TABLE)
                 
                 conn.commit()
                 self.logger.info("数据库表初始化完成")

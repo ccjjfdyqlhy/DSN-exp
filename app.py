@@ -447,15 +447,19 @@ else:
 # ---------- 初始化 Prompt 生态 ----------
 import os as _os
 _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt", "prompts")
+_pers_v2_dir = _os.path.join(_os.path.dirname(__file__), "prompt", "personality_v2", "presets")
 prompt_engine = prompt.init_prompt_engine(
     library_dirs=[
         _os.path.join(_prompt_dir, "core"),
         _os.path.join(_prompt_dir, "capabilities"),
         _os.path.join(_prompt_dir, "extensions"),
     ],
-    personality_dir=_os.path.join(_prompt_dir, "personality"),
+    personality_v2_dir=_pers_v2_dir,
+    db=db,
 )
-app.logger.info("PromptEngine 初始化完成 (条目: %d)", len(prompt_engine.library.entries))
+app.logger.info("PromptEngine 已初始化完成 (条目: %d)", len(prompt_engine.library.entries))
+
+_personality_v2 = prompt_engine.personality_v2
 
 # ---------- 初始化技能系统 ----------
 try:
@@ -609,6 +613,15 @@ def chat_send():
 
     # 保存原始回复
     original_reply = reply
+
+    # ---- 人格系统 v2: 交互后更新 ----
+    if _personality_v2:
+        try:
+            _interaction = _personality_v2.on_interaction(user_id, message, is_positive=True)
+            app.logger.debug("人格v2交互更新: mood=%s, affinity=%.0f",
+                             _interaction["mood"]["label"], _interaction["affinity_value"])
+        except Exception as e:
+            app.logger.debug("人格v2交互更新跳过: %s", e)
 
     # --- 处理技能工具 (<tool> 标签) ---
     if skill_registry is not None:
@@ -894,6 +907,13 @@ def chat_stream_send():
         db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
 
+        # ---- 人格系统 v2: 交互后更新 ----
+        if _personality_v2:
+            try:
+                _personality_v2.on_interaction(user_id, message, is_positive=True)
+            except Exception:
+                pass
+
         reply = _process_tools_and_recall(original_reply)
 
         # 发送初始回复（已清理）
@@ -1040,6 +1060,52 @@ def chat_delete(chat_id):
     except Exception as e:
         app.logger.error("删除聊天失败: %s", e)
         return jsonify({"error": "Database error"}), 500
+
+
+# ========== 人格系统 v2 API ==========
+
+@app.route("/api/personality/status", methods=["GET"])
+@login_required
+def personality_status():
+    """获取当前人格状态摘要"""
+    if not _personality_v2:
+        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+    state = _personality_v2.get_state(g.user["uid"])
+    return jsonify(state)
+
+
+@app.route("/api/personality/current", methods=["GET"])
+@login_required
+def personality_current():
+    """获取完整人格状态"""
+    if not _personality_v2:
+        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+    state = _personality_v2.get_full_state(g.user["uid"])
+    return jsonify(state)
+
+
+@app.route("/api/personality/list", methods=["GET"])
+@login_required
+def personality_list():
+    """列出所有可用性格预设"""
+    if not _personality_v2:
+        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+    presets = _personality_v2.list_presets()
+    return jsonify({"presets": presets})
+
+
+@app.route("/api/personality/switch", methods=["POST"])
+@login_required
+def personality_switch():
+    """切换到指定性格预设"""
+    if not _personality_v2:
+        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+    data = request.get_json()
+    if not data or "preset" not in data:
+        return jsonify({"error": "Missing preset name"}), 400
+    result = _personality_v2.switch_preset(g.user["uid"], data["preset"])
+    return jsonify(result)
+
 
 if __name__ == "__main__":
     app.run(

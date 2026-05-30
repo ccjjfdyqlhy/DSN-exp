@@ -31,6 +31,7 @@
     var isPaused = false;
     var ttsEnabled = false;
     var streamAbort = null;
+    var aiName = 'EXA';
 
     // DOM
     var $ = function (s) { return document.querySelector(s); };
@@ -164,7 +165,7 @@
         requestAnimationFrame(function () { line.classList.add('active'); });
         var sp = document.createElement('span');
         sp.className = 'speaker';
-        sp.textContent = 'ASSISTANT';
+        sp.textContent = aiName;
         line.appendChild(sp);
         var t = document.createElement('span');
         t.textContent = text;
@@ -300,12 +301,17 @@
         return apiGet('/api/chat/' + id).then(function (d) {
             var msgs = d.messages || [];
             msgs.forEach(function (m) {
-                if (m.role === 'user') addLineStatic('>', m.content, 'active-group-top');
-                else if (m.role === 'assistant') {
+                if (m.role === 'user') {
+                    var content = m.content.replace(/^\[.*?\]\s*/, '');
+                    addLineStatic('>', content, 'active-group-top');
+                } else if (m.role === 'assistant') {
                     var p = parseControlTags(m.content);
-                    p.narrations.forEach(function (n) { addLineStatic('ASSISTANT', n, 'narration-line'); });
-                    addLineStatic('ASSISTANT', p.text, 'active-group-bottom');
-                } else if (m.role === 'system') addSystemLine(m.content);
+                    p.narrations.forEach(function (n) { addLineStatic(aiName, n, 'narration-line'); });
+                    addLineStatic(aiName, p.text, 'active-group-bottom');
+                } else if (m.role === 'system') {
+                    if (/^\[系统\]/.test(m.content)) return;
+                    addSystemLine(m.content);
+                }
             });
             var lines = dom.textBox.querySelectorAll('.text-line');
             lines.forEach(function (l) {
@@ -370,14 +376,14 @@
                         switch (ev.status) {
                             case 'text_ready':
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
-                                if (ev.reply) await addMessage('ASSISTANT', ev.reply, true);
+                                if (ev.reply) await addMessage(aiName, ev.reply, true);
                                 break;
                             case 'agent_action':
                                 addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
                                 updateStatusBar();
                                 break;
                             case 'text_update':
-                                if (ev.reply) await addMessage('ASSISTANT', ev.reply, false);
+                                if (ev.reply) await addMessage(aiName, ev.reply, false);
                                 break;
                             case 'completed':
                                 if (ev.audio) audioB64 = ev.audio;
