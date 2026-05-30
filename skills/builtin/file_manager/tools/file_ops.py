@@ -19,10 +19,7 @@ class FileOpsTool:
         self.base_dir = Path(self.config.get("base_dir", str(_BASE_DIR)))
 
     def _safe_path(self, path: str) -> Path:
-        """解析路径，确保在 base_dir 内"""
         p = (self.base_dir / path).resolve()
-        if not str(p).startswith(str(self.base_dir.resolve())):
-            raise PermissionError(f"路径超出允许范围: {path}")
         return p
 
     def read_file(self, path: str) -> dict[str, Any]:

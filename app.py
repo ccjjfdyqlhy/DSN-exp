@@ -845,16 +845,23 @@ def chat_stream_send():
             return f"[系统] 你刚才的 {action_type} 操作已成功完成。\n输出:\n{result.get('output', '')}"[:2000]
         return f"[系统] 你刚才的 {action_type} 操作执行失败。\n错误: {result.get('error', '未知错误')}"
 
-    def _process_tools_and_recall(raw: str) -> str:
-        """处理工具标签和记忆召回，返回增强后的文本"""
+    def _process_tools_and_recall(raw: str) -> tuple[str, str]:
+        """处理工具标签和记忆召回。返回 (清理后的文本, 工具结果反馈文本 或 空字符串)"""
         augmented = raw
+        tool_results: list[str] = []
         if skill_registry is not None:
             _pat = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
             for m in _pat.finditer(raw):
                 try:
                     d = json.loads(m.group(1).strip())
-                    r = skill_registry.call_tool(d.get("skill", ""), d.get("tool", ""), d.get("params", {}))
-                    app.logger.info("工具执行: %s.%s", d.get("skill", ""), d.get("tool", ""))
+                    s_name = d.get("skill", "")
+                    t_name = d.get("tool", "")
+                    params = d.get("params", {})
+                    if s_name and t_name:
+                        r = skill_registry.call_tool(s_name, t_name, params)
+                        formatted = _format_tool_result(s_name, t_name, r)
+                        tool_results.append(formatted)
+                        app.logger.info("工具执行: %s.%s", s_name, t_name)
                 except Exception:
                     pass
             augmented = _pat.sub("", augmented).strip()
@@ -865,7 +872,8 @@ def chat_stream_send():
                     augmented = rec
             except Exception:
                 pass
-        return augmented
+        feedback = "\n".join(tool_results) if tool_results else ""
+        return augmented, feedback
 
     def generate_stream():
         nonlocal chat_id
@@ -914,48 +922,55 @@ def chat_stream_send():
             except Exception:
                 pass
 
-        reply = _process_tools_and_recall(original_reply)
-
-        # 发送初始回复（已清理）
-        yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(original_reply), 'chat_id': chat_id})}\n\n"
-
-        # ── 阶段 3: Agent Loop ──
+        # ── 阶段 3: 统一 Agent Loop（工具 + 动作）──
         max_steps = Config.AGENT_MAX_STEPS
         pending = original_reply
         last_reply_for_tts = original_reply
+        first_display = True
 
         for step in range(max_steps):
-            actions = _extract_actions(pending)
-            if not actions:
+            clean, tool_feedback = _process_tools_and_recall(pending)
+            actions = _extract_actions(clean)
+
+            if not tool_feedback and not actions:
+                if first_display:
+                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
                 break
 
-            yield f"data: {json.dumps({'status': 'execution', 'step': step + 1})}\n\n"
+            if tool_feedback:
+                chat.messages.append({"role": "system", "content": tool_feedback})
+                db.append_messages(user_id, chat_id, [{"role": "system", "content": tool_feedback}])
+                app.logger.info("Agent loop step %d: 工具结果已喂回 AI", step + 1)
+                pending = chat.send_message(tool_feedback)
+                db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
+                last_reply_for_tts = pending
+                if first_display:
+                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
+                    first_display = False
+                yield f"data: {json.dumps({'status': 'text_update', 'reply': _clean_display(pending)})}\n\n"
+                continue
 
-            batch_results = []
-            for act in actions:
-                atype = act["action_type"]
-                yield f"data: {json.dumps({'status': 'agent_action', 'desc': atype})}\n\n"
-                result = task_manager.execute_action_sync(user_id, chat_id, act["params"])
-                batch_results.append((atype, result))
-                app.logger.info("Agent loop step %d: %s 完成 (success=%s)", step + 1, atype, result.get("success"))
-
-            if not batch_results:
-                break
-
-            # 将结果喂回 AI
-            feedback = "\n\n".join(_format_action_result(t, r) for t, r in batch_results)
-            chat.messages.append({"role": "system", "content": feedback})
-            db.append_messages(user_id, chat_id, [{"role": "system", "content": feedback}])
-
-            continuation = chat.send_message(feedback)
-            db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
-
-            continuation = _process_tools_and_recall(continuation)
-
-            yield f"data: {json.dumps({'status': 'text_update', 'reply': _clean_display(continuation)})}\n\n"
-
-            pending = continuation
-            last_reply_for_tts = continuation
+            if actions:
+                yield f"data: {json.dumps({'status': 'execution', 'step': step + 1})}\n\n"
+                batch_results = []
+                for act in actions:
+                    atype = act["action_type"]
+                    yield f"data: {json.dumps({'status': 'agent_action', 'desc': atype})}\n\n"
+                    result = task_manager.execute_action_sync(user_id, chat_id, act["params"])
+                    batch_results.append((atype, result))
+                    app.logger.info("Agent loop step %d: %s 完成 (success=%s)", step + 1, atype, result.get("success"))
+                if not batch_results:
+                    break
+                feedback = "\n\n".join(_format_action_result(t, r) for t, r in batch_results)
+                chat.messages.append({"role": "system", "content": feedback})
+                db.append_messages(user_id, chat_id, [{"role": "system", "content": feedback}])
+                pending = chat.send_message(feedback)
+                db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
+                last_reply_for_tts = pending
+                if first_display:
+                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
+                    first_display = False
+                yield f"data: {json.dumps({'status': 'text_update', 'reply': _clean_display(pending)})}\n\n"
 
         # ── 阶段 4: TTS ──
         audio_b64 = None

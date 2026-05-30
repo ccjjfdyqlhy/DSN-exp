@@ -1,5 +1,1 @@
----
-name: file_manager_init
-category: skills
-priority: 0
----
+# skills/builtin/file_manager/tools/__init__.py
