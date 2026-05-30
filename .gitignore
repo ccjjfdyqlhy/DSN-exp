@@ -16,3 +16,5 @@ config.py
 note.txt
 /cli/webui/.credentials
 /cli/webui/.secret_key
+*.flet_credentials
+*.flet_secret_key

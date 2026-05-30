@@ -506,9 +506,9 @@ class TaskManager:
                     content,
                     shell=True,
                     capture_output=True,
-                    text=True,
-                    timeout=300,  # 5分钟超时
-                    cwd=os.path.expanduser("~")  # 在家目录执行
+                    encoding='utf-8-sig', errors='replace',
+                    timeout=300,
+                    cwd=os.path.expanduser("~")
                 )
                 output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
                 exit_code = process.returncode
@@ -526,7 +526,7 @@ class TaskManager:
                 
                 # 创建一个临时文件来执行代码
                 import tempfile
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8-sig') as f:
                     f.write(content)
                     temp_file = f.name
                 
@@ -535,8 +535,8 @@ class TaskManager:
                     process = subprocess.run(
                         ["python", temp_file],
                         capture_output=True,
-                        text=True,
-                        timeout=300,  # 5分钟超时
+                        encoding='utf-8-sig', errors='replace',
+                        timeout=300,
                         cwd=os.path.dirname(temp_file)
                     )
                     output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
@@ -577,7 +577,7 @@ class TaskManager:
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 
                 # 写入文件
-                with open(file_path, 'w', encoding='utf-8') as f:
+                with open(file_path, 'w', encoding='utf-8-sig') as f:
                     f.write(content)
                 
                 result.update({
@@ -607,7 +607,7 @@ class TaskManager:
                     raise FileNotFoundError(f"文件不存在: {file_path}")
                 
                 # 读取文件内容
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(file_path, 'r', encoding='utf-8-sig') as f:
                     file_content = f.read()
                 
                 # 执行替换
@@ -618,7 +618,7 @@ class TaskManager:
                     new_content = content  # 如果没有pattern，则用content直接替换
                 
                 # 写入文件
-                with open(file_path, 'w', encoding='utf-8') as f:
+                with open(file_path, 'w', encoding='utf-8-sig') as f:
                     f.write(new_content)
                 
                 result.update({

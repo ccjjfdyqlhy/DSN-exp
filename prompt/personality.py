@@ -124,7 +124,7 @@ class PersonalitySystem:
         count = 0
         for f in sorted(p.glob("*.yaml")):
             try:
-                preset = yaml.safe_load(f.read_text(encoding="utf-8"))
+                preset = yaml.safe_load(f.read_text(encoding='utf-8-sig'))
                 name = preset.get("name", f.stem)
                 self._presets[name] = preset
                 count += 1

@@ -64,7 +64,7 @@ def decrypt(encoded: str) -> str:
 
 def save_credentials(token: str) -> None:
     """加密并持久化 token"""
-    CRED_FILE.write_text(encrypt(token), encoding="utf-8")
+    CRED_FILE.write_text(encrypt(token), encoding='utf-8-sig')
     CRED_FILE.chmod(0o600)
 
 
@@ -73,7 +73,7 @@ def load_credentials() -> str | None:
     if not CRED_FILE.exists():
         return None
     try:
-        return decrypt(CRED_FILE.read_text(encoding="utf-8"))
+        return decrypt(CRED_FILE.read_text(encoding='utf-8-sig'))
     except Exception:
         CRED_FILE.unlink(missing_ok=True)
         return None

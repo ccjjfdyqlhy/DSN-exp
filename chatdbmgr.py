@@ -57,6 +57,35 @@ class ChatDBManager:
         except sqlite3.OperationalError:
             pass  # 列已存在
 
+    @staticmethod
+    def _migrate_messages_role(conn: sqlite3.Connection) -> None:
+        """迁移: 如果 messages 表 role 列有 CHECK 约束阻止 'system'，则重建表"""
+        try:
+            conn.execute("INSERT INTO messages (chat_id, role, content) VALUES (-1, 'system', '_migration_test')")
+            conn.execute("DELETE FROM messages WHERE chat_id = -1 AND content = '_migration_test'")
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # 旧约束存在，需要迁移
+            logger = logging.getLogger("ChatDBManager")
+            logger.info("迁移 messages 表: 移除 role CHECK 约束...")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS messages_new (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    round_index INTEGER DEFAULT NULL,
+                    FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("INSERT INTO messages_new SELECT * FROM messages ORDER BY message_id")
+            conn.execute("DROP TABLE messages")
+            conn.execute("ALTER TABLE messages_new RENAME TO messages")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+            conn.commit()
+            logger.info("迁移完成: messages 表现在接受 'system' role")
+
     def _init_db(self):
         """初始化表结构（线程安全，使用锁）"""
         with threading.Lock():
@@ -82,7 +111,7 @@ class ChatDBManager:
                     CREATE TABLE IF NOT EXISTS messages (
                         message_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         chat_id INTEGER NOT NULL,
-                        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                        role TEXT NOT NULL,
                         content TEXT NOT NULL,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
@@ -119,7 +148,6 @@ class ChatDBManager:
                         FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
                     )
                 """)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_task_notifications_user_id ON task_notifications(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id ON task_notifications(task_id)")
                 
                 # 迁移: 为旧数据库补充新列 (v4 memory recall)
@@ -127,6 +155,9 @@ class ChatDBManager:
                 self._migrate_add_column(conn, "memories", "message_start_id", "INTEGER DEFAULT NULL")
                 self._migrate_add_column(conn, "memories", "message_end_id", "INTEGER DEFAULT NULL")
                 self._migrate_add_column(conn, "messages", "round_index", "INTEGER DEFAULT NULL")
+                
+                # 迁移: 移除 messages 表 role 列的 CHECK 约束，允许 'system' role
+                self._migrate_messages_role(conn)
                 
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
@@ -360,7 +391,7 @@ class ChatDBManager:
             for msg in messages:
                 role = msg.get("role")
                 content = msg.get("content")
-                if role not in ("user", "assistant") or not isinstance(content, str):
+                if role not in ("user", "assistant", "system") or not isinstance(content, str):
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
                 conn.execute(
@@ -469,7 +500,7 @@ class ChatDBManager:
                 content = msg.get("content")
                 skip_memory = msg.get("skip_memory", False) or skip_memory_check
 
-                if role not in ("user", "assistant") or not isinstance(content, str):
+                if role not in ("user", "assistant", "system") or not isinstance(content, str):
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
 
