@@ -18,3 +18,5 @@ note.txt
 /cli/webui/.secret_key
 *.flet_credentials
 *.flet_secret_key
+.vs/*
+*/assets/*
