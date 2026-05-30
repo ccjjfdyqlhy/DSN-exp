@@ -47,6 +47,7 @@ task_manager = None
 completion_queue = queue.Queue()
 complexity_analyzer = ComplexityAnalyzer()
 notification_thread = None
+_tts_available = True  # TTS 可用性标记，首次失败后置 False 避免刷屏
 
 # ---------- 模型工厂函数 ----------
 def create_chat_client(model_type: str = None):
@@ -118,6 +119,41 @@ def parse_task_instructions(text: str):
 
     return tasks
 
+def _format_tool_result(skill: str, tool: str, result) -> str:
+    """格式化工具执行结果为用户友好的文本。"""
+    if not isinstance(result, dict):
+        return str(result)
+
+    if not result.get("success", False):
+        return f"[工具 {skill}.{tool} 失败] {result.get('error', '未知错误')}"
+
+    if skill == "web_search" and tool == "search":
+        lines = [f"搜索: {result.get('query', '')}"]
+        for i, r in enumerate(result.get("results", []), 1):
+            lines.append(f"  {i}. {r.get('title', '')}")
+            if r.get("snippet"):
+                lines.append(f"     {r['snippet'][:200]}")
+            if r.get("url"):
+                lines.append(f"     {r['url']}")
+        return "\n".join(lines)
+
+    if skill == "file_manager":
+        if tool == "list_dir":
+            lines = [f"目录 {result.get('path', '')}:"]
+            for item in result.get("items", []):
+                marker = "[DIR]" if item.get("type") == "dir" else "[FILE]"
+                lines.append(f"  {marker} {item['name']}")
+            return "\n".join(lines)
+        if tool == "read_file":
+            content = result.get("content", "")
+            if len(content) > 2000:
+                content = content[:2000] + "\n...(截断)"
+            return f"文件 {result.get('path', '')} ({result.get('size', 0)} bytes):\n{content}"
+        if tool == "write_file":
+            return f"已写入 {result.get('path', '')} ({result.get('size', 0)} bytes)"
+
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
 def handle_complex_question(user_id: int, chat_id: int, message: str, history: list) -> dict:
     """处理复杂问题：创建异步推理任务并返回初步回复"""
     if not task_manager:
@@ -186,342 +222,86 @@ def process_task_completion():
                 # 处理推理任务：保存结果供用户查询
                 _handle_reasoner_completion(task, result)
             elif task.task_type == TaskType.ACTION:
-                # 处理动作任务：触发AI生成结果消息
-                retry_depth = 0
-                if task_manager and hasattr(task_manager, '_retry_depths'):
-                    if hasattr(task_manager, '_retry_lock'):
-                        with task_manager._retry_lock:
-                            retry_depth = task_manager._retry_depths.pop(task_id, 0)
-                    else:
-                        retry_depth = task_manager._retry_depths.pop(task_id, 0)
-                _handle_action_completion(task, result, retry_depth=retry_depth)
+                _handle_action_completion(task, result)
             else:
-                # 其他类型任务
                 app.logger.info("任务类型 %s 完成，结果: %s", task.task_type.value, result)
-            
-            # 将任务结果保存到数据库，供后续查询
-            try:
-                conn = db._get_connection()
-                conn.execute(
-                    "INSERT INTO task_notifications (task_id, user_id, chat_id, result, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (task_id, task.user_id, task.chat_id, json.dumps(result), datetime.now().isoformat())
-                )
-                conn.commit()
-                app.logger.info("任务通知已保存到数据库")
-            except Exception as e:
-                app.logger.error("保存任务通知失败: %s", e)
-                
+
         except Exception as e:
             app.logger.error("处理任务完成通知失败: %s", e)
             import time
             time.sleep(1)
 
-def _generate_ai_reminder_message(task, reminder_text):
-    """调用AI生成自然的提醒消息"""
-    try:
-        # 获取聊天历史作为上下文
-        history = db.get_chat_history(task.user_id, task.chat_id)
-        
-        # 构建系统提示词
-        from prompt import get_system_prompt
-        # 创建一个临时的用户信息字典
-        temp_user_info = {"uid": task.user_id, "nickname": f"用户{task.user_id}"}
-        system_prompt = get_system_prompt(temp_user_info)
-        
-        # 构建更自然的提醒提示词 - 让AI像主动想起一样提醒用户
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        reminder_prompt = f"""
-现在是 {current_time}，你之前设置了一个提醒。
-提醒内容：{reminder_text}
-自然地提醒用户这件事。
-"""
-        
-        # 创建聊天客户端
-        chat = create_chat_client()
-        
-        # 构建完整的消息历史
-        full_history = [{"role": "system", "content": system_prompt}]
-        
-        # 添加最近的历史消息作为上下文（最多5条）
-        recent_history = history[-5:] if len(history) > 5 else history
-        for msg in recent_history:
-            full_history.append(msg)
-        
-        # 添加提醒提示词（带时间戳）
-        full_history.append({"role": "user", "content": reminder_prompt})
-        
-        # 设置消息历史并发送
-        chat.messages = full_history
-        ai_response = chat.send_message("请生成一个自然的提醒消息")
-        
-        app.logger.info("AI生成的提醒消息: %s", ai_response[:100])
-        return ai_response
-        
-    except Exception as e:
-        app.logger.error("生成AI提醒消息失败: %s", e)
-        # 如果AI调用失败，返回一个默认的自然提醒消息
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return f"嘿，现在是 {current_time}，你之前设置的提醒时间到了：{reminder_text}。记得去处理哦！"
-
 def _handle_reminder_completion(task, result):
-    """处理提醒任务完成：调用AI生成自然提醒消息"""
-    app.logger.info("处理提醒任务完成: task_id=%s, user_id=%d, chat_id=%d", 
-                   task.task_id, task.user_id, task.chat_id)
-    
-    # 检查是否需要AI通知
-    if result.get("requires_ai_notification", False):
-        reminder_text = result.get("reminder_text", "提醒时间到了！")
-        skip_memory = result.get("skip_memory", False)
-        
-        app.logger.info("需要AI生成自然提醒消息: %s", reminder_text)
-        
-        try:
-            # 调用AI生成自然提醒消息
-            ai_message = _generate_ai_reminder_message(task, reminder_text)
-            
-            # 将AI生成的提醒消息保存到聊天历史
-            reminder_message = {
-                "role": "assistant",
-                "content": ai_message,
-                "skip_memory": skip_memory  # 添加标记，跳过记忆化
-            }
-            
-            # 将提醒消息追加到聊天历史
-            db.append_messages(task.user_id, task.chat_id, [reminder_message])
-            app.logger.info("AI提醒消息已保存到聊天历史: %s", ai_message[:100])
-            
-            # 这里可以添加其他通知机制，如WebSocket推送、邮件通知等
-            # 例如：通过WebSocket实时推送提醒
-            # _send_websocket_notification(task.user_id, task.chat_id, ai_message)
-            
-        except Exception as e:
-            app.logger.error("生成或保存AI提醒消息失败: %s", e)
+    """处理提醒任务完成 — 注入提醒系统消息"""
+    app.logger.info("提醒任务到期: task_id=%s", task.task_id)
+    short_id = task.task_id[:8]
+    reminder_text = result.get("reminder_text", "提醒时间到了！")
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    msg = f"[系统] ⏰ 提醒（ID: {short_id}）\n现在是 {current_time}，你之前设置的提醒：{reminder_text}"
+
+    try:
+        db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
+        app.logger.info("提醒已注入聊天: %s", short_id)
+    except Exception as e:
+        app.logger.error("保存提醒消息失败: %s", e)
 
 def _handle_reasoner_completion(task, result):
-    """处理推理任务完成"""
-    app.logger.info("处理推理任务完成: task_id=%s, user_id=%d, chat_id=%d", 
-                   task.task_id, task.user_id, task.chat_id)
-    
-    # 保存推理结果到聊天历史
-    reasoning_result = result.get("reasoning", "")
+    """处理推理任务完成 — 注入结果系统消息"""
+    app.logger.info("推理任务完成: task_id=%s", task.task_id)
+    short_id = task.task_id[:8]
     conclusion = result.get("conclusion", "")
-    
+
     if conclusion:
-        ai_message = f"【推理完成】\n\n经过深入分析，我得出的结论是：\n{conclusion}\n\n详细的推理过程已保存。"
-        
-        try:
-            reminder_message = {
-                "role": "assistant",
-                "content": ai_message
-            }
-            
-            db.append_messages(task.user_id, task.chat_id, [reminder_message])
-            app.logger.info("推理结果已保存到聊天历史")
-        except Exception as e:
-            app.logger.error("保存推理结果失败: %s", e)
+        msg = f"[系统] 推理任务完成（ID: {short_id}）。\n结论: {conclusion}"
+    else:
+        reasoning = result.get("reasoning", "")
+        msg = f"[系统] 推理任务完成（ID: {short_id}）。\n{reasoning[:2000]}"
 
-def _generate_action_result_message(task, result):
-    """调用AI生成动作执行结果的回复消息"""
     try:
-        # 获取聊天历史作为上下文
-        history = db.get_chat_history(task.user_id, task.chat_id)
-        
-        # 构建系统提示词
-        from prompt import get_system_prompt
-        # 创建一个临时的用户信息字典
-        temp_user_info = {"uid": task.user_id, "nickname": f"用户{task.user_id}"}
-        system_prompt = get_system_prompt(temp_user_info)
-        
-        # 构建动作结果的提示词
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 根据动作类型和结果构建提示词
-        action_type = result.get("action_type", "unknown")
-        success = result.get("success", False)
-        error = result.get("error")
-        output = result.get("output", "")
-        
-        if action_type == "shell":
-            prompt_text = f"""
-现在是 {current_time}，我之前执行的系统命令已经完成。
-
-命令预览：{result.get('content_preview', '')[:100]}...
-
-执行结果：
-- 成功：{success}
-- 退出码：{result.get('exit_code', 'N/A')}
-- 输出：{output[:500] if output else '无输出'}
-
-请根据这个结果生成一个自然的回复，告诉用户命令执行的结果。如果成功，可以说命令执行完成并简要说明结果；如果失败，说明遇到了什么问题。
-"""
-        elif action_type == "python":
-            prompt_text = f"""
-现在是 {current_time}，我之前执行的Python代码已经完成。
-
-代码预览：{result.get('content_preview', '')[:100]}...
-
-执行结果：
-- 成功：{success}
-- 退出码：{result.get('exit_code', 'N/A')}
-- 输出：{output[:500] if output else '无输出'}
-
-请根据这个结果生成一个自然的回复，告诉用户代码执行的结果。
-"""
-        elif action_type == "write_file":
-            prompt_text = f"""
-现在是 {current_time}，我之前执行的文件写入操作已经完成。
-
-文件路径：{result.get('file_path', '')}
-文件大小：{result.get('file_size', 0)} 字符
-
-执行结果：
-- 成功：{success}
-- 错误：{error if error else '无'}
-
-请根据这个结果生成一个自然的回复，告诉用户文件写入的结果。
-"""
-        elif action_type == "edit_file":
-            prompt_text = f"""
-现在是 {current_time}，我之前执行的文件编辑操作已经完成。
-
-文件路径：{result.get('file_path', '')}
-原始大小：{result.get('old_size', 0)} 字符
-新大小：{result.get('new_size', 0)} 字符
-
-执行结果：
-- 成功：{success}
-- 错误：{error if error else '无'}
-
-请根据这个结果生成一个自然的回复，告诉用户文件编辑的结果。
-"""
-        else:
-            prompt_text = f"""
-现在是 {current_time}，我之前执行的操作已经完成。
-
-操作类型：{action_type}
-执行结果：
-- 成功：{success}
-- 错误：{error if error else '无'}
-- 输出：{output[:500] if output else '无输出'}
-
-请根据这个结果生成一个自然的回复，告诉用户操作执行的结果。
-"""
-        
-        # 创建聊天客户端
-        chat = create_chat_client()
-        
-        # 构建完整的消息历史
-        full_history = [{"role": "system", "content": system_prompt}]
-        
-        # 添加最近的历史消息作为上下文（最多5条）
-        recent_history = history[-5:] if len(history) > 5 else history
-        for msg in recent_history:
-            full_history.append(msg)
-        
-        # 添加动作结果提示词
-        full_history.append({"role": "user", "content": prompt_text})
-        
-        # 设置消息历史并发送
-        chat.messages = full_history
-        ai_response = chat.send_message("请生成一个自然的回复消息")
-        
-        app.logger.info("AI生成的动作结果消息: %s", ai_response[:100])
-        return ai_response
-        
+        db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
+        app.logger.info("推理结果已注入聊天: %s", short_id)
     except Exception as e:
-        app.logger.error("生成AI动作结果消息失败: %s", e)
-        # 如果AI调用失败，返回一个默认的回复消息
-        action_type = result.get("action_type", "操作")
-        success = result.get("success", False)
-        
-        if success:
-            return f"我之前执行的{action_type}操作已经成功完成了！"
-        else:
-            error = result.get("error", "未知错误")
-            return f"我之前执行的{action_type}操作失败了：{error}"
+        app.logger.error("保存推理结果失败: %s", e)
 
-# 动作自纠正最大轮数（防止无限循环）
-_MAX_AUTO_RETRY_DEPTH = 3
 
 def _handle_action_completion(task, result, retry_depth: int = 0):
-    """处理动作任务完成：调用AI生成自然结果消息，并重新解析纠正后的代码"""
-    app.logger.info("处理动作任务完成: task_id=%s, user_id=%d, chat_id=%d, action_type=%s",
-                   task.task_id, task.user_id, task.chat_id, result.get("action_type"))
+    """处理动作任务完成 — 注入结果系统消息，支持自纠正"""
+    app.logger.info("动作任务完成: task_id=%s, type=%s", task.task_id, result.get("action_type"))
+    short_id = task.task_id[:8]
+    action_type = result.get("action_type", "unknown")
+    success = result.get("success", False)
+    output = result.get("output", "")
+    error = result.get("error", "")
+    exit_code = result.get("exit_code", "")
 
-    if not result.get("requires_ai_notification", True):
-        return
+    status = "成功" if success else "失败"
+    msg_lines = [f"[系统] {action_type} 任务完成（ID: {short_id}）。状态: {status}"]
 
-    skip_memory = result.get("skip_memory", True)
+    if exit_code is not None and exit_code != "":
+        msg_lines.append(f"退出码: {exit_code}")
+
+    if output and output.strip():
+        # 截断过长输出
+        out = output.strip()
+        if len(out) > 3000:
+            out = out[:3000] + "\n...(输出截断)"
+        msg_lines.append(f"输出:\n{out}")
+    elif error:
+        msg_lines.append(f"错误: {error}")
+
+    msg = "\n".join(msg_lines)
 
     try:
-        ai_message = _generate_action_result_message(task, result)
-
-        action_message = {
-            "role": "assistant",
-            "content": ai_message,
-            "skip_memory": skip_memory,
-        }
-        db.append_messages(task.user_id, task.chat_id, [action_message])
-        app.logger.info("AI动作结果消息已保存到聊天历史: %s", ai_message[:100])
-
-        if not result.get("success", False) and retry_depth < _MAX_AUTO_RETRY_DEPTH:
-            _retry_failed_action(ai_message, task, retry_depth)
-
+        db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
+        app.logger.info("动作结果已注入聊天: %s", short_id)
     except Exception as e:
-        app.logger.error("生成或保存AI动作结果消息失败: %s", e)
+        app.logger.error("保存动作结果失败: %s", e)
 
 
-def _retry_failed_action(ai_message: str, task, retry_depth: int):
-    """解析AI纠正后的回复中的新动作任务并执行"""
-    from tasks import TaskType
+# 动作自纠正最大轮数
+_MAX_AUTO_RETRY_DEPTH = 0  # 已禁用；现在任务结果直接注入为系统消息
 
-    tasks = parse_task_instructions(ai_message)
-    if not tasks:
-        return
-
-    app.logger.info("发现AI自纠正动作 %d 个 (深度=%d)", len(tasks), retry_depth + 1)
-
-    for task_data in tasks:
-        task_type = task_data.get("type")
-        params = task_data.get("params", {})
-
-        if task_type == "action":
-            if "action_type" not in params:
-                params["action_type"] = "shell"
-            new_task_id = task_manager.create_task(
-                task_type=TaskType.ACTION,
-                user_id=task.user_id,
-                chat_id=task.chat_id,
-                params=params,
-                priority=1,
-            )
-            task_manager.execute_task(new_task_id)
-            app.logger.info("已创建并执行自纠正动作: %s (类型: %s)", new_task_id, params.get("action_type"))
-
-            _patch_task_completion_for_retry(new_task_id, task, retry_depth + 1)
-
-        elif task_type == "reasoner":
-            new_task_id = task_manager.create_task(
-                task_type=TaskType.REASONER,
-                user_id=task.user_id,
-                chat_id=task.chat_id,
-                params=params,
-                priority=1,
-            )
-            task_manager.execute_task(new_task_id)
-
-
-def _patch_task_completion_for_retry(new_task_id: str, original_task, retry_depth: int):
-    """
-    将新创建的自纠正任务注入完成回调，使其完成后也能递归解析。
-    """
-    if not hasattr(task_manager, '_retry_depths'):
-        task_manager._retry_depths = {}
-    if not hasattr(task_manager, '_retry_lock'):
-        import threading
-        task_manager._retry_lock = threading.Lock()
-    with task_manager._retry_lock:
-        task_manager._retry_depths[new_task_id] = retry_depth
 
 # ---------- 日志配置 ----------
 # 全局变量，用于跟踪日志是否已配置
@@ -818,16 +598,46 @@ def chat_send():
         app.logger.error("主模型 API 调用失败: %s", e)
         return jsonify({"error": "AI service error"}), 500
 
-    # 将新消息存入数据库
+    # 将新消息存入数据库 (附带 round_index 用于记忆召回)
+    round_index = db.get_memory_count(user_id, chat_id) + 1
     new_messages = chat.messages[-2:]
     try:
-        db.append_messages(user_id, chat_id, new_messages)
+        db.append_messages(user_id, chat_id, new_messages, round_index=round_index)
     except Exception as e:
         app.logger.error("追加消息失败: %s", e)
         return jsonify({"error": "Database error"}), 500
 
-    # 保存原始回复用于记忆摘要
+    # 保存原始回复
     original_reply = reply
+
+    # --- 处理技能工具 (<tool> 标签) ---
+    if skill_registry is not None:
+        import re as _tool_re
+        _tool_pat = _tool_re.compile(r"<tool>\s*(.*?)\s*</tool>", _tool_re.DOTALL)
+        _tool_matches = list(_tool_pat.finditer(original_reply))
+        if _tool_matches:
+            tool_results: list[str] = []
+            for match in _tool_matches:
+                try:
+                    tool_data = json.loads(match.group(1).strip())
+                    s_name = tool_data.get("skill", "")
+                    t_name = tool_data.get("tool", "")
+                    params = tool_data.get("params", {})
+                    if s_name and t_name:
+                        result = skill_registry.call_tool(s_name, t_name, params)
+                        formatted = _format_tool_result(s_name, t_name, result)
+                        tool_results.append(formatted)
+                        app.logger.info("工具执行: %s.%s", s_name, t_name)
+                except json.JSONDecodeError as e:
+                    tool_results.append(f"[工具调用失败: JSON 解析错误] {e}")
+                except ValueError as e:
+                    tool_results.append(f"[工具调用失败] {e}")
+                except Exception as e:
+                    app.logger.exception("工具执行异常: %s", e)
+                    tool_results.append(f"[工具执行异常] {e}")
+            if tool_results:
+                reply = _tool_pat.sub("", reply).strip()
+                reply += "\n\n" + "\n".join(tool_results)
 
     # --- 处理记忆召回 (<recall> 标签) ---
     if memory_manager:
@@ -839,21 +649,19 @@ def chat_send():
         except Exception as e:
             app.logger.error("记忆召回处理失败: %s", e)
 
-    # --- 解析并执行任务 ---
+    # --- 解析并执行异步任务 ---
+    task_status_messages: list[str] = []
     if task_manager:
         tasks = parse_task_instructions(original_reply)
         for task_data in tasks:
             try:
                 task_type = task_data.get("type")
                 params = task_data.get("params", {})
-                
+
                 if task_type == "reminder":
-                    # 解析提醒时间
                     time_str = params.get("time")
                     if time_str:
-                        from datetime import datetime
                         scheduled_time = datetime.fromisoformat(time_str)
-                        
                         task_id = task_manager.create_task(
                             task_type=TaskType.REMINDER,
                             user_id=user_id,
@@ -862,10 +670,11 @@ def chat_send():
                             priority=1,
                             scheduled_time=scheduled_time
                         )
+                        short_id = task_id[:8]
+                        task_status_messages.append(f"[系统] 提醒已设置，将在 {time_str} 触发。任务ID: {short_id}")
                         app.logger.info("已创建提醒任务: %s, 时间: %s", task_id, scheduled_time)
-                        
+
                 elif task_type == "reasoner":
-                    # 创建推理任务
                     task_id = task_manager.create_task(
                         task_type=TaskType.REASONER,
                         user_id=user_id,
@@ -873,17 +682,14 @@ def chat_send():
                         params=params,
                         priority=1
                     )
-                    # 立即执行推理任务
                     task_manager.execute_task(task_id)
-                    app.logger.info("已创建并执行推理任务: %s", task_id)
-                    
+                    short_id = task_id[:8]
+                    task_status_messages.append(f"[系统] 深度推理任务已提交（ID: {short_id}），正在后台执行，完成后会通知你。")
+                    app.logger.info("已创建并提交推理任务: %s", task_id)
+
                 elif task_type == "action":
-                    # 创建动作执行任务
-                    # 确保有action_type参数
                     if "action_type" not in params:
-                        app.logger.warning("action类型任务缺少action_type参数")
-                        params["action_type"] = "shell"  # 默认类型
-                    
+                        params["action_type"] = "shell"
                     task_id = task_manager.create_task(
                         task_type=TaskType.ACTION,
                         user_id=user_id,
@@ -891,62 +697,56 @@ def chat_send():
                         params=params,
                         priority=1
                     )
-                    # 立即执行动作任务
                     task_manager.execute_task(task_id)
-                    app.logger.info("已创建并执行动作任务: %s (类型: %s)", task_id, params.get("action_type"))
-                    
+                    short_id = task_id[:8]
+                    action_type = params.get("action_type", "shell")
+                    task_status_messages.append(f"[系统] {action_type} 任务已提交（ID: {short_id}），正在后台执行，完成后会通知你。")
+                    app.logger.info("已创建并提交动作任务: %s (类型: %s)", task_id, action_type)
+
             except Exception as e:
                 app.logger.error("处理任务失败: %s, 任务数据: %s", e, task_data)
+
+    if task_status_messages:
+        status_text = "\n".join(task_status_messages)
+        db.append_messages(user_id, chat_id, [{"role": "system", "content": status_text}])
+        reply += "\n\n" + status_text
 
     # --- TTS 合成 ---
     audio_data = None
     tts_error = None
+    global _tts_available
 
-    # 在TTS合成之前，需要移除所有标签，包括<text>和<task>标签
-    # 首先提取用于显示的回复（移除所有标签）
+    # 移除所有标签以得到纯净显示文本
     import re
-    
-    # 移除<text>标签，保留标签内的内容用于显示
-    text_tag_pattern = r'<text>(.*?)</text>'
-    display_reply = re.sub(text_tag_pattern, r'\1', original_reply, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 移除<task>标签及其内容（完全移除）
-    task_tag_pattern = r'<task>.*?</task>'
-    display_reply = re.sub(task_tag_pattern, '', display_reply, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 移除其他可能的标签
-    display_reply = re.sub(r'<[^>]+>', '', display_reply)  # 移除所有HTML标签
-    
-    # 清理多余的空格和换行
+    display_reply = original_reply
+
+    # <text> — 保留内容，去标签
+    display_reply = re.sub(r'<text>(.*?)</text>', r'\1', display_reply, flags=re.DOTALL | re.IGNORECASE)
+    # <task>, <tool>, <recall> — 完全移除
+    for tag in ("task", "tool", "recall"):
+        display_reply = re.sub(f"<{tag}>.*?</{tag}>", '', display_reply, flags=re.DOTALL)
+    # 残留的 <> 标签
+    display_reply = re.sub(r'<[^>]+>', '', display_reply)
     display_reply = re.sub(r'\s+', ' ', display_reply).strip()
     reply = display_reply
-    
-    # 准备用于TTS合成的文本：移除所有标签，只保留纯文本
+
+    # TTS 文本 — 完全移除所有标签
     tts_text = original_reply
-    
-    # 移除<text>标签及其内容（完全移除）
-    tts_text = re.sub(text_tag_pattern, '', tts_text, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 移除<task>标签及其内容（完全移除）
-    tts_text = re.sub(task_tag_pattern, '', tts_text, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 移除其他可能的标签
-    tts_text = re.sub(r'<[^>]+>', '', tts_text)  # 移除所有HTML标签
-    
-    # 清理多余的空格和换行
+    tts_text = re.sub(r'<text>(.*?)</text>', '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+    for tag in ("task", "tool", "recall"):
+        tts_text = re.sub(f"<{tag}>.*?</{tag}>", '', tts_text, flags=re.DOTALL)
+    tts_text = re.sub(r'<[^>]+>', '', tts_text)
     tts_text = re.sub(r'\s+', ' ', tts_text).strip()
     
     # 如果有内容才进行TTS合成
-    if tts_text:
-        app.logger.info(f"进行TTS合成，文本: {tts_text[:100]}...")
+    if tts_text and _tts_available:
         try:
-            # 构造 TTS 请求参数
             REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
             PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
 
             params = {
                 "text": tts_text,
-                "text_lang": "zh",                     # 假设回复为中文
+                "text_lang": "zh",
                 "ref_audio_path": REF_AUDIO_PATH,
                 "prompt_lang": "en",
                 "prompt_text": PROMPT_TEXT,
@@ -957,18 +757,19 @@ def chat_send():
             app.logger.info("TTS合成成功")
         except TTSRequestError as e:
             tts_error = f"TTS 服务请求失败: {e}"
-            app.logger.error(tts_error)
+            _tts_available = False
+            app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
         except Exception as e:
-            tts_error = f"TTS 未知错误: {e}"
-            app.logger.exception("TTS 异常")
-    else:
-        app.logger.info("没有可用于TTS合成的文本内容，跳过TTS合成")
+            tts_error = f"TTS 错误: {e}"
+            _tts_available = False
+            app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
+    elif not _tts_available:
+        pass  # TTS 不可用，静默跳过
 
-    # 写入记忆模块（异步摘要）- 使用原始reply内容
+    # 写入记忆模块（异步摘要）
     if memory_manager:
-        round_index = db.get_memory_count(user_id, chat_id) + 1
         try:
-            print("启动记忆摘要任务...")
+            app.logger.info("启动记忆摘要任务...")
             memory_manager.record_dialog_and_summary(
                 user_id=user_id,
                 chat_id=chat_id,
@@ -1041,8 +842,32 @@ def chat_stream_send():
         
         chat.messages = full_history.copy()
         reply = chat.send_message(timestamped_message)
-        db.append_messages(user_id, chat_id, chat.messages[-2:])
+
+        round_index = db.get_memory_count(user_id, chat_id) + 1
+        db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
+
+        # --- 处理技能工具 (<tool> 标签) ---
+        if skill_registry is not None:
+            _tool_pat = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
+            _tool_matches = list(_tool_pat.finditer(original_reply))
+            if _tool_matches:
+                tool_results: list[str] = []
+                for match in _tool_matches:
+                    try:
+                        tool_data = json.loads(match.group(1).strip())
+                        s_name = tool_data.get("skill", "")
+                        t_name = tool_data.get("tool", "")
+                        params = tool_data.get("params", {})
+                        if s_name and t_name:
+                            result = skill_registry.call_tool(s_name, t_name, params)
+                            tool_results.append(_format_tool_result(s_name, t_name, result))
+                            app.logger.info("工具执行: %s.%s", s_name, t_name)
+                    except Exception as e:
+                        tool_results.append(f"[工具执行异常] {e}")
+                if tool_results:
+                    reply = _tool_pat.sub("", reply).strip()
+                    reply += "\n\n" + "\n".join(tool_results)
 
         # --- 处理记忆召回 (<recall> 标签) ---
         if memory_manager:
@@ -1059,6 +884,7 @@ def chat_stream_send():
 
         # --- [阶段 3: 执行] ---
         yield f"data: {json.dumps({'status': 'execution'})}\n\n"
+        task_status_msgs: list[str] = []
         if task_manager:
             tasks = parse_task_instructions(original_reply)
             for task_data in tasks:
@@ -1068,38 +894,33 @@ def chat_stream_send():
                     if task_type == "reminder":
                         time_str = params.get("time")
                         if time_str:
-                            task_manager.create_task(TaskType.REMINDER, user_id, chat_id, params, 1, datetime.fromisoformat(time_str))
+                            task_id = task_manager.create_task(TaskType.REMINDER, user_id, chat_id, params, 1, datetime.fromisoformat(time_str))
+                            task_status_msgs.append(f"[系统] 提醒已设置，将在 {time_str} 触发。任务ID: {task_id[:8]}")
                     elif task_type == "reasoner":
                         task_id = task_manager.create_task(TaskType.REASONER, user_id, chat_id, params, 1)
                         task_manager.execute_task(task_id)
+                        task_status_msgs.append(f"[系统] 深度推理任务已提交（ID: {task_id[:8]}），正在后台执行。")
                     elif task_type == "action":
-                        # 确保有action_type参数
                         if "action_type" not in params:
-                            app.logger.warning("action类型任务缺少action_type参数")
-                            params["action_type"] = "shell"  # 默认类型
-                        
-                        task_id = task_manager.create_task(
-                            task_type=TaskType.ACTION,
-                            user_id=user_id,
-                            chat_id=chat_id,
-                            params=params,
-                            priority=1
-                        )
-                        # 立即执行动作任务
+                            params["action_type"] = "shell"
+                        task_id = task_manager.create_task(TaskType.ACTION, user_id, chat_id, params, 1)
                         task_manager.execute_task(task_id)
-                        app.logger.info("已创建并执行动作任务: %s (类型: %s)", task_id, params.get("action_type"))
+                        task_status_msgs.append(f"[系统] {params['action_type']} 任务已提交（ID: {task_id[:8]}），正在后台执行。")
                 except Exception as e:
                     app.logger.error("处理任务失败: %s", e)
+        if task_status_msgs:
+            db.append_messages(user_id, chat_id, [{"role": "system", "content": "\n".join(task_status_msgs)}])
 
         # --- [阶段 4: TTS] ---
         audio_b64 = None
         tts_error = None
-        if tts_enabled:
+        global _tts_available
+        if tts_enabled and _tts_available:
             yield f"data: {json.dumps({'status': 'tts'})}\n\n"
-            text_tag_pattern = r'<text>(.*?)</text>'
-            task_tag_pattern = r'<task>.*?</task>'
-            tts_text = re.sub(text_tag_pattern, '', original_reply, flags=re.DOTALL | re.IGNORECASE)
-            tts_text = re.sub(task_tag_pattern, '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+            tts_text = original_reply
+            tts_text = re.sub(r'<text>(.*?)</text>', '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+            for tag in ("task", "tool", "recall"):
+                tts_text = re.sub(f"<{tag}>.*?</{tag}>", '', tts_text, flags=re.DOTALL)
             tts_text = re.sub(r'<[^>]+>', '', tts_text)
             tts_text = re.sub(r'\s+', ' ', tts_text).strip()
             
@@ -1115,9 +936,10 @@ def chat_stream_send():
                     audio_b64 = base64.b64encode(audio_data).decode('utf-8')
                 except Exception as e:
                     tts_error = str(e)
+                    _tts_available = False
+                    app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
 
         if memory_manager:
-            round_index = db.get_memory_count(user_id, chat_id) + 1
             memory_manager.record_dialog_and_summary(user_id, chat_id, round_index, [{"role": "user", "content": message}, {"role": "assistant", "content": original_reply}], async_mode=True)
 
         # --- [阶段 5: 完成] ---

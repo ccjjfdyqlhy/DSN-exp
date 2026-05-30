@@ -79,7 +79,7 @@ class SkillLoader:
         if not yaml_file.exists():
             raise FileNotFoundError(f"skill.yaml not found in {skill_dir}")
 
-        with open(yaml_file, "r", encoding="utf-8") as f:
+        with open(yaml_file, "r", encoding='utf-8-sig') as f:
             data = yaml.safe_load(f)
 
         if not data or "name" not in data:
@@ -114,7 +114,7 @@ class SkillLoader:
 
         for md_file in sorted(prompts_dir.glob("*.md")):
             try:
-                text = md_file.read_text(encoding="utf-8")
+                text = md_file.read_text(encoding='utf-8-sig')
                 match = _FM_RE.match(text)
                 if match:
                     meta = yaml.safe_load(match.group(1)) or {}

@@ -95,7 +95,7 @@ def load_subapp_config(subapp_path: str) -> SubAppConfig:
     if not yaml_path.exists():
         raise FileNotFoundError(f"subapp.yaml 未找到: {subapp_path}")
 
-    with open(yaml_path, "r", encoding="utf-8") as f:
+    with open(yaml_path, "r", encoding='utf-8-sig') as f:
         data = yaml.safe_load(f) or {}
 
     return _build_config(data, str(p))

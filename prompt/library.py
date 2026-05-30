@@ -69,7 +69,7 @@ class PromptLibrary:
 
     def load_file(self, path: str) -> PromptEntry | None:
         """加载单个 .md 文件，覆盖同 name 已有条目"""
-        text = Path(path).read_text(encoding="utf-8")
+        text = Path(path).read_text(encoding='utf-8-sig')
 
         m = _FM_RE.match(text)
         if m:

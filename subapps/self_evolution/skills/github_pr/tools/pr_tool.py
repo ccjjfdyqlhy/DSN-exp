@@ -76,7 +76,7 @@ class GitHubPRTool:
         full_path = os.path.join(cwd, path)
         try:
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, "w", encoding="utf-8") as f:
+            with open(full_path, "w", encoding='utf-8-sig') as f:
                 f.write(content)
             return {"success": True, "path": path, "size": len(content), "detail": f"wrote {len(content)} bytes"}
         except Exception as e:

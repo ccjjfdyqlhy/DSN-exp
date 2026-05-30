@@ -322,7 +322,7 @@ class DSNEngine:
                 peers.scan_presets(str(Path(pers_file).parent))
                 # 从 YAML 读取实际 preset name
                 try:
-                    with open(pers_file, "r", encoding="utf-8") as f:
+                    with open(pers_file, "r", encoding='utf-8-sig') as f:
                         pers_data = yaml.safe_load(f) or {}
                     preset_name = pers_data.get("name", Path(pers_file).stem)
                     if peers.load_preset(preset_name):

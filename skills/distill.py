@@ -310,7 +310,7 @@ class DistillationEngine:
                 continue
             full_path = draft_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
+            full_path.write_text(content, encoding='utf-8-sig')
 
         logger.info("草案已保存: %s", draft_path)
         return draft_path
@@ -339,7 +339,7 @@ class DistillationEngine:
             yaml_file = d / "skill.yaml"
             if yaml_file.exists():
                 try:
-                    data = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+                    data = yaml.safe_load(yaml_file.read_text(encoding='utf-8-sig'))
                     drafts.append({
                         "name": data.get("name", d.name),
                         "display_name": data.get("display_name", ""),
@@ -363,14 +363,14 @@ class DistillationEngine:
 
         yaml_file = draft_dir / "skill.yaml"
         if yaml_file.exists():
-            data = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+            data = yaml.safe_load(yaml_file.read_text(encoding='utf-8-sig'))
             data["status"] = "active"
             data["enabled"] = True
             version = data.get("version", "0.1-draft")
             data["version"] = version.replace("-draft", "")
             yaml_file.write_text(
                 yaml.dump(data, allow_unicode=True, default_flow_style=False),
-                encoding="utf-8"
+                encoding='utf-8-sig'
             )
 
         # 移动到 distilled/

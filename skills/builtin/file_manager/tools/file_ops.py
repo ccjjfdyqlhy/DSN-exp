@@ -35,7 +35,7 @@ class FileOpsTool:
             size = p.stat().st_size
             if size > 1024 * 1024:  # 1MB limit
                 return {"success": False, "error": f"文件过大 ({size} bytes), 超过1MB限制"}
-            content = p.read_text(encoding="utf-8")
+            content = p.read_text(encoding='utf-8-sig')
             return {
                 "success": True,
                 "path": str(p),
@@ -82,7 +82,7 @@ class FileOpsTool:
         try:
             p = self._safe_path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
+            p.write_text(content, encoding='utf-8-sig')
             return {
                 "success": True,
                 "path": str(p),
