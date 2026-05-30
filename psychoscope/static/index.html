@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <script>
+        (function(){var t=localStorage.getItem('psychoscope_theme');if(!t){t=new Date().getHours()>=6&&new Date().getHours()<18?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>DSN-exp — Psychoscope</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div id="background"></div>
+
+<div id="main-container">
+    <div id="text-box-wrapper">
+        <div id="text-box">
+            <div id="bottom-anchor"></div>
+        </div>
+    </div>
+</div>
+
+<div id="input-area">
+    <div class="input-wrapper">
+        <button id="btn-tts" class="btn-tts" title="语音播报：关">♪</button>
+        <input type="text" id="message-input" placeholder="输入消息" autofocus>
+        <button id="btn-send">→</button>
+    </div>
+</div>
+
+<div id="header">
+    <span class="header-brand">PSYCHOSCOPE</span>
+    <span class="header-divider">|</span>
+    <span class="header-sub">DSN-exp</span>
+    <div class="header-actions">
+        <button id="btn-new-chat" title="新对话">+</button>
+        <button id="btn-chat-list" title="对话列表">☰</button>
+        <button id="btn-theme" title="切换主题">◐</button>
+        <button id="btn-logout" title="退出">⏻</button>
+    </div>
+</div>
+
+<div id="status-bar"></div>
+
+<button id="scroll-bottom-btn">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 13l5 5 5-5M7 6l5 5 5-5"/></svg>
+</button>
+
+<div id="sidebar" class="hidden">
+    <div id="sidebar-header">
+        <span>对话列表</span>
+        <button id="btn-close-sidebar">&times;</button>
+    </div>
+    <div id="chat-list"></div>
+</div>
+
+<div id="login-overlay">
+    <div class="login-content">
+        <h1>DSN-exp</h1>
+        <p>PSYCHOSCOPE CLIENT</p>
+        <button id="btn-login">通过 LittleSkin 登录</button>
+        <span class="login-hint">需要连接主服务器</span>
+    </div>
+</div>
+
+<div id="loading-overlay" class="hidden">
+    <div class="spinner"></div>
+</div>
+
+<div id="notification" class="hidden"></div>
+
+<script src="/static/js/typewriter.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
