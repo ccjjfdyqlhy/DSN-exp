@@ -792,7 +792,7 @@ def chat_send():
 @app.route("/api/chat/stream_send", methods=["POST"])
 @login_required
 def chat_stream_send():
-    """流式发送消息并同步处理状态"""
+    """流式发送消息 — Agent Loop：AI 可执行 action 并将结果喂回继续对话"""
     data = request.get_json()
     if not data or "message" not in data:
         return jsonify({"error": "Missing message"}), 400
@@ -805,11 +805,60 @@ def chat_stream_send():
     model_type = data.get("model_type")
     user_id = g.user["uid"]
 
+    def _clean_display(raw: str) -> str:
+        """移除控制标签，返回纯净显示文本"""
+        t = raw
+        t = re.sub(r'```action\s*\n.*?```', '', t, flags=re.DOTALL | re.IGNORECASE)
+        t = re.sub(r'<text>(.*?)</text>', r'\1', t, flags=re.DOTALL | re.IGNORECASE)
+        for tag in ("task", "tool", "recall"):
+            t = re.sub(f"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
+        t = re.sub(r'<[^>]+>', '', t)
+        return re.sub(r'\s+', ' ', t).strip()
+
+    def _extract_actions(raw: str) -> list:
+        """从原始回复中提取可执行的 action 参数列表"""
+        actions = []
+        for td in parse_task_instructions(raw):
+            if td.get("type") == "action":
+                p = td.get("params", {})
+                if "action_type" not in p:
+                    p["action_type"] = "shell"
+                actions.append({"action_type": p.get("action_type", "shell"), "params": p})
+        return actions
+
+    def _format_action_result(action_type: str, result: dict) -> str:
+        """格式化 action 执行结果，用于喂回 AI"""
+        if result.get("success"):
+            return f"[系统] 你刚才的 {action_type} 操作已成功完成。\n输出:\n{result.get('output', '')}"[:2000]
+        return f"[系统] 你刚才的 {action_type} 操作执行失败。\n错误: {result.get('error', '未知错误')}"
+
+    def _process_tools_and_recall(raw: str) -> str:
+        """处理工具标签和记忆召回，返回增强后的文本"""
+        augmented = raw
+        if skill_registry is not None:
+            _pat = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
+            for m in _pat.finditer(raw):
+                try:
+                    d = json.loads(m.group(1).strip())
+                    r = skill_registry.call_tool(d.get("skill", ""), d.get("tool", ""), d.get("params", {}))
+                    app.logger.info("工具执行: %s.%s", d.get("skill", ""), d.get("tool", ""))
+                except Exception:
+                    pass
+            augmented = _pat.sub("", augmented).strip()
+        if memory_manager:
+            try:
+                rec = memory_manager.process_recall_tags(user_id, chat_id, raw)
+                if rec != raw:
+                    augmented = rec
+            except Exception:
+                pass
+        return augmented
+
     def generate_stream():
         nonlocal chat_id
-        # --- [阶段 1: 解析] ---
+        # ── 阶段 1: 解析 ──
         yield f"data: {json.dumps({'status': 'parsing'})}\n\n"
-        
+
         history = []
         if chat_id:
             history = db.get_chat_history(user_id, chat_id)
@@ -819,10 +868,10 @@ def chat_stream_send():
         if is_asr_input and filter_model is not None:
             decision = filter_model.filter_input(message)
             if decision == "HOLD":
-                memory_content = f"听到：{message}"
-                round_index = db.get_memory_count(user_id, chat_id) + 1
-                db.save_memory(user_id, chat_id, round_index, memory_content)
-                db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{memory_content}"}])
+                mem = f"听到：{message}"
+                ridx = db.get_memory_count(user_id, chat_id) + 1
+                db.save_memory(user_id, chat_id, ridx, mem)
+                db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{mem}"}])
                 yield f"data: {json.dumps({'status': 'completed', 'reply': '', 'chat_id': chat_id, 'filtered': True})}\n\n"
                 return
 
@@ -833,116 +882,101 @@ def chat_stream_send():
             assembled = history
         full_history = [{"role": "system", "content": system_prompt}] + assembled
 
-        # --- [阶段 2: 请求] ---
+        # ── 阶段 2: 初始 AI 调用 ──
         yield f"data: {json.dumps({'status': 'request'})}\n\n"
-        
+
         chat = create_chat_client(model_type)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        timestamped_message = f"[{current_time}] {message}"
-        
         chat.messages = full_history.copy()
-        reply = chat.send_message(timestamped_message)
+        reply = chat.send_message(f"[{current_time}] {message}")
 
         round_index = db.get_memory_count(user_id, chat_id) + 1
         db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
 
-        # --- 处理技能工具 (<tool> 标签) ---
-        if skill_registry is not None:
-            _tool_pat = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
-            _tool_matches = list(_tool_pat.finditer(original_reply))
-            if _tool_matches:
-                tool_results: list[str] = []
-                for match in _tool_matches:
-                    try:
-                        tool_data = json.loads(match.group(1).strip())
-                        s_name = tool_data.get("skill", "")
-                        t_name = tool_data.get("tool", "")
-                        params = tool_data.get("params", {})
-                        if s_name and t_name:
-                            result = skill_registry.call_tool(s_name, t_name, params)
-                            tool_results.append(_format_tool_result(s_name, t_name, result))
-                            app.logger.info("工具执行: %s.%s", s_name, t_name)
-                    except Exception as e:
-                        tool_results.append(f"[工具执行异常] {e}")
-                if tool_results:
-                    reply = _tool_pat.sub("", reply).strip()
-                    reply += "\n\n" + "\n".join(tool_results)
+        reply = _process_tools_and_recall(original_reply)
 
-        # --- 处理记忆召回 (<recall> 标签) ---
-        if memory_manager:
-            try:
-                recall_processed = memory_manager.process_recall_tags(user_id, chat_id, original_reply)
-                if recall_processed != original_reply:
-                    reply = recall_processed
-                    app.logger.info("记忆召回已处理，回复已更新")
-            except Exception as e:
-                app.logger.error("记忆召回处理失败: %s", e)
+        # 发送初始回复（已清理）
+        yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(original_reply), 'chat_id': chat_id})}\n\n"
 
-        # 请求完成，立即把文字回复推给前端进行逐行打字机渲染
-        yield f"data: {json.dumps({'status': 'text_ready', 'reply': original_reply, 'chat_id': chat_id})}\n\n"
+        # ── 阶段 3: Agent Loop ──
+        max_steps = Config.AGENT_MAX_STEPS
+        pending = original_reply
+        last_reply_for_tts = original_reply
 
-        # --- [阶段 3: 执行] ---
-        yield f"data: {json.dumps({'status': 'execution'})}\n\n"
-        task_status_msgs: list[str] = []
-        if task_manager:
-            tasks = parse_task_instructions(original_reply)
-            for task_data in tasks:
-                try:
-                    task_type = task_data.get("type")
-                    params = task_data.get("params", {})
-                    if task_type == "reminder":
-                        time_str = params.get("time")
-                        if time_str:
-                            task_id = task_manager.create_task(TaskType.REMINDER, user_id, chat_id, params, 1, datetime.fromisoformat(time_str))
-                            task_status_msgs.append(f"[系统] 提醒已设置，将在 {time_str} 触发。任务ID: {task_id[:8]}")
-                    elif task_type == "reasoner":
-                        task_id = task_manager.create_task(TaskType.REASONER, user_id, chat_id, params, 1)
-                        task_manager.execute_task(task_id)
-                        task_status_msgs.append(f"[系统] 深度推理任务已提交（ID: {task_id[:8]}），正在后台执行。")
-                    elif task_type == "action":
-                        if "action_type" not in params:
-                            params["action_type"] = "shell"
-                        task_id = task_manager.create_task(TaskType.ACTION, user_id, chat_id, params, 1)
-                        task_manager.execute_task(task_id)
-                        task_status_msgs.append(f"[系统] {params['action_type']} 任务已提交（ID: {task_id[:8]}），正在后台执行。")
-                except Exception as e:
-                    app.logger.error("处理任务失败: %s", e)
-        if task_status_msgs:
-            db.append_messages(user_id, chat_id, [{"role": "system", "content": "\n".join(task_status_msgs)}])
+        for step in range(max_steps):
+            actions = _extract_actions(pending)
+            if not actions:
+                break
 
-        # --- [阶段 4: TTS] ---
+            yield f"data: {json.dumps({'status': 'execution', 'step': step + 1})}\n\n"
+
+            batch_results = []
+            for act in actions:
+                atype = act["action_type"]
+                yield f"data: {json.dumps({'status': 'agent_action', 'desc': atype})}\n\n"
+                result = task_manager.execute_action_sync(user_id, chat_id, act["params"])
+                batch_results.append((atype, result))
+                app.logger.info("Agent loop step %d: %s 完成 (success=%s)", step + 1, atype, result.get("success"))
+
+            if not batch_results:
+                break
+
+            # 将结果喂回 AI
+            feedback = "\n\n".join(_format_action_result(t, r) for t, r in batch_results)
+            chat.messages.append({"role": "system", "content": feedback})
+            db.append_messages(user_id, chat_id, [{"role": "system", "content": feedback}])
+
+            continuation = chat.send_message(feedback)
+            db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
+
+            continuation = _process_tools_and_recall(continuation)
+
+            yield f"data: {json.dumps({'status': 'text_update', 'reply': _clean_display(continuation)})}\n\n"
+
+            pending = continuation
+            last_reply_for_tts = continuation
+
+        # ── 阶段 4: TTS ──
         audio_b64 = None
         tts_error = None
         global _tts_available
         if tts_enabled and _tts_available:
             yield f"data: {json.dumps({'status': 'tts'})}\n\n"
-            tts_text = original_reply
-            tts_text = re.sub(r'<text>(.*?)</text>', '', tts_text, flags=re.DOTALL | re.IGNORECASE)
+            t = last_reply_for_tts
+            t = re.sub(r'```action\s*\n.*?```', '', t, flags=re.DOTALL | re.IGNORECASE)
+            t = re.sub(r'<text>(.*?)</text>', '', t, flags=re.DOTALL | re.IGNORECASE)
             for tag in ("task", "tool", "recall"):
-                tts_text = re.sub(f"<{tag}>.*?</{tag}>", '', tts_text, flags=re.DOTALL)
-            tts_text = re.sub(r'<[^>]+>', '', tts_text)
-            tts_text = re.sub(r'\s+', ' ', tts_text).strip()
-            
-            if tts_text:
+                t = re.sub(f"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
+            t = re.sub(r'<[^>]+>', '', t)
+            t = re.sub(r'\s+', ' ', t).strip()
+            if t:
                 try:
-                    params = {
-                        "text": tts_text, "text_lang": "zh", 
+                    tts_params = {
+                        "text": t, "text_lang": "zh",
                         "ref_audio_path": os.path.join(os.path.dirname(__file__), "tests", "ref.wav"),
                         "prompt_lang": "en", "prompt_text": "Many people may feel lost at times.",
                         "media_type": "wav", "streaming_mode": False,
                     }
-                    audio_data = tts_client.tts(**params)
+                    audio_data = tts_client.tts(**tts_params)
                     audio_b64 = base64.b64encode(audio_data).decode('utf-8')
                 except Exception as e:
                     tts_error = str(e)
                     _tts_available = False
                     app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
 
+        # ── 阶段 5: 记忆 ──
         if memory_manager:
-            memory_manager.record_dialog_and_summary(user_id, chat_id, round_index, [{"role": "user", "content": message}, {"role": "assistant", "content": original_reply}], async_mode=True)
+            try:
+                memory_manager.record_dialog_and_summary(
+                    user_id, chat_id, round_index,
+                    [{"role": "user", "content": message}, {"role": "assistant", "content": original_reply}],
+                    async_mode=True,
+                )
+            except Exception as e:
+                app.logger.error("记忆摘要失败: %s", e)
 
-        # --- [阶段 5: 完成] ---
+        # ── 阶段 6: 完成 ──
         yield f"data: {json.dumps({'status': 'completed', 'audio': audio_b64, 'tts_error': tts_error})}\n\n"
 
     return Response(stream_with_context(generate_stream()), mimetype="text/event-stream")

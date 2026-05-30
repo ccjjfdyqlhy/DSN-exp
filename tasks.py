@@ -376,6 +376,24 @@ class TaskManager:
         
         return future
     
+    def execute_action_sync(self, user_id: int, chat_id: int, params: dict) -> Dict[str, Any]:
+        """同步执行 action 任务并等待结果返回（用于 Agent Loop）。
+        不走 completion_queue 通知通道。"""
+        task_id = self.create_task(
+            task_type=TaskType.ACTION,
+            user_id=user_id,
+            chat_id=chat_id,
+            params=params,
+            priority=1,
+        )
+        future = self.execute_task(task_id)
+        try:
+            result = future.result(timeout=Config.ACTION_TIMEOUT)
+            return result
+        except Exception as e:
+            self.logger.error("action 同步执行失败 (task_id=%s): %s", task_id, e)
+            return {"success": False, "error": str(e), "action_type": params.get("action_type", "")}
+    
     def _execute_task_internal(self, task: Task) -> Dict[str, Any]:
         """内部任务执行逻辑"""
         try:
