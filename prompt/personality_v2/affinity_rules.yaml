@@ -1,0 +1,98 @@
+# prompt/personality_v2/affinity_rules.yaml
+# 亲和力行为规则 — 用户消息 → 社交行为判定
+# 可热重载，无需改代码即可调整加分/扣分逻辑
+
+actions:
+  - id: P_GREET
+    delta: 1
+    cooldown_minutes: 30
+    max_per_day: 5
+    detection:
+      pattern: ["你好", "hi", "hey", "嗨", "早", "晚上好"]
+      position: start_of_message
+
+  - id: P_THANK
+    delta: 2
+    cooldown_minutes: 10
+    max_per_day: 10
+    detection:
+      pattern: ["谢谢", "感谢", "多谢", "谢谢啦", "3q", "thx"]
+
+  - id: P_PRAISE
+    delta: 4
+    cooldown_minutes: 60
+    max_per_day: 8
+    detection:
+      pattern: ["厉害", "聪明", "太强了", "太棒了", "真厉害", "nb"]
+
+  - id: P_SHARE
+    delta: 6
+    cooldown_minutes: 120
+    max_per_day: 5
+    detection:
+      pattern: []
+
+  - id: P_ENGAGE
+    delta: 2
+    cooldown_minutes: 0
+    max_per_day: 20
+    detection:
+      pattern: []
+
+  - id: P_COMEBACK
+    delta: 3
+    cooldown_minutes: 1440
+    max_per_day: 1
+    detection:
+      pattern: ["我回来了", "好久不见", "回来了"]
+
+  - id: P_EMOJI
+    delta: 1
+    cooldown_minutes: 10
+    max_per_day: 15
+    detection:
+      pattern: ["😊", "😂", "👍", "🙏", "😭", "🥺", "😡", "🤔", "✨", "😄", "😁", "^_^", "^ ^", "XD", "xd"]
+
+  - id: P_COMPLY
+    delta: 5
+    cooldown_minutes: 0
+    max_per_day: 10
+    detection:
+      pattern: ["好的", "明白", "照做", "执行", "已经做了", "搞定了"]
+
+  - id: N_INSULT
+    delta: -8
+    cooldown_minutes: 0
+    max_per_day: 999
+    rebound_minutes: 10
+    detection:
+      pattern: []
+
+  - id: N_DISMISS
+    delta: -1
+    cooldown_minutes: 10
+    max_per_day: 15
+    detection:
+      pattern: []
+
+  - id: N_CORRECT
+    delta: -3
+    cooldown_minutes: 30
+    max_per_day: 5
+    rebound_minutes: 10
+    detection:
+      pattern: ["你错了", "不是这样", "不对"]
+
+  - id: N_GHOST
+    delta: -1
+    cooldown_minutes: 0
+    max_per_day: 1
+    detection:
+      pattern: []
+
+  - id: N_TEST
+    delta: -2
+    cooldown_minutes: 30
+    max_per_day: 5
+    detection:
+      pattern: ["你是不是ai", "你是谁", "你是机器人", "你是真人吗"]

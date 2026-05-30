@@ -163,11 +163,12 @@ class DashboardData:
 
         try:
             pe = self.prompt_engine
-            if pe and pe.personality:
-                prof = pe.personality.current_profile
-                d["persona_preset"] = getattr(prof, 'preset_name', 'default')
-                d["persona_mood"] = getattr(prof, 'current_mood', 'neutral')
-                d["persona_intimacy"] = f"{getattr(prof, 'intimacy', 0):.2f}"
+            if pe and pe.personality_v2:
+                pv2 = pe.personality_v2
+                presets = pv2.list_presets()
+                d["persona_preset"] = presets[0]["display_name"] if presets else "default"
+                d["persona_mood"] = "v2"
+                d["persona_intimacy"] = f"{len(presets)} presets"
         except Exception:
             pass
         return d

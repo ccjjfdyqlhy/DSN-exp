@@ -115,7 +115,7 @@ def test_personality_presets():
     print("Test 4: PersonalitySystem 性格预设")
     print("=" * 60)
 
-    from prompt.personality import PersonalitySystem
+    from prompt._personality_v1_legacy import PersonalitySystem
 
     ps = PersonalitySystem()
     count = ps.scan_presets("prompt/prompts/personality")
@@ -152,7 +152,7 @@ def test_personality_prompt():
     print("Test 5: PersonalitySystem 自然语言描述")
     print("=" * 60)
 
-    from prompt.personality import PersonalitySystem
+    from prompt._personality_v1_legacy import PersonalitySystem
 
     ps = PersonalitySystem()
     ps.scan_presets("prompt/prompts/personality")
@@ -175,7 +175,7 @@ def test_personality_dynamics():
     print("Test 6: PersonalitySystem 情绪动态")
     print("=" * 60)
 
-    from prompt.personality import PersonalitySystem
+    from prompt._personality_v1_legacy import PersonalitySystem
 
     ps = PersonalitySystem()
     ps.load_preset("default")
@@ -209,17 +209,17 @@ def test_prompt_engine():
     print("=" * 60)
 
     from prompt.library import PromptLibrary
-    from prompt.personality import PersonalitySystem
+    from prompt.personality_v2 import PersonalitySystemV2
     from prompt.engine import PromptEngine
 
     lib = PromptLibrary()
     lib.scan_and_load("prompt/prompts/core", "prompt/prompts/capabilities")
 
-    ps = PersonalitySystem()
-    ps.scan_presets("prompt/prompts/personality")
-    ps.load_preset("default")
+    ps = PersonalitySystemV2()
+    ps.scan_presets("prompt/personality_v2/presets")
+    ps.load_preset(42, "default")
 
-    engine = PromptEngine(library=lib, personality=ps)
+    engine = PromptEngine(library=lib, personality_v2=ps)
 
     user_info = {"uid": 42, "nickname": "test_user"}
     prompt = engine.build_system_prompt(user_info)
@@ -268,7 +268,7 @@ def test_engine_integration():
 
     engine = init_prompt_engine(
         library_dirs=["prompt/prompts/core", "prompt/prompts/capabilities"],
-        personality_dir="prompt/prompts/personality",
+        personality_v2_dir="prompt/personality_v2/presets",
     )
 
     # 验证旧 prompt.py 自动使用新引擎

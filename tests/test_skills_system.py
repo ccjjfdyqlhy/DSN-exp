@@ -281,7 +281,7 @@ def test_prompt_engine_with_skills():
     from skills.loader import SkillLoader
     from skills.registry import SkillRegistry
     from prompt.library import PromptLibrary
-    from prompt.personality import PersonalitySystem
+    from prompt._personality_v1_legacy import PersonalitySystem
     from prompt.engine import PromptEngine
 
     lib = PromptLibrary()
