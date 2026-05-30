@@ -1,5 +1,1 @@
----
-name: web_search_init
-category: skills
-priority: 0
----
+# skills/builtin/web_search/tools/__init__.py
