@@ -5,6 +5,7 @@
 import os
 import json
 import logging
+import locale
 import threading
 import time
 import uuid
@@ -519,12 +520,13 @@ class TaskManager:
             if action_type == "shell":
                 # 执行系统指令
                 import subprocess
+                _sub_encoding = locale.getpreferredencoding(False)
                 self.logger.info("执行shell命令: %s", content[:100] + "..." if len(content) > 100 else content)
                 process = subprocess.run(
                     content,
                     shell=True,
                     capture_output=True,
-                    encoding='utf-8-sig', errors='replace',
+                    encoding=_sub_encoding, errors='replace',
                     timeout=300,
                     cwd=os.path.expanduser("~")
                 )
@@ -550,10 +552,11 @@ class TaskManager:
                 
                 try:
                     import subprocess
+                    _sub_encoding = locale.getpreferredencoding(False)
                     process = subprocess.run(
                         ["python", temp_file],
                         capture_output=True,
-                        encoding='utf-8-sig', errors='replace',
+                        encoding=_sub_encoding, errors='replace',
                         timeout=300,
                         cwd=os.path.dirname(temp_file)
                     )

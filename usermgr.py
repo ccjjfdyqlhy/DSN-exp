@@ -139,7 +139,7 @@ def login_start():
         redirect_uri=url_for("auth.callback", _external=True),
         state=state,
     )
-    return jsonify({"auth_url": auth_url})
+    return redirect(auth_url)
 
 
 @auth_bp.route("/callback")

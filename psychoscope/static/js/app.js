@@ -53,6 +53,7 @@
         notification: $('#notification'),
         btnLogin: $('#btn-login'),
         btnLogout: $('#btn-logout'),
+        serverUrl: $('#server-url'),
         btnNewChat: $('#btn-new-chat'),
         btnChatList: $('#btn-chat-list'),
         btnTheme: $('#btn-theme'),
@@ -260,7 +261,10 @@
 
     // auth
     function login() {
-        window.location.href = API_BASE + '/api/auth/start?redirect_uri=' + encodeURIComponent(window.location.origin + '/');
+        var url = (dom.serverUrl.value || '').replace(/\/+$/, '');
+        if (!url) { notify('请输入服务器地址', true); return; }
+        localStorage.setItem('api_base', url);
+        window.location.href = url + '/api/auth/start?redirect_uri=' + encodeURIComponent(window.location.origin + '/');
     }
     function logout() {
         token = null; currentChatId = null; chats = [];
@@ -478,6 +482,9 @@
 
     // init
     async function init() {
+        var savedUrl = localStorage.getItem('api_base');
+        if (savedUrl && dom.serverUrl) dom.serverUrl.value = savedUrl;
+
         var p = new URLSearchParams(window.location.search);
         var ut = p.get('token');
         if (ut) { token = ut; localStorage.setItem('jwt_token', token); window.history.replaceState({}, document.title, '/'); }
