@@ -105,7 +105,9 @@ class EmotionModule:
                 if key in inertia:
                     self._inertia[key] = self._clamp(inertia[key])
         self._last_decay = time.time()
-        logger.debug("情绪模块已重置, 基线=%s", self._baselines)
+        logger.info("情绪模块已重置, 基线: joly=%.2f sorw=%.2f angr=%.2f fear=%.2f meta=%.2f",
+                     self._baselines["joly"], self._baselines["sorw"], self._baselines["angr"],
+                     self._baselines["fear"], self._baselines["meta"])
 
     def apply_stimulus(self, stimulus: EmotionalStimulus) -> None:
         """接收情绪刺激向量并更新 5 个维度，含惯性系数"""
@@ -127,6 +129,10 @@ class EmotionModule:
             self._values[key] = self._clamp(self._values[key] + effective_delta)
 
         self._apply_meta_feedback()
+        mood = self.get_mood_profile()
+        logger.info("情绪刺激已应用 → 心境: %s (joly=%.2f sorw=%.2f angr=%.2f fear=%.2f meta=%.2f)",
+                     mood["label"], self._values["joly"], self._values["sorw"],
+                     self._values["angr"], self._values["fear"], self._values["meta"])
 
     def _apply_meta_feedback(self) -> None:
         """META 反馈回路: 其他情绪影响 META 本身"""
@@ -152,6 +158,8 @@ class EmotionModule:
 
     def decay(self, dt_minutes: float) -> None:
         """所有情绪向基线回归"""
+        if dt_minutes > 10:
+            logger.info("情绪衰减: 距上次交互 %.1f 分钟", dt_minutes)
         for key in ("joly", "sorw", "angr", "fear", "meta"):
             rate = self._decay_rates.get(key, self.DEFAULT_DECAY_RATE)
             drift = (self._baselines[key] - self._values[key]) * rate * dt_minutes

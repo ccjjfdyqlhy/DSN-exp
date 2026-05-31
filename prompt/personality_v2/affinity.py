@@ -50,7 +50,7 @@ class AffinityModule:
         self._last_insult_time = None
         self._recent_changes.clear()
         self._decay_enabled = decay_enabled
-        logger.debug("亲和力模块已重置, 初始值=%.1f", self._value)
+        logger.info("亲和力模块已重置, 初始值=%.1f", self._value)
 
     def apply_action(self, action: dict) -> float:
         """
@@ -103,12 +103,20 @@ class AffinityModule:
         actual_change = self._value - old_value
         if abs(actual_change) > 0.01:
             self._recent_changes.append(actual_change)
+            new_level = self.get_level()
+            old_level = self._get_level_for_value(old_value)
+            if new_level != old_level:
+                level_name, _ = AFFINITY_LEVELS.get(new_level, AFFINITY_LEVELS[0])
+                logger.info("亲和力等级变化: L%d → L%d「%s」(亲和值: %.1f → %.1f, 行为: %s)",
+                             old_level, new_level, level_name, old_value, self._value, action_id)
 
         return actual_change
 
     def get_level(self) -> int:
         """返回当前亲和力等级 (0~5)"""
-        v = self.get_effective_affinity()
+        return self._get_level_for_value(self.get_effective_affinity())
+
+    def _get_level_for_value(self, v: float) -> int:
         if v < 0:
             return 0
         if v < 16:
@@ -147,8 +155,9 @@ class AffinityModule:
         days_since = (now - self._last_interaction) / 86400.0
         if days_since > 7:
             decay_days = days_since - 7
+            old_value = self._value
             self._value = max(0.0, self._value - decay_days * 1.0)
-            logger.debug("亲和力衰减: 距离上次互动 %.1f 天, 衰减 %.1f", days_since, decay_days)
+            logger.info("亲和力衰减: 距上次互动 %.1f 天, %.1f → %.1f", days_since, old_value, self._value)
 
     @property
     def value(self) -> float:

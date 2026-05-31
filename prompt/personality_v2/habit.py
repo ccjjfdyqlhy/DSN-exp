@@ -173,7 +173,7 @@ class HabitModule:
             self._habits[candidate.id] = candidate
             added += 1
         if added > 0:
-            logger.debug("添加了 %d 条候选习性", added)
+            logger.info("发现 %d 条候选习性", added)
         return added
 
     def record_usage(self, habit_id: str) -> None:
@@ -255,11 +255,14 @@ class HabitModule:
         for hid in to_remove:
             removed = self._habits.pop(hid, None)
             if removed:
-                logger.debug("习性遗忘: %s (strength=%.3f)", removed.content, removed.strength)
+                logger.info("习性遗忘: %s (strength=%.3f)", removed.content, removed.strength)
 
     def update_innate_weight(self) -> None:
         """根据总交互次数更新先天权重"""
+        old = self._innate_weight
         self._innate_weight = max(0.3, 1.0 - self._total_interactions / 1000.0)
+        if abs(self._innate_weight - old) > 0.001:
+            logger.info("先天权重更新: %.4f → %.4f (交互次数: %d)", old, self._innate_weight, self._total_interactions)
 
     def increment_interactions(self) -> None:
         self._total_interactions += 1
