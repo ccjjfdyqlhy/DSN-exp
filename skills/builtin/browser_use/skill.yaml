@@ -1,0 +1,174 @@
+name: browser_use
+display_name: "浏览器操控"
+description: "通过 Playwright 操控浏览器：导航、点击、输入、截图、提取内容、执行 JS"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 65
+
+tools:
+  - name: navigate
+    display_name: "导航"
+    description: "导航到指定 URL"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: navigate
+        description: "打开 URL 并等待页面加载"
+        parameters:
+          url:
+            type: string
+            description: "目标网页地址"
+            required: true
+          timeout:
+            type: integer
+            description: "超时秒数"
+            default: 30
+  - name: click
+    display_name: "点击"
+    description: "点击页面元素（CSS 选择器或文本）"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: click
+        description: "点击匹配选择器的第一个元素"
+        parameters:
+          selector:
+            type: string
+            description: "CSS 选择器或按钮文本"
+            required: true
+          timeout:
+            type: integer
+            description: "等待元素超时秒数"
+            default: 10
+  - name: type
+    display_name: "输入"
+    description: "在输入框中输入文本，可选按回车提交"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: type
+        description: "清除输入框并键入文本"
+        parameters:
+          selector:
+            type: string
+            description: "输入框的 CSS 选择器"
+            required: true
+          text:
+            type: string
+            description: "要输入的文本"
+            required: true
+          press_enter:
+            type: boolean
+            description: "是否输入后按回车键"
+            default: false
+  - name: get_content
+    display_name: "提取内容"
+    description: "提取页面内容（文本或 HTML）"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: get_content
+        description: "获取页面或指定元素的文本内容"
+        parameters:
+          selector:
+            type: string
+            description: "CSS 选择器，不填取全文"
+            required: false
+  - name: get_title
+    display_name: "获取标题"
+    description: "获取当前页面标题"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: get_title
+        description: "返回页面 <title> 标签内容"
+        parameters: []
+  - name: get_url
+    display_name: "获取 URL"
+    description: "获取当前页面地址"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: get_url
+        description: "返回浏览器当前地址栏 URL"
+        parameters: []
+  - name: screenshot
+    display_name: "截图"
+    description: "对当前页面截图"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: screenshot
+        description: "截取页面截图，返回 base64 或保存到文件"
+        parameters:
+          filename:
+            type: string
+            description: "保存路径，不填返回 base64"
+            required: false
+          full_page:
+            type: boolean
+            description: "是否截取整页"
+            default: false
+  - name: execute_js
+    display_name: "执行 JS"
+    description: "在页面中执行 JavaScript 代码"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: execute_js
+        description: "在页面上下文中执行 JavaScript"
+        parameters:
+          code:
+            type: string
+            description: "JavaScript 代码字符串"
+            required: true
+  - name: wait_for
+    display_name: "等待元素"
+    description: "等待指定元素出现在页面上"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: wait_for
+        description: "阻塞直到选择器匹配到元素"
+        parameters:
+          selector:
+            type: string
+            description: "CSS 选择器"
+            required: true
+          timeout:
+            type: integer
+            description: "最大等待秒数"
+            default: 10
+  - name: scroll
+    display_name: "滚动"
+    description: "滚动页面"
+    module: "tools.browser"
+    class: "BrowserTool"
+    methods:
+      - name: scroll
+        description: "向指定方向滚动页面"
+        parameters:
+          direction:
+            type: string
+            description: "滚动方向: down, up, top, bottom"
+            default: "down"
+          amount:
+            type: integer
+            description: "滚动像素数"
+            default: 500
+
+dependencies:
+  python:
+    - "playwright>=1.40"
+  system:
+    - "playwright install chromium"
+
+activation:
+  keywords: ["浏览器", "浏览", "打开网页", "截图", "网页", "网站"]
+  auto_activate: false
+
+tags: [browser, web, automation, playwright]

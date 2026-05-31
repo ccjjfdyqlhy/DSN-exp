@@ -1,0 +1,112 @@
+name: skillmgr
+display_name: "技能管理"
+description: "管理技能生命周期：列出、安装、卸载、启用、禁用，以及从 SKILL.md 转换第三方技能"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 10
+
+tools:
+  - name: list_skills
+    display_name: "列出技能"
+    description: "列出所有已安装技能的详细信息"
+    module: "tools.skillmgr"
+    class: "SkillMgrTool"
+    methods:
+      - name: list_skills
+        description: "列出已安装技能的名称、状态、依赖、工具数"
+        parameters: []
+  - name: enable_skill
+    display_name: "启用技能"
+    description: "启用指定技能"
+    module: "tools.skillmgr"
+    class: "SkillMgrTool"
+    methods:
+      - name: enable_skill
+        description: "启用技能并注册其工具和提示词"
+        parameters:
+          name:
+            type: string
+            description: "技能名称"
+            required: true
+  - name: disable_skill
+    display_name: "禁用技能"
+    description: "禁用指定技能"
+    module: "tools.skillmgr"
+    class: "SkillMgrTool"
+    methods:
+      - name: disable_skill
+        description: "禁用技能并注销其工具和提示词"
+        parameters:
+          name:
+            type: string
+            description: "技能名称"
+            required: true
+  - name: install_deps
+    display_name: "安装依赖"
+    description: "检查并安装技能的 Python 和系统依赖"
+    module: "tools.skillmgr"
+    class: "SkillMgrTool"
+    methods:
+      - name: install_deps
+        description: "读取 skill.yaml 的 dependencies 字段，安装 python 包并执行 system 命令"
+        parameters:
+          name:
+            type: string
+            description: "技能名称"
+            required: true
+          upgrade:
+            type: boolean
+            description: "是否使用 pip --upgrade"
+            default: false
+  - name: convert_skill
+    display_name: "转换技能"
+    description: "将 claw_skills 下的 SKILL.md 转换为 DSN-exp 技能格式"
+    module: "tools.skillmgr"
+    class: "SkillMgrTool"
+    methods:
+      - name: convert_skill
+        description: "读取 SKILL.md，生成 skill.yaml + prompts + tools wrapper"
+        parameters:
+          source_name:
+            type: string
+            description: "claw_skills 下的目录名"
+            required: true
+          target_name:
+            type: string
+            description: "目标技能名称（可选，默认同 source_name）"
+            required: false
+          target_source:
+            type: string
+            description: "安装位置: custom(默认) 或 builtin"
+            default: "custom"
+  - name: download_skill
+    display_name: "下载技能"
+    description: "从 URL 下载技能并放到 claw_skills 目录"
+    module: "tools.skillmgr"
+    class: "SkillMgrTool"
+    methods:
+      - name: download_skill
+        description: "从 GitHub raw URL 或其他直链下载 SKILL.md 到 claw_skills"
+        parameters:
+          url:
+            type: string
+            description: "SKILL.md 或包含 SKILL.md 的 zip/目录的下载地址"
+            required: true
+          name:
+            type: string
+            description: "本地存储目录名（可选，默认从 URL 推断）"
+            required: false
+
+dependencies:
+  python: []
+  system: []
+
+activation:
+  keywords: ["技能管理", "skillmgr", "安装技能", "转换技能", "下载技能"]
+  auto_activate: false
+
+tags: [management, skills, installation]

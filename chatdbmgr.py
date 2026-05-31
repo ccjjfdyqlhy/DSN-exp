@@ -162,6 +162,24 @@ class ChatDBManager:
                 # 人格系统 v2 状态表
                 from prompt.personality_v2.persistence import CREATE_PERSONALITY_TABLE
                 conn.execute(CREATE_PERSONALITY_TABLE)
+
+                # 用户印象表
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS user_impressions (
+                        impression_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        uid INTEGER NOT NULL,
+                        category TEXT NOT NULL DEFAULT '其他',
+                        content TEXT NOT NULL,
+                        confidence REAL NOT NULL DEFAULT 0.5,
+                        source TEXT NOT NULL DEFAULT 'inferred',
+                        evidence TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_impressions_uid ON user_impressions(uid)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_impressions_category ON user_impressions(category)")
                 
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
@@ -169,6 +187,102 @@ class ChatDBManager:
                 self.logger.error("初始化数据库表失败: %s", e)
                 conn.rollback()
                 raise
+
+    # ═══════════════════════════════════════════
+    # 用户印象系统 (User Impressions)
+    # ═══════════════════════════════════════════
+
+    def add_impression(self, uid: int, category: str, content: str,
+                       confidence: float = 0.5, source: str = "inferred",
+                       evidence: str = "") -> int:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO user_impressions (uid, category, content, confidence, source, evidence) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (uid, category, content, confidence, source, evidence),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.Error as e:
+            self.logger.error("添加印象失败: %s", e)
+            conn.rollback()
+            raise
+
+    def update_impression(self, impression_id: int, **fields) -> bool:
+        conn = self._get_connection()
+        allowed = {"category", "content", "confidence", "source", "evidence"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        updates["updated_at"] = "datetime('now')"
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [impression_id]
+        try:
+            conn.execute(
+                f"UPDATE user_impressions SET {set_clause} WHERE impression_id = ?",
+                values,
+            )
+            conn.commit()
+            return conn.total_changes > 0
+        except sqlite3.Error as e:
+            self.logger.error("更新印象失败: %s", e)
+            conn.rollback()
+            return False
+
+    def delete_impression(self, impression_id: int) -> bool:
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM user_impressions WHERE impression_id = ?", (impression_id,))
+            conn.commit()
+            return conn.total_changes > 0
+        except sqlite3.Error as e:
+            self.logger.error("删除印象失败: %s", e)
+            conn.rollback()
+            return False
+
+    def get_impressions(self, uid: int, category: str = None,
+                        min_confidence: float = 0.0, limit: int = 50) -> list[dict]:
+        conn = self._get_connection()
+        try:
+            query = "SELECT * FROM user_impressions WHERE uid = ?"
+            params: list = [uid]
+            if category:
+                query += " AND category = ?"
+                params.append(category)
+            if min_confidence > 0.0:
+                query += " AND confidence >= ?"
+                params.append(min_confidence)
+            query += " ORDER BY confidence DESC, updated_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error as e:
+            self.logger.error("查询印象失败: %s", e)
+            return []
+
+    def count_impressions(self, uid: int) -> int:
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM user_impressions WHERE uid = ?", (uid,)
+            ).fetchone()
+            return row["cnt"] if row else 0
+        except sqlite3.Error as e:
+            self.logger.error("统计印象失败: %s", e)
+            return 0
+
+    def get_impression_categories(self, uid: int) -> list[str]:
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM user_impressions WHERE uid = ? ORDER BY category",
+                (uid,)
+            ).fetchall()
+            return [r["category"] for r in rows]
+        except sqlite3.Error as e:
+            self.logger.error("获取印象分类失败: %s", e)
+            return []
 
     def add_or_update_user(self, uid: int, nickname: str) -> None:
         """添加或更新用户信息"""
