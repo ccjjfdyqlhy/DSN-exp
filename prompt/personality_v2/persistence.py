@@ -97,6 +97,7 @@ class PersonalityStateStore:
             ).fetchone()
             if row is None:
                 return None
+            logger.info("加载人格状态 uid=%d preset=%s", uid, row["preset_name"])
             return dict(row)
         except Exception as e:
             logger.error("加载人格状态失败 uid=%d: %s", uid, e)
@@ -209,7 +210,7 @@ class PersonalityStateStore:
                 ))
 
             conn.commit()
-            logger.debug("已刷新 %d 条人格状态", len(pending))
+            logger.info("已持久化 %d 条人格状态", len(pending))
         except Exception as e:
             logger.error("刷新人格状态失败: %s", e)
             conn.rollback()

@@ -379,6 +379,15 @@ class DSNEngine:
                 db=self.db,
             ))
 
+        # 2b. PersonalityPlugin (POST_PROCESS, priority 25)
+        if enabled("personality"):
+            pe = self.prompt_engine
+            if pe and pe.personality_v2:
+                from plugins.builtin.personality_plugin import PersonalityPlugin
+                self.plugin_manager.register(PersonalityPlugin(
+                    personality_v2=pe.personality_v2,
+                ))
+
         # 3. RecallPlugin (POST_PROCESS, priority 33)
         if enabled("recall") and self.memory_manager:
             try:

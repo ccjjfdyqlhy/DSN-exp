@@ -250,7 +250,7 @@ class PersonalitySystemV2:
             last_interaction=now_iso,
         )
 
-        return {
+        result = {
             "stimulus": stimulus.to_dict(),
             "mood": mood,
             "display_emotion": emotion.get_display_emotion(),
@@ -259,6 +259,15 @@ class PersonalitySystemV2:
             "affinity_level": affinity.get_level(),
             "total_interactions": state["total_interactions"],
         }
+
+        level_name, _ = AFFINITY_LEVELS.get(result["affinity_level"], AFFINITY_LEVELS[0])
+        deltas_str = ", ".join(f"{aid}{d:+.1f}" for aid, d in affinity_deltas) if affinity_deltas else "无变化"
+        logger.info("人格交互 #%d: 心境=%s, 亲和=L%d「%s」(%.0f/100) Δ=[%s]",
+                     result["total_interactions"], result["mood"]["label"],
+                     result["affinity_level"], level_name,
+                     result["affinity_value"], deltas_str)
+
+        return result
 
     def build_prompt(self, uid: int) -> str:
         """生成自然语言人格快照，用于注入 system prompt"""

@@ -461,6 +461,25 @@ app.logger.info("PromptEngine 已初始化完成 (条目: %d)", len(prompt_engin
 
 _personality_v2 = prompt_engine.personality_v2
 
+# ---- 初始化插件管理器 ----
+from plugins.manager import PluginManager
+from plugins.base import HookPoint, PluginContext
+_app_plugin_manager = PluginManager()
+if _personality_v2:
+    from plugins.builtin.personality_plugin import PersonalityPlugin
+    _app_plugin_manager.register(PersonalityPlugin(personality_v2=_personality_v2))
+
+
+def _dispatch_plugins_sync(hook: HookPoint, ctx: PluginContext) -> None:
+    """同步调度指定钩子下所有已启用的插件（用于 Flask 非异步端点）"""
+    for plugin in _app_plugin_manager.get_hooks_for(hook):
+        if not _app_plugin_manager.is_enabled(plugin.name):
+            continue
+        try:
+            plugin.on_hook(hook, ctx)
+        except Exception:
+            pass
+
 # ---------- 初始化技能系统 ----------
 try:
     _skills_dir = _os.path.join(_os.path.dirname(__file__), "skills")
@@ -614,14 +633,9 @@ def chat_send():
     # 保存原始回复
     original_reply = reply
 
-    # ---- 人格系统 v2: 交互后更新 ----
-    if _personality_v2:
-        try:
-            _interaction = _personality_v2.on_interaction(user_id, message, is_positive=True)
-            app.logger.debug("人格v2交互更新: mood=%s, affinity=%.0f",
-                             _interaction["mood"]["label"], _interaction["affinity_value"])
-        except Exception as e:
-            app.logger.debug("人格v2交互更新跳过: %s", e)
+    # ---- 插件调度: 人格系统 v2 交互后更新 ----
+    _dispatch_plugins_sync(HookPoint.POST_PROCESS,
+                           PluginContext(user_id=user_id, message=message))
 
     # --- 处理技能工具 (<tool> 标签) ---
     if skill_registry is not None:
@@ -915,12 +929,9 @@ def chat_stream_send():
         db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
 
-        # ---- 人格系统 v2: 交互后更新 ----
-        if _personality_v2:
-            try:
-                _personality_v2.on_interaction(user_id, message, is_positive=True)
-            except Exception:
-                pass
+        # ---- 插件调度: 人格系统 v2 交互后更新 ----
+        _dispatch_plugins_sync(HookPoint.POST_PROCESS,
+                               PluginContext(user_id=user_id, message=message))
 
         # ── 阶段 3: 统一 Agent Loop（工具 + 动作）──
         max_steps = Config.AGENT_MAX_STEPS
