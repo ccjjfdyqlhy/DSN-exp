@@ -152,6 +152,62 @@ def _format_tool_result(skill: str, tool: str, result) -> str:
         if tool == "write_file":
             return f"已写入 {result.get('path', '')} ({result.get('size', 0)} bytes)"
 
+    if skill == "browser_use":
+        if tool == "navigate":
+            return f"[浏览器] 已导航到 {result.get('url', '')}\n标题: {result.get('title', '')}"
+        if tool == "click":
+            return f"[浏览器] 已点击 \"{result.get('selector', '')}\""
+        if tool == "type":
+            return f"[浏览器] 已在 \"{result.get('selector', '')}\" 中输入文本"
+        if tool == "get_content":
+            return f"[浏览器] 页面内容 ({result.get('length', 0)} 字符):\n{result.get('content', '')[:2000]}"
+        if tool == "get_title":
+            return f"[浏览器] 页面标题: {result.get('title', '')}"
+        if tool == "get_url":
+            return f"[浏览器] 当前 URL: {result.get('url', '')}"
+        if tool == "screenshot":
+            if result.get("path"):
+                return f"[浏览器] 截图已保存到 {result['path']}"
+            return f"[浏览器] 截图 (base64, {result.get('length', 0)} 字符)"
+        if tool == "execute_js":
+            return f"[浏览器] JS 执行结果: {result.get('result', '')[:1000]}"
+        if tool == "wait_for":
+            appeared = result.get("appeared", False)
+            status = "已出现" if appeared else "未出现"
+            return f"[浏览器] 等待 \"{result.get('selector', '')}\" → {status}"
+        if tool == "scroll":
+            return f"[浏览器] 已向{result.get('direction', '')}滚动"
+
+    if skill == "skillmgr":
+        if tool == "list_skills":
+            skills = result.get("skills", [])
+            lines = [f"已安装技能 ({len(skills)} 个):"]
+            for s in skills:
+                status = "✓" if s.get("enabled") else "✗"
+                lines.append(f"  {status} {s['name']} ({s.get('display_name', '')}) [{s.get('source', '')}] — {s.get('tool_count', 0)} tools")
+            return "\n".join(lines)
+        if tool == "enable_skill":
+            return f"[skillmgr] {result.get('message', '')}"
+        if tool == "disable_skill":
+            return f"[skillmgr] {result.get('message', '')}"
+        if tool == "install_deps":
+            py = result.get("python_installed", [])
+            sk = result.get("python_skipped", [])
+            sys_r = result.get("system_results", [])
+            lines = [f"[skillmgr] 依赖安装完成:"]
+            if py:
+                lines.append(f"  新安装: {', '.join(py)}")
+            if sk:
+                lines.append(f"  已存在: {', '.join(sk)}")
+            if sys_r:
+                for r in sys_r:
+                    lines.append(f"  系统命令: {r.get('command', '')} (exit={r.get('exit_code', '?')})")
+            return "\n".join(lines)
+        if tool == "convert_skill":
+            return f"[skillmgr] {result.get('message', '')}\n目标: {result.get('target', '')}\n二进制: {result.get('binary', '')}"
+        if tool == "download_skill":
+            return f"[skillmgr] {result.get('message', '')}"
+
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 def handle_complex_question(user_id: int, chat_id: int, message: str, history: list) -> dict:
@@ -461,6 +517,10 @@ app.logger.info("PromptEngine 已初始化完成 (条目: %d)", len(prompt_engin
 
 _personality_v2 = prompt_engine.personality_v2
 
+# ---- 初始化印象管理器 ----
+from prompt.impression import ImpressionManager
+_impression_manager = ImpressionManager(db=db)
+
 # ---- 初始化插件管理器 ----
 from plugins.manager import PluginManager
 from plugins.base import HookPoint, PluginContext
@@ -468,6 +528,9 @@ _app_plugin_manager = PluginManager()
 if _personality_v2:
     from plugins.builtin.personality_plugin import PersonalityPlugin
     _app_plugin_manager.register(PersonalityPlugin(personality_v2=_personality_v2))
+
+from plugins.builtin.impression_plugin import ImpressionPlugin
+_app_plugin_manager.register(ImpressionPlugin(impression_manager=_impression_manager))
 
 
 def _dispatch_plugins_sync(hook: HookPoint, ctx: PluginContext) -> None:
@@ -853,6 +916,24 @@ def chat_stream_send():
                 actions.append({"action_type": p.get("action_type", "shell"), "params": p})
         return actions
 
+    def _extract_and_save_impressions(text: str) -> None:
+        """从 AI 回复中提取 IMPRESSION: 标签并写入 DB"""
+        if not _impression_manager:
+            return
+        import re
+        pat = re.compile(r"IMPRESSION\s*:\s*(.+?)\s*:\s*(.+?)\s*:\s*(\d+)", re.IGNORECASE)
+        for m in pat.finditer(text):
+            try:
+                _impression_manager.add(
+                    user_id,
+                    m.group(1).strip(),
+                    m.group(2).strip(),
+                    int(m.group(3)) / 100.0,
+                    "inferred",
+                )
+            except Exception:
+                pass
+
     def _format_action_result(action_type: str, result: dict) -> str:
         """格式化 action 执行结果，用于喂回 AI"""
         if result.get("success"):
@@ -934,7 +1015,12 @@ def chat_stream_send():
                                PluginContext(user_id=user_id, message=message))
 
         # ── 阶段 3: 统一 Agent Loop（工具 + 动作）──
-        max_steps = Config.AGENT_MAX_STEPS
+        ssp_mode = bool(re.search(r"<ssp>", original_reply, re.IGNORECASE))
+        max_steps = 50 if ssp_mode else Config.AGENT_MAX_STEPS
+        if ssp_mode:
+            app.logger.info("SSP 自维持管线启动: uid=%d max_steps=%d", user_id, max_steps)
+            yield f"data: {json.dumps({'status': 'agent_action', 'desc': 'ssp_start'})}\n\n"
+
         pending = original_reply
         last_reply_for_tts = original_reply
         first_display = True
@@ -955,6 +1041,7 @@ def chat_stream_send():
                 pending = chat.send_message(tool_feedback)
                 db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
                 last_reply_for_tts = pending
+                _extract_and_save_impressions(pending)
                 if first_display:
                     yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
                     first_display = False
@@ -978,6 +1065,7 @@ def chat_stream_send():
                 pending = chat.send_message(feedback)
                 db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
                 last_reply_for_tts = pending
+                _extract_and_save_impressions(pending)
                 if first_display:
                     yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
                     first_display = False
@@ -1131,6 +1219,66 @@ def personality_switch():
         return jsonify({"error": "Missing preset name"}), 400
     result = _personality_v2.switch_preset(g.user["uid"], data["preset"])
     return jsonify(result)
+
+
+# ========== 用户印象 API ==========
+
+@app.route("/api/impressions", methods=["GET"])
+@login_required
+def impression_list():
+    """获取所有用户印象"""
+    uid = g.user["uid"]
+    category = request.args.get("category")
+    min_conf = float(request.args.get("min_confidence", 0.0))
+    imps = _impression_manager.query(uid, category=category, min_confidence=min_conf)
+    return jsonify({
+        "impressions": imps,
+        "count": len(imps),
+        "summary": _impression_manager.summary(uid),
+    })
+
+
+@app.route("/api/impressions", methods=["POST"])
+@login_required
+def impression_add():
+    """手动添加印象"""
+    uid = g.user["uid"]
+    data = request.get_json()
+    if not data or "content" not in data:
+        return jsonify({"error": "Missing content"}), 400
+    imp_id = _impression_manager.add(
+        uid,
+        data.get("category", "其他"),
+        data["content"],
+        data.get("confidence", 0.7),
+        data.get("source", "declared"),
+        data.get("evidence", ""),
+    )
+    return jsonify({"impression_id": imp_id})
+
+
+@app.route("/api/impressions/<int:impression_id>", methods=["DELETE"])
+@login_required
+def impression_delete(impression_id: int):
+    """删除指定印象"""
+    ok = _impression_manager.delete(impression_id)
+    return jsonify({"success": ok})
+
+
+@app.route("/api/impressions/suggest", methods=["GET"])
+@login_required
+def impression_suggest():
+    """检查是否建议启动全面了解协议"""
+    uid = g.user["uid"]
+    affinity_level = 0
+    if _personality_v2:
+        state = _personality_v2.get_state(uid)
+        affinity_level = state.get("affinity", {}).get("level", 0)
+    suggest = _impression_manager.should_propose_ssp(uid, affinity_level)
+    return jsonify({
+        "suggest_ssp": suggest,
+        "impression_count": _impression_manager.count(uid),
+    })
 
 
 if __name__ == "__main__":

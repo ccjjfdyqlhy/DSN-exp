@@ -98,6 +98,7 @@ class DSNEngine:
         self.memory_manager: Optional[MemoryManager] = None
         self.task_manager: Optional[TaskManager] = None
         self.summary_model: Optional[LMSummaryModel] = None
+        self.impression_manager = None
 
         self.plugin_manager = PluginManager()
         self.skill_registry = SkillRegistry()
@@ -131,6 +132,8 @@ class DSNEngine:
         db_path = self._engine_cfg.database_path
         abs_path = self._cfg.resolve_path(db_path) if self._cfg else db_path
         self.db = ChatDBManager(db_path=abs_path)
+        from prompt.impression import ImpressionManager
+        self.impression_manager = ImpressionManager(db=self.db)
 
     def _init_tasks(self):
         if not self._engine_cfg.task_manager_enabled:
@@ -388,6 +391,13 @@ class DSNEngine:
                     personality_v2=pe.personality_v2,
                 ))
 
+        # 2c. ImpressionPlugin (PRE_PROCESS + POST_PROCESS, priority 22)
+        if enabled("impression"):
+            from plugins.builtin.impression_plugin import ImpressionPlugin
+            self.plugin_manager.register(ImpressionPlugin(
+                impression_manager=self.impression_manager,
+            ))
+
         # 3. RecallPlugin (POST_PROCESS, priority 33)
         if enabled("recall") and self.memory_manager:
             try:
@@ -414,6 +424,16 @@ class DSNEngine:
                 max_steps=ec.agent_max_steps,
                 token_budget=ec.agent_token_budget,
                 agent_timeout=ec.agent_timeout,
+            ))
+
+        # 5c. SSPPlugin (POST_PROCESS, priority 50)
+        if enabled("ssp"):
+            from plugins.builtin.ssp_plugin import SSPPlugin
+            self.plugin_manager.register(SSPPlugin(
+                db=self.db,
+                impression_manager=self.impression_manager,
+                models_plugin=self._models_plugin,
+                skill_registry=self.skill_registry,
             ))
 
         # 5b. TaskPlugin (POST_PROCESS, priority 40)
@@ -600,6 +620,7 @@ def create_engine_with_defaults(
     memory_manager: MemoryManager = None,
     skill_registry: SkillRegistry = None,
     skill_manager: SkillManager = None,
+    impression_manager = None,
 ) -> DSNEngine:
     """
     使用已有组件创建引擎（供 app.py 复用）。
@@ -620,6 +641,8 @@ def create_engine_with_defaults(
         engine.skill_registry = skill_registry
     if skill_manager:
         engine.skill_manager = skill_manager
+    if impression_manager:
+        engine.impression_manager = impression_manager
 
     # PromptEngine — v2
     _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt")
