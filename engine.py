@@ -99,6 +99,9 @@ class DSNEngine:
         self.task_manager: Optional[TaskManager] = None
         self.summary_model: Optional[LMSummaryModel] = None
         self.impression_manager = None
+        self.world_engine = None
+        self.world_state_manager = None
+        self.narrative_model = None
 
         self.plugin_manager = PluginManager()
         self.skill_registry = SkillRegistry()
@@ -381,6 +384,17 @@ class DSNEngine:
                 memory_manager=self.memory_manager,
                 db=self.db,
             ))
+
+        # 2a. WorldPlugin (PRE_PROCESS + POST_PROCESS, priority 15)
+        if enabled("world") and self.world_engine:
+            from world import WorldPlugin
+            self.plugin_manager.register(WorldPlugin(
+                world_engine=self.world_engine,
+                world_state_manager=self.world_state_manager,
+                narrative_model=self.narrative_model,
+                personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
+            ))
+
 
         # 2b. PersonalityPlugin (POST_PROCESS, priority 25)
         if enabled("personality"):
