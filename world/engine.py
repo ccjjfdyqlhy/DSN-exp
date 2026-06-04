@@ -1,0 +1,414 @@
+# world/engine.py
+# WorldEngine — 天体力学 + 天气模拟 + 地理 + 随机事件
+
+from __future__ import annotations
+
+import copy
+import logging
+import random
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+logger = logging.getLogger("WorldEngine")
+
+
+class WorldEngine:
+    """世界状态引擎。解析 YAML 世界配置，计算天体力学时间、天气、月光，管理地理和事件。"""
+
+    def __init__(self, config: dict | None = None):
+        self._config: dict = config or {}
+        self._epoch_real: float = time.time()
+        self._weather: str = "晴朗"
+        self._last_weather_refresh: int = 0
+        self._current_location: str = "core"
+        self._recent_events: list[dict] = []
+        self._scheduled_cooldowns: dict[str, int] = {}
+        self._prev_season: str = ""
+        self._prev_mood_label: str = ""
+        self._first_tool_used: bool = False
+        self._prev_affinity_level: int = 0
+
+        if config:
+            self._apply_config()
+
+    def load_config(self, config: dict) -> None:
+        self._config = config
+        self._epoch_real = time.time()
+        self._apply_config()
+
+    def load_config_file(self, path: str) -> None:
+        import yaml
+        from pathlib import Path
+        self.load_config(yaml.safe_load(Path(path).read_text(encoding="utf-8-sig")) or {})
+        logger.info("世界配置已加载: %s (季节=%d, 房间=%d, 随机事件=%d)",
+                     Path(path).stem,
+                     len(self._seasons),
+                     len(self._rooms),
+                     len(self._random_events))
+
+    def _apply_config(self):
+        c = self._config
+        cel = c.get("celestial", {})
+        geo = c.get("geography", {})
+        self._celestial = cel
+        self._day_length = cel.get("day_length", 86400)
+        self._year_length = cel.get("year_length", 31536000)
+        self._time_scale = cel.get("time_scale", 1.0)
+        self._seasons = cel.get("seasons", [])
+        self._moon = cel.get("moon", {})
+        self._day_parts = cel.get("day_parts", {})
+        self._weather_descriptions = cel.get("weather_descriptions", {})
+        epoch_str = cel.get("epoch", "2026-01-01T00:00:00")
+        try:
+            self._epoch_dt = datetime.fromisoformat(epoch_str)
+        except (ValueError, TypeError):
+            self._epoch_dt = datetime(2026, 1, 1)
+        self._epoch_year = self._epoch_dt.year
+        self._days_per_year = int(self._year_length / self._day_length)
+
+        phys = c.get("physics", {})
+        self._weather_persistence = phys.get("weather_persistence", 0.8)
+        self._weather_refresh_interval = phys.get("weather_refresh_interval", 600)
+        self._day_night_visible = phys.get("day_night_visible", True)
+
+        self._rooms = geo.get("rooms", [])
+        self._tool_room_map = geo.get("tool_room_map", {})
+        self._current_location = geo.get("current_location", "core")
+
+        events_conf = c.get("events", {})
+        self._scheduled_events = events_conf.get("scheduled", [])
+        self._random_events_config = events_conf.get("random", {})
+        self._random_event_interval = self._random_events_config.get("interval", 3600)
+        self._random_events = self._random_events_config.get("events", [])
+        self._interaction_events = events_conf.get("interaction", [])
+        self._last_random_check: int = 0
+
+        # Prime initial weather from first season
+        if self._seasons:
+            s = self._find_season(1)
+            weights = s.get("weather", {})
+            self._weather = self._roll_weighted(weights) or "晴朗"
+
+    # ═══════════════════ 时间 ═══════════════════
+
+    def world_time_now(self) -> dict:
+        elapsed_real = time.time() - self._epoch_real
+        elapsed_world = int(elapsed_real * self._time_scale)
+
+        year_offset = elapsed_world // self._year_length
+        year = self._epoch_year + year_offset
+        remainder_in_year = elapsed_world % self._year_length
+        day_of_year = int(remainder_in_year // self._day_length) + 1
+        day_seconds = remainder_in_year % self._day_length
+        hour = int(day_seconds // 3600)
+        minute = int((day_seconds % 3600) // 60)
+        second = int(day_seconds % 60)
+
+        season = self._find_season(day_of_year)
+        daylight = self._is_daylight(hour, season.get("daylight_hours", 12))
+        day_part = self._find_day_part(hour)
+        moon_phase = self._compute_moon_phase(elapsed_world)
+        temperature = self._compute_temperature(season)
+
+        return {
+            "year": year,
+            "day_of_year": day_of_year,
+            "season": season,
+            "season_name": season.get("name", ""),
+            "hour": hour,
+            "minute": minute,
+            "second": second,
+            "daylight": daylight,
+            "day_part": day_part,
+            "moon_phase": moon_phase,
+            "moon_name": self._moon.get("name", "月"),
+            "temperature": temperature,
+            "light_color": season.get("light_color", "#FFFFFF"),
+        }
+
+    def world_delta(self, real_seconds: float) -> float:
+        return real_seconds * self._time_scale
+
+    def _find_season(self, day_of_year: int) -> dict:
+        for s in self._seasons:
+            start = s.get("start_day", 0)
+            days = s.get("days", 90)
+            if start <= day_of_year - 1 < start + days:
+                return s
+        return self._seasons[0] if self._seasons else {"name": "恒常", "daylight_hours": 12, "weather": {"晴朗": 1.0}, "temperature": [15, 25], "light_color": "#FFFFFF"}
+
+    def _is_daylight(self, hour: int, daylight_hours: float) -> bool:
+        dawn = 12 - daylight_hours / 2
+        dusk = 12 + daylight_hours / 2
+        return dawn <= hour < dusk
+
+    def _find_day_part(self, hour: int) -> str:
+        parts = self._celestial.get("day_parts", [])
+        if isinstance(parts, list):
+            for entry in parts:
+                if isinstance(entry, dict):
+                    rng = entry.get("range", [0, 24])
+                    lo, hi = rng[0], rng[1]
+                    if lo <= hour < hi:
+                        return entry.get("label", "白天")
+        return "白天"
+
+    def _compute_moon_phase(self, elapsed_world: int) -> str:
+        period = self._moon.get("period", 2551443)
+        phases = self._moon.get("phase_names", ["新月", "蛾眉月", "上弦月", "盈凸月", "满月", "亏凸月", "下弦月", "残月"])
+        if period <= 0:
+            return phases[0] if phases else "无"
+        idx = int((elapsed_world % period) / period * len(phases)) % len(phases)
+        return phases[idx]
+
+    def _compute_temperature(self, season: dict) -> int:
+        tr = season.get("temperature", [15, 25])
+        return random.randint(tr[0], tr[1])
+
+    # ═══════════════════ 天气 ═══════════════════
+
+    def get_weather(self) -> dict:
+        return {
+            "current": self._weather,
+            "description": self._weather_descriptions.get(self._weather, self._weather),
+            "temperature": self._compute_temperature(self._get_current_season()),
+        }
+
+    def refresh_weather(self) -> None:
+        if random.random() > self._weather_persistence:
+            season = self._get_current_season()
+            weights = season.get("weather", {"晴朗": 1.0})
+            new = self._roll_weighted(weights)
+            if new and new != self._weather:
+                old = self._weather
+                self._weather = new
+                logger.info("天气变化: %s → %s", old, new)
+
+    def should_refresh_weather(self) -> bool:
+        elapsed = int((time.time() - self._epoch_real) * self._time_scale)
+        if elapsed - self._last_weather_refresh >= self._weather_refresh_interval:
+            self._last_weather_refresh = elapsed
+            return True
+        return False
+
+    def _get_current_season(self) -> dict:
+        t = self.world_time_now()
+        return t.get("season", {})
+
+    @staticmethod
+    def _roll_weighted(weights: dict) -> str | None:
+        if not weights:
+            return None
+        items = list(weights.keys())
+        w = list(weights.values())
+        s = sum(w)
+        if s == 0:
+            return random.choice(items)
+        return random.choices(items, weights=w, k=1)[0]
+
+    # ═══════════════════ 地理 ═══════════════════
+
+    def get_current_location(self) -> dict:
+        for r in self._rooms:
+            if r.get("id") == self._current_location:
+                return dict(r)
+        return {"id": self._current_location, "name": self._current_location, "description": ""}
+
+    def move_to(self, room_id: str, reason: str = "") -> None:
+        prev = self._current_location
+        self._current_location = room_id
+        room = self.find_room(room_id)
+        name = room.get("name", room_id) if room else room_id
+        if reason:
+            self.record_event(f"EXA进入了{name}——{reason}")
+            logger.info("房间移动: %s → %s (%s)", self._rooms_by_id(prev), name, reason)
+        elif prev != room_id:
+            self.record_event(f"EXA从{self._rooms_by_id(prev)}进入了{name}")
+            logger.info("房间移动: %s → %s", self._rooms_by_id(prev), name, room_id)
+
+    def find_room(self, room_id: str) -> dict | None:
+        for r in self._rooms:
+            if r.get("id") == room_id:
+                return dict(r)
+        return None
+
+    def _rooms_by_id(self, rid: str) -> str:
+        r = self.find_room(rid)
+        return r.get("name", rid) if r else rid
+
+    def map_tool_to_room(self, tool_name: str) -> str:
+        for prefix, room in self._tool_room_map.items():
+            if tool_name.startswith(prefix):
+                return room
+        return self._tool_room_map.get("default", self._current_location)
+
+    # ═══════════════════ 事件 ═══════════════════
+
+    def poll_events(self) -> list[dict]:
+        triggered = []
+        t = self.world_time_now()
+        elapsed = int((time.time() - self._epoch_real) * self._time_scale)
+        triggered.extend(self._poll_scheduled_events(t, elapsed))
+        triggered.extend(self._poll_random_events(t, elapsed))
+        for evt in triggered:
+            self._recent_events.append(evt)
+        if len(self._recent_events) > 10:
+            self._recent_events = self._recent_events[-10:]
+        return triggered
+
+    def _poll_scheduled_events(self, t: dict, elapsed: int) -> list[dict]:
+        results = []
+        for evt in self._scheduled_events:
+            eid = evt.get("id", "")
+            cond = evt.get("condition", "")
+            cooldown = evt.get("cooldown", 0)
+            if not self._eval_condition(cond, t):
+                continue
+            if cooldown > 0:
+                if elapsed - self._scheduled_cooldowns.get(eid, -cooldown) < cooldown:
+                    continue
+            results.append({"id": eid, "name": evt.get("name", ""), "text": evt.get("text", ""), "source": "scheduled"})
+            self._scheduled_cooldowns[eid] = elapsed
+        return results
+
+    def _poll_random_events(self, t: dict, elapsed: int) -> list[dict]:
+        results = []
+        if elapsed - self._last_random_check < self._random_event_interval:
+            return results
+        self._last_random_check = elapsed
+        for evt in self._random_events:
+            prob = evt.get("probability", 0.0)
+            if random.random() > prob:
+                continue
+            cond = evt.get("condition", "")
+            if cond and not self._eval_condition(cond, t):
+                continue
+            results.append({"id": evt.get("id", ""), "name": evt.get("name", ""), "text": evt.get("text", ""), "source": "random"})
+        return results
+
+    def check_interaction_events(self, ctx_update: dict) -> list[dict]:
+        results = []
+        for evt in self._interaction_events:
+            cond = evt.get("condition", "")
+            if not self._eval_interaction_condition(cond, ctx_update):
+                continue
+            tmpl = evt.get("text_template", evt.get("text", ""))
+            text = self._render_template(tmpl, ctx_update)
+            results.append({"id": evt.get("id", ""), "name": evt.get("name", ""), "text": text, "source": "interaction"})
+        return results
+
+    def record_event(self, text: str, source: str = "custom") -> None:
+        self._recent_events.append({"id": f"custom_{len(self._recent_events)}", "text": text, "source": source})
+        if len(self._recent_events) > 10:
+            self._recent_events = self._recent_events[-10:]
+
+    def _eval_condition(self, cond: str, t: dict) -> bool:
+        if not cond:
+            return True
+        try:
+            context = {
+                "day_part": t.get("day_part", ""),
+                "moon_phase": t.get("moon_phase", ""),
+                "daylight": t.get("daylight", False),
+                "season_name": t.get("season_name", ""),
+                "weather": self._weather,
+                "location": self._current_location,
+                "season_just_changed": (self._prev_season != t.get("season_name", "")),
+            }
+            return bool(eval(cond, {"__builtins__": {}}, context))
+        except Exception:
+            return False
+
+    def _eval_interaction_condition(self, cond: str, ctx: dict) -> bool:
+        if not cond:
+            return True
+        try:
+            return bool(eval(cond, {"__builtins__": {}}, ctx))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _render_template(tmpl: str, ctx: dict) -> str:
+        try:
+            return tmpl.format(**ctx)
+        except (KeyError, ValueError):
+            return tmpl
+
+    # ═══════════════════ 全状态 ═══════════════════
+
+    def get_full_state(self) -> dict:
+        t = self.world_time_now()
+        w = self.get_weather()
+        loc = self.get_current_location()
+        events = list(self._recent_events[-5:])
+        return {
+            "time": t,
+            "weather": w,
+            "location": loc,
+            "recent_events": events,
+        }
+
+    def get_state_prompt(self) -> str:
+        """生成自然语言世界描述，注入 system prompt"""
+        t = self.world_time_now()
+        w = self.get_weather()
+        loc = self.get_current_location()
+        season = t.get("season_name", "")
+        day_part = t.get("day_part", "")
+        moon = t.get("moon_phase", "")
+        moon_name = t.get("moon_name", "月")
+        temp = t.get("temperature", 20)
+
+        lines = [
+            f"现在是{season}的{day_part}，{moon}{moon_name}挂在天上。",
+            f"你正位于{loc.get('name', '')}，{loc.get('description', '')}",
+            f"{w.get('description', '')}，气温约{temp}度。",
+        ]
+
+        events = self._recent_events[-5:]
+        if events:
+            for evt in events:
+                lines.append(f"（{evt.get('text', '')}）")
+
+        return "\n".join(lines)
+
+    def get_complete_context(self, mood_label: str = "") -> str:
+        """供 NarrativeModel 使用的完整上下文"""
+        prompt = self.get_state_prompt()
+        if mood_label:
+            prompt += f"\nEXA此刻的情绪色调是：{mood_label}。"
+        return prompt
+
+    def tick(self) -> None:
+        elapsed = int((time.time() - self._epoch_real) * self._time_scale)
+        self._prev_season = self.world_time_now().get("season_name", "")
+        if self.should_refresh_weather():
+            self.refresh_weather()
+
+    def to_dict(self) -> dict:
+        return {
+            "weather": self._weather,
+            "location": self._current_location,
+            "prev_season": self._prev_season,
+            "prev_mood_label": self._prev_mood_label,
+            "first_tool_used": self._first_tool_used,
+            "prev_affinity_level": self._prev_affinity_level,
+            "epoch_real": self._epoch_real,
+            "recent_events": self._recent_events,
+            "scheduled_cooldowns": self._scheduled_cooldowns,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict, config: dict) -> "WorldEngine":
+        inst = cls(config)
+        inst._weather = data.get("weather", inst._weather)
+        inst._current_location = data.get("location", inst._current_location)
+        inst._prev_season = data.get("prev_season", "")
+        inst._prev_mood_label = data.get("prev_mood_label", "")
+        inst._first_tool_used = data.get("first_tool_used", False)
+        inst._prev_affinity_level = data.get("prev_affinity_level", 0)
+        inst._epoch_real = data.get("epoch_real", inst._epoch_real)
+        inst._recent_events = data.get("recent_events", [])
+        inst._scheduled_cooldowns = data.get("scheduled_cooldowns", {})
+        return inst

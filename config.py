@@ -67,8 +67,8 @@ class Config:
     MEMORY_SUMMARY_BACKEND = _env("MEMORY_SUMMARY_BACKEND", "deepseek")  # "deepseek" | "lmstudio"
     MEMORY_MODEL = _env("MEMORY_MODEL", "deepseek-v4-flash")
     MEMORY_SUMMARY_LENGTH = int(_env("MEMORY_SUMMARY_LENGTH", "100"))
-    MEMORY_CONTEXT_WINDOW_SIZE = int(_env("MEMORY_CONTEXT_WINDOW_SIZE", "40"))
-    MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.5"))
+    MEMORY_CONTEXT_WINDOW_SIZE = int(_env("MEMORY_CONTEXT_WINDOW_SIZE", "80"))
+    MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.7"))
     MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
 
     # ==================== ASR 配置 ====================
@@ -88,4 +88,15 @@ class Config:
     ACTION_TIMEOUT = int(_env("ACTION_TIMEOUT", "300"))
 
     # ==================== Agent 循环 ====================
-    AGENT_MAX_STEPS = int(_env("AGENT_MAX_STEPS", "5"))
+    AGENT_MAX_STEPS = int(_env("AGENT_MAX_STEPS", "10"))
+
+    # ==================== 叙事世界模型 ====================
+    WORLD_ENABLED = _env("WORLD_ENABLED", "true").lower() in ("1", "true", "yes")
+    WORLD_PRESET = _env("WORLD_PRESET", "default")
+    WORLD_UPDATE_INTERVAL = int(_env("WORLD_UPDATE_INTERVAL", "60"))
+
+    NARRATIVE_ENABLED = _env("NARRATIVE_ENABLED", "true").lower() in ("1", "true", "yes")
+    NARRATIVE_MODEL = _env("NARRATIVE_MODEL", "deepseek-v4-flash")
+    NARRATIVE_TEMPERATURE = float(_env("NARRATIVE_TEMPERATURE", "0.9"))
+    NARRATIVE_MAX_TOKENS = int(_env("NARRATIVE_MAX_TOKENS", "150"))
+    NARRATIVE_KEEP_HISTORY = _env("NARRATIVE_KEEP_HISTORY", "false").lower() in ("1", "true", "yes")

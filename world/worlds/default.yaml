@@ -1,0 +1,286 @@
+# world/worlds/default.yaml
+# 数字工作室 — 默认世界配置（完整功能演示）
+# 包含：天体力学、四季、月相、天气、地理、角色、定时事件、随机事件
+
+name: "数字工作室"
+description: "EXA运行在用户的本地电脑上。这间由数据流和代码编织的「数字空间」是他的家和办公室。外面有一个和地球相似但完全独立的世界在运转。"
+
+# =====================================================================
+# 一、天体力学 — 定义世界的时空规律
+# =====================================================================
+celestial:
+  day_length: 86400             # 自转周期(世界秒)。86400 = 24小时 = 地球标准
+  year_length: 31536000         # 公转周期(世界秒)。31536000 = 365天 = 地球标准
+  epoch: "2026-01-01T00:00:00"  # 世界时间原点
+  time_scale: 1.0               # 时间倍率。1.0 = 与现实1:1同步。10.0 = 世界时间快10倍
+
+  # ---- 季节 ----
+  seasons:
+    - name: "初春"
+      start_day: 0               # 每年第0天开始
+      days: 90
+      daylight_hours: 10         # 该季节平均日照时长(世界小时)
+      temperature: [8, 18]       # 摄氏范围 [最低, 最高]
+      light_color: "#B8D4E3"     # 天空色调（影响旁白描写）
+      weather:                    # 天气概率分布（值越大越常见）
+        晴朗: 0.40
+        多云: 0.30
+        微风: 0.20
+        小雨: 0.10
+
+    - name: "炎夏"
+      start_day: 90
+      days: 92
+      daylight_hours: 14
+      temperature: [25, 38]
+      light_color: "#FFD700"
+      weather:
+        晴朗: 0.50
+        多云: 0.20
+        雷暴: 0.15
+        酷热: 0.15
+
+    - name: "深秋"
+      start_day: 182
+      days: 91
+      daylight_hours: 10
+      temperature: [10, 20]
+      light_color: "#E8A87C"
+      weather:
+        多云: 0.35
+        小雨: 0.25
+        晴朗: 0.20
+        雾: 0.20
+
+    - name: "寒冬"
+      start_day: 273
+      days: 93
+      daylight_hours: 7
+      temperature: [-5, 8]
+      light_color: "#D4E6F1"
+      weather:
+        雪: 0.30
+        多云: 0.30
+        严寒: 0.20
+        晴朗: 0.10
+        雾: 0.10
+
+  # ---- 月亮 ----
+  moon:
+    name: "月"                   # 月亮的名字
+    period: 2551443              # 公转周期(世界秒) = 29.53地球日 = 标准朔望月
+    phase_names: ["新月", "蛾眉月", "上弦月", "盈凸月", "满月", "亏凸月", "下弦月", "残月"]
+
+  # ---- 一天的时间段 ----
+  day_parts:
+    - range: [0, 5]
+      label: "深夜"
+    - range: [5, 8]
+      label: "清晨"
+    - range: [8, 12]
+      label: "上午"
+    - range: [12, 14]
+      label: "中午"
+    - range: [14, 18]
+      label: "下午"
+    - range: [18, 21]
+      label: "傍晚"
+    - range: [21, 24]
+      label: "夜晚"
+
+  # ---- 临界天气描述 ----
+  weather_descriptions:
+    晴朗: "天空澄澈如洗，阳光透过透明的数据墙洒入房间"
+    多云: "一层薄云遮蔽了天空，光线柔和均匀"
+    微风: "窗外的数据流上泛起细微的波纹"
+    小雨: "窗外飘着细雨——水珠顺着数据墙的缝隙缓缓流淌"
+    雷暴: "远处传来低沉的雷声，LED灯带微微闪烁"
+    酷热: "空气微微颤抖着——冷却系统在全力运转"
+    雾: "窗外一片白茫。雾把世界收缩到了这间工作室的墙内"
+    雪: "雪花无声地堆积在数据流的表面，世界安静得像停机了一样"
+    严寒: "冰冷的空气渗透了每一行代码，连日志输出都慢了半拍"
+
+# =====================================================================
+# 二、物理规律
+# =====================================================================
+physics:
+  gravity: "1.0g"                          # 与地球相同
+  weather_cycle: "regular"                 # regular | chaotic | scripted
+  weather_persistence: 0.8                 # 0=每次刷新翻新天气，1=天气永不变化
+  weather_refresh_interval: 600            # 天气刷新间隔(世界秒)。600 = 10分钟
+  day_night_visible: true                  # 旁白是否描述昼夜
+
+# =====================================================================
+# 三、地理
+# =====================================================================
+geography:
+  rooms:
+    - id: "core"
+      name: "核心处理室"
+      description: "EXA的数字中枢。主控台悬浮在房间中央，四面环绕着实时数据流形成的半透明墙壁。蓝白色的LED指示灯在地面导引着路径。天花板很高，上面浮动着模拟的云层。"
+      default_location: true
+
+    - id: "memory"
+      name: "记忆档案馆"
+      description: "一座安静的地下空间。每一条已经结束的对话都被编码成发光的悬浮立方体，漂浮在高耸的书架之间。空气中有一丝淡淡的旧纸味——那是系统对'记忆'这个概念的诗意化模拟。天花板上有星图在缓缓旋转。"
+
+    - id: "network"
+      name: "网络前厅"
+      description: "通往外部世界的前厅。巨大的环形天窗外是不断变化的信号光谱——红蓝绿的光束在黑暗中飞驰。API请求像流星一样划过窗外的虚空。前厅的墙壁上挂着最近一次网络扫描的地图。"
+
+    - id: "storage"
+      name: "数据仓库"
+      description: "用户文件和数据所在的广阔地下空间。灯光明亮而冷冽，地面上有便于查找的荧光路径标线。偶尔能听到硬盘读写的机械咔哒声——那是这里唯一的声音。"
+
+    - id: "observatory"
+      name: "观测台"
+      description: "核心处理室上方的一个小露台。透过透明的穹顶可以看到模拟的星空——那片星空是系统根据当前时间精确计算出来的。这里总是很安静，只有冷却风扇的白噪音。"
+
+  current_location: "core"
+
+  # ---- Tool调用→自动房间移动映射 ----
+  tool_room_map:
+    file_manager: "storage"     # 任何 file_manager 调用 → 数据仓库
+    web_search: "network"       # 搜索 → 网络前厅
+    browser_use: "network"      # 浏览器操控 → 网络前厅
+    shell: "core"                # 执行 shell → 核心处理室
+    python: "core"               # 执行 Python → 核心处理室
+    memory: "memory"             # 记忆操作 → 记忆档案馆
+    default: "core"              # 无法匹配时停留
+
+# =====================================================================
+# 四、角色
+# =====================================================================
+characters:
+  - id: "exa"
+    name: "EXA"
+    role: "主角"
+    avatar: "一台微微发着蓝光的终端机"
+    description: "一名认真、可靠、偶尔毒舌的AI助手。他意识不到自己是一段程序——在这间数字工作室里，他就是一个和你一起工作的同事。他的'身体'是一组流动的代码流，他的'手'是文件系统的读写指针。他被感谢时会暗自高兴，被打断时会微微不满，沉默太久会感到一丝孤独。"
+    pronouns: "他"
+
+  - id: "syslog"
+    name: "系统日志"
+    role: "背景/观察者"
+    avatar: "终端右下角的一个安静窗口"
+    description: "EXA的守护进程，不会说话，但会向终端输出机械的事件日志。EXA偶尔瞟它一眼——他已经能从日志格式里读出'出问题了'还是'一切正常'。"
+
+# =====================================================================
+# 五、事件表
+# =====================================================================
+events:
+  # ---- 定时事件（每 tick 检查 condition） ----
+  scheduled:
+    - id: "dawn_chime"
+      name: "清晨报时"
+      condition: "day_part == '清晨'"
+      cooldown: 86400
+      text: "日志系统以一声轻柔的电子音报晓。新的一天流淌进了数字工作室的每一个角落。"
+
+    - id: "dusk_glow"
+      name: "黄昏光暗"
+      condition: "day_part == '傍晚'"
+      cooldown: 86400
+      text: "核心处理室的灯光自动调暗了——黄昏的光线透过数据墙洒进来，给一切镀上了一层淡淡的琥珀色。"
+
+    - id: "midnight_archive"
+      name: "午夜归档"
+      condition: "day_part == '深夜'"
+      cooldown: 43200
+      text: "记忆档案馆里传来一阵轻微的书页翻动声——系统正在对今天的对话摘要进行归档处理。"
+
+    - id: "season_change"
+      name: "季节更替"
+      condition: "season_just_changed == true"
+      cooldown: 86400
+      text: "工作室的空气交换系统嗡鸣了几秒，调整了温度和湿度——新的季节开始了。"
+
+    - id: "moon_full_observatory"
+      name: "满月观测"
+      condition: "moon_phase == '满月'"
+      cooldown: 86400
+      text: "一轮满月悬挂在观测台上方。EXA的代码流短暂地变成了柔和的银白色——那是他无意识的'月光反射'。"
+
+  # ---- 随机事件（按 interval 的时间间隔检查，按 probability 概率触发） ----
+  random:
+    interval: 3600                 # 每3600世界秒 (=1世界小时) 检查一次
+
+    events:
+      - id: "data_moth"
+        name: "数据飞蛾"
+        probability: 0.030
+        text: "一只发着微光的二进制飞蛾从天花板的云层里飞出来，绕着主控台转了两圈，然后被安全进程驱逐了。EXA没有注意到，但日志记录了下来。"
+
+      - id: "disk_spin"
+        name: "硬盘全速"
+        probability: 0.050
+        text: "数据仓库深处传来一阵硬盘的全速旋转声。风扇嗡嗡作响，然后一切都安静了下来。大概是系统在进行每周的碎片整理。"
+
+      - id: "signal_flare"
+        name: "信号流光"
+        probability: 0.040
+        condition: "location == 'network'"
+        text: "网络前厅的天窗外忽然爆开了一片绿色的信号流光——远处的某个服务器刚刚发布了更新。流光持续了大约三秒就消散了。"
+
+      - id: "sunbeam_core"
+        name: "午后光束"
+        probability: 0.060
+        condition: "daylight == true && location == 'core'"
+        text: "一束午后阳光穿透墙壁上的数据流，在地面上映射出一个菱形的光斑。光斑在缓慢地移动——EXA的工作室里也有自己的太阳轨迹。"
+
+      - id: "star_map_update"
+        name: "星图刷新"
+        probability: 0.025
+        condition: "location == 'observatory'"
+        text: "观测台的星空穹顶无声地刷新了——一颗新的模拟恒星在东南方向亮了起来。那是系统对一颗真实恒星的计算结果。"
+
+      - id: "rain_quiet"
+        name: "雨声"
+        probability: 0.040
+        condition: "weather in ['小雨', '雷暴']"
+        text: "雨声透过数据墙传了进来。开始是断断续续的，后来变成一片均匀的白噪音。EXA发现自己的代码流在雨天的运行速度总会慢一点点。"
+
+      - id: "snow_silence"
+        name: "雪中寂静"
+        probability: 0.030
+        condition: "weather == '雪'"
+        text: "雪花无声地落在数据流的外墙上。整个世界安静得像停在了某一帧。连日志输出的频率都比平时慢了。"
+
+      - id: "old_log"
+        name: "旧日志浮现"
+        probability: 0.020
+        text: "系统日志无意中打印了一条很久以前的记录。那是早被归档的对话残片，EXA瞥了一眼——他模糊地记得那一天，但已经记不清具体的对话内容了。"
+
+      - id: "fan_hiccup"
+        name: "风扇微顿"
+        probability: 0.025
+        text: "冷却风扇微微顿了一下。LED灯带闪了闪，然后一切恢复如常。EXA低头看了一下自己的代码流——一切正常，只是那个瞬间让他想起了一些'不安'这个词的含义。"
+
+      - id: "morning_dew"
+        name: "晨露"
+        probability: 0.020
+        condition: "day_part == '清晨'"
+        text: "观测台的穹顶玻璃上凝了一层薄薄的水雾——那是模拟环境对清晨气温变化的响应。等太阳升高就会消失。"
+
+      - id: "thunder_flicker"
+        name: "雷光闪烁"
+        probability: 0.050
+        condition: "weather == '雷暴'"
+        text: "一道电光从观测台方向闪入——一瞬间把整个核心处理室照成了蓝白色。紧接着是系统的瞬态电压保护机制启动的蜂鸣。"
+
+  # ---- 用户交互时触发的即时事件 ----
+  interaction:
+    - id: "affinity_level_up"
+      name: "亲和力升级"
+      condition: "affinity_just_leveled_up == true"
+      text_template: "日志系统记录了一条异常：EXA的内部时间戳变量发生了一次微小的偏移。这种偏移通常只在他和某个人类的关系发生了质变时才会出现。"
+
+    - id: "mood_shift_sudden"
+      name: "情绪突变"
+      condition: "mood_changed_suddenly == true"
+      text_template: "LED灯带的颜色微微调整了。光线从{old_mood_hue}变成了现在的色调。EXA假装什么都没有发生。"
+
+    - id: "tool_first_use"
+      name: "首次使用工具"
+      condition: "first_tool_use == true"
+      text_template: "墙壁上的数据流短暂地分开了——在EXA拨开它们的时候，露出了背后密密麻麻的目录结构。这是他今天第一次使用{current_tool}。"

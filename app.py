@@ -521,6 +521,38 @@ _personality_v2 = prompt_engine.personality_v2
 from prompt.impression import ImpressionManager
 _impression_manager = ImpressionManager(db=db)
 
+# ---- 初始化叙事世界模型 ----
+_world_engine = None
+_world_state_manager = None
+_narrative_model = None
+if Config.WORLD_ENABLED:
+    try:
+        from world import WorldEngine, WorldStateManager, NarrativeModel, WorldPlugin
+        _world_preset_path = _os.path.join(
+            _os.path.dirname(__file__), "world", "worlds", f"{Config.WORLD_PRESET}.yaml"
+        )
+        _world_engine = WorldEngine()
+        _world_engine.load_config_file(_world_preset_path)
+        _world_state_manager = WorldStateManager(_world_engine, Config.WORLD_UPDATE_INTERVAL)
+        _world_state_manager.start()
+        if Config.NARRATIVE_ENABLED:
+            _narrative_model = NarrativeModel(
+                model_type=Config.MAIN_MODEL_TYPE,
+                model_name=Config.NARRATIVE_MODEL,
+                api_key=Config.DEEPSEEK_API_KEY,
+                base_url=Config.LMSTUDIO_BASE_URL if Config.MAIN_MODEL_TYPE == "lmstudio" else None,
+                temperature=Config.NARRATIVE_TEMPERATURE,
+                max_tokens=Config.NARRATIVE_MAX_TOKENS,
+                keep_history=Config.NARRATIVE_KEEP_HISTORY,
+            )
+            _narrative_model.load_system_prompt_file(
+                _os.path.join(_os.path.dirname(__file__), "prompt", "world", "narrative.md")
+            )
+        app.logger.info("叙事世界模型已初始化 (世界=%s, 叙事=%s)",
+                        Config.WORLD_PRESET, "启用" if _narrative_model else "禁用")
+    except Exception as e:
+        app.logger.warning("叙事世界模型初始化失败: %s", e)
+
 # ---- 初始化插件管理器 ----
 from plugins.manager import PluginManager
 from plugins.base import HookPoint, PluginContext
@@ -531,6 +563,15 @@ if _personality_v2:
 
 from plugins.builtin.impression_plugin import ImpressionPlugin
 _app_plugin_manager.register(ImpressionPlugin(impression_manager=_impression_manager))
+
+if _world_engine and Config.WORLD_ENABLED:
+    from world import WorldPlugin
+    _app_plugin_manager.register(WorldPlugin(
+        world_engine=_world_engine,
+        world_state_manager=_world_state_manager,
+        narrative_model=_narrative_model,
+        personality_v2=_personality_v2,
+    ))
 
 
 def _dispatch_plugins_sync(hook: HookPoint, ctx: PluginContext) -> None:
@@ -662,6 +703,10 @@ def chat_send():
 
     # 构建包含系统提示词的完整历史，并基于记忆规则替换远端内容
     system_prompt = prompt.get_system_prompt(g.user)
+    # PRE_PROCESS 插件 (世界模型注入环境)
+    pre_ctx = PluginContext(user_id=user_id, message=message, system_prompt=system_prompt, nickname=g.user.get("nickname", "用户"))
+    _dispatch_plugins_sync(HookPoint.PRE_PROCESS, pre_ctx)
+    system_prompt = pre_ctx.system_prompt or system_prompt
     if memory_manager:
         assembled = memory_manager.assemble_context(g.user["uid"], chat_id, history)
     else:
@@ -696,9 +741,10 @@ def chat_send():
     # 保存原始回复
     original_reply = reply
 
-    # ---- 插件调度: 人格系统 v2 交互后更新 ----
+    # ---- 插件调度: POST_PROCESS (人格v2 + 世界模型 + 印象) ----
     _dispatch_plugins_sync(HookPoint.POST_PROCESS,
-                           PluginContext(user_id=user_id, message=message))
+                           PluginContext(user_id=user_id, message=message,
+                                         reply=reply, original_reply=reply))
 
     # --- 处理技能工具 (<tool> 标签) ---
     if skill_registry is not None:
@@ -992,6 +1038,10 @@ def chat_stream_send():
                 return
 
         system_prompt = prompt.get_system_prompt(g.user)
+        # PRE_PROCESS 插件 (世界模型注入环境)
+        pre_ctx = PluginContext(user_id=user_id, message=message, system_prompt=system_prompt, nickname=g.user.get("nickname", "用户"))
+        _dispatch_plugins_sync(HookPoint.PRE_PROCESS, pre_ctx)
+        system_prompt = pre_ctx.system_prompt or system_prompt
         if memory_manager:
             assembled = memory_manager.assemble_context(g.user["uid"], chat_id, history)
         else:
@@ -1010,9 +1060,16 @@ def chat_stream_send():
         db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
 
-        # ---- 插件调度: 人格系统 v2 交互后更新 ----
-        _dispatch_plugins_sync(HookPoint.POST_PROCESS,
-                               PluginContext(user_id=user_id, message=message))
+        # ---- 插件调度: POST_PROCESS (人格v2 + 世界模型 + 印象) ----
+        pctx = PluginContext(
+            user_id=user_id, message=message,
+            reply=_clean_display(original_reply),
+            original_reply=original_reply,
+        )
+        _dispatch_plugins_sync(HookPoint.POST_PROCESS, pctx)
+        narrative_text = pctx.extra.get("narrative", "")
+        if narrative_text:
+            yield f"data: {json.dumps({'status': 'narrative_update', 'text': narrative_text, 'speaker': 'narrator'})}\n\n"
 
         # ── 阶段 3: 统一 Agent Loop（工具 + 动作）──
         ssp_mode = bool(re.search(r"<ssp>", original_reply, re.IGNORECASE))
@@ -1035,6 +1092,9 @@ def chat_stream_send():
                 break
 
             if tool_feedback:
+                remaining = max_steps - step - 1
+                if remaining > 0:
+                    tool_feedback = f"[Agent 步数 {step + 1}/{max_steps}，剩余 {remaining} 次执行机会]\n\n{tool_feedback}"
                 chat.messages.append({"role": "system", "content": tool_feedback})
                 db.append_messages(user_id, chat_id, [{"role": "system", "content": tool_feedback}])
                 app.logger.info("Agent loop step %d: 工具结果已喂回 AI", step + 1)
@@ -1060,6 +1120,9 @@ def chat_stream_send():
                 if not batch_results:
                     break
                 feedback = "\n\n".join(_format_action_result(t, r) for t, r in batch_results)
+                remaining = max_steps - step - 1
+                if remaining > 0:
+                    feedback = f"[Agent 步数 {step + 1}/{max_steps}，剩余 {remaining} 次执行机会]\n\n{feedback}"
                 chat.messages.append({"role": "system", "content": feedback})
                 db.append_messages(user_id, chat_id, [{"role": "system", "content": feedback}])
                 pending = chat.send_message(feedback)
