@@ -121,7 +121,7 @@ class UserManager:
 
 
 # ---------- Flask 蓝图 ----------
-auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
+auth_bp = Blueprint("littleskin_auth", __name__, url_prefix="/api/auth/littleskin")
 
 
 @auth_bp.route("/start", methods=["GET"])
@@ -136,7 +136,7 @@ def login_start():
 
     um: UserManager = current_app.config["USER_MANAGER"]
     auth_url = um.generate_authorize_url(
-        redirect_uri=url_for("auth.callback", _external=True),
+        redirect_uri=url_for("littleskin_auth.callback", _external=True),
         state=state,
     )
     return redirect(auth_url)

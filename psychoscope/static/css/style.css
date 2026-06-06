@@ -230,6 +230,23 @@ input, textarea, button {
     filter: none;
 }
 
+/* ── Narrator Line (旁白 / 世界描述) ── */
+.text-line.narrator-line {
+    font-style: italic;
+    letter-spacing: 0.04em;
+    text-align: center;
+    opacity: 0;
+    transform: translateY(18px) translateZ(0);
+}
+
+.text-line.narrator-line.active {
+    opacity: 0.75;
+    transform: translateY(0) scale(1.01) translateZ(0);
+    filter: drop-shadow(0 0 12px var(--active-glow));
+    margin-top: 6vh;
+    margin-bottom: 4vh;
+}
+
 /* ── Typing Cursor ── */
 .typing-cursor {
     display: inline-block;
@@ -595,47 +612,73 @@ input, textarea, button {
     margin-bottom: 48px;
 }
 
-#btn-login {
+#btn-pair,
+#btn-recover {
     font-family: 'LanaPixel', sans-serif;
-    padding: 14px 40px;
+    width: 100%;
+    padding: 12px 0;
+    margin-top: 12px;
     background: transparent;
     border: 1px solid var(--glass-border);
-    color: var(--text-primary);
-    font-size: 15px;
+    color: var(--text-dim);
+    font-size: 14px;
     cursor: pointer;
     letter-spacing: 2px;
-    transition: all 0.5s ease;
+    transition: all 0.3s ease;
 }
 
-#btn-login:hover {
+#btn-pair:hover,
+#btn-recover:hover {
     background: var(--accent);
     color: var(--bg-base);
     border-color: var(--accent);
-    box-shadow: 0 0 40px var(--accent-glow);
-    letter-spacing: 4px;
 }
 
-#server-url {
+#btn-pair:active,
+#btn-recover:active {
+    transform: scale(0.97);
+}
+
+#pairing-code,
+#user-name,
+#recover-user-id {
     width: 280px;
-    padding: 8px 14px;
-    margin-bottom: 16px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
     font-family: 'LanaPixel', sans-serif;
-    font-size: 11px;
+    font-size: 13px;
     letter-spacing: 1px;
-    color: var(--text-base);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-dim);
-    border-radius: 4px;
+    color: var(--text-primary);
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
     outline: none;
     text-align: center;
-    transition: border-color 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.165, 0.84, 0.44, 1);
+    caret-color: var(--accent);
 }
-#server-url:focus {
+
+#pairing-code:focus,
+#user-name:focus,
+#recover-user-id:focus {
     border-color: var(--accent);
+    background: var(--input-focus-bg);
     box-shadow: 0 0 12px var(--accent-glow);
 }
-#server-url::placeholder {
+
+#pairing-code::placeholder,
+#user-name::placeholder,
+#recover-user-id::placeholder {
     color: var(--text-faint);
+    letter-spacing: 1px;
+    font-family: 'LanaPixel', sans-serif;
+}
+
+.or-divider {
+    color: var(--text-faint);
+    font-size: 10px;
+    letter-spacing: 3px;
+    margin: 20px 0 16px 0;
+    text-align: center;
 }
 
 .login-hint {

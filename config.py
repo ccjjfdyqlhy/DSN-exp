@@ -30,10 +30,17 @@ def _env(key: str, default=None, required: bool = False):
 class Config:
     # ==================== 验证系统 ====================
     LITTLESKIN_CLIENT_ID = _env("LITTLESKIN_CLIENT_ID", "")
-    LITTLESKIN_CLIENT_SECRET = _env("LITTLESKIN_CLIENT_SECRET", required=True)
+    LITTLESKIN_CLIENT_SECRET = _env("LITTLESKIN_CLIENT_SECRET", "")
 
     # JWT 密钥
-    JWT_SECRET = _env("JWT_SECRET", required=True)
+    JWT_SECRET = _env("JWT_SECRET", "dsn-exp-auto-secret")
+
+    # ==================== 分层认证系统 ====================
+    AUTH_SESSION_DAYS = int(_env("AUTH_SESSION_DAYS", "30"))
+    AUTH_PAIRING_DIGITS = int(_env("AUTH_PAIRING_DIGITS", "8"))
+    AUTH_PAIRING_TIMEOUT = int(_env("AUTH_PAIRING_TIMEOUT", "300"))
+    AUTH_WEBAUTHN_RP_NAME = _env("AUTH_WEBAUTHN_RP_NAME", "DSN-exp")
+    AUTH_TOTP_ISSUER = _env("AUTH_TOTP_ISSUER", "DSN-exp")
 
     # ==================== DeepSeek API ====================
     DEEPSEEK_API_KEY = _env("DEEPSEEK_API_KEY", required=True)
@@ -53,7 +60,7 @@ class Config:
     LMSTUDIO_TIMEOUT = int(_env("LMSTUDIO_TIMEOUT", "300"))
 
     # ==================== 存储配置 ====================
-    DATABASE_PATH = _env("DATABASE_PATH", "chats.db")
+    DATABASE_PATH = _env("DATABASE_PATH", "DSN_usrdata.db")
     LOG_DIR = _env("LOG_DIR", "logs")
 
     # ==================== 服务配置 ====================

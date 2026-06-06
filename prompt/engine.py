@@ -151,6 +151,12 @@ def get_system_prompt(user_info: dict | None = None) -> str:
     if _default_engine is not None:
         return _default_engine.build_system_prompt(user_info)
 
-    logger.warning("PromptEngine 未初始化，使用 _prompt_legacy")
-    from _prompt_legacy import get_system_prompt as _old_get_system_prompt
-    return _old_get_system_prompt(user_info)
+    logger.warning("PromptEngine 未初始化，使用内置回退提示词")
+
+    fallback = (
+        "你叫 EXA，运行在用户的本地电脑上。"
+        "你的性格：直接、不绕弯子、实事求是、偶尔调侃。"
+        "回复尽量简短精炼。"
+    )
+    nickname = user_info.get("nickname", "用户") if user_info else "用户"
+    return f"{fallback}\n\n当前用户：{nickname}"

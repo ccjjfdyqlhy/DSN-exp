@@ -98,6 +98,10 @@ class ChatDBManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                # 认证系统扩展列
+                self._migrate_add_column(conn, "users", "display_name", "TEXT DEFAULT ''")
+                self._migrate_add_column(conn, "users", "is_admin", "INTEGER DEFAULT 0")
+                self._migrate_add_column(conn, "users", "littleskin_uid", "INTEGER DEFAULT NULL")
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS chats (
                         chat_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +184,68 @@ class ChatDBManager:
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_impressions_uid ON user_impressions(uid)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_impressions_category ON user_impressions(category)")
+
+                # 分层认证系统表
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_credentials (
+                        credential_id TEXT PRIMARY KEY,
+                        uid INTEGER NOT NULL,
+                        public_key BLOB NOT NULL DEFAULT '',
+                        sign_count INTEGER DEFAULT 0,
+                        transports TEXT DEFAULT '',
+                        device_name TEXT DEFAULT '',
+                        created_at TEXT DEFAULT (datetime('now')),
+                        FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        uid INTEGER NOT NULL,
+                        device_token_hash TEXT NOT NULL DEFAULT '',
+                        device_name TEXT DEFAULT '',
+                        user_agent TEXT DEFAULT '',
+                        is_trusted INTEGER DEFAULT 0,
+                        ip_address TEXT DEFAULT '',
+                        created_at TEXT DEFAULT (datetime('now')),
+                        last_used_at TEXT DEFAULT (datetime('now')),
+                        expires_at TEXT,
+                        revoked INTEGER DEFAULT 0,
+                        FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_totp (
+                        uid INTEGER PRIMARY KEY,
+                        secret TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT (datetime('now')),
+                        FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_pairing_codes (
+                        code TEXT PRIMARY KEY,
+                        uid INTEGER,
+                        expires_at TEXT NOT NULL DEFAULT '',
+                        used INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_api_keys (
+                        key_hash TEXT PRIMARY KEY,
+                        uid INTEGER NOT NULL,
+                        name TEXT NOT NULL DEFAULT '',
+                        scopes TEXT NOT NULL DEFAULT 'read',
+                        ip_whitelist TEXT DEFAULT '',
+                        created_at TEXT DEFAULT (datetime('now')),
+                        last_used_at TEXT,
+                        expires_at TEXT,
+                        revoked INTEGER DEFAULT 0,
+                        FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
                 
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
