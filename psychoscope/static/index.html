@@ -59,9 +59,17 @@
     <div class="login-content">
         <h1>DSN-exp</h1>
         <p>PSYCHOSCOPE CLIENT</p>
-        <input id="server-url" type="text" placeholder="服务器地址" value="http://localhost:5000" />
-        <button id="btn-login">通过 LittleSkin 登录</button>
-        <span class="login-hint">输入服务器地址后点击登录</span>
+        <div id="pairing-section">
+            <input id="pairing-code" type="text" placeholder="配对码 (终端显示的8位数字)" maxlength="8" autocomplete="off" />
+            <input id="user-name" type="text" placeholder="你的名字" autocomplete="off" />
+            <button id="btn-pair">完成配对</button>
+        </div>
+        <div class="or-divider">— 或 —</div>
+        <div id="recover-section">
+            <input id="recover-user-id" type="text" placeholder="用户名恢复登录" autocomplete="off" />
+            <button id="btn-recover">恢复登录</button>
+        </div>
+        <span class="login-hint" id="login-status"></span>
     </div>
 </div>
 

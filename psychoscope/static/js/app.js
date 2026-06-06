@@ -51,9 +51,15 @@
         sidebar: $('#sidebar'),
         chatList: $('#chat-list'),
         notification: $('#notification'),
-        btnLogin: $('#btn-login'),
         btnLogout: $('#btn-logout'),
-        serverUrl: $('#server-url'),
+        btnPair: $('#btn-pair'),
+        btnRecover: $('#btn-recover'),
+        pairingCode: $('#pairing-code'),
+        userName: $('#user-name'),
+        recoverUserId: $('#recover-user-id'),
+        loginStatus: $('#login-status'),
+        pairingSection: $('#pairing-section'),
+        recoverSection: $('#recover-section'),
         btnNewChat: $('#btn-new-chat'),
         btnChatList: $('#btn-chat-list'),
         btnTheme: $('#btn-theme'),
@@ -164,13 +170,16 @@
         line.className = 'text-line narration-line';
         dom.textBox.insertBefore(line, dom.bottomAnchor);
         requestAnimationFrame(function () { line.classList.add('active'); });
-        var sp = document.createElement('span');
-        sp.className = 'speaker';
-        sp.textContent = aiName;
-        line.appendChild(sp);
-        var t = document.createElement('span');
-        t.textContent = text;
-        line.appendChild(t);
+        line.textContent = text;
+        scrollToBottom();
+    }
+
+    function addNarratorLine(text) {
+        var line = document.createElement('div');
+        line.className = 'text-line narrator-line';
+        dom.textBox.insertBefore(line, dom.bottomAnchor);
+        requestAnimationFrame(function () { line.classList.add('active'); });
+        line.textContent = text;
         scrollToBottom();
     }
 
@@ -244,9 +253,16 @@
     }
 
     // API
+    function getAuthHeader() {
+        if (!token) return null;
+        if (token.indexOf('dsn_ses_') === 0) return 'Session ' + token;
+        if (token.indexOf('dsn_apk_') === 0) return null;  // API key uses separate header
+        return 'Bearer ' + token;  // JWT or legacy
+    }
     function apiCall(path, method, body) {
         var headers = { 'Content-Type': 'application/json' };
-        if (token) headers['Authorization'] = 'Bearer ' + token;
+        var auth = getAuthHeader();
+        if (auth) headers['Authorization'] = auth;
         return fetch(API_BASE + path, { method: method || 'GET', headers: headers, body: body ? JSON.stringify(body) : undefined });
     }
     function apiGet(path) {
@@ -260,15 +276,70 @@
     }
 
     // auth
-    function login() {
-        var url = (dom.serverUrl.value || '').replace(/\/+$/, '');
-        if (!url) { notify('请输入服务器地址', true); return; }
-        localStorage.setItem('api_base', url);
-        window.location.href = url + '/api/auth/start?redirect_uri=' + encodeURIComponent(window.location.origin + '/');
+    function apiPost(path, body) {
+        var headers = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        console.log('[apiPost]', path, 'token=' + (token ? token.substring(0, 12) + '...' : 'null'));
+        return fetch(API_BASE + path, { method: 'POST', headers: headers, body: JSON.stringify(body), credentials: 'include' });
     }
+    function apiPostJson(path, body) {
+        return apiPost(path, body).then(function (r) {
+            if (r.status === 401) { logout(); throw new Error('login expired'); }
+            return r.json().then(function (d) {
+                if (!r.ok) throw new Error(d.error || 'request failed (' + r.status + ')');
+                return d;
+            });
+        });
+    }
+
+    async function tryPairLogin() {
+        var code = (dom.pairingCode.value || '').trim();
+        var name = (dom.userName.value || '').trim();
+        if (!code) { dom.loginStatus.textContent = '请输入配对码'; return; }
+        if (!name) { dom.loginStatus.textContent = '请输入名字'; return; }
+        dom.loginStatus.textContent = '配对中...';
+        try {
+            var resp = await apiPostJson('/api/auth/pairing/verify', { code: code, display_name: name, is_admin: true });
+            token = resp.session_id;
+            localStorage.setItem('dsn_session', token);
+            if (resp.uid) localStorage.setItem('dsn_user_id', resp.uid);
+            if (resp.display_name) localStorage.setItem('dsn_display_name', resp.display_name);
+            if (resp.device_token) localStorage.setItem('dsn_device_token', resp.device_token);
+            dom.loginOverlay.classList.add('hidden');
+            await loadChats();
+            updateStatusBar();
+        } catch (e) {
+            dom.loginStatus.textContent = e.message || '配对失败';
+        }
+    }
+
+    async function tryRecoverLogin() {
+        var displayName = (dom.recoverUserId.value || '').trim();
+        if (!displayName) { dom.loginStatus.textContent = '请输入用户名'; return; }
+        dom.loginStatus.textContent = '恢复中...';
+        var deviceToken = localStorage.getItem('dsn_device_token') || '';
+        console.log('[recover] attempting recovery for name=' + displayName + ' api_base=' + API_BASE + ' device_token=' + (deviceToken ? deviceToken.substring(0, 12) + '...' : 'null'));
+        try {
+            var resp = await apiPostJson('/api/auth/session/recover', { display_name: displayName, device_token: deviceToken });
+            console.log('[recover] success:', resp);
+            token = resp.session_id;
+            localStorage.setItem('dsn_session', token);
+            localStorage.setItem('dsn_user_id', resp.uid);
+            dom.loginOverlay.classList.add('hidden');
+            await loadChats();
+            updateStatusBar();
+        } catch (e) {
+            console.error('[recover] FAILED:', e.message, e);
+            dom.loginStatus.textContent = e.message || '恢复失败';
+        }
+    }
+
     function logout() {
         token = null; currentChatId = null; chats = [];
         localStorage.removeItem('jwt_token');
+        localStorage.removeItem('dsn_session');
+        localStorage.removeItem('dsn_user_id');
+        // Keep dsn_device_token and dsn_display_name — needed for recovery after logout
         dom.textBox.querySelectorAll('.text-line').forEach(function (e) { e.remove(); });
         dom.chatList.innerHTML = '';
         dom.sidebar.classList.add('hidden');
@@ -310,7 +381,7 @@
                     addLineStatic('>', content, 'active-group-top');
                 } else if (m.role === 'assistant') {
                     var p = parseControlTags(m.content);
-                    p.narrations.forEach(function (n) { addLineStatic(aiName, n, 'narration-line'); });
+                    p.narrations.forEach(function (n) { addLineStatic('', n, 'narration-line'); });
                     addLineStatic(aiName, p.text, 'active-group-bottom');
                 } else if (m.role === 'system') {
                     if (/^\[系统\]/.test(m.content)) return;
@@ -346,9 +417,13 @@
             await addMessage('>', text, true);
             updateStatusBar();
 
+            var auth = getAuthHeader();
+            var reqHeaders = { 'Content-Type': 'application/json' };
+            if (auth) reqHeaders['Authorization'] = auth;
+            console.log('[msgFlow] sending to', API_BASE + '/api/chat/stream_send', 'token=' + (token ? token.substring(0, 12) + '...' : 'null') + ' chat_id=' + currentChatId);
             var res = await fetch(API_BASE + '/api/chat/stream_send', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (token || '') },
+                headers: reqHeaders,
                 body: JSON.stringify({ message: text, chat_id: currentChatId, chat_name: 'Psychoscope', tts_enabled: ttsEnabled }),
                 signal: streamAbort.signal,
             });
@@ -378,6 +453,9 @@
                     try {
                         var ev = JSON.parse(line.slice(6));
                         switch (ev.status) {
+                            case 'narrative_update':
+                                if (ev.text) addNarratorLine(ev.text);
+                                break;
                             case 'text_ready':
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
@@ -402,6 +480,7 @@
             if (ttsEnabled && audioB64) playAudioBase64(audioB64);
 
         } catch (e) {
+            console.error('[msgFlow] ERROR:', e.name, e.message, e);
             if (e.name !== 'AbortError') addErrorLine('ERROR: ' + e.message);
         } finally {
             isProcessing = false;
@@ -458,8 +537,9 @@
     }
 
     // events
-    dom.btnLogin.addEventListener('click', login);
     dom.btnLogout.addEventListener('click', function () { if (confirm('logout?')) logout(); });
+    dom.btnPair.addEventListener('click', tryPairLogin);
+    dom.btnRecover.addEventListener('click', tryRecoverLogin);
     dom.btnNewChat.addEventListener('click', newChat);
     dom.btnTheme.addEventListener('click', toggleTheme);
     dom.btnCloseSidebar.addEventListener('click', function () { dom.sidebar.classList.add('hidden'); });
@@ -482,13 +562,20 @@
 
     // init
     async function init() {
-        var savedUrl = localStorage.getItem('api_base');
-        if (savedUrl && dom.serverUrl) dom.serverUrl.value = savedUrl;
+        // Check server auth status
+        try {
+            var statusResp = await fetch(API_BASE + '/api/auth/status').then(function (r) { return r.json(); });
+            if (statusResp.need_pairing) {
+                dom.pairingSection.style.display = 'block';
+                dom.recoverSection.style.display = 'none';
+                dom.loginStatus.textContent = '服务器需要初始配对';
+            } else {
+                dom.pairingSection.style.display = 'none';
+                dom.recoverSection.style.display = 'block';
+            }
+        } catch (_) {}
 
-        var p = new URLSearchParams(window.location.search);
-        var ut = p.get('token');
-        if (ut) { token = ut; localStorage.setItem('jwt_token', token); window.history.replaceState({}, document.title, '/'); }
-        else token = localStorage.getItem('jwt_token');
+        token = localStorage.getItem('jwt_token') || localStorage.getItem('dsn_session');
         if (!token) { dom.loginOverlay.classList.remove('hidden'); return; }
         try {
             await loadChats();

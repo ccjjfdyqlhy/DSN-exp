@@ -320,7 +320,6 @@ def _handle_reasoner_completion(task, result):
     except Exception as e:
         app.logger.error("保存推理结果失败: %s", e)
 
-
 def _handle_action_completion(task, result, retry_depth: int = 0):
     """处理动作任务完成 — 注入结果系统消息，支持自纠正"""
     app.logger.info("动作任务完成: task_id=%s, type=%s", task.task_id, result.get("action_type"))
@@ -353,11 +352,6 @@ def _handle_action_completion(task, result, retry_depth: int = 0):
         app.logger.info("动作结果已注入聊天: %s", short_id)
     except Exception as e:
         app.logger.error("保存动作结果失败: %s", e)
-
-
-# 动作自纠正最大轮数
-_MAX_AUTO_RETRY_DEPTH = 0  # 已禁用；现在任务结果直接注入为系统消息
-
 
 # ---------- 日志配置 ----------
 # 全局变量，用于跟踪日志是否已配置
@@ -436,9 +430,39 @@ app = Flask(__name__)
 app.config.from_object(Config)
 
 setup_logging(app)
+
+# ---- 分层认证系统 ----
+from auth import AuthManager, auth_bp
+_auth_manager = AuthManager(
+    db=None,  # db 尚未创建，先创建 manager，后续注入
+    jwt_secret=Config.JWT_SECRET,
+    session_days=Config.AUTH_SESSION_DAYS,
+    pairing_digits=Config.AUTH_PAIRING_DIGITS,
+    pairing_timeout=Config.AUTH_PAIRING_TIMEOUT,
+)
+app.config["AUTH_MANAGER"] = _auth_manager
+app.register_blueprint(auth_bp)
+
+# 兼容：保留旧 LittleSkin OAuth 蓝图（降级为可选绑定）
 init_usermgr(app)
 app.register_blueprint(todo_bp)
 db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
+_auth_manager.db = db  # 使用 property 传播到所有子管理器
+
+# 首次启动：生成配对码
+_pairing_code = _auth_manager.generate_pairing_if_needed()
+if _pairing_code:
+    print(f"""
+  ╔═══════════════════════════════════════════════════════╗
+  ║                 DSN-exp 首次启动                      ║
+  ║                                                       ║
+  ║  配对码: {_pairing_code}                              ║
+  ║  请在 webUI 中输入此码完成初始配对                     ║
+  ║                                                       ║
+  ║  【重要】此码仅显示一次，{Config.AUTH_PAIRING_TIMEOUT // 60} 分钟后自动失效。      ║
+  ╚═══════════════════════════════════════════════════════╝
+""")
+    app.logger.info("配对码已生成，请在 webUI 中完成初始配对")
 
 # 初始化任务管理器
 if app.config.get("TASK_MANAGER_ENABLED", True):
@@ -611,15 +635,17 @@ except Exception as e:
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return jsonify({"error": "Missing or invalid token"}), 401
-        token = auth_header[7:]
-        user = app.config["USER_MANAGER"].verify_jwt(token)
+        user = app.config["AUTH_MANAGER"].authenticate(request)
         if not user:
-            return jsonify({"error": "Invalid token"}), 401
+            app.logger.warning("login_required: UNAUTHORIZED path=%s method=%s ip=%s auth_header=%s",
+                               request.path, request.method,
+                               request.remote_addr,
+                               request.headers.get("Authorization", "")[:30] if request.headers.get("Authorization") else "<none>")
+            return jsonify({"error": "Unauthorized"}), 401
         g.user = user
-        db.add_or_update_user(user["uid"], user["nickname"])
+        app.logger.debug("login_required: OK uid=%d source=%s path=%s",
+                         user["uid"], user.get("auth_source", "?"), request.path)
+        db.add_or_update_user(user["uid"], user.get("nickname", "用户"))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -631,9 +657,15 @@ def close_db_connection(exception=None):
 # ---------- CORS 支持 ----------
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    origin = request.headers.get("Origin", "")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-DSN-API-Key"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Expose-Headers"] = "Content-Type, Cache-Control"
     response.headers["Access-Control-Max-Age"] = "3600"
     return response
 
@@ -641,9 +673,15 @@ def add_cors_headers(response):
 def handle_preflight():
     if request.method == "OPTIONS":
         resp = jsonify({"ok": True})
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        origin = request.headers.get("Origin", "")
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+        else:
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-DSN-API-Key"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+        resp.headers["Access-Control-Expose-Headers"] = "Content-Type, Cache-Control"
         resp.headers["Access-Control-Max-Age"] = "3600"
         return resp, 200
 
