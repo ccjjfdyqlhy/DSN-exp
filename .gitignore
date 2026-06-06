@@ -5,6 +5,7 @@
 *.wav
 *.jpg
 *.db
+*.bak
 *.pyc
 .vscode/*
 logs/*
