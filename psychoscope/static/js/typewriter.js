@@ -27,7 +27,7 @@ class TypeWriter {
     }
 
     /**
-     * 逐字输出文本
+     * 逐字输出文本，支持 **加粗** 标记。
      * @param {string} text
      * @returns {Promise<void>}
      */
@@ -43,22 +43,50 @@ class TypeWriter {
         this._cursor = cursor;
 
         const punctuation = new Set('，,。.!！?？…；;：:、"\'」』）)】]}>》');
+        const segments = this._parseBold(text);
 
-        for (let i = 0; i < text.length; i++) {
+        for (const seg of segments) {
             if (this._aborted) break;
 
-            const char = text[i];
-            cursor.before(document.createTextNode(char));
+            if (seg.type === 'bold') {
+                const strong = document.createElement('strong');
+                strong.className = 'md-bold';
+                cursor.before(strong);
+                strong.appendChild(cursor);
 
-            let delay = this.speed + Math.random() * this.jitter;
-            if (punctuation.has(char)) delay += this.punctuationPause;
-            if (char === '\n') delay += this.newlinePause;
+                for (let i = 0; i < seg.content.length; i++) {
+                    if (this._aborted) break;
+                    const char = seg.content[i];
+                    if (char === '\n') {
+                        cursor.before(document.createElement('br'));
+                    } else {
+                        cursor.before(document.createTextNode(char));
+                    }
+                    let delay = this.speed + Math.random() * this.jitter;
+                    if (punctuation.has(char)) delay += this.punctuationPause;
+                    if (char === '\n') delay += this.newlinePause;
+                    await this._wait(delay);
+                }
 
-            if (this._onChar) {
-                this._onChar(char, i, text.length);
+                strong.parentElement.appendChild(cursor);
+            } else {
+                for (let i = 0; i < seg.content.length; i++) {
+                    if (this._aborted) break;
+                    const char = seg.content[i];
+                    if (char === '\n') {
+                        cursor.before(document.createElement('br'));
+                    } else {
+                        cursor.before(document.createTextNode(char));
+                    }
+                    let delay = this.speed + Math.random() * this.jitter;
+                    if (punctuation.has(char)) delay += this.punctuationPause;
+                    if (char === '\n') delay += this.newlinePause;
+                    if (this._onChar) {
+                        this._onChar(char, i, seg.content.length);
+                    }
+                    await this._wait(delay);
+                }
             }
-
-            await this._wait(delay);
         }
 
         this._removeCursor();
@@ -67,6 +95,29 @@ class TypeWriter {
         if (!this._aborted && this._onComplete) {
             this._onComplete(this._fullText);
         }
+    }
+
+    /**
+     * 将文本按 **...** 分割为普通文本段和加粗段。
+     * @param {string} text
+     * @returns {Array<{type:'text'|'bold', content:string}>}
+     */
+    _parseBold(text) {
+        const segments = [];
+        const re = /\*\*(.+?)\*\*/g;
+        let lastIndex = 0;
+        let match;
+        while ((match = re.exec(text)) !== null) {
+            if (match.index > lastIndex) {
+                segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+            }
+            segments.push({ type: 'bold', content: match[1] });
+            lastIndex = match.index + match[0].length;
+        }
+        if (lastIndex < text.length) {
+            segments.push({ type: 'text', content: text.slice(lastIndex) });
+        }
+        return segments.length ? segments : [{ type: 'text', content: text }];
     }
 
     /**

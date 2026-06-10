@@ -134,3 +134,20 @@ class ModelsPlugin(Plugin):
         chat = self._create_chat(effective_type)
         chat.messages = list(messages)
         return chat.send_message("继续")
+
+    def describe_image(self, data_url: str, prompt: str = "请详细描述这张图片的内容") -> str:
+        """
+        调用本地 LMStudio 多模态模型描述图片，返回文字描述。
+
+        始终使用 LMStudioChat，因为只有本地模型支持多模态输入。
+        """
+        from models import LMStudioChat
+
+        chat = LMStudioChat(
+            base_url=self._lmstudio_base_url,
+            model_name=self._lmstudio_model_name,
+            temperature=0.1,
+            max_tokens=500,
+            timeout=self._lmstudio_timeout,
+        )
+        return chat.describe_image(data_url, prompt)

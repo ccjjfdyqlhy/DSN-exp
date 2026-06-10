@@ -383,6 +383,13 @@ class DSNEngine:
                 db=self.db,
             ))
 
+        # 2a. VisionPlugin (PRE_PROCESS, priority 28)
+        if enabled("vision") and self._models_plugin:
+            from plugins.builtin.vision_plugin import VisionPlugin
+            self.plugin_manager.register(VisionPlugin(
+                models_plugin=self._models_plugin,
+            ))
+
         # 2a. WorldPlugin (PRE_PROCESS + POST_PROCESS, priority 15)
         if enabled("world") and self.world_engine:
             from world import WorldPlugin
@@ -690,6 +697,9 @@ def create_engine_with_defaults(
     if memory_manager and db:
         from plugins.builtin.memory_plugin import MemoryPlugin
         engine.plugin_manager.register(MemoryPlugin(memory_manager=memory_manager, db=db))
+
+    from plugins.builtin.vision_plugin import VisionPlugin
+    engine.plugin_manager.register(VisionPlugin(models_plugin=models_plugin))
 
     if skill_registry:
         from plugins.builtin.skills_plugin import SkillsPlugin

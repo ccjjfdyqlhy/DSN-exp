@@ -287,6 +287,66 @@ class LMStudioChat:
         self.base_url = base_url.rstrip('/')
         self.logger.info("服务地址已更新为: %s", self.base_url)
 
+    def describe_image(self, data_url: str, prompt: str = "请详细描述这张图片的内容",
+                       max_tokens: int = 500, temperature: float = 0.1) -> str:
+        """
+        发送图片到多模态模型，获取文字描述。
+
+        使用 OpenAI Vision 兼容格式 (content 数组)。
+
+        :param data_url: 图片的 data URL，如 "data:image/png;base64,..."
+        :param prompt: 描述指令
+        :param max_tokens: 最大生成 token 数
+        :param temperature: 生成温度
+        :return: 模型对图片的文字描述
+        """
+        if not data_url:
+            raise ValueError("data_url 不能为空")
+
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }]
+
+        payload = {
+            "model": self.model_name or "default",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+        }
+
+        try:
+            self.logger.debug("describe_image 请求 → %s (tokens=%d)", url, max_tokens)
+            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            result = response.json()
+
+            if "choices" in result and result["choices"]:
+                description = result["choices"][0]["message"]["content"].strip()
+                self.logger.info("图片描述: %s", description[:80] + ("..." if len(description) > 80 else ""))
+                return description
+            else:
+                raise ValueError("图片描述响应格式异常")
+        except requests.exceptions.Timeout:
+            self.logger.error("图片描述请求超时 (%d秒)", self.timeout)
+            raise
+        except requests.exceptions.ConnectionError:
+            self.logger.error("无法连接到图片描述服务: %s", self.base_url)
+            raise
+        except requests.exceptions.RequestException as e:
+            self.logger.error("图片描述请求失败: %s", str(e))
+            raise
+        except (KeyError, ValueError) as e:
+            self.logger.error("图片描述响应解析失败: %s", str(e))
+            raise
+
     def __repr__(self):
         return f"<LMStudioChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
 
