@@ -565,14 +565,16 @@
         // Check server auth status
         try {
             var statusResp = await fetch(API_BASE + '/api/auth/status').then(function (r) { return r.json(); });
-            if (statusResp.need_pairing) {
+            if (statusResp.has_active_pairing) {
                 dom.pairingSection.style.display = 'block';
-                dom.recoverSection.style.display = 'none';
-                dom.loginStatus.textContent = '服务器需要初始配对';
+                var fb = document.getElementById('recover-section-fallback');
+                if (fb) fb.style.display = 'none';
             } else {
                 dom.pairingSection.style.display = 'none';
-                dom.recoverSection.style.display = 'block';
+                var fb = document.getElementById('recover-section-fallback');
+                if (fb) fb.style.display = 'block';
             }
+            dom.recoverSection.style.display = 'block';
         } catch (_) {}
 
         token = localStorage.getItem('jwt_token') || localStorage.getItem('dsn_session');

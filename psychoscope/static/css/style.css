@@ -612,6 +612,15 @@ input, textarea, button {
     margin-bottom: 48px;
 }
 
+.section-title {
+    font-family: 'LanaPixel', sans-serif;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+}
+
 #btn-pair,
 #btn-recover {
     font-family: 'LanaPixel', sans-serif;

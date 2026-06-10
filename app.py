@@ -449,20 +449,10 @@ app.register_blueprint(todo_bp)
 db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
 _auth_manager.db = db  # 使用 property 传播到所有子管理器
 
-# 首次启动：生成配对码
-_pairing_code = _auth_manager.generate_pairing_if_needed()
-if _pairing_code:
-    print(f"""
-  ╔═══════════════════════════════════════════════════════╗
-  ║                 DSN-exp 首次启动                      ║
-  ║                                                       ║
-  ║  配对码: {_pairing_code}                              ║
-  ║  请在 webUI 中输入此码完成初始配对                     ║
-  ║                                                       ║
-  ║  【重要】此码仅显示一次，{Config.AUTH_PAIRING_TIMEOUT // 60} 分钟后自动失效。      ║
-  ╚═══════════════════════════════════════════════════════╝
-""")
-    app.logger.info("配对码已生成，请在 webUI 中完成初始配对")
+# 首次启动：提示管理员使用 /newbind 生成配对码
+if _auth_manager._user_count() == 0:
+    print("  首次启动提示: 在服务器控制台输入 /newbind 生成配对码")
+    app.logger.info("系统无用户，请在控制台输入 /newbind 生成配对码")
 
 # 初始化任务管理器
 if app.config.get("TASK_MANAGER_ENABLED", True):
