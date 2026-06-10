@@ -59,15 +59,20 @@
     <div class="login-content">
         <h1>DSN-exp</h1>
         <p>PSYCHOSCOPE CLIENT</p>
-        <div id="pairing-section">
-            <input id="pairing-code" type="text" placeholder="配对码 (终端显示的8位数字)" maxlength="8" autocomplete="off" />
+        <div id="pairing-section" style="display:none">
+            <p class="section-title">新设备绑定</p>
+            <input id="pairing-code" type="text" placeholder="管理员提供的配对码" maxlength="8" autocomplete="off" />
             <input id="user-name" type="text" placeholder="你的名字" autocomplete="off" />
-            <button id="btn-pair">完成配对</button>
+            <button id="btn-pair">绑定</button>
+        </div>
+        <div id="recover-section-fallback" style="display:none">
+            <p class="section-title">等待管理员在控制台输入 /newbind 生成配对码...</p>
         </div>
         <div class="or-divider">— 或 —</div>
         <div id="recover-section">
-            <input id="recover-user-id" type="text" placeholder="用户名恢复登录" autocomplete="off" />
-            <button id="btn-recover">恢复登录</button>
+            <p class="section-title">已有账号？恢复登录</p>
+            <input id="recover-user-id" type="text" placeholder="用户名" autocomplete="off" />
+            <button id="btn-recover">恢复</button>
         </div>
         <span class="login-hint" id="login-status"></span>
     </div>

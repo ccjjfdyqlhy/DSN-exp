@@ -271,9 +271,7 @@ class DSNEngine:
             return
         try:
             backend = self._engine_cfg.memory_summary_backend
-            model_name = self._engine_cfg.model_name
-            if backend == "deepseek":
-                model_name = model_name or getattr(Config, 'MEMORY_MODEL', 'deepseek-v4-flash')
+            model_name = getattr(Config, 'MEMORY_MODEL', None) or self._engine_cfg.model_name
 
             self.summary_model = LMSummaryModel(
                 backend=backend,

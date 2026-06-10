@@ -29,7 +29,7 @@ def auth_status():
     auth = _get_auth()
     users = auth.list_users()
     return jsonify({
-        "need_pairing": len(users) == 0,
+        "has_active_pairing": auth.pairing.is_active(),
         "users_count": len(users),
         "methods": {
             "pairing": auth.pairing.is_active(),
