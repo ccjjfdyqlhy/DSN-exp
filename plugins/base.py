@@ -32,6 +32,7 @@ class PluginContext:
     tts_enabled: bool = True
     model_type: Optional[str] = None
     nickname: str = "用户"
+    image_data: Optional[str] = None
 
     # ---- 中间产物 ----
     system_prompt: str = ""

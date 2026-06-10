@@ -32,6 +32,7 @@
     var ttsEnabled = false;
     var streamAbort = null;
     var aiName = 'EXA';
+    var currentImageData = null;
 
     // DOM
     var $ = function (s) { return document.querySelector(s); };
@@ -64,6 +65,11 @@
         btnChatList: $('#btn-chat-list'),
         btnTheme: $('#btn-theme'),
         btnCloseSidebar: $('#btn-close-sidebar'),
+        btnImage: $('#btn-image'),
+        imageInput: $('#image-input'),
+        imagePreview: $('#image-preview'),
+        previewImg: $('#preview-img'),
+        btnRemoveImage: $('#btn-remove-image'),
     };
 
     // utils
@@ -86,6 +92,11 @@
         var d = document.createElement('div');
         d.textContent = s;
         return d.innerHTML;
+    };
+    var renderMarkdown = function (text) {
+        return escapeHtml(text)
+            .replace(/\*\*(.+?)\*\*/g, '<strong class="md-bold">$1</strong>')
+            .replace(/\n/g, '<br>');
     };
 
     // scroll
@@ -170,16 +181,17 @@
         line.className = 'text-line narration-line';
         dom.textBox.insertBefore(line, dom.bottomAnchor);
         requestAnimationFrame(function () { line.classList.add('active'); });
-        line.textContent = text;
+        line.innerHTML = renderMarkdown(text);
         scrollToBottom();
     }
 
     function addNarratorLine(text) {
+        console.log('[narrator] rendering:', text.substring(0, 80));
         var line = document.createElement('div');
         line.className = 'text-line narrator-line';
         dom.textBox.insertBefore(line, dom.bottomAnchor);
         requestAnimationFrame(function () { line.classList.add('active'); });
-        line.textContent = text;
+        line.innerHTML = renderMarkdown(text);
         scrollToBottom();
     }
 
@@ -195,7 +207,7 @@
             line.appendChild(sp);
         }
         var ts = document.createElement('span');
-        ts.textContent = text;
+        ts.innerHTML = renderMarkdown(text);
         line.appendChild(ts);
         scrollToBottom();
     }
@@ -205,7 +217,7 @@
         line.className = 'text-line system-line';
         dom.textBox.insertBefore(line, dom.bottomAnchor);
         requestAnimationFrame(function () { line.classList.add('active'); });
-        line.textContent = text;
+        line.innerHTML = renderMarkdown(text);
         scrollToBottom();
     }
 
@@ -214,7 +226,7 @@
         line.className = 'text-line error-line';
         dom.textBox.insertBefore(line, dom.bottomAnchor);
         requestAnimationFrame(function () { line.classList.add('active'); });
-        line.textContent = text;
+        line.innerHTML = renderMarkdown(text);
         scrollToBottom();
     }
 
@@ -377,14 +389,16 @@
             var msgs = d.messages || [];
             msgs.forEach(function (m) {
                 if (m.role === 'user') {
-                    var content = m.content.replace(/^\[.*?\]\s*/, '');
+                    var content = m.content
+                        .replace(/^\[.*?\]\s*/, '')
+                        .replace(/^\[图片描述:[^\]]*\]\s*\n?/, '');
                     addLineStatic('>', content, 'active-group-top');
                 } else if (m.role === 'assistant') {
                     var p = parseControlTags(m.content);
                     p.narrations.forEach(function (n) { addLineStatic('', n, 'narration-line'); });
                     addLineStatic(aiName, p.text, 'active-group-bottom');
                 } else if (m.role === 'system') {
-                    if (/^\[系统\]/.test(m.content)) return;
+                    if (/^\[系统\]|^\[Agent|^\[工具结果/.test(m.content)) return;
                     addSystemLine(m.content);
                 }
             });
@@ -405,6 +419,34 @@
         updateStatusBar();
     }
 
+    // image upload
+    function selectImage() {
+        dom.imageInput.click();
+    }
+
+    function handleImageSelected(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+            currentImageData = ev.target.result;
+            dom.previewImg.src = ev.target.result;
+            dom.imagePreview.classList.remove('hidden');
+            dom.btnImage.classList.add('has-image');
+            dom.msgInput.focus();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function removeImage() {
+        currentImageData = null;
+        dom.previewImg.src = '';
+        dom.imagePreview.classList.add('hidden');
+        dom.btnImage.classList.remove('has-image');
+        dom.imageInput.value = '';
+        dom.msgInput.focus();
+    }
+
     // SSE streaming send
     var ACTION_LABELS = {
         shell: 'executing shell', python: 'executing python',
@@ -421,10 +463,19 @@
             var reqHeaders = { 'Content-Type': 'application/json' };
             if (auth) reqHeaders['Authorization'] = auth;
             console.log('[msgFlow] sending to', API_BASE + '/api/chat/stream_send', 'token=' + (token ? token.substring(0, 12) + '...' : 'null') + ' chat_id=' + currentChatId);
+            var reqBody = { message: text, chat_id: currentChatId, chat_name: 'Psychoscope', tts_enabled: ttsEnabled };
+            if (currentImageData) {
+                reqBody.image_data = currentImageData;
+                currentImageData = null;
+                dom.previewImg.src = '';
+                dom.imagePreview.classList.add('hidden');
+                dom.btnImage.classList.remove('has-image');
+                dom.imageInput.value = '';
+            }
             var res = await fetch(API_BASE + '/api/chat/stream_send', {
                 method: 'POST',
                 headers: reqHeaders,
-                body: JSON.stringify({ message: text, chat_id: currentChatId, chat_name: 'Psychoscope', tts_enabled: ttsEnabled }),
+                body: JSON.stringify(reqBody),
                 signal: streamAbort.signal,
             });
 
@@ -550,6 +601,9 @@
     dom.btnSend.addEventListener('click', sendMessage);
     dom.btnTTS.addEventListener('click', toggleTTS);
     dom.scrollBtn.addEventListener('click', backToBottom);
+    dom.btnImage.addEventListener('click', selectImage);
+    dom.imageInput.addEventListener('change', handleImageSelected);
+    dom.btnRemoveImage.addEventListener('click', removeImage);
     dom.msgInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         else if (e.key === 'Escape' && isProcessing) { e.preventDefault(); abortStream(); }

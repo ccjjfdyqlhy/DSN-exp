@@ -113,3 +113,7 @@ class Config:
     STEWARD_MODEL_TYPE = _env("STEWARD_MODEL_TYPE", "deepseek")
     STEWARD_MODEL_NAME = _env("STEWARD_MODEL_NAME", "deepseek-v4-flash")
     STEWARD_TIMEOUT = int(_env("STEWARD_TIMEOUT", "300"))
+
+    # ==================== 视觉多模态 ====================
+    VISION_ENABLED = _env("VISION_ENABLED", "true").lower() == "true"
+    VISION_PROMPT = _env("VISION_PROMPT", "请详细描述这张图片的内容")

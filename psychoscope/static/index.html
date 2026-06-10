@@ -22,8 +22,14 @@
 </div>
 
 <div id="input-area">
+    <div id="image-preview" class="hidden">
+        <img id="preview-img" src="" alt="preview">
+        <button id="btn-remove-image" title="移除图片">&times;</button>
+    </div>
     <div class="input-wrapper">
         <button id="btn-tts" class="btn-tts" title="语音播报：关">♪</button>
+        <input type="file" id="image-input" accept="image/*" style="display:none;">
+        <button id="btn-image" title="上传图片">🖼</button>
         <input type="text" id="message-input" placeholder="输入消息" autofocus>
         <button id="btn-send">→</button>
     </div>

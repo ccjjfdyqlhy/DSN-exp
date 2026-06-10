@@ -72,6 +72,35 @@ def create_chat_client(model_type: str = None):
     else:
         return DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
 
+def _process_image_input(message: str, image_data: str) -> str:
+    """
+    将 base64 图片发送到本地 LMStudio 多模态模型，获取文字描述后拼入 message。
+    如果 image_data 为空或转换失败，返回原 message。
+    """
+    if not image_data:
+        return message
+
+    # 如果 image_data 不是 data URL 格式，包装为 data URL
+    data_url = image_data
+    if not data_url.startswith("data:"):
+        data_url = f"data:image/png;base64,{image_data}"
+
+    try:
+        vision_chat = LMStudioChat(
+            base_url=app.config.get("LMSTUDIO_BASE_URL", "http://localhost:4501"),
+            model_name=app.config.get("MEMORY_MODEL", "gemma-4-12b-it"),
+            temperature=0.1,
+            max_tokens=500,
+            timeout=app.config.get("LMSTUDIO_TIMEOUT", 300),
+        )
+        vision_prompt = app.config.get("VISION_PROMPT", "请详细描述这张图片的内容")
+        description = vision_chat.describe_image(data_url, vision_prompt)
+        app.logger.info("图片转文字完成 (desc_len=%d)", len(description))
+        return f"[图片描述: {description}]\n{message}"
+    except Exception as e:
+        app.logger.error("图片转文字失败: %s", e)
+        return f"[无法识别图片: {e}]\n{message}"
+
 # ---------- 辅助函数 ----------
 def parse_task_instructions(text: str):
     """解析回复中的<task>指令，支持动作代码块。支持两种顺序:<task>在前或```action在前。"""
@@ -690,6 +719,7 @@ def chat_send():
     tts_enabled = data.get("tts_enabled", True)
     is_asr_input = data.get("is_asr_input", False)
     model_type = data.get("model_type")
+    image_data = data.get("image_data")
 
     user_id = g.user["uid"]
 
@@ -741,6 +771,10 @@ def chat_send():
         assembled = history
     full_history = [{"role": "system", "content": system_prompt}] + assembled
     # 这样我们避开把系统提示词给记忆化。
+
+    # 图片输入处理: 发送到多模态模型获取文字描述
+    if image_data:
+        message = _process_image_input(message, image_data)
 
     # 下面调用主模型 API
     try:
@@ -967,6 +1001,7 @@ def chat_stream_send():
     tts_enabled = data.get("tts_enabled", True)
     is_asr_input = data.get("is_asr_input", False)
     model_type = data.get("model_type")
+    image_data = data.get("image_data")
     user_id = g.user["uid"]
 
     def _clean_display(raw: str) -> str:
@@ -977,7 +1012,7 @@ def chat_stream_send():
         for tag in ("task", "tool", "recall"):
             t = re.sub(f"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
         t = re.sub(r'<[^>]+>', '', t)
-        return re.sub(r'\s+', ' ', t).strip()
+        return re.sub(r'[^\S\n]+', ' ', t).strip()
 
     def _extract_actions(raw: str) -> list:
         """从原始回复中提取可执行的 action 参数列表"""
@@ -1043,6 +1078,10 @@ def chat_stream_send():
                 pass
         feedback = "\n".join(tool_results) if tool_results else ""
         return augmented, feedback
+
+    # 图片输入处理: 发送到多模态模型获取文字描述
+    if image_data:
+        message = _process_image_input(message, image_data)
 
     def generate_stream():
         nonlocal chat_id
