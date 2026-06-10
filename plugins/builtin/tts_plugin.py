@@ -48,6 +48,10 @@ class TTSPlugin(Plugin):
             logger.debug("ctx.tts_enabled=False，跳过 TTS")
             return ctx
 
+        if not ctx.extra.get("tts_available", True):
+            logger.debug("tts_available=False，跳过 TTS")
+            return ctx
+
         if self._tts is None:
             logger.debug("TTS 客户端未配置，跳过")
             return ctx
@@ -74,9 +78,11 @@ class TTSPlugin(Plugin):
             logger.info("TTS 合成成功")
         except TTSRequestError as e:
             ctx.tts_error = f"TTS 服务请求失败: {e}"
+            ctx.extra["tts_available"] = False
             logger.error(ctx.tts_error)
         except Exception as e:
             ctx.tts_error = f"TTS 未知错误: {e}"
+            ctx.extra["tts_available"] = False
             logger.exception("TTS 异常")
 
         return ctx
