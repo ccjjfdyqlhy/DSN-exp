@@ -1,6 +1,7 @@
 
 # DSN-exp/app.py
-# UPD v3_260328
+# UPD v4.2
+# Core backend logics
 
 import os
 import base64
@@ -25,7 +26,7 @@ from todo_api import todo_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat
 from memory import MemoryManager
-from tasks import TaskManager, TaskType, TaskStatus, ComplexityAnalyzer, get_task_manager
+from tasks import TaskManager, TaskType
 import prompt
 
 # 导入 TTS 模块
@@ -40,13 +41,10 @@ from ASR_filter import LMFilterModel
 from flask import Response, stream_with_context
 if Config.ASR_ENABLED: # 启动的更快
     from funasr import AutoModel
-import io
 
 # ---------- 全局变量 ----------
 task_manager = None
 completion_queue = queue.Queue()
-complexity_analyzer = ComplexityAnalyzer()
-notification_thread = None
 _tts_available = True  # TTS 可用性标记，首次失败后置 False 避免刷屏
 
 # ---------- 模型工厂函数 ----------
@@ -148,138 +146,8 @@ def parse_task_instructions(text: str):
 
     return tasks
 
-def _format_tool_result(skill: str, tool: str, result) -> str:
-    """格式化工具执行结果为用户友好的文本。"""
-    if not isinstance(result, dict):
-        return str(result)
-
-    if not result.get("success", False):
-        return f"[工具 {skill}.{tool} 失败] {result.get('error', '未知错误')}"
-
-    if skill == "web_search" and tool == "search":
-        lines = [f"搜索: {result.get('query', '')}"]
-        for i, r in enumerate(result.get("results", []), 1):
-            lines.append(f"  {i}. {r.get('title', '')}")
-            if r.get("snippet"):
-                lines.append(f"     {r['snippet'][:200]}")
-            if r.get("url"):
-                lines.append(f"     {r['url']}")
-        return "\n".join(lines)
-
-    if skill == "file_manager":
-        if tool == "list_dir":
-            lines = [f"目录 {result.get('path', '')}:"]
-            for item in result.get("items", []):
-                marker = "[DIR]" if item.get("type") == "dir" else "[FILE]"
-                lines.append(f"  {marker} {item['name']}")
-            return "\n".join(lines)
-        if tool == "read_file":
-            content = result.get("content", "")
-            if len(content) > 2000:
-                content = content[:2000] + "\n...(截断)"
-            return f"文件 {result.get('path', '')} ({result.get('size', 0)} bytes):\n{content}"
-        if tool == "write_file":
-            return f"已写入 {result.get('path', '')} ({result.get('size', 0)} bytes)"
-
-    if skill == "browser_use":
-        if tool == "navigate":
-            return f"[浏览器] 已导航到 {result.get('url', '')}\n标题: {result.get('title', '')}"
-        if tool == "click":
-            return f"[浏览器] 已点击 \"{result.get('selector', '')}\""
-        if tool == "type":
-            return f"[浏览器] 已在 \"{result.get('selector', '')}\" 中输入文本"
-        if tool == "get_content":
-            return f"[浏览器] 页面内容 ({result.get('length', 0)} 字符):\n{result.get('content', '')[:2000]}"
-        if tool == "get_title":
-            return f"[浏览器] 页面标题: {result.get('title', '')}"
-        if tool == "get_url":
-            return f"[浏览器] 当前 URL: {result.get('url', '')}"
-        if tool == "screenshot":
-            if result.get("path"):
-                return f"[浏览器] 截图已保存到 {result['path']}"
-            return f"[浏览器] 截图 (base64, {result.get('length', 0)} 字符)"
-        if tool == "execute_js":
-            return f"[浏览器] JS 执行结果: {result.get('result', '')[:1000]}"
-        if tool == "wait_for":
-            appeared = result.get("appeared", False)
-            status = "已出现" if appeared else "未出现"
-            return f"[浏览器] 等待 \"{result.get('selector', '')}\" → {status}"
-        if tool == "scroll":
-            return f"[浏览器] 已向{result.get('direction', '')}滚动"
-
-    if skill == "skillmgr":
-        if tool == "list_skills":
-            skills = result.get("skills", [])
-            lines = [f"已安装技能 ({len(skills)} 个):"]
-            for s in skills:
-                status = "✓" if s.get("enabled") else "✗"
-                lines.append(f"  {status} {s['name']} ({s.get('display_name', '')}) [{s.get('source', '')}] — {s.get('tool_count', 0)} tools")
-            return "\n".join(lines)
-        if tool == "enable_skill":
-            return f"[skillmgr] {result.get('message', '')}"
-        if tool == "disable_skill":
-            return f"[skillmgr] {result.get('message', '')}"
-        if tool == "install_deps":
-            py = result.get("python_installed", [])
-            sk = result.get("python_skipped", [])
-            sys_r = result.get("system_results", [])
-            lines = [f"[skillmgr] 依赖安装完成:"]
-            if py:
-                lines.append(f"  新安装: {', '.join(py)}")
-            if sk:
-                lines.append(f"  已存在: {', '.join(sk)}")
-            if sys_r:
-                for r in sys_r:
-                    lines.append(f"  系统命令: {r.get('command', '')} (exit={r.get('exit_code', '?')})")
-            return "\n".join(lines)
-        if tool == "convert_skill":
-            return f"[skillmgr] {result.get('message', '')}\n目标: {result.get('target', '')}\n二进制: {result.get('binary', '')}"
-        if tool == "download_skill":
-            return f"[skillmgr] {result.get('message', '')}"
-
-    return json.dumps(result, ensure_ascii=False, indent=2)
-
-def handle_complex_question(user_id: int, chat_id: int, message: str, history: list) -> dict:
-    """处理复杂问题：创建异步推理任务并返回初步回复"""
-    if not task_manager:
-        return {"error": "任务管理器未初始化"}
-    
-    # 分析问题复杂度
-    context_length = len(history)
-    complexity_result = complexity_analyzer.analyze_complexity(message, context_length)
-    
-    app.logger.info("问题复杂度分析: %s", complexity_result)
-    
-    if not complexity_result["is_complex"]:
-        return {"should_use_reasoner": False}
-    
-    # 创建推理任务
-    task_params = {
-        "question": message,
-        "context": "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-5:]])  # 最近5条消息作为上下文
-    }
-    
-    try:
-        task_id = task_manager.create_task(
-            task_type=TaskType.REASONER,
-            user_id=user_id,
-            chat_id=chat_id,
-            params=task_params,
-            priority=1  # 正常优先级
-        )
-        
-        # 立即执行任务
-        task_manager.execute_task(task_id)
-        
-        return {
-            "should_use_reasoner": True,
-            "task_id": task_id,
-            "complexity_score": complexity_result["score"],
-            "preliminary_reply": "这个问题看起来比较复杂，我需要一些时间来深入思考。让我先分析一下，稍后给您详细的解答。在此期间，您可以继续问我其他问题。"
-        }
-    except Exception as e:
-        app.logger.error("创建推理任务失败: %s", e)
-        return {"error": f"创建推理任务失败: {str(e)}"}
+from utils.formatter import format_tool_result as _format_tool_result
+from utils.text_clean import clean_display, clean_tts_text
 
 def process_task_completion():
     """处理任务完成通知的线程函数"""
@@ -492,8 +360,7 @@ if app.config.get("TASK_MANAGER_ENABLED", True):
         app.logger.info("任务管理器初始化完成")
         
         # 启动任务完成通知线程
-        notification_thread = threading.Thread(target=process_task_completion, daemon=True)
-        notification_thread.start()
+        threading.Thread(target=process_task_completion, daemon=True).start()
         app.logger.info("任务完成通知线程已启动")
     except Exception as e:
         app.logger.error("任务管理器初始化失败: %s", e)
@@ -596,37 +463,6 @@ if Config.WORLD_ENABLED:
     except Exception as e:
         app.logger.warning("叙事世界模型初始化失败: %s", e)
 
-# ---- 初始化插件管理器 ----
-from plugins.manager import PluginManager
-from plugins.base import HookPoint, PluginContext
-_app_plugin_manager = PluginManager()
-if _personality_v2:
-    from plugins.builtin.personality_plugin import PersonalityPlugin
-    _app_plugin_manager.register(PersonalityPlugin(personality_v2=_personality_v2))
-
-from plugins.builtin.impression_plugin import ImpressionPlugin
-_app_plugin_manager.register(ImpressionPlugin(impression_manager=_impression_manager))
-
-if _world_engine and Config.WORLD_ENABLED:
-    from world import WorldPlugin
-    _app_plugin_manager.register(WorldPlugin(
-        world_engine=_world_engine,
-        world_state_manager=_world_state_manager,
-        narrative_model=_narrative_model,
-        personality_v2=_personality_v2,
-    ))
-
-
-def _dispatch_plugins_sync(hook: HookPoint, ctx: PluginContext) -> None:
-    """同步调度指定钩子下所有已启用的插件（用于 Flask 非异步端点）"""
-    for plugin in _app_plugin_manager.get_hooks_for(hook):
-        if not _app_plugin_manager.is_enabled(plugin.name):
-            continue
-        try:
-            plugin.on_hook(hook, ctx)
-        except Exception:
-            pass
-
 # ---------- 初始化技能系统 ----------
 try:
     _skills_dir = _os.path.join(_os.path.dirname(__file__), "skills")
@@ -649,6 +485,22 @@ except Exception as e:
     app.logger.warning("技能系统初始化失败: %s", e)
     skill_registry = None
     skill_manager = None
+
+# ---------- 初始化 DSNEngine ----------
+from engine import create_engine_with_defaults
+engine = create_engine_with_defaults(
+    db=db,
+    memory_manager=memory_manager,
+    skill_registry=skill_registry,
+    skill_manager=skill_manager,
+    impression_manager=_impression_manager,
+    tts_client=tts_client,
+    filter_model=filter_model,
+    world_engine=_world_engine,
+    world_state_manager=_world_state_manager,
+    narrative_model=_narrative_model,
+)
+app.logger.info("DSNEngine 已创建 (插件: %s)", engine.plugin_manager.list_plugins())
 
 # ---------- 认证装饰器 ----------
 def login_required(f):
@@ -713,284 +565,37 @@ def chat_send():
     if not data or "message" not in data:
         return jsonify({"error": "Missing message"}), 400
 
-    message = data["message"]
-    chat_id = data.get("chat_id")
-    chat_name = data.get("chat_name", "未命名")
-    tts_enabled = data.get("tts_enabled", True)
-    is_asr_input = data.get("is_asr_input", False)
-    model_type = data.get("model_type")
-    image_data = data.get("image_data")
-
     user_id = g.user["uid"]
-
-    # 获取或创建聊天会话
-    history = []
-    if chat_id:
-        try:
-            history = db.get_chat_history(user_id, chat_id)
-            if not history:
-                return jsonify({"error": "Chat not found or access denied"}), 404
-        except Exception as e:
-            app.logger.error("获取聊天历史失败: %s", e)
-            return jsonify({"error": "Database error"}), 500
-    else:
-        try:
-            chat_id = db.create_chat(user_id, chat_name)
-        except Exception as e:
-            app.logger.error("创建聊天失败: %s", e)
-            return jsonify({"error": "Database error"}), 500
-
-    # 如果是ASR输入且启用过滤，先通过过滤模型判断
-    if is_asr_input and filter_model is not None:
-        decision = filter_model.filter_input(message)
-        if decision == "HOLD":
-            # 不转发给主模型，但生成记忆
-            memory_content = f"听到：{message}"
-            try:
-                # 立即生成记忆并插入聊天列表
-                round_index = db.get_memory_count(user_id, chat_id) + 1
-                memory_id = db.save_memory(user_id, chat_id, round_index, memory_content)
-                # 将记忆作为系统消息插入聊天历史
-                db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{memory_content}"}])
-                app.logger.info("ASR输入被过滤，生成记忆: %s", memory_content)
-                return jsonify({"reply": "", "chat_id": chat_id, "filtered": True})
-            except Exception as e:
-                app.logger.error("生成ASR记忆失败: %s", e)
-                return jsonify({"error": "Memory error"}), 500
-        # 如果是FORWARD，继续正常流程
-
-    # 构建包含系统提示词的完整历史，并基于记忆规则替换远端内容
-    system_prompt = prompt.get_system_prompt(g.user)
-    # PRE_PROCESS 插件 (世界模型注入环境)
-    pre_ctx = PluginContext(user_id=user_id, message=message, system_prompt=system_prompt, nickname=g.user.get("nickname", "用户"))
-    _dispatch_plugins_sync(HookPoint.PRE_PROCESS, pre_ctx)
-    system_prompt = pre_ctx.system_prompt or system_prompt
-    if memory_manager:
-        assembled = memory_manager.assemble_context(g.user["uid"], chat_id, history)
-    else:
-        assembled = history
-    full_history = [{"role": "system", "content": system_prompt}] + assembled
-    # 这样我们避开把系统提示词给记忆化。
-
-    # 图片输入处理: 发送到多模态模型获取文字描述
-    if image_data:
-        message = _process_image_input(message, image_data)
-
-    # 下面调用主模型 API
     try:
-        chat = create_chat_client(model_type)
-        
-        # 在用户消息前添加时间戳
-        from datetime import datetime
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        timestamped_message = f"[{current_time}] {message}"
-        
-        chat.messages = full_history.copy()
-        reply = chat.send_message(timestamped_message)
+        result = engine.chat(
+            message=data["message"],
+            user_id=user_id,
+            chat_id=data.get("chat_id"),
+            chat_name=data.get("chat_name", "未命名"),
+            model_type=data.get("model_type"),
+            nickname=g.user.get("nickname", "用户"),
+            tts_enabled=data.get("tts_enabled", True),
+            is_asr_input=data.get("is_asr_input", False),
+            image_data=data.get("image_data"),
+        )
     except Exception as e:
-        app.logger.error("主模型 API 调用失败: %s", e)
+        app.logger.error("Engine chat 调用失败: %s", e)
         return jsonify({"error": "AI service error"}), 500
 
-    # 将新消息存入数据库 (附带 round_index 用于记忆召回)
-    round_index = db.get_memory_count(user_id, chat_id) + 1
-    new_messages = chat.messages[-2:]
-    try:
-        db.append_messages(user_id, chat_id, new_messages, round_index=round_index)
-    except Exception as e:
-        app.logger.error("追加消息失败: %s", e)
-        return jsonify({"error": "Database error"}), 500
+    if result.get("filtered"):
+        return jsonify({"reply": "", "chat_id": result["chat_id"], "filtered": True})
 
-    # 保存原始回复
-    original_reply = reply
-
-    # ---- 插件调度: POST_PROCESS (人格v2 + 世界模型 + 印象) ----
-    _dispatch_plugins_sync(HookPoint.POST_PROCESS,
-                           PluginContext(user_id=user_id, message=message,
-                                         reply=reply, original_reply=reply))
-
-    # --- 处理技能工具 (<tool> 标签) ---
-    if skill_registry is not None:
-        import re as _tool_re
-        _tool_pat = _tool_re.compile(r"<tool>\s*(.*?)\s*</tool>", _tool_re.DOTALL)
-        _tool_matches = list(_tool_pat.finditer(original_reply))
-        if _tool_matches:
-            tool_results: list[str] = []
-            for match in _tool_matches:
-                try:
-                    tool_data = json.loads(match.group(1).strip())
-                    s_name = tool_data.get("skill", "")
-                    t_name = tool_data.get("tool", "")
-                    params = tool_data.get("params", {})
-                    if s_name and t_name:
-                        result = skill_registry.call_tool(s_name, t_name, params)
-                        formatted = _format_tool_result(s_name, t_name, result)
-                        tool_results.append(formatted)
-                        app.logger.info("工具执行: %s.%s", s_name, t_name)
-                except json.JSONDecodeError as e:
-                    tool_results.append(f"[工具调用失败: JSON 解析错误] {e}")
-                except ValueError as e:
-                    tool_results.append(f"[工具调用失败] {e}")
-                except Exception as e:
-                    app.logger.exception("工具执行异常: %s", e)
-                    tool_results.append(f"[工具执行异常] {e}")
-            if tool_results:
-                reply = _tool_pat.sub("", reply).strip()
-                reply += "\n\n" + "\n".join(tool_results)
-
-    # --- 处理记忆召回 (<recall> 标签) ---
-    if memory_manager:
-        try:
-            recall_processed = memory_manager.process_recall_tags(user_id, chat_id, original_reply)
-            if recall_processed != original_reply:
-                reply = recall_processed
-                app.logger.info("记忆召回已处理，回复已更新")
-        except Exception as e:
-            app.logger.error("记忆召回处理失败: %s", e)
-
-    # --- 解析并执行异步任务 ---
-    task_status_messages: list[str] = []
-    if task_manager:
-        tasks = parse_task_instructions(original_reply)
-        for task_data in tasks:
-            try:
-                task_type = task_data.get("type")
-                params = task_data.get("params", {})
-
-                if task_type == "reminder":
-                    time_str = params.get("time")
-                    if time_str:
-                        scheduled_time = datetime.fromisoformat(time_str)
-                        task_id = task_manager.create_task(
-                            task_type=TaskType.REMINDER,
-                            user_id=user_id,
-                            chat_id=chat_id,
-                            params=params,
-                            priority=1,
-                            scheduled_time=scheduled_time
-                        )
-                        short_id = task_id[:8]
-                        task_status_messages.append(f"[系统] 提醒已设置，将在 {time_str} 触发。任务ID: {short_id}")
-                        app.logger.info("已创建提醒任务: %s, 时间: %s", task_id, scheduled_time)
-
-                elif task_type == "reasoner":
-                    task_id = task_manager.create_task(
-                        task_type=TaskType.REASONER,
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        params=params,
-                        priority=1
-                    )
-                    task_manager.execute_task(task_id)
-                    short_id = task_id[:8]
-                    task_status_messages.append(f"[系统] 深度推理任务已提交（ID: {short_id}），正在后台执行，完成后会通知你。")
-                    app.logger.info("已创建并提交推理任务: %s", task_id)
-
-                elif task_type == "action":
-                    if "action_type" not in params:
-                        params["action_type"] = "shell"
-                    task_id = task_manager.create_task(
-                        task_type=TaskType.ACTION,
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        params=params,
-                        priority=1
-                    )
-                    task_manager.execute_task(task_id)
-                    short_id = task_id[:8]
-                    action_type = params.get("action_type", "shell")
-                    task_status_messages.append(f"[系统] {action_type} 任务已提交（ID: {short_id}），正在后台执行，完成后会通知你。")
-                    app.logger.info("已创建并提交动作任务: %s (类型: %s)", task_id, action_type)
-
-            except Exception as e:
-                app.logger.error("处理任务失败: %s, 任务数据: %s", e, task_data)
-
-    if task_status_messages:
-        status_text = "\n".join(task_status_messages)
-        db.append_messages(user_id, chat_id, [{"role": "system", "content": status_text}])
-        reply += "\n\n" + status_text
-
-    # --- TTS 合成 ---
-    audio_data = None
-    tts_error = None
-    global _tts_available
-
-    # 移除所有标签以得到纯净显示文本
-    import re
-    display_reply = original_reply
-
-    # <text> — 保留内容，去标签
-    display_reply = re.sub(r'<text>(.*?)</text>', r'\1', display_reply, flags=re.DOTALL | re.IGNORECASE)
-    # <task>, <tool>, <recall> — 完全移除
-    for tag in ("task", "tool", "recall"):
-        display_reply = re.sub(f"<{tag}>.*?</{tag}>", '', display_reply, flags=re.DOTALL)
-    # 残留的 <> 标签
-    display_reply = re.sub(r'<[^>]+>', '', display_reply)
-    display_reply = re.sub(r'\s+', ' ', display_reply).strip()
-    reply = display_reply
-
-    # TTS 文本 — 完全移除所有标签
-    tts_text = original_reply
-    tts_text = re.sub(r'<text>(.*?)</text>', '', tts_text, flags=re.DOTALL | re.IGNORECASE)
-    for tag in ("task", "tool", "recall"):
-        tts_text = re.sub(f"<{tag}>.*?</{tag}>", '', tts_text, flags=re.DOTALL)
-    tts_text = re.sub(r'<[^>]+>', '', tts_text)
-    tts_text = re.sub(r'\s+', ' ', tts_text).strip()
-    
-    # 如果有内容才进行TTS合成
-    if tts_text and _tts_available:
-        try:
-            REF_AUDIO_PATH = os.path.join(os.path.dirname(__file__), "tests", "ref.wav")
-            PROMPT_TEXT = "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
-
-            params = {
-                "text": tts_text,
-                "text_lang": "zh",
-                "ref_audio_path": REF_AUDIO_PATH,
-                "prompt_lang": "en",
-                "prompt_text": PROMPT_TEXT,
-                "media_type": "wav",
-                "streaming_mode": False,
-            }
-            audio_data = tts_client.tts(**params)
-            app.logger.info("TTS合成成功")
-        except TTSRequestError as e:
-            tts_error = f"TTS 服务请求失败: {e}"
-            _tts_available = False
-            app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
-        except Exception as e:
-            tts_error = f"TTS 错误: {e}"
-            _tts_available = False
-            app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
-    elif not _tts_available:
-        pass  # TTS 不可用，静默跳过
-
-    # 写入记忆模块（异步摘要）
-    if memory_manager:
-        try:
-            app.logger.info("启动记忆摘要任务...")
-            memory_manager.record_dialog_and_summary(
-                user_id=user_id,
-                chat_id=chat_id,
-                round_index=round_index,
-                messages=[{"role": "user", "content": message}, {"role": "assistant", "content": original_reply}],
-                async_mode=True,
-            )
-        except Exception as e:
-            app.logger.error("记忆摘要任务启动失败: %s", e)
-
-    # 准备响应
-    response = {
-        "reply": reply,
-        "chat_id": chat_id,
-        "audio": base64.b64encode(audio_data).decode('utf-8') if audio_data else None,
-        "tts_error": tts_error
-    }
-    return jsonify(response)
+    return jsonify({
+        "reply": result["reply"],
+        "chat_id": result["chat_id"],
+        "audio": result.get("audio_b64"),
+        "tts_error": result.get("tts_error"),
+    })
 
 @app.route("/api/chat/stream_send", methods=["POST"])
 @login_required
 def chat_stream_send():
-    """流式发送消息 — Agent Loop：AI 可执行 action 并将结果喂回继续对话"""
+    """流式发送消息 — Agent Loop：使用 engine 组件但保留 SSE 代理循环"""
     data = request.get_json()
     if not data or "message" not in data:
         return jsonify({"error": "Missing message"}), 400
@@ -1004,18 +609,7 @@ def chat_stream_send():
     image_data = data.get("image_data")
     user_id = g.user["uid"]
 
-    def _clean_display(raw: str) -> str:
-        """移除控制标签，返回纯净显示文本"""
-        t = raw
-        t = re.sub(r'```action\s*\n.*?```', '', t, flags=re.DOTALL | re.IGNORECASE)
-        t = re.sub(r'<text>(.*?)</text>', r'\1', t, flags=re.DOTALL | re.IGNORECASE)
-        for tag in ("task", "tool", "recall"):
-            t = re.sub(f"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
-        t = re.sub(r'<[^>]+>', '', t)
-        return re.sub(r'[^\S\n]+', ' ', t).strip()
-
     def _extract_actions(raw: str) -> list:
-        """从原始回复中提取可执行的 action 参数列表"""
         actions = []
         for td in parse_task_instructions(raw):
             if td.get("type") == "action":
@@ -1026,7 +620,6 @@ def chat_stream_send():
         return actions
 
     def _extract_and_save_impressions(text: str) -> None:
-        """从 AI 回复中提取 IMPRESSION: 标签并写入 DB"""
         if not _impression_manager:
             return
         import re
@@ -1034,23 +627,18 @@ def chat_stream_send():
         for m in pat.finditer(text):
             try:
                 _impression_manager.add(
-                    user_id,
-                    m.group(1).strip(),
-                    m.group(2).strip(),
-                    int(m.group(3)) / 100.0,
-                    "inferred",
+                    user_id, m.group(1).strip(), m.group(2).strip(),
+                    int(m.group(3)) / 100.0, "inferred",
                 )
             except Exception:
                 pass
 
     def _format_action_result(action_type: str, result: dict) -> str:
-        """格式化 action 执行结果，用于喂回 AI"""
         if result.get("success"):
             return f"[系统] 你刚才的 {action_type} 操作已成功完成。\n输出:\n{result.get('output', '')}"[:2000]
         return f"[系统] 你刚才的 {action_type} 操作执行失败。\n错误: {result.get('error', '未知错误')}"
 
     def _process_tools_and_recall(raw: str) -> tuple[str, str]:
-        """处理工具标签和记忆召回。返回 (清理后的文本, 工具结果反馈文本 或 空字符串)"""
         augmented = raw
         tool_results: list[str] = []
         if skill_registry is not None:
@@ -1079,13 +667,11 @@ def chat_stream_send():
         feedback = "\n".join(tool_results) if tool_results else ""
         return augmented, feedback
 
-    # 图片输入处理: 发送到多模态模型获取文字描述
     if image_data:
         message = _process_image_input(message, image_data)
 
     def generate_stream():
         nonlocal chat_id
-        # ── 阶段 1: 解析 ──
         yield f"data: {json.dumps({'status': 'parsing'})}\n\n"
 
         history = []
@@ -1104,41 +690,26 @@ def chat_stream_send():
                 yield f"data: {json.dumps({'status': 'completed', 'reply': '', 'chat_id': chat_id, 'filtered': True})}\n\n"
                 return
 
-        system_prompt = prompt.get_system_prompt(g.user)
-        # PRE_PROCESS 插件 (世界模型注入环境)
-        pre_ctx = PluginContext(user_id=user_id, message=message, system_prompt=system_prompt, nickname=g.user.get("nickname", "用户"))
-        _dispatch_plugins_sync(HookPoint.PRE_PROCESS, pre_ctx)
-        system_prompt = pre_ctx.system_prompt or system_prompt
-        if memory_manager:
-            assembled = memory_manager.assemble_context(g.user["uid"], chat_id, history)
+        system_prompt = engine.prompt_engine.build_system_prompt({"uid": user_id, "nickname": g.user.get("nickname", "用户")})
+        if engine.memory_manager:
+            assembled = engine.memory_manager.assemble_context(user_id, chat_id, history)
         else:
             assembled = history
         full_history = [{"role": "system", "content": system_prompt}] + assembled
 
-        # ── 阶段 2: 初始 AI 调用 ──
         yield f"data: {json.dumps({'status': 'request'})}\n\n"
 
-        chat = create_chat_client(model_type)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamped = f"[{current_time}] {message}"
+
+        chat = create_chat_client(model_type)
         chat.messages = full_history.copy()
-        reply = chat.send_message(f"[{current_time}] {message}")
+        reply = chat.send_message(timestamped)
 
         round_index = db.get_memory_count(user_id, chat_id) + 1
         db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
 
-        # ---- 插件调度: POST_PROCESS (人格v2 + 世界模型 + 印象) ----
-        pctx = PluginContext(
-            user_id=user_id, message=message,
-            reply=_clean_display(original_reply),
-            original_reply=original_reply,
-        )
-        _dispatch_plugins_sync(HookPoint.POST_PROCESS, pctx)
-        narrative_text = pctx.extra.get("narrative", "")
-        if narrative_text:
-            yield f"data: {json.dumps({'status': 'narrative_update', 'text': narrative_text, 'speaker': 'narrator'})}\n\n"
-
-        # ── 阶段 3: 统一 Agent Loop（工具 + 动作）──
         ssp_mode = bool(re.search(r"<ssp>", original_reply, re.IGNORECASE))
         max_steps = 50 if ssp_mode else Config.AGENT_MAX_STEPS
         if ssp_mode:
@@ -1155,7 +726,8 @@ def chat_stream_send():
 
             if not tool_feedback and not actions:
                 if first_display:
-                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
+                    reply_clean = clean_display(clean)
+                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': reply_clean, 'chat_id': chat_id})}\n\n"
                 break
 
             if tool_feedback:
@@ -1170,9 +742,9 @@ def chat_stream_send():
                 last_reply_for_tts = pending
                 _extract_and_save_impressions(pending)
                 if first_display:
-                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
+                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': clean_display(clean), 'chat_id': chat_id})}\n\n"
                     first_display = False
-                yield f"data: {json.dumps({'status': 'text_update', 'reply': _clean_display(pending)})}\n\n"
+                yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
                 continue
 
             if actions:
@@ -1197,23 +769,16 @@ def chat_stream_send():
                 last_reply_for_tts = pending
                 _extract_and_save_impressions(pending)
                 if first_display:
-                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': _clean_display(clean), 'chat_id': chat_id})}\n\n"
+                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': clean_display(clean), 'chat_id': chat_id})}\n\n"
                     first_display = False
-                yield f"data: {json.dumps({'status': 'text_update', 'reply': _clean_display(pending)})}\n\n"
+                yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
 
-        # ── 阶段 4: TTS ──
         audio_b64 = None
         tts_error = None
         global _tts_available
         if tts_enabled and _tts_available:
             yield f"data: {json.dumps({'status': 'tts'})}\n\n"
-            t = last_reply_for_tts
-            t = re.sub(r'```action\s*\n.*?```', '', t, flags=re.DOTALL | re.IGNORECASE)
-            t = re.sub(r'<text>(.*?)</text>', '', t, flags=re.DOTALL | re.IGNORECASE)
-            for tag in ("task", "tool", "recall"):
-                t = re.sub(f"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
-            t = re.sub(r'<[^>]+>', '', t)
-            t = re.sub(r'\s+', ' ', t).strip()
+            t = clean_tts_text(last_reply_for_tts)
             if t:
                 try:
                     tts_params = {
@@ -1229,7 +794,6 @@ def chat_stream_send():
                     _tts_available = False
                     app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
 
-        # ── 阶段 5: 记忆 ──
         if memory_manager:
             try:
                 memory_manager.record_dialog_and_summary(
@@ -1240,7 +804,6 @@ def chat_stream_send():
             except Exception as e:
                 app.logger.error("记忆摘要失败: %s", e)
 
-        # ── 阶段 6: 完成 ──
         yield f"data: {json.dumps({'status': 'completed', 'audio': audio_b64, 'tts_error': tts_error})}\n\n"
 
     return Response(stream_with_context(generate_stream()), mimetype="text/event-stream")

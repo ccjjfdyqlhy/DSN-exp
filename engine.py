@@ -109,6 +109,12 @@ class DSNEngine:
         self.prompt_engine: Optional[PromptEngine] = None
         self.pipeline: Optional[ChatPipeline] = None
 
+        self._models_plugin = None
+        self._tts_client = None
+        self._tts_available = False
+        self._filter_model = None
+        self.complexity_analyzer: Optional[ComplexityAnalyzer] = None
+
         self._logger = logger
 
         if self._subapp_path:
@@ -124,6 +130,8 @@ class DSNEngine:
         self._init_database()
         self._init_tasks()
         self._init_memory()
+        self._init_world()
+        self._init_tts()
         self._init_skills()
         self._init_prompt()
         self._init_plugins()
@@ -153,6 +161,7 @@ class DSNEngine:
                 target=self._process_task_completion, daemon=True
             )
             self._task_completion_thread.start()
+            self.complexity_analyzer = ComplexityAnalyzer()
             self._logger.info("TaskManager 初始化完成 (max_workers=%d)", self._engine_cfg.task_max_workers)
         except Exception as e:
             self._logger.warning("TaskManager 初始化失败: %s", e)
@@ -171,7 +180,11 @@ class DSNEngine:
                 if not task:
                     continue
                 self._logger.info("任务完成: %s (type=%s)", task_id, task.task_type.value)
-                if task.task_type == TaskType.ACTION:
+                if task.task_type == TaskType.REMINDER:
+                    self._handle_reminder_completion(task, result)
+                elif task.task_type == TaskType.REASONER:
+                    self._handle_reasoner_completion(task, result)
+                elif task.task_type == TaskType.ACTION:
                     retry_depth = 0
                     if hasattr(self.task_manager, '_retry_depths'):
                         if hasattr(self.task_manager, '_retry_lock'):
@@ -198,6 +211,31 @@ class DSNEngine:
                 self._retry_engine_action(ai_message, task, retry_depth)
         except Exception as e:
             self._logger.error("处理动作完成失败: %s", e)
+
+    def _handle_reminder_completion(self, task, result):
+        self._logger.info("提醒任务到期: task_id=%s", task.task_id)
+        short_id = task.task_id[:8]
+        reminder_text = result.get("reminder_text", "提醒时间到了！")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msg = f"[系统] ⏰ 提醒（ID: {short_id}）\n现在是 {now}，你之前设置的提醒：{reminder_text}"
+        try:
+            self.db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
+        except Exception as e:
+            self._logger.error("保存提醒消息失败: %s", e)
+
+    def _handle_reasoner_completion(self, task, result):
+        self._logger.info("推理任务完成: task_id=%s", task.task_id)
+        short_id = task.task_id[:8]
+        conclusion = result.get("conclusion", "")
+        if conclusion:
+            msg = f"[系统] 推理任务完成（ID: {short_id}）。\n结论: {conclusion}"
+        else:
+            reasoning = result.get("reasoning", "")
+            msg = f"[系统] 推理任务完成（ID: {short_id}）。\n{reasoning[:2000]}"
+        try:
+            self.db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
+        except Exception as e:
+            self._logger.error("保存推理结果失败: %s", e)
 
     def _generate_result_message(self, task, result) -> str | None:
         try:
@@ -284,6 +322,44 @@ class DSNEngine:
         except Exception as e:
             self._logger.warning("Memory 初始化失败: %s", e)
 
+    def _init_world(self):
+        if not Config.WORLD_ENABLED:
+            return
+        try:
+            from world import WorldEngine, WorldStateManager, NarrativeModel
+            preset_path = Path(__file__).parent / "world" / "worlds" / f"{Config.WORLD_PRESET}.yaml"
+            self.world_engine = WorldEngine()
+            self.world_engine.load_config_file(str(preset_path))
+            self.world_state_manager = WorldStateManager(self.world_engine, Config.WORLD_UPDATE_INTERVAL)
+            self.world_state_manager.start()
+            if Config.NARRATIVE_ENABLED:
+                self.narrative_model = NarrativeModel(
+                    model_type=Config.MAIN_MODEL_TYPE,
+                    model_name=Config.NARRATIVE_MODEL,
+                    api_key=Config.DEEPSEEK_API_KEY,
+                    base_url=Config.LMSTUDIO_BASE_URL if Config.MAIN_MODEL_TYPE == "lmstudio" else None,
+                    temperature=Config.NARRATIVE_TEMPERATURE,
+                    max_tokens=Config.NARRATIVE_MAX_TOKENS,
+                    keep_history=Config.NARRATIVE_KEEP_HISTORY,
+                )
+                prompt_path = Path(__file__).parent / "prompt" / "world" / "narrative.md"
+                self.narrative_model.load_system_prompt_file(str(prompt_path))
+            self._logger.info("World/Narrative 初始化完成 (world=%s, narrative=%s)",
+                              Config.WORLD_PRESET, "enabled" if self.narrative_model else "disabled")
+        except Exception as e:
+            self._logger.warning("World/Narrative 初始化失败: %s", e)
+
+    def _init_tts(self):
+        try:
+            from vocal_infer import VocalExp
+            self._tts_client = VocalExp(Config.TTS_BASE_URL)
+            self._tts_available = True
+            self._logger.info("TTS 客户端初始化完成")
+        except Exception as e:
+            self._logger.warning("TTS 初始化失败: %s", e)
+            self._tts_client = None
+            self._tts_available = False
+
     def _init_skills(self):
         skill_dirs = []
         if self._cfg and self._cfg.skills_dirs:
@@ -356,6 +432,14 @@ class DSNEngine:
             return True
 
         # ---- 创建插件（按依赖顺序） ----
+
+        # 0. ASRFilterPlugin (PRE_FILTER, priority 10)
+        if enabled("asr_filter"):
+            from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
+            self.plugin_manager.register(ASRFilterPlugin(
+                filter_model=self._filter_model,
+                db=self.db,
+            ))
 
         # 1. ModelsPlugin (MODEL_INVOKE, priority 50)
         if enabled("models"):
@@ -443,6 +527,7 @@ class DSNEngine:
                 max_steps=ec.agent_max_steps,
                 token_budget=ec.agent_token_budget,
                 agent_timeout=ec.agent_timeout,
+                impression_manager=self.impression_manager,
             ))
 
         # 5c. SSPPlugin (POST_PROCESS, priority 50)
@@ -464,7 +549,24 @@ class DSNEngine:
                 skill_registry=self.skill_registry,
             ))
 
-        # 6. DistillPlugin (POST_PROCESS, priority 100)
+        # 5d. TodoPlugin (POST_PROCESS, priority 33)
+        if enabled("todo") and self._models_plugin:
+            from plugins.builtin.todo_plugin import TodoPlugin
+            self.plugin_manager.register(TodoPlugin(
+                models_plugin=self._models_plugin,
+                complexity_analyzer=self.complexity_analyzer,
+                skill_registry=self.skill_registry,
+                db=self.db,
+            ))
+
+        # 6. TTSPlugin (POST_TTS, priority 60)
+        if enabled("tts") and self._tts_client:
+            from plugins.builtin.tts_plugin import TTSPlugin
+            self.plugin_manager.register(TTSPlugin(
+                tts_client=self._tts_client,
+            ))
+
+        # 7. DistillPlugin (POST_PROCESS, priority 100)
         if enabled("distill") and self.skill_manager and self._models_plugin:
             try:
                 from plugins.builtin.distill_plugin import DistillPlugin
@@ -496,17 +598,21 @@ class DSNEngine:
                       nickname: str = "用户",
                       **kwargs) -> PluginContext:
         """构建 PluginContext"""
+        ec = self._engine_cfg
         return PluginContext(
             user_id=user_id,
             message=message,
             chat_id=chat_id,
             chat_name=chat_name,
             history=history or [],
-            model_type=model_type or self._engine_cfg.model_type,
+            model_type=model_type or (ec.model_type if ec else "deepseek"),
             nickname=nickname,
+            is_asr_input=kwargs.get("is_asr_input", False),
+            tts_enabled=kwargs.get("tts_enabled", True),
+            image_data=kwargs.get("image_data"),
             agent_active=kwargs.get("agent_active", False),
-            agent_max_steps=kwargs.get("agent_max_steps", self._engine_cfg.agent_max_steps),
-            agent_token_budget=kwargs.get("agent_token_budget", self._engine_cfg.agent_token_budget),
+            agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else 5),
+            agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 8000),
         )
 
     def chat(self, message: str, user_id: int = 1,
@@ -640,6 +746,11 @@ def create_engine_with_defaults(
     skill_registry: SkillRegistry = None,
     skill_manager: SkillManager = None,
     impression_manager = None,
+    tts_client = None,
+    filter_model = None,
+    world_engine = None,
+    world_state_manager = None,
+    narrative_model = None,
 ) -> DSNEngine:
     """
     使用已有组件创建引擎（供 app.py 复用）。
@@ -662,6 +773,17 @@ def create_engine_with_defaults(
         engine.skill_manager = skill_manager
     if impression_manager:
         engine.impression_manager = impression_manager
+    if tts_client:
+        engine._tts_client = tts_client
+        engine._tts_available = True
+    if filter_model:
+        engine._filter_model = filter_model
+    if world_engine:
+        engine.world_engine = world_engine
+    if world_state_manager:
+        engine.world_state_manager = world_state_manager
+    if narrative_model:
+        engine.narrative_model = narrative_model
 
     # PromptEngine — v2
     _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt")
@@ -701,6 +823,28 @@ def create_engine_with_defaults(
     from plugins.builtin.vision_plugin import VisionPlugin
     engine.plugin_manager.register(VisionPlugin(models_plugin=models_plugin))
 
+    if engine.world_engine:
+        from world import WorldPlugin
+        engine.plugin_manager.register(WorldPlugin(
+            world_engine=engine.world_engine,
+            world_state_manager=engine.world_state_manager,
+            narrative_model=engine.narrative_model,
+            personality_v2=pers_v2,
+        ))
+
+    pe = engine.prompt_engine
+    if pe and pe.personality_v2:
+        from plugins.builtin.personality_plugin import PersonalityPlugin
+        engine.plugin_manager.register(PersonalityPlugin(
+            personality_v2=pe.personality_v2,
+        ))
+
+    if engine.impression_manager:
+        from plugins.builtin.impression_plugin import ImpressionPlugin
+        engine.plugin_manager.register(ImpressionPlugin(
+            impression_manager=engine.impression_manager,
+        ))
+
     if skill_registry:
         from plugins.builtin.skills_plugin import SkillsPlugin
         engine.plugin_manager.register(SkillsPlugin(skill_registry=skill_registry))
@@ -709,6 +853,28 @@ def create_engine_with_defaults(
         engine.plugin_manager.register(AgentPlugin(
             skill_registry=skill_registry,
             models_plugin=models_plugin,
+            impression_manager=impression_manager,
+        ))
+
+    if engine.task_manager:
+        from plugins.builtin.task_plugin import TaskPlugin
+        engine.plugin_manager.register(TaskPlugin(
+            task_manager=engine.task_manager,
+            db=db,
+            skill_registry=skill_registry,
+        ))
+
+    if engine._tts_client:
+        from plugins.builtin.tts_plugin import TTSPlugin
+        engine.plugin_manager.register(TTSPlugin(
+            tts_client=engine._tts_client,
+        ))
+
+    if engine._filter_model:
+        from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
+        engine.plugin_manager.register(ASRFilterPlugin(
+            filter_model=engine._filter_model,
+            db=db,
         ))
 
     engine._init_pipeline()

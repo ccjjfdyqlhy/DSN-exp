@@ -81,8 +81,10 @@ class ModelsPlugin(Plugin):
         # 保存消息到数据库
         if self._db is not None and ctx.chat_id:
             try:
+                round_index = self._db.get_memory_count(ctx.user_id, ctx.chat_id) + 1
                 self._db.append_messages(
-                    ctx.user_id, ctx.chat_id, chat.messages[-2:]
+                    ctx.user_id, ctx.chat_id, chat.messages[-2:],
+                    round_index=round_index,
                 )
             except Exception as e:
                 logger.error("保存消息失败: %s", e)

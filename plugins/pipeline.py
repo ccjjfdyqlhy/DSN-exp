@@ -139,6 +139,15 @@ class ChatPipeline:
                     'chat_id': ctx.chat_id,
                 })}\n\n"
 
+            if hook == HookPoint.POST_PROCESS:
+                narrative = ctx.extra.get("narrative", "")
+                if narrative:
+                    yield f"data: {json.dumps({
+                        'status': 'narrative_update',
+                        'text': narrative,
+                        'speaker': 'narrator',
+                    })}\n\n"
+
             if ctx.filtered:
                 yield f"data: {json.dumps({
                     'status': 'completed',

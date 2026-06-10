@@ -51,12 +51,14 @@ class AgentPlugin(Plugin):
         max_steps: int = 5,
         token_budget: int = 8000,
         agent_timeout: float = 120.0,
+        impression_manager=None,
     ):
         self._skill_registry = skill_registry
         self._models_plugin = models_plugin
         self._default_max_steps = max_steps
         self._default_token_budget = token_budget
         self._default_timeout = agent_timeout
+        self._impression = impression_manager
 
     def on_load(self) -> None:
         if self._skill_registry is None:
@@ -161,6 +163,8 @@ class AgentPlugin(Plugin):
 
             try:
                 current_reply = self._models_plugin.invoke(base_messages, ctx)
+                if self._impression and current_reply:
+                    self._extract_impressions(current_reply, ctx.user_id)
             except Exception as e:
                 logger.error("Agent 第 %d 步 LLM 调用失败: %s", step_count, e)
                 if tool_results:
@@ -210,6 +214,26 @@ class AgentPlugin(Plugin):
                 results.append(f"{skill_name}.{tool_name} 执行异常: {e}")
 
         return results
+
+    def _extract_impressions(self, text: str, user_id: int) -> None:
+        """从文本中提取 IMPRESSION: 标签并写入 DB"""
+        if not self._impression:
+            return
+        import re
+        pat = re.compile(r"IMPRESSION\s*:\s*(.+?)\s*:\s*(.+?)\s*:\s*(\d+)", re.IGNORECASE)
+        for m in pat.finditer(text):
+            try:
+                category = m.group(1).strip()
+                content = m.group(2).strip()
+                confidence = min(1.0, max(0.1, int(m.group(3)) / 100.0))
+                if content and len(content) >= 2:
+                    self._impression.add(
+                        user_id, category, content,
+                        confidence, "inferred",
+                    )
+                    logger.info("Agent 步骤提取印象: uid=%d cat=%s", user_id, category)
+            except Exception:
+                pass
 
     @staticmethod
     def _format_tool_result(skill: str, tool: str, result) -> str:
