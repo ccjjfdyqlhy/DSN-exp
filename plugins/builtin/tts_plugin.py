@@ -1,5 +1,6 @@
 # plugins/builtin/tts_plugin.py
 # TTS 语音合成插件 — POST_TTS
+# UPD v1_260611 — 对接 TTSProfileManager
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import logging
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
+from plugins.builtin.tts_profile import TTSProfileManager
 
 logger = logging.getLogger("TTSPlugin")
 
@@ -16,6 +18,9 @@ logger = logging.getLogger("TTSPlugin")
 class TTSPlugin(Plugin):
     """
     从 AI 回复中提取纯文本，调用 TTS 服务合成语音。
+
+    音色参数通过 TTSProfileManager 从 YAML 配置文件加载，
+    确保 prompt_text 与参考音频完全对齐。
 
     依赖: tts_client (VocalExp 实例，可选)
     """
@@ -28,20 +33,32 @@ class TTSPlugin(Plugin):
     def __init__(
         self,
         tts_client=None,
+        *,
+        profile_manager: Optional[TTSProfileManager] = None,
+        profile_name: Optional[str] = None,
+        # ---- 旧版 fallback 参数 (当 profile_manager 为 None 时使用) ----
         ref_audio_path: str | None = None,
         prompt_text: str = "Many people may feel lost at times.",
         prompt_lang: str = "en",
     ):
         self._tts = tts_client
-        self._ref_audio_path = ref_audio_path or os.path.join(
+        self._profile_manager = profile_manager
+        self._profile_name = profile_name
+
+        self._fallback_ref_audio = ref_audio_path or os.path.join(
             os.path.dirname(__file__), "..", "..", "tests", "ref.wav"
         )
-        self._prompt_text = prompt_text
-        self._prompt_lang = prompt_lang
+        self._fallback_prompt_text = prompt_text
+        self._fallback_prompt_lang = prompt_lang
 
     def on_load(self) -> None:
         if self._tts is None:
             logger.warning("TTS 客户端未注入，TTSPlugin 将跳过所有合成")
+
+        if self._profile_manager is None:
+            logger.info("TTSProfileManager 未注入，将使用旧版 fallback 参数")
+        else:
+            logger.info("TTS 使用 profile: %s", self._profile_name or self._profile_manager.default_name)
 
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
         if not ctx.tts_enabled:
@@ -65,15 +82,8 @@ class TTSPlugin(Plugin):
 
         try:
             from vocal_infer import TTSRequestError
-            params = {
-                "text": tts_text,
-                "text_lang": "zh",
-                "ref_audio_path": self._ref_audio_path,
-                "prompt_lang": self._prompt_lang,
-                "prompt_text": self._prompt_text,
-                "media_type": "wav",
-                "streaming_mode": False,
-            }
+
+            params = self._build_params(tts_text)
             ctx.audio = self._tts.tts(**params)
             logger.info("TTS 合成成功")
         except TTSRequestError as e:
@@ -86,6 +96,22 @@ class TTSPlugin(Plugin):
             logger.exception("TTS 异常")
 
         return ctx
+
+    # ---- 参数构建 ----
+
+    def _build_params(self, text: str) -> dict:
+        if self._profile_manager is not None:
+            return self._profile_manager.build_params(text, self._profile_name)
+
+        return {
+            "text": text,
+            "text_lang": "zh",
+            "ref_audio_path": self._fallback_ref_audio,
+            "prompt_lang": self._fallback_prompt_lang,
+            "prompt_text": self._fallback_prompt_text,
+            "media_type": "wav",
+            "streaming_mode": False,
+        }
 
     # ---- 内部 ----
 

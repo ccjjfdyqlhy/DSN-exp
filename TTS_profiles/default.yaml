@@ -1,0 +1,22 @@
+# TTS 音色配置文件
+# 使用完整长版 prompt_text 与 ref_audio_path 的实际录音完全对齐
+
+default_profile: "default"
+
+profiles:
+  default:
+    description: "DSN-exp EN TTS profile 0"
+    ref_audio_path: "./ref.wav"
+    prompt_text: "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
+    prompt_lang: "en"
+    text_lang: "zh"
+    media_type: "wav"
+    streaming_mode: false
+    extra_params:
+      top_k: 15
+      top_p: 1.0
+      temperature: 1.0
+      speed_factor: 1.0
+      fragment_interval: 0.3
+      repetition_penalty: 1.35
+      sample_steps: 32
