@@ -33,6 +33,9 @@
     var streamAbort = null;
     var aiName = 'EXA';
     var currentImageData = null;
+    var lineQueue = [];
+    var isProcessingLines = false;
+    var pendingTiming = null;
 
     // DOM
     var $ = function (s) { return document.querySelector(s); };
@@ -508,6 +511,7 @@
                                 if (ev.text) addNarratorLine(ev.text);
                                 break;
                             case 'text_ready':
+                                if (ttsEnabled) break;
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
                                 break;
@@ -518,17 +522,37 @@
                             case 'text_update':
                                 if (ev.reply) await addMessage(aiName, ev.reply, false);
                                 break;
+                            case 'line':
+                                if (ev.text) {
+                                    lineQueue.push(ev);
+                                    processLineQueue();
+                                }
+                                break;
                             case 'completed':
-                                if (ev.audio) audioB64 = ev.audio;
+                                if (ev.timing) {
+                                    pendingTiming = ev.timing;
+                                }
+                                if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
                                 break;
                         }
                     } catch (_) {}
                 }
             }
 
+            // Wait for line queue and active typewriter to finish
+            while (isProcessingLines || lineQueue.length > 0) {
+                await wait(100);
+            }
+            while (activeTypewriter) {
+                await wait(100);
+            }
+            if (pendingTiming) {
+                showTimingLine(pendingTiming);
+                pendingTiming = null;
+            }
+
             if (currentChatId) { await loadChats(); renderChatList(); }
             updateStatusBar();
-            if (ttsEnabled && audioB64) playAudioBase64(audioB64);
 
         } catch (e) {
             console.error('[msgFlow] ERROR:', e.name, e.message, e);
@@ -579,6 +603,63 @@
             a.onended = function () { URL.revokeObjectURL(url); };
             a.play().catch(function () {});
         } catch (_) {}
+    }
+
+    function playAudioBase64Wait(b64) {
+        return new Promise(function (resolve) {
+            try {
+                var raw = atob(b64);
+                var bytes = new Uint8Array(raw.length);
+                for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                var url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+                var a = new Audio(url);
+                a.onended = function () { URL.revokeObjectURL(url); resolve(); };
+                a.onerror = function () { URL.revokeObjectURL(url); resolve(); };
+                var played = a.play();
+                if (played && played.catch) played.catch(function () { resolve(); });
+            } catch (_) { resolve(); }
+        });
+    }
+
+    function processLineQueue() {
+        if (isProcessingLines || lineQueue.length === 0) return;
+        isProcessingLines = true;
+        (async function () {
+            var isFirstLine = true;
+            while (lineQueue.length > 0) {
+                var line = lineQueue.shift();
+                var audioPromise = line.audio_b64
+                    ? playAudioBase64Wait(line.audio_b64)
+                    : Promise.resolve();
+                if (line.audio_b64) {
+                    await addMessage(aiName, line.text, isFirstLine);
+                    isFirstLine = false;
+                    await audioPromise;
+                } else {
+                    await addMessage(aiName, line.text, isFirstLine);
+                    isFirstLine = false;
+                }
+            }
+            isProcessingLines = false;
+            if (pendingTiming && lineQueue.length === 0) {
+                showTimingLine(pendingTiming);
+                pendingTiming = null;
+            }
+        })();
+    }
+
+    function showTimingLine(timing) {
+        if (!timing) return;
+        var parts = [];
+        if (timing.model_invoke_ms) parts.push('MODEL ' + (timing.model_invoke_ms / 1000).toFixed(1) + 's');
+        if (timing.post_process_ms) parts.push('AGENT ' + (timing.post_process_ms / 1000).toFixed(1) + 's');
+        if (timing.tts_ms) parts.push('TTS ' + (timing.tts_ms / 1000).toFixed(1) + 's');
+        parts.push('TOTAL ' + (timing.total_ms / 1000).toFixed(1) + 's');
+        var line = document.createElement('div');
+        line.className = 'text-line timing-line active';
+        line.textContent = parts.join('  \u00b7  ');
+        dom.textBox.insertBefore(line, dom.bottomAnchor);
+        scrollToBottom();
     }
 
     // status bar

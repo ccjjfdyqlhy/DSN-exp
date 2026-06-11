@@ -104,6 +104,16 @@ class PluginManager:
 
     # ---- 调度 ----
 
+    async def _call_plugin(self, plugin: _PluginT, hook: HookPoint,
+                           ctx: PluginContext) -> PluginContext:
+        """调用单个插件，返回更新后的 ctx"""
+        if isinstance(plugin, AsyncPlugin):
+            return await plugin.on_hook(hook, ctx)
+        else:
+            return await asyncio.get_event_loop().run_in_executor(
+                None, plugin.on_hook, hook, ctx
+            )
+
     async def dispatch(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
         """
         按优先级依次调用该钩子下所有已启用的插件。
@@ -114,12 +124,55 @@ class PluginManager:
                 continue
 
             try:
-                if isinstance(plugin, AsyncPlugin):
-                    ctx = await plugin.on_hook(hook, ctx)
-                else:
-                    ctx = await asyncio.get_event_loop().run_in_executor(
-                        None, plugin.on_hook, hook, ctx
-                    )
+                ctx = await self._call_plugin(plugin, hook, ctx)
+            except Exception:
+                logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
+                continue
+
+            if ctx.filtered:
+                logger.debug("管道在钩子 %s 被插件 %s 短路", hook.value, plugin.name)
+                break
+
+        return ctx
+
+    async def dispatch_except(self, hook: HookPoint, ctx: PluginContext,
+                              skip_names: set[str]) -> PluginContext:
+        """
+        按优先级调度该钩子下所有已启用的插件，跳过指定名称的插件。
+        用于并行分叉场景（如跳过 VisionPlugin，与其他插件并行运行）。
+        """
+        for plugin in self._hook_index[hook]:
+            if plugin.name in skip_names:
+                continue
+            if not self._enabled.get(plugin.name, False):
+                continue
+
+            try:
+                ctx = await self._call_plugin(plugin, hook, ctx)
+            except Exception:
+                logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
+                continue
+
+            if ctx.filtered:
+                logger.debug("管道在钩子 %s 被插件 %s 短路", hook.value, plugin.name)
+                break
+
+        return ctx
+
+    async def dispatch_only(self, hook: HookPoint, ctx: PluginContext,
+                            names: set[str]) -> PluginContext:
+        """
+        只调度指定名称的插件（按优先级顺序）。
+        用于并行分叉场景（如单独运行 VisionPlugin）。
+        """
+        for plugin in self._hook_index[hook]:
+            if plugin.name not in names:
+                continue
+            if not self._enabled.get(plugin.name, False):
+                continue
+
+            try:
+                ctx = await self._call_plugin(plugin, hook, ctx)
             except Exception:
                 logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
                 continue
