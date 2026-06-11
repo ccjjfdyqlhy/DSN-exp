@@ -33,6 +33,7 @@ import prompt
 import sys
 sys.path.insert(0, os.path.dirname(__file__))  # 确保 vocal_infer 可导入
 from vocal_infer import VocalExp, TTSRequestError
+from plugins.builtin.tts_profile import TTSProfileManager
 
 # 导入 ASR 过滤模块
 from ASR_filter import LMFilterModel
@@ -385,6 +386,7 @@ else:
 
 # 初始化 TTS 客户端
 tts_client = VocalExp(app.config["TTS_BASE_URL"])
+tts_profile_mgr = TTSProfileManager()
 
 # 初始化 ASR 过滤模型（根据配置启用）
 filter_model = None
@@ -781,12 +783,7 @@ def chat_stream_send():
             t = clean_tts_text(last_reply_for_tts)
             if t:
                 try:
-                    tts_params = {
-                        "text": t, "text_lang": "zh",
-                        "ref_audio_path": os.path.join(os.path.dirname(__file__), "tests", "ref.wav"),
-                        "prompt_lang": "en", "prompt_text": "Many people may feel lost at times.",
-                        "media_type": "wav", "streaming_mode": False,
-                    }
+                    tts_params = tts_profile_mgr.build_params(t)
                     audio_data = tts_client.tts(**tts_params)
                     audio_b64 = base64.b64encode(audio_data).decode('utf-8')
                 except Exception as e:

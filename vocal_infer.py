@@ -2,9 +2,17 @@
 # DSN-exp/vocal_infer.py
 # UPD v1_260214
 
+import os
+import time
+import hashlib
 import requests
 import logging
+from pathlib import Path
+from datetime import datetime
 from typing import Optional, Any, Dict, Union, List, Generator
+
+# 硬编码DEBUG标签: 设为True时，每次TTS合成的音频都会保存到 logs/tts_history/
+_DEBUG_SAVE_AUDIO = True
 
 # 模块级日志记录器，不再单独配置处理器
 logger = logging.getLogger(__name__)
@@ -29,6 +37,28 @@ class VocalExp:
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.logger = logger or logging.getLogger(__name__)
+        self._save_dir = None
+        if _DEBUG_SAVE_AUDIO:
+            self._debug_init_save_dir()
+
+    def _debug_init_save_dir(self):
+        self._save_dir = Path(__file__).parent / "logs" / "tts_history"
+        self._save_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.debug("TTS DEBUG: 音频保存目录=%s", self._save_dir)
+
+    def _debug_save_audio(self, audio_data: bytes, text: str, ext: str, mode: str = "sync"):
+        if not _DEBUG_SAVE_AUDIO or not audio_data:
+            return
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        text_slug = text[:40].strip()
+        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        filename = f"{ts}_{text_hash}_{mode}.{ext.lstrip('.')}"
+        filepath = self._save_dir / filename
+        try:
+            filepath.write_bytes(audio_data)
+            self.logger.debug("TTS DEBUG: 已保存音频 (%dB) → %s", len(audio_data), filepath)
+        except Exception as e:
+            self.logger.warning("TTS DEBUG: 保存音频失败 %s: %s", filepath, e)
 
     def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """
@@ -60,12 +90,27 @@ class VocalExp:
         except requests.exceptions.RequestException as e:
             error_msg = f"API请求失败: {e}"
             if hasattr(e, 'response') and e.response is not None:
+                resp = e.response
+                status_code = resp.status_code
                 try:
-                    error_data = e.response.json()
-                    error_msg += f" - {error_data.get('message', '')}"
+                    error_data = resp.json()
+                    detail = error_data.get('message') or error_data.get('detail') or error_data.get('error') or ''
+                    body_str = str(error_data)[:600]
                 except:
-                    pass
-            self.logger.error(error_msg)
+                    body_str = resp.text[:600]
+                error_msg += f" [HTTP {status_code}]"
+                if detail:
+                    error_msg += f" detail={detail}"
+                error_msg += f" response_body={body_str}"
+            else:
+                error_msg += " [无响应]"
+            error_msg += f" url={url}"
+            if kwargs.get('json'):
+                json_info = kwargs['json'].copy()
+                if 'text' in json_info and len(str(json_info['text'])) > 60:
+                    json_info['text'] = json_info['text'][:60] + '...'
+                error_msg += f" body_params={json_info}"
+            self.logger.error(error_msg, exc_info=True)
             raise TTSRequestError(error_msg) from e
 
     def tts(self, **params) -> bytes:
@@ -114,7 +159,16 @@ class VocalExp:
             params['prompt_text'] = ""
 
         # 发送POST请求
+        text_preview = params.get('text', '')[:80]
+        self.logger.info("TTS开始 | text=%s... | ref_audio=%s | text_lang=%s | prompt_lang=%s",
+                         text_preview, params.get('ref_audio_path'), params.get('text_lang'), params.get('prompt_lang'))
+        t0 = time.perf_counter()
         resp = self._request('POST', '/tts', json=params)
+        elapsed = time.perf_counter() - t0
+        audio_len = len(resp.content)
+        self.logger.info("TTS完成 | 耗时=%.2fs | 音频大小=%.1fKB", elapsed, audio_len / 1024)
+        media_type = params.get('media_type', 'wav')
+        self._debug_save_audio(resp.content, params.get('text', ''), media_type, mode="sync")
         return resp.content
 
     def tts_stream(self, chunk_size: int = 1024, **params) -> Generator[bytes, None, None]:
@@ -146,14 +200,30 @@ class VocalExp:
             params['streaming_mode'] = True
 
         # 发送流式POST请求
+        text_preview = params.get('text', '')[:80]
+        self.logger.info("流式TTS开始 | text=%s... | ref_audio=%s | text_lang=%s | prompt_lang=%s",
+                         text_preview, params.get('ref_audio_path'), params.get('text_lang'), params.get('prompt_lang'))
+        t0 = time.perf_counter()
         resp = self._request('POST', '/tts', json=params, stream=True)
 
         # 逐块yield数据
+        chunk_count = 0
+        total_bytes = 0
+        chunks: list[bytes] = []
         for chunk in resp.iter_content(chunk_size=chunk_size):
             if chunk:
+                chunk_count += 1
+                total_bytes += len(chunk)
+                chunks.append(chunk)
+                if chunk_count <= 3 or chunk_count % 10 == 0:
+                    self.logger.debug("流式TTS #%d: %d bytes (累计 %.1fKB)", chunk_count, len(chunk), total_bytes / 1024)
                 yield chunk
 
-        self.logger.debug("流式TTS完成")
+        elapsed = time.perf_counter() - t0
+        self.logger.info("流式TTS完成 | 共%d个chunk | 总大小=%.1fKB | 耗时=%.2fs", chunk_count, total_bytes / 1024, elapsed)
+        if chunks:
+            media_type = params.get('media_type', 'wav')
+            self._debug_save_audio(b''.join(chunks), params.get('text', ''), media_type, mode="stream")
 
     def control(self, command: str) -> Dict[str, Any]:
         """

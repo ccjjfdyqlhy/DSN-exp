@@ -111,6 +111,7 @@ class DSNEngine:
 
         self._models_plugin = None
         self._tts_client = None
+        self._tts_profile_mgr = None
         self._tts_available = False
         self._filter_model = None
         self.complexity_analyzer: Optional[ComplexityAnalyzer] = None
@@ -352,12 +353,15 @@ class DSNEngine:
     def _init_tts(self):
         try:
             from vocal_infer import VocalExp
+            from plugins.builtin.tts_profile import TTSProfileManager
             self._tts_client = VocalExp(Config.TTS_BASE_URL)
+            self._tts_profile_mgr = TTSProfileManager()
             self._tts_available = True
             self._logger.info("TTS 客户端初始化完成")
         except Exception as e:
             self._logger.warning("TTS 初始化失败: %s", e)
             self._tts_client = None
+            self._tts_profile_mgr = None
             self._tts_available = False
 
     def _init_skills(self):
@@ -564,6 +568,7 @@ class DSNEngine:
             from plugins.builtin.tts_plugin import TTSPlugin
             self.plugin_manager.register(TTSPlugin(
                 tts_client=self._tts_client,
+                profile_manager=self._tts_profile_mgr,
             ))
 
         # 7. DistillPlugin (POST_PROCESS, priority 100)
@@ -776,6 +781,11 @@ def create_engine_with_defaults(
     if tts_client:
         engine._tts_client = tts_client
         engine._tts_available = True
+        try:
+            from plugins.builtin.tts_profile import TTSProfileManager
+            engine._tts_profile_mgr = TTSProfileManager()
+        except Exception:
+            engine._tts_profile_mgr = None
     if filter_model:
         engine._filter_model = filter_model
     if world_engine:
@@ -868,6 +878,7 @@ def create_engine_with_defaults(
         from plugins.builtin.tts_plugin import TTSPlugin
         engine.plugin_manager.register(TTSPlugin(
             tts_client=engine._tts_client,
+            profile_manager=engine._tts_profile_mgr,
         ))
 
     if engine._filter_model:
