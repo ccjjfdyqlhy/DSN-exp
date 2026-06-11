@@ -458,6 +458,25 @@ input, textarea, button {
     to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Timing Line ── */
+.text-line.timing-line {
+    font-size: 10px;
+    opacity: 0.4;
+    color: var(--text-faint);
+    text-align: right;
+    letter-spacing: 1px;
+    margin-top: 2vh;
+    margin-bottom: 2vh;
+}
+
+.text-line.timing-line.active {
+    opacity: 0.5;
+    transform: translateY(0) scale(1) translateZ(0);
+    filter: none;
+    margin-top: 4vh;
+    margin-bottom: 4vh;
+}
+
 /* ── Markdown Bold ── */
 strong.md-bold {
     color: var(--accent);

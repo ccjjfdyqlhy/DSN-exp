@@ -4,12 +4,14 @@
 # Core backend logics
 
 import os
+import time
 import base64
 import json
 import re
 import logging
 import threading
 import queue
+from concurrent.futures import ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from flask import Flask, request, jsonify, g
@@ -149,6 +151,56 @@ def parse_task_instructions(text: str):
 
 from utils.formatter import format_tool_result as _format_tool_result
 from utils.text_clean import clean_display, clean_tts_text
+
+
+def _synthesize_tts_lines(text: str) -> list[dict]:
+    """按换行符切割文本，逐行合成 TTS 音频。返回 [{text, audio_b64}]。"""
+    if not text or not _tts_available:
+        return []
+
+    cleaned = clean_tts_text(text)
+    if not cleaned:
+        return []
+
+    raw_lines = cleaned.split("\n")
+    lines = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not any(c.isalpha() or "\u4e00" <= c <= "\u9fff" for c in stripped):
+            continue
+        lines.append(stripped)
+
+    if not lines:
+        return []
+
+    results = []
+    for i, line in enumerate(lines):
+        try:
+            tts_params = tts_profile_mgr.build_params(line)
+            audio_data = tts_client.tts(**tts_params)
+            audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+            results.append({
+                "index": i,
+                "total": len(lines),
+                "text": line,
+                "audio_b64": audio_b64,
+            })
+            app.logger.debug("TTS 行 %d/%d 完成 (len=%d)", i + 1, len(lines), len(audio_b64))
+        except Exception as e:
+            app.logger.warning("TTS 行 %d/%d 失败: %s", i + 1, len(lines), e)
+            results.append({
+                "index": i,
+                "total": len(lines),
+                "text": line,
+                "audio_b64": None,
+            })
+
+    ok_count = sum(1 for r in results if r["audio_b64"])
+    app.logger.info("逐行 TTS 合成完成: %d/%d 行成功", ok_count, len(results))
+    return results
+
 
 def process_task_completion():
     """处理任务完成通知的线程函数"""
@@ -669,12 +721,22 @@ def chat_stream_send():
         feedback = "\n".join(tool_results) if tool_results else ""
         return augmented, feedback
 
-    if image_data:
-        message = _process_image_input(message, image_data)
-
     def generate_stream():
-        nonlocal chat_id
+        nonlocal chat_id, message
+        t_total = time.perf_counter()
+        timing = {}
+
+        # ---- PRE_PROCESS (含图片并行) ----
+        t_pre = time.perf_counter()
         yield f"data: {json.dumps({'status': 'parsing'})}\n\n"
+
+        # 图片模态：后台并行处理，同时装配上下文
+        img_future = None
+        img_executor = None
+        if image_data:
+            img_executor = ThreadPoolExecutor(max_workers=1)
+            img_future = img_executor.submit(_process_image_input, message, image_data)
+            app.logger.info("图片描述已启动并行处理")
 
         history = []
         if chat_id:
@@ -689,6 +751,9 @@ def chat_stream_send():
                 ridx = db.get_memory_count(user_id, chat_id) + 1
                 db.save_memory(user_id, chat_id, ridx, mem)
                 db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{mem}"}])
+                if img_future:
+                    img_future.cancel()
+                    img_executor.shutdown(wait=False)
                 yield f"data: {json.dumps({'status': 'completed', 'reply': '', 'chat_id': chat_id, 'filtered': True})}\n\n"
                 return
 
@@ -699,6 +764,20 @@ def chat_stream_send():
             assembled = history
         full_history = [{"role": "system", "content": system_prompt}] + assembled
 
+        # 等待图片描述完成
+        if img_future:
+            try:
+                message = img_future.result(timeout=60)
+            except Exception as e:
+                app.logger.error("图片并行处理失败: %s", e)
+                message = f"[无法识别图片: {e}]\n{message}"
+            finally:
+                img_executor.shutdown(wait=False)
+
+        timing["pre_process_ms"] = round((time.perf_counter() - t_pre) * 1000)
+
+        # ---- MODEL_INVOKE ----
+        t_model = time.perf_counter()
         yield f"data: {json.dumps({'status': 'request'})}\n\n"
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -711,6 +790,11 @@ def chat_stream_send():
         round_index = db.get_memory_count(user_id, chat_id) + 1
         db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
         original_reply = reply
+
+        timing["model_invoke_ms"] = round((time.perf_counter() - t_model) * 1000)
+
+        # ---- POST_PROCESS (Agent Loop) ----
+        t_post = time.perf_counter()
 
         ssp_mode = bool(re.search(r"<ssp>", original_reply, re.IGNORECASE))
         max_steps = 50 if ssp_mode else Config.AGENT_MAX_STEPS
@@ -727,7 +811,7 @@ def chat_stream_send():
             actions = _extract_actions(clean)
 
             if not tool_feedback and not actions:
-                if first_display:
+                if first_display and not tts_enabled:
                     reply_clean = clean_display(clean)
                     yield f"data: {json.dumps({'status': 'text_ready', 'reply': reply_clean, 'chat_id': chat_id})}\n\n"
                 break
@@ -743,10 +827,11 @@ def chat_stream_send():
                 db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
                 last_reply_for_tts = pending
                 _extract_and_save_impressions(pending)
-                if first_display:
+                if first_display and not tts_enabled:
                     yield f"data: {json.dumps({'status': 'text_ready', 'reply': clean_display(clean), 'chat_id': chat_id})}\n\n"
                     first_display = False
-                yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
+                if not tts_enabled:
+                    yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
                 continue
 
             if actions:
@@ -770,26 +855,46 @@ def chat_stream_send():
                 db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
                 last_reply_for_tts = pending
                 _extract_and_save_impressions(pending)
-                if first_display:
+                if first_display and not tts_enabled:
                     yield f"data: {json.dumps({'status': 'text_ready', 'reply': clean_display(clean), 'chat_id': chat_id})}\n\n"
                     first_display = False
-                yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
+                if not tts_enabled:
+                    yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
 
+        timing["post_process_ms"] = round((time.perf_counter() - t_post) * 1000)
+
+        # ---- POST_TTS (逐行合成) ----
+        t_tts = time.perf_counter()
         audio_b64 = None
         tts_error = None
+        tts_lines = None
         global _tts_available
+
         if tts_enabled and _tts_available:
-            yield f"data: {json.dumps({'status': 'tts'})}\n\n"
-            t = clean_tts_text(last_reply_for_tts)
-            if t:
-                try:
-                    tts_params = tts_profile_mgr.build_params(t)
-                    audio_data = tts_client.tts(**tts_params)
-                    audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                except Exception as e:
-                    tts_error = str(e)
-                    _tts_available = False
-                    app.logger.warning("TTS 不可用 (后续将跳过): %s", e)
+            app.logger.info("开始逐行 TTS 合成")
+            tts_lines = _synthesize_tts_lines(last_reply_for_tts)
+            if tts_lines:
+                yield f"data: {json.dumps({'status': 'tts', 'line_count': len(tts_lines)})}\n\n"
+                all_audio_parts: list[bytes] = []
+                for line_data in tts_lines:
+                    yield f"data: {json.dumps({
+                        'status': 'line',
+                        'index': line_data['index'],
+                        'total': line_data['total'],
+                        'text': line_data['text'],
+                        'audio_b64': line_data['audio_b64'],
+                    })}\n\n"
+                    if line_data.get("audio_b64"):
+                        all_audio_parts.append(base64.b64decode(line_data["audio_b64"]))
+                if all_audio_parts:
+                    audio_b64 = base64.b64encode(b"".join(all_audio_parts)).decode("utf-8")
+
+        if (not tts_lines or not tts_enabled) and first_display:
+            reply_clean = clean_display(last_reply_for_tts)
+            if reply_clean:
+                yield f"data: {json.dumps({'status': 'text_ready', 'reply': reply_clean, 'chat_id': chat_id})}\n\n"
+
+        timing["tts_ms"] = round((time.perf_counter() - t_tts) * 1000)
 
         if memory_manager:
             try:
@@ -801,7 +906,13 @@ def chat_stream_send():
             except Exception as e:
                 app.logger.error("记忆摘要失败: %s", e)
 
-        yield f"data: {json.dumps({'status': 'completed', 'audio': audio_b64, 'tts_error': tts_error})}\n\n"
+        timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
+        yield f"data: {json.dumps({
+            'status': 'completed',
+            'audio': audio_b64,
+            'tts_error': tts_error,
+            'timing': timing,
+        })}\n\n"
 
     return Response(stream_with_context(generate_stream()), mimetype="text/event-stream")
 

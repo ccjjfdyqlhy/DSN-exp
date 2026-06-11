@@ -2,7 +2,7 @@
 *.enc
 *.pem
 *.crt
-*.wav
+tests/*.wav
 *.jpg
 *.db
 *.bak

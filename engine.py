@@ -591,6 +591,8 @@ class DSNEngine:
         self.pipeline = ChatPipeline(
             plugin_manager=self.plugin_manager,
             prompt_engine=self.prompt_engine,
+            tts_client=self._tts_client,
+            tts_profile_mgr=self._tts_profile_mgr,
         )
 
     # ── 对话接口 ──
