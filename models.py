@@ -200,6 +200,59 @@ class LMStudioChat:
 
         self.logger.info("LMStudioChat客户端初始化完成，地址：%s，模型：%s", self.base_url, self.model_name or "默认")
 
+    def _ensure_model_loaded(self) -> bool:
+        """
+        通过 REST API 加载 self.model_name 指定的模型。
+        LMStudio 未加载任何模型时列表为空，因此直接用配置的模型名加载。
+        """
+        if not self.model_name:
+            self.logger.error("未配置 model_name，无法自动加载 LMStudio 模型")
+            return False
+        try:
+            self.logger.info("正在加载 LMStudio 模型: %s", self.model_name)
+            load_resp = requests.post(
+                f"{self.base_url}/api/v1/models/load",
+                json={"model": self.model_name},
+                timeout=180,
+            )
+            load_resp.raise_for_status()
+            result = load_resp.json()
+            self.logger.info("模型加载完成 (%.1fs): %s", result.get("load_time_seconds", 0), self.model_name)
+            return True
+        except Exception as e:
+            self.logger.error("自动加载 LMStudio 模型失败 (%s): %s", self.model_name, e)
+            return False
+
+    @staticmethod
+    def _is_no_model_error(response) -> bool:
+        """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
+        if response is None or response.status_code != 400:
+            return False
+        try:
+            body = response.text or ""
+            return "no model" in body.lower() or "No models loaded" in body
+        except Exception:
+            return False
+
+    # ---- 底层 API 调用（含自动加载重试） ----
+
+    def _call_chat_api(self, payload: dict) -> dict:
+        """调用 /v1/chat/completions，若模型未加载则自动加载后重试一次"""
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+
+        for attempt in range(2):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                if attempt == 0 and self._is_no_model_error(e.response):
+                    self.logger.info("检测到 LMStudio 未加载模型，自动加载后重试……")
+                    if self._ensure_model_loaded():
+                        continue
+                raise
+
     def send_message(self, message: str) -> str:
         """
         发送一条用户消息，获取模型回复。
@@ -213,52 +266,24 @@ class LMStudioChat:
         self.messages.append({"role": "user", "content": message})
         self.logger.info("发送用户消息: %s", message[:50] + "..." if len(message) > 50 else message)
 
-        url = f"{self.base_url}/v1/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        
         payload = {
             "messages": self.messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stream": False
         }
-        
         if self.model_name:
             payload["model"] = self.model_name
 
-        try:
-            self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False))
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            result = response.json()
-            self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False))
+        self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False))
+        result = self._call_chat_api(payload)
+        self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False))
 
-            assistant_message = result["choices"][0]["message"]["content"]
-            self.messages.append({"role": "assistant", "content": assistant_message})
-            self.logger.info("收到助手回复: %s", assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
+        assistant_message = result["choices"][0]["message"]["content"]
+        self.messages.append({"role": "assistant", "content": assistant_message})
+        self.logger.info("收到助手回复: %s", assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
 
-            return assistant_message
-
-        except requests.exceptions.Timeout:
-            self.logger.error("请求超时（%d秒）", self.timeout)
-            raise
-        except requests.exceptions.ConnectionError:
-            self.logger.error("无法连接到LMStudio服务器: %s", self.base_url)
-            raise
-        except requests.exceptions.RequestException as e:
-            self.logger.error("网络请求失败: %s", str(e))
-            raise
-        except KeyError as e:
-            self.logger.error("响应格式异常，缺少字段: %s", str(e))
-            raise ValueError("API返回的数据格式不正确") from e
-        except json.JSONDecodeError as e:
-            self.logger.error("JSON解析失败: %s", str(e))
-            raise
+        return assistant_message
 
     def reset_conversation(self):
         """清空当前对话历史"""
@@ -291,20 +316,9 @@ class LMStudioChat:
                        max_tokens: int = 500, temperature: float = 0.1) -> str:
         """
         发送图片到多模态模型，获取文字描述。
-
-        使用 OpenAI Vision 兼容格式 (content 数组)。
-
-        :param data_url: 图片的 data URL，如 "data:image/png;base64,..."
-        :param prompt: 描述指令
-        :param max_tokens: 最大生成 token 数
-        :param temperature: 生成温度
-        :return: 模型对图片的文字描述
         """
         if not data_url:
             raise ValueError("data_url 不能为空")
-
-        url = f"{self.base_url}/v1/chat/completions"
-        headers = {"Content-Type": "application/json"}
 
         messages = [{
             "role": "user",
@@ -322,30 +336,15 @@ class LMStudioChat:
             "stream": False,
         }
 
-        try:
-            self.logger.debug("describe_image 请求 → %s (tokens=%d)", url, max_tokens)
-            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            result = response.json()
+        self.logger.debug("describe_image 请求 (tokens=%d)", max_tokens)
+        result = self._call_chat_api(payload)
 
-            if "choices" in result and result["choices"]:
-                description = result["choices"][0]["message"]["content"].strip()
-                self.logger.info("图片描述: %s", description[:80] + ("..." if len(description) > 80 else ""))
-                return description
-            else:
-                raise ValueError("图片描述响应格式异常")
-        except requests.exceptions.Timeout:
-            self.logger.error("图片描述请求超时 (%d秒)", self.timeout)
-            raise
-        except requests.exceptions.ConnectionError:
-            self.logger.error("无法连接到图片描述服务: %s", self.base_url)
-            raise
-        except requests.exceptions.RequestException as e:
-            self.logger.error("图片描述请求失败: %s", str(e))
-            raise
-        except (KeyError, ValueError) as e:
-            self.logger.error("图片描述响应解析失败: %s", str(e))
-            raise
+        if "choices" in result and result["choices"]:
+            description = result["choices"][0]["message"]["content"].strip()
+            self.logger.info("图片描述: %s", description[:80] + ("..." if len(description) > 80 else ""))
+            return description
+        else:
+            raise ValueError("图片描述响应格式异常")
 
     def __repr__(self):
         return f"<LMStudioChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
@@ -452,9 +451,7 @@ class LMSummaryModel:
             raise
 
     def _call_lmstudio(self, prompt: str, max_length: int) -> str:
-        """调用本地 LMStudio API 生成摘要。"""
-        import requests
-
+        """调用本地 LMStudio API 生成摘要，模型未加载时自动加载后重试"""
         url = f"{self.base_url}/v1/chat/completions"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -465,32 +462,68 @@ class LMSummaryModel:
             "stream": False,
         }
 
-        try:
-            self.logger.debug("LMStudio summary request → %s", url)
-            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            result = response.json()
+        for attempt in range(2):
+            try:
+                self.logger.debug("LMStudio summary request → %s", url)
+                response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                response.raise_for_status()
+                result = response.json()
 
-            if "choices" in result and result["choices"]:
-                summary = result["choices"][0]["message"]["content"].strip()
-                if len(summary) > max_length * 2:
-                    summary = summary[:max_length * 2].rstrip() + "..."
-                self.logger.info("LMStudio 摘要: %s", summary[:80] + ("..." if len(summary) > 80 else ""))
-                return summary
-            else:
-                raise ValueError("LMStudio 响应格式异常")
-        except requests.exceptions.Timeout:
-            self.logger.error("LMStudio 摘要请求超时 (%d秒)", self.timeout)
-            raise
-        except requests.exceptions.ConnectionError:
-            self.logger.error("无法连接到 LMStudio 服务器: %s", self.base_url)
-            raise
-        except requests.exceptions.RequestException as e:
-            self.logger.error("LMStudio 摘要请求失败: %s", str(e))
-            raise
-        except (KeyError, ValueError) as e:
-            self.logger.error("LMStudio 摘要响应解析失败: %s", str(e))
-            raise
+                if "choices" in result and result["choices"]:
+                    summary = result["choices"][0]["message"]["content"].strip()
+                    if len(summary) > max_length * 2:
+                        summary = summary[:max_length * 2].rstrip() + "..."
+                    self.logger.info("LMStudio 摘要: %s", summary[:80] + ("..." if len(summary) > 80 else ""))
+                    return summary
+                else:
+                    raise ValueError("LMStudio 响应格式异常")
+            except requests.exceptions.Timeout:
+                self.logger.error("LMStudio 摘要请求超时 (%d秒)", self.timeout)
+                raise
+            except requests.exceptions.ConnectionError:
+                self.logger.error("无法连接到 LMStudio 服务器: %s", self.base_url)
+                raise
+            except requests.exceptions.HTTPError as e:
+                if attempt == 0 and self._is_no_model_error(e.response):
+                    self.logger.info("摘要模型未加载，自动加载后重试……")
+                    if self._auto_load_model():
+                        continue
+                self.logger.error("LMStudio 摘要请求失败: %s", str(e))
+                raise
+            except (KeyError, ValueError) as e:
+                self.logger.error("LMStudio 摘要响应解析失败: %s", str(e))
+                raise
+
+    def _auto_load_model(self) -> bool:
+        """用配置的 self.model_name 直接加载 LMStudio 模型"""
+        if not self.model_name:
+            self.logger.error("未配置 model_name，无法自动加载 LMStudio 摘要模型")
+            return False
+        try:
+            self.logger.info("正在加载 LMStudio 摘要模型: %s", self.model_name)
+            load_resp = requests.post(
+                f"{self.base_url}/api/v1/models/load",
+                json={"model": self.model_name},
+                timeout=180,
+            )
+            load_resp.raise_for_status()
+            result = load_resp.json()
+            self.logger.info("摘要模型加载完成 (%.1fs): %s", result.get("load_time_seconds", 0), self.model_name)
+            return True
+        except Exception as e:
+            self.logger.error("自动加载 LMStudio 摘要模型失败 (%s): %s", self.model_name, e)
+            return False
+
+    @staticmethod
+    def _is_no_model_error(response) -> bool:
+        """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
+        if response is None or response.status_code != 400:
+            return False
+        try:
+            body = response.text or ""
+            return "no model" in body.lower() or "No models loaded" in body
+        except Exception:
+            return False
 
     def summarize_dialog(self, messages: List[Dict[str, str]], max_length: Optional[int] = None) -> str:
         """根据消息列表生成一条整体摘要。"""

@@ -27,6 +27,7 @@ from usermgr import init_usermgr, auth_bp
 from todo_api import todo_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat
+from tts_process_model import TTSProcessModel
 from memory import MemoryManager
 from tasks import TaskManager, TaskType
 import prompt
@@ -49,6 +50,7 @@ if Config.ASR_ENABLED: # 启动的更快
 task_manager = None
 completion_queue = queue.Queue()
 _tts_available = True  # TTS 可用性标记，首次失败后置 False 避免刷屏
+_tts_process_model = None  # TTS 文本预处理模型
 
 # ---------- 模型工厂函数 ----------
 def create_chat_client(model_type: str = None):
@@ -178,7 +180,10 @@ def _synthesize_tts_lines(text: str) -> list[dict]:
     results = []
     for i, line in enumerate(lines):
         try:
-            tts_params = tts_profile_mgr.build_params(line)
+            processed_line = line
+            if _tts_process_model is not None:
+                processed_line = _tts_process_model.process_tts_text(line)
+            tts_params = tts_profile_mgr.build_params(processed_line)
             audio_data = tts_client.tts(**tts_params)
             audio_b64 = base64.b64encode(audio_data).decode("utf-8")
             results.append({
@@ -439,6 +444,15 @@ else:
 # 初始化 TTS 客户端
 tts_client = VocalExp(app.config["TTS_BASE_URL"])
 tts_profile_mgr = TTSProfileManager()
+
+# 初始化 TTS 文本预处理模型
+if Config.TTS_PROCESS_ENABLED:
+    try:
+        _tts_process_model = TTSProcessModel()
+        app.logger.info("TTSProcessModel 初始化完成")
+    except Exception as e:
+        app.logger.warning("TTSProcessModel 初始化失败: %s", e)
+        _tts_process_model = None
 
 # 初始化 ASR 过滤模型（根据配置启用）
 filter_model = None

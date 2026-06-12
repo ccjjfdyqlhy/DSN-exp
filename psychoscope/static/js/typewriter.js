@@ -126,6 +126,9 @@ class TypeWriter {
     finalize(text) {
         this.abort();
         this.element.textContent = text || this._fullText;
+        if (this._onComplete) {
+            this._onComplete(this._fullText);
+        }
     }
 
     /**

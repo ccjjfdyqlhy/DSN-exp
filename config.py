@@ -78,6 +78,13 @@ class Config:
     MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.7"))
     MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
 
+    # ==================== TTS 文本预处理 ====================
+    TTS_PROCESS_ENABLED = _env("TTS_PROCESS_ENABLED", "true").lower() == "true"
+    TTS_PROCESS_MODEL = _env("TTS_PROCESS_MODEL", None) or _env("MEMORY_MODEL", "google/gemma-3-4b")
+    TTS_PROCESS_MAX_TOKENS = int(_env("TTS_PROCESS_MAX_TOKENS", "1024"))
+    TTS_PROCESS_TEMPERATURE = float(_env("TTS_PROCESS_TEMPERATURE", "0.2"))
+    TTS_PROCESS_TIMEOUT = int(_env("TTS_PROCESS_TIMEOUT", "30"))
+
     # ==================== ASR 配置 ====================
     ASR_ENABLED = _env("ASR_ENABLED", "false").lower() == "true"
     ASR_DEVICE = _env("ASR_DEVICE", "cuda")
