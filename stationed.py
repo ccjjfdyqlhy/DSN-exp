@@ -78,13 +78,13 @@ class StewardModel:
                 logger.info("暂无注册用户，驻守模型会话暂不持久化")
                 return 0
             row = conn.execute(
-                "SELECT chat_id FROM chats WHERE user_id = 1 AND chat_name = '__steward__' LIMIT 1"
+                "SELECT chat_id FROM chats WHERE user_id = 0 AND chat_name = '__steward__' LIMIT 1"
             ).fetchone()
             if row:
                 self._chat_id = row["chat_id"]
             else:
                 cursor = conn.execute(
-                    "INSERT INTO chats (user_id, chat_name) VALUES (1, '__steward__')"
+                    "INSERT INTO chats (user_id, chat_name) VALUES (0, '__steward__')"
                 )
                 conn.commit()
                 self._chat_id = cursor.lastrowid

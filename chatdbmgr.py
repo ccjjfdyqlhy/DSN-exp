@@ -7,6 +7,8 @@ import logging
 import threading
 from typing import List, Dict, Optional, Any
 
+from crypto_utils import MessageCipher
+
 DEFAULT_DB_FILE = "chats.db"
 
 
@@ -14,6 +16,7 @@ class ChatDBManager:
     """
     聊天记录数据库管理器，线程安全（每个线程独立连接）。
     所有方法需传入 user_id 以隔离用户数据。
+    消息内容使用 AES-256-GCM 加密，密钥由 SHA-256(主密钥 + user_id) 派生。
     """
 
     def __init__(
@@ -23,6 +26,7 @@ class ChatDBManager:
     ):
         self.db_path = db_path
         self._local = threading.local()
+        self._cipher = MessageCipher()  # 主密钥从 /.dsn/ 自动加载或创建
 
         # 日志
         if logger:
@@ -371,10 +375,12 @@ class ChatDBManager:
         """保存某轮对话的摘要记忆（含关键词索引和消息范围链接）"""
         conn = self._get_connection()
         try:
+            encrypted_summary = self._cipher.encrypt(user_id, summary)
+            encrypted_keywords = self._cipher.encrypt(user_id, keywords) if keywords else ""
             cursor = conn.execute(
                 "INSERT INTO memories (user_id, chat_id, round_index, summary, keywords, message_start_id, message_end_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (user_id, chat_id, round_index, summary, keywords, message_start_id, message_end_id),
+                (user_id, chat_id, round_index, encrypted_summary, encrypted_keywords, message_start_id, message_end_id),
             )
             conn.commit()
             self.logger.info("保存记忆: chat_id=%d round=%d keywords=%s", chat_id, round_index, keywords[:50] if keywords else "")
@@ -395,8 +401,8 @@ class ChatDBManager:
             ).fetchall()
             return [{
                 "round_index": r["round_index"],
-                "summary": r["summary"],
-                "keywords": r["keywords"] or "",
+                "summary": self._cipher.decrypt(user_id, r["summary"]),
+                "keywords": self._cipher.decrypt(user_id, r["keywords"] or ""),
                 "message_start_id": r["message_start_id"],
                 "message_end_id": r["message_end_id"],
                 "created_at": r["created_at"],
@@ -487,7 +493,7 @@ class ChatDBManager:
                     result[ri] = []
                 result[ri].append({
                     "role": r["role"],
-                    "content": r["content"],
+                    "content": self._cipher.decrypt(user_id, r["content"]),
                     "timestamp": r["timestamp"],
                 })
 
@@ -607,7 +613,7 @@ class ChatDBManager:
                 "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
                 (chat_id,),
             ).fetchall()
-            return [{"role": r["role"], "content": r["content"]} for r in rows]
+            return [{"role": r["role"], "content": self._cipher.decrypt(user_id, r["content"])} for r in rows]
         except sqlite3.Error as e:
             self.logger.error("获取聊天历史失败: %s", e)
             raise
@@ -688,10 +694,11 @@ class ChatDBManager:
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
 
-                # 插入消息到数据库，含 round_index
+                # 加密内容后插入数据库，含 round_index
+                encrypted = self._cipher.encrypt(user_id, content)
                 conn.execute(
                     "INSERT INTO messages (chat_id, role, content, round_index) VALUES (?, ?, ?, ?)",
-                    (chat_id, role, content, round_index),
+                    (chat_id, role, encrypted, round_index),
                 )
 
                 # 如果消息标记为跳过记忆化，记录日志

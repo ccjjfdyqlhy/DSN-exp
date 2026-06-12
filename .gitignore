@@ -8,6 +8,7 @@ tests/*.wav
 *.bak
 *.pyc
 .vscode/*
+.dsn/*
 logs/*
 plans/*
 instances/models/*
