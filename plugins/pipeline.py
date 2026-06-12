@@ -53,8 +53,8 @@ class ChatPipeline:
 
         各阶段:
         1. PRE_FILTER  — ctx.filtered=True 则短路
-        2. PRE_PROCESS — 上下文组装 (history + memories)
-        3. [PromptEngine] — 构建 system_prompt
+        2. [PromptEngine] — 构建 system_prompt (必须在 PRE_PROCESS 之前，供世界/印象注入)
+        3. PRE_PROCESS — 上下文组装 + 世界状态/印象注入 system_prompt
         4. MODEL_INVOKE— LLM 调用
         5. POST_PROCESS— 任务解析 + 对话保存
         6. POST_TTS    — TTS 语音合成
@@ -64,13 +64,13 @@ class ChatPipeline:
         if ctx.filtered:
             return ctx
 
-        # 2
+        # 2 — PromptEngine 组装 system prompt（为 PRE_PROCESS 插件提供底座）
+        self._assemble_prompt(ctx)
+
+        # 3
         ctx = await self._dispatch_pre_process(ctx)
         if ctx.filtered:
             return ctx
-
-        # 2.5 — PromptEngine 组装 system prompt
-        self._assemble_prompt(ctx)
 
         # 3
         ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
@@ -265,16 +265,16 @@ class ChatPipeline:
                 ctx = await self.pm.dispatch(hook, ctx)
 
             elif hook == HookPoint.PRE_PROCESS:
+                self._assemble_prompt(ctx)
                 ctx = await self._dispatch_pre_process(ctx)
 
             elif hook == HookPoint.MODEL_INVOKE:
-                self._assemble_prompt(ctx)
                 ctx = await self.pm.dispatch(hook, ctx)
 
                 if ctx.original_reply:
                     yield f"data: {json.dumps({
                         'status': 'text_ready',
-                        'reply': ctx.original_reply,
+                        'reply': ctx.reply or ctx.original_reply,
                         'chat_id': ctx.chat_id,
                     })}\n\n"
 

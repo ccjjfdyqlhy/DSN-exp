@@ -625,7 +625,7 @@ class DSNEngine:
             is_asr_input=kwargs.get("is_asr_input", False),
             tts_enabled=kwargs.get("tts_enabled", True),
             image_data=kwargs.get("image_data"),
-            agent_active=kwargs.get("agent_active", False),
+            agent_active=kwargs.get("agent_active", True),
             agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else 5),
             agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 8000),
         )
@@ -766,6 +766,7 @@ def create_engine_with_defaults(
     world_engine = None,
     world_state_manager = None,
     narrative_model = None,
+    task_manager = None,
 ) -> DSNEngine:
     """
     使用已有组件创建引擎（供 app.py 复用）。
@@ -804,6 +805,8 @@ def create_engine_with_defaults(
         engine.world_state_manager = world_state_manager
     if narrative_model:
         engine.narrative_model = narrative_model
+    if task_manager:
+        engine.task_manager = task_manager
 
     # PromptEngine — v2
     _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt")
@@ -889,6 +892,7 @@ def create_engine_with_defaults(
         engine.plugin_manager.register(TTSPlugin(
             tts_client=engine._tts_client,
             profile_manager=engine._tts_profile_mgr,
+            tts_process_model=engine._tts_process_model,
         ))
 
     if engine._filter_model:
@@ -897,6 +901,46 @@ def create_engine_with_defaults(
             filter_model=engine._filter_model,
             db=db,
         ))
+
+    # ---- 补充注册：TaskPlugin / RecallPlugin / SSPPlugin ----
+
+    if engine.task_manager and skill_registry:
+        from plugins.builtin.task_plugin import TaskPlugin
+        engine.plugin_manager.register(TaskPlugin(
+            task_manager=engine.task_manager,
+            db=db,
+            skill_registry=skill_registry,
+        ))
+
+    if memory_manager and db:
+        try:
+            from plugins.builtin.recall_plugin import RecallPlugin
+            from memory_recall import MemoryRecallEngine
+            recall_engine = MemoryRecallEngine(db=db)
+            engine.plugin_manager.register(RecallPlugin(recall_engine=recall_engine))
+        except Exception as e:
+            engine._logger.warning("RecallPlugin 加载失败: %s", e)
+
+    if skill_registry and models_plugin:
+        try:
+            from plugins.builtin.ssp_plugin import SSPPlugin
+            engine.plugin_manager.register(SSPPlugin(
+                db=db,
+                impression_manager=impression_manager,
+                models_plugin=models_plugin,
+                skill_registry=skill_registry,
+            ))
+        except Exception as e:
+            engine._logger.warning("SSPPlugin 加载失败: %s", e)
+
+    # ---- TTS 文本预处理 ----
+    if Config.TTS_PROCESS_ENABLED:
+        try:
+            from tts_process_model import TTSProcessModel
+            engine._tts_process_model = TTSProcessModel()
+            engine._logger.info("TTSProcessModel 初始化完成")
+        except Exception as e:
+            engine._logger.warning("TTSProcessModel 初始化失败: %s", e)
 
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")
