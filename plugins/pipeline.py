@@ -37,11 +37,13 @@ class ChatPipeline:
         prompt_engine=None,  # Optional[PromptEngine]
         tts_client=None,      # VocalExp
         tts_profile_mgr=None, # TTSProfileManager
+        tts_process_model=None,  # TTSProcessModel
     ):
         self.pm = plugin_manager
         self._prompt_engine = prompt_engine
         self._tts_client = tts_client
         self._tts_profile_mgr = tts_profile_mgr
+        self._tts_process_model = tts_process_model
 
     # ---- 完整管道 ----
 
@@ -188,8 +190,11 @@ class ChatPipeline:
         results = []
         for i, line in enumerate(lines):
             try:
-                params = self._tts_profile_mgr.build_params(line) if self._tts_profile_mgr else {
-                    "text": line, "text_lang": "zh",
+                processed_line = line
+                if self._tts_process_model is not None:
+                    processed_line = self._tts_process_model.process_tts_text(line)
+                params = self._tts_profile_mgr.build_params(processed_line) if self._tts_profile_mgr else {
+                    "text": processed_line, "text_lang": "zh",
                     "ref_audio_path": "", "prompt_lang": "en", "prompt_text": "",
                     "media_type": "wav", "streaming_mode": False,
                 }

@@ -17,11 +17,18 @@ from rich.text import Text
 from rich.table import Table
 from rich import box
 
+try:
+    from plugins.base import AsyncPlugin
+except ImportError:
+    AsyncPlugin = None
+
 console = Console()
 
 LOG_BUFFER: deque = deque(maxlen=200)
 LOG_LOCK = threading.Lock()
 _LOG_HANDLER_INSTALLED = False
+
+_server_start_time = None
 
 
 def append_log(module: str, level: str, message: str):
@@ -147,7 +154,23 @@ def _cmd_users(auth_manager, db):
 
 def _cmd_status(auth_manager, db):
     """显示服务器状态摘要"""
+    global _server_start_time
     print("\n  --- 服务器状态 ---")
+
+    uptime_str = ""
+    if _server_start_time:
+        delta = datetime.now() - _server_start_time
+        days = delta.days
+        hours, rem = divmod(delta.seconds, 3600)
+        mins, secs = divmod(rem, 60)
+        parts = []
+        if days: parts.append(f"{days}d")
+        if hours: parts.append(f"{hours}h")
+        if mins: parts.append(f"{mins}m")
+        parts.append(f"{secs}s")
+        uptime_str = f"  Uptime: {' '.join(parts)}"
+        print(uptime_str)
+
     _cmd_users(auth_manager, db)
 
     if db:
@@ -175,13 +198,71 @@ def _cmd_help():
     /newbind   生成新的设备配对码
     /users     列出所有注册用户
     /status    显示服务器状态摘要
+    /plugin    列出所有插件及运行状态
+    /plugin <名称>  查询指定插件的详细信息
     /help      显示此帮助信息
 
   其他输入将被转发给驻守模型 (如果已启用)。
 """)
 
 
-def _execute_command(line, auth_manager, db):
+def _cmd_plugin(plugin_manager, name: str = None):
+    """列出所有插件或查询指定插件详情"""
+    if not plugin_manager:
+        print("  错误: PluginManager 不可用")
+        return
+
+    plugins = plugin_manager.list_plugins()
+    if not plugins:
+        print("  暂无已注册插件")
+        return
+
+    if name:
+        p = plugin_manager.get(name)
+        if not p:
+            print(f"  插件 '{name}' 未找到")
+            available = [pl["name"] for pl in plugins]
+            print(f"  可用插件: {', '.join(available)}")
+            return
+
+        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        table.add_column("属性", style="dim")
+        table.add_column("值", style="bold")
+        table.add_row("名称", p.name)
+        table.add_row("描述", p.description)
+        table.add_row("版本", p.version)
+        table.add_row("钩子", ", ".join(h.value for h in p.hooks))
+        table.add_row("优先级", str(p.priority))
+        table.add_row("启用", "Y" if plugin_manager.is_enabled(p.name) else "N")
+        table.add_row("异步", "Y" if AsyncPlugin and isinstance(p, AsyncPlugin) else "N")
+        console.print(f"\n  [bold]插件详情: {name}[/]")
+        console.print(table)
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("名称", style="bold")
+    table.add_column("启用")
+    table.add_column("优先级")
+    table.add_column("钩子", style="dim")
+    table.add_column("异步")
+    table.add_column("版本", style="dim")
+
+    for pl in plugins:
+        hooks_str = ", ".join(pl["hooks"])
+        table.add_row(
+            pl["name"],
+            "Y" if pl["enabled"] else "N",
+            str(pl["priority"]),
+            hooks_str,
+            "Y" if pl.get("is_async") else "",
+            pl["version"],
+        )
+
+    console.print(f"\n  [bold]已注册插件 ({len(plugins)} 个)[/]")
+    console.print(table)
+
+
+def _execute_command(line, auth_manager, db, plugin_manager):
     """解析并执行命令"""
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -192,6 +273,9 @@ def _execute_command(line, auth_manager, db):
         _cmd_users(auth_manager, db)
     elif cmd == "/status":
         _cmd_status(auth_manager, db)
+    elif cmd == "/plugin":
+        name = parts[1].strip() if len(parts) > 1 else None
+        _cmd_plugin(plugin_manager, name)
     elif cmd == "/help":
         _cmd_help()
     else:
@@ -201,6 +285,9 @@ def _execute_command(line, auth_manager, db):
 # ── 主入口 ──
 
 def main():
+    global _server_start_time
+    _server_start_time = datetime.now()
+
     console.print(Text(BANNER, style="bold cyan"))
     console.print("[bold]Booting system... (importing app.py)[/]\n")
 
@@ -214,6 +301,8 @@ def main():
     flask_app = app_module.app
     auth_manager = flask_app.config.get("AUTH_MANAGER")
     db = app_module.db
+    engine = getattr(app_module, 'engine', None)
+    plugin_manager = engine.plugin_manager if engine else None
 
     # ── 启动提示（替代旧自动配对码） ──
     try:
@@ -304,7 +393,7 @@ def main():
                 continue
 
             if line.startswith("/"):
-                _execute_command(line, auth_manager, db)
+                _execute_command(line, auth_manager, db, plugin_manager)
             else:
                 _handle_steward_chat(line)
 

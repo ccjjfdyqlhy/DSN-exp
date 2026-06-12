@@ -36,6 +36,7 @@ class TTSPlugin(Plugin):
         *,
         profile_manager: Optional[TTSProfileManager] = None,
         profile_name: Optional[str] = None,
+        tts_process_model=None,
         # ---- 旧版 fallback 参数 (当 profile_manager 为 None 时使用) ----
         ref_audio_path: str | None = None,
         prompt_text: str = "Many people may feel lost at times.",
@@ -44,6 +45,7 @@ class TTSPlugin(Plugin):
         self._tts = tts_client
         self._profile_manager = profile_manager
         self._profile_name = profile_name
+        self._tts_process_model = tts_process_model
 
         self._fallback_ref_audio = ref_audio_path or os.path.join(
             os.path.dirname(__file__), "..", "..", "tests", "ref.wav"
@@ -77,6 +79,9 @@ class TTSPlugin(Plugin):
         if not tts_text:
             logger.info("无可用的 TTS 文本，跳过合成")
             return ctx
+
+        if self._tts_process_model is not None:
+            tts_text = self._tts_process_model.process_tts_text(tts_text)
 
         logger.info("进行 TTS 合成，文本: %s...", tts_text[:100])
 

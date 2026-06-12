@@ -238,6 +238,12 @@
 
     function addMessage(speaker, text, isInteraction) {
         return new Promise(function (resolve) {
+            // AI 回复到达时，若用户消息打字机仍在运行，强制完成
+            if (activeTypewriter && speaker !== '>') {
+                activeTypewriter.finalize();
+                activeTypewriter = null;
+            }
+
             if (!isInteraction) archiveActiveLines();
             var line = document.createElement('div');
             line.className = 'text-line';
@@ -471,8 +477,13 @@
     async function msgFlow(text) {
         try {
             archiveActiveLines();
-            forceScrollToNew = true;  // 确保用户消息与 AI 新行自动滚动可见
-            await addMessage('>', text, true);
+            forceScrollToNew = true;
+
+            // 启动用户消息打字机（不等待），同时立即发送 API 请求
+            var userMsgDone = false;
+            var userMsgPromise = addMessage('>', text, true).then(function () {
+                userMsgDone = true;
+            }).catch(function () {});
             updateStatusBar();
 
             var auth = getAuthHeader();

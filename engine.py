@@ -19,6 +19,7 @@ from subapp_loader import SubAppConfig
 from config import Config
 from chatdbmgr import ChatDBManager
 from models import LMSummaryModel
+from tts_process_model import TTSProcessModel
 from memory import MemoryManager
 from tasks import TaskManager, TaskType, ComplexityAnalyzer
 
@@ -112,6 +113,7 @@ class DSNEngine:
         self._models_plugin = None
         self._tts_client = None
         self._tts_profile_mgr = None
+        self._tts_process_model = None
         self._tts_available = False
         self._filter_model = None
         self.complexity_analyzer: Optional[ComplexityAnalyzer] = None
@@ -358,6 +360,10 @@ class DSNEngine:
             self._tts_profile_mgr = TTSProfileManager()
             self._tts_available = True
             self._logger.info("TTS 客户端初始化完成")
+
+            if Config.TTS_PROCESS_ENABLED:
+                self._tts_process_model = TTSProcessModel()
+                self._logger.info("TTSProcessModel 初始化完成")
         except Exception as e:
             self._logger.warning("TTS 初始化失败: %s", e)
             self._tts_client = None
@@ -569,6 +575,7 @@ class DSNEngine:
             self.plugin_manager.register(TTSPlugin(
                 tts_client=self._tts_client,
                 profile_manager=self._tts_profile_mgr,
+                tts_process_model=self._tts_process_model,
             ))
 
         # 7. DistillPlugin (POST_PROCESS, priority 100)
@@ -593,6 +600,7 @@ class DSNEngine:
             prompt_engine=self.prompt_engine,
             tts_client=self._tts_client,
             tts_profile_mgr=self._tts_profile_mgr,
+            tts_process_model=self._tts_process_model,
         )
 
     # ── 对话接口 ──
