@@ -130,8 +130,8 @@ input, textarea, button {
     flex-direction: column;
     justify-content: flex-end;
     min-height: 100%;
-    padding-bottom: 28vh;
-    padding-top: 10vh;
+    padding-bottom: 8vh;
+    padding-top: 6vh;
 }
 
 #bottom-anchor {
@@ -287,7 +287,7 @@ input, textarea, button {
 
 .input-wrapper {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 8px;
     padding: 8px 16px;
     background: var(--glass-bg);
@@ -310,11 +310,17 @@ input, textarea, button {
     background: transparent;
     border: none;
     outline: none;
+    resize: none;
     font-family: 'LanaPixel', sans-serif;
     font-size: 16px;
+    line-height: 1.4;
     color: var(--text-primary);
     padding: 6px 0;
     caret-color: var(--accent);
+    min-height: 24px;
+    max-height: 140px;
+    overflow-y: auto;
+    transition: height 0.15s ease;
 }
 
 #message-input::placeholder {
@@ -352,6 +358,12 @@ input, textarea, button {
 #btn-send:disabled {
     opacity: 0.3;
     cursor: not-allowed;
+}
+
+#btn-send.stop-mode {
+    color: rgba(255, 80, 80, 0.8);
+    border-color: rgba(255, 80, 80, 0.3);
+    font-size: 14px;
 }
 
 .btn-tts {
@@ -475,6 +487,106 @@ input, textarea, button {
     filter: none;
     margin-top: 4vh;
     margin-bottom: 4vh;
+}
+
+/* ── Footer Bar ── */
+#footer-bar {
+    position: fixed;
+    bottom: 0.6%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80%;
+    max-width: 600px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 150;
+    padding: 0 8px;
+    font-family: 'LanaPixel', sans-serif;
+    font-size: 9px;
+    letter-spacing: 1px;
+    color: var(--text-faint);
+    transition: opacity 0.6s ease;
+    pointer-events: none;
+}
+
+.scrolling-up #footer-bar {
+    opacity: 0;
+}
+
+.footer-brand {
+    color: var(--text-dim);
+    letter-spacing: 2px;
+}
+
+.footer-version {
+    color: var(--text-faint);
+    margin-left: 6px;
+}
+
+.footer-spacer {
+    flex: 1;
+}
+
+.footer-hint {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.key-icon.alt-key {
+    flex-shrink: 0;
+    stroke: var(--text-faint);
+}
+
+.key-icon.alt-key text {
+    fill: var(--text-faint);
+}
+
+/* ── Key Hint Tips (Alt 提示) ── */
+.key-hint-tip {
+    position: absolute;
+    top: -22px;
+    left: 0;
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    pointer-events: none;
+    z-index: 500;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+    white-space: nowrap;
+}
+
+.key-hint-tip.visible {
+    opacity: 1;
+}
+
+.key-hint-tip.right-side {
+    left: auto;
+    right: 0;
+}
+
+.key-cap-svg {
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.key-cap-svg rect {
+    fill: var(--text-dim);
+}
+
+.key-cap-svg text {
+    fill: var(--bg-base);
+    font-family: 'LanaPixel', sans-serif;
+}
+
+.key-hint-label {
+    font-family: 'LanaPixel', sans-serif;
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
 }
 
 /* ── Markdown Bold ── */

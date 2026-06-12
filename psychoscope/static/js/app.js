@@ -36,6 +36,7 @@
     var lineQueue = [];
     var isProcessingLines = false;
     var pendingTiming = null;
+    var forceScrollToNew = false;
 
     // DOM
     var $ = function (s) { return document.querySelector(s); };
@@ -102,16 +103,18 @@
             .replace(/\n/g, '<br>');
     };
 
-    // scroll
+    // scroll — 使用 scroll 事件替代 IntersectionObserver
     var scrollToBottom = function () {
-        if (autoScroll) dom.textBoxWrapper.scrollTo({ top: dom.textBoxWrapper.scrollHeight, behavior: 'smooth' });
+        if (forceScrollToNew || autoScroll) {
+            dom.textBoxWrapper.scrollTop = dom.textBoxWrapper.scrollHeight;
+        }
     };
     var backToBottom = function () {
-        dom.textBoxWrapper.scrollTo({ top: dom.textBoxWrapper.scrollHeight, behavior: 'smooth' });
+        dom.textBoxWrapper.scrollTop = dom.textBoxWrapper.scrollHeight;
     };
-    var observer = new IntersectionObserver(function (entries) {
-        var e = entries[0];
-        if (e.isIntersecting) {
+    dom.textBoxWrapper.addEventListener('scroll', function () {
+        var atBottom = dom.textBoxWrapper.scrollTop + dom.textBoxWrapper.clientHeight >= dom.textBoxWrapper.scrollHeight - 10;
+        if (atBottom) {
             dom.textBoxWrapper.classList.remove('scrolling-up');
             dom.scrollBtn.style.display = 'none';
             autoScroll = true; isPaused = false;
@@ -119,9 +122,9 @@
             dom.textBoxWrapper.classList.add('scrolling-up');
             dom.scrollBtn.style.display = 'flex';
             autoScroll = false; isPaused = true;
+            forceScrollToNew = false;
         }
-    }, { threshold: 0.1 });
-    observer.observe(dom.bottomAnchor);
+    });
 
     // control tag parsing
     var CONTROL_TAGS = [
@@ -410,7 +413,16 @@
                 l.classList.remove('active', 'active-group-top', 'active-group-bottom');
                 l.classList.add('history');
             });
-            scrollToBottom();
+            requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                    var wrapper = dom.textBoxWrapper;
+                    var last = dom.textBox.querySelector('.text-line:last-of-type');
+                    if (last) {
+                        var top = last.offsetTop - wrapper.clientHeight / 2 + last.offsetHeight / 2;
+                        wrapper.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+                    }
+                });
+            });
         }).catch(function (e) { notify('load failed: ' + e.message, true); });
     }
     function newChat() {
@@ -459,6 +471,7 @@
     async function msgFlow(text) {
         try {
             archiveActiveLines();
+            forceScrollToNew = true;  // 确保用户消息与 AI 新行自动滚动可见
             await addMessage('>', text, true);
             updateStatusBar();
 
@@ -561,7 +574,9 @@
             isProcessing = false;
             activeTypewriter = null;
             streamAbort = null;
-            dom.btnSend.disabled = false;
+            forceScrollToNew = false;
+            dom.btnSend.textContent = '→';
+            dom.btnSend.classList.remove('stop-mode');
             dom.msgInput.disabled = false;
             dom.msgInput.focus();
         }
@@ -571,9 +586,11 @@
         var text = dom.msgInput.value.trim();
         if (!text || isProcessing) return;
         isProcessing = true;
-        dom.btnSend.disabled = true;
+        dom.btnSend.textContent = '■';
+        dom.btnSend.classList.add('stop-mode');
         dom.msgInput.disabled = true;
         dom.msgInput.value = '';
+        dom.msgInput.style.height = 'auto';
         streamAbort = new AbortController();
         msgFlow(text);
     }
@@ -582,8 +599,11 @@
         if (streamAbort) { streamAbort.abort(); streamAbort = null; }
         if (activeTypewriter) { activeTypewriter.abort(); activeTypewriter = null; }
         isProcessing = false;
-        dom.btnSend.disabled = false;
+        forceScrollToNew = false;
+        dom.btnSend.textContent = '→';
+        dom.btnSend.classList.remove('stop-mode');
         dom.msgInput.disabled = false;
+        dom.msgInput.style.height = 'auto';
         dom.msgInput.focus();
     }
 
@@ -679,15 +699,134 @@
         if (dom.sidebar.classList.contains('hidden')) { await loadChats(); dom.sidebar.classList.remove('hidden'); }
         else dom.sidebar.classList.add('hidden');
     });
-    dom.btnSend.addEventListener('click', sendMessage);
+    dom.btnSend.addEventListener('click', function () {
+        if (isProcessing) abortStream();
+        else sendMessage();
+    });
     dom.btnTTS.addEventListener('click', toggleTTS);
     dom.scrollBtn.addEventListener('click', backToBottom);
     dom.btnImage.addEventListener('click', selectImage);
     dom.imageInput.addEventListener('change', handleImageSelected);
     dom.btnRemoveImage.addEventListener('click', removeImage);
+    // ── 键盘绑定 ──
     dom.msgInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-        else if (e.key === 'Escape' && isProcessing) { e.preventDefault(); abortStream(); }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            if (isProcessing) abortStream();
+            else sendMessage();
+        } else if (e.key === 'Escape' && isProcessing) {
+            e.preventDefault(); abortStream();
+        }
+    });
+
+    dom.msgInput.addEventListener('input', function () {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 140) + 'px';
+    });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.altKey && (e.key === 't' || e.key === 'T')) {
+            e.preventDefault(); toggleTTS();
+        }
+        if (e.ctrlKey || e.metaKey) {
+            if (e.key === 'q' || e.key === 'Q') {
+                e.preventDefault();
+                if (confirm('确定退出登录？')) logout();
+            }
+        }
+    });
+
+    // ── SVG 键帽组件 ──
+    function createKeyCapSVG(label) {
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('width', '24');
+        svg.setAttribute('height', '18');
+        svg.setAttribute('viewBox', '0 0 24 18');
+        svg.classList.add('key-cap-svg');
+        svg.innerHTML =
+            '<rect x="1" y="1" width="22" height="16" rx="3"/>' +
+            '<text x="12" y="12" text-anchor="middle" font-size="9">' + label + '</text>';
+        return svg;
+    }
+
+    // ── Alt 键位提示系统 ──
+    var altHeld = false;
+    var keyHintTips = [];
+
+    function showKeyHints() {
+        if (altHeld) return;
+        altHeld = true;
+        var elements = document.querySelectorAll('[data-key-hint]');
+        elements.forEach(function (el) {
+            var rect = el.getBoundingClientRect();
+            var hintsText = el.getAttribute('data-key-hint');
+            if (!hintsText) return;
+
+            var tip = document.createElement('div');
+            tip.className = 'key-hint-tip';
+            tip.style.position = 'fixed';
+            tip.style.left = rect.left + 'px';
+            tip.style.top = rect.top - 24 < 0
+                ? (rect.bottom + 4) + 'px'
+                : (rect.top - 24) + 'px';
+
+            var groups = hintsText.split('|');
+            groups.forEach(function (group, gi) {
+                var parts = group.split(':');
+                var keysStr = parts[0];
+                var label = parts[1] || '';
+
+                var keyParts = keysStr.split('+');
+                keyParts.forEach(function (kp, ki) {
+                    tip.appendChild(createKeyCapSVG(kp.trim()));
+                    if (ki < keyParts.length - 1) {
+                        var plus = document.createElement('span');
+                        plus.textContent = '+';
+                        plus.style.cssText = 'font-size:8px;color:var(--text-dim);margin:0 1px;';
+                        tip.appendChild(plus);
+                    }
+                });
+
+                if (label) {
+                    var lbl = document.createElement('span');
+                    lbl.className = 'key-hint-label';
+                    lbl.textContent = label;
+                    tip.appendChild(lbl);
+                }
+
+                if (gi < groups.length - 1) {
+                    var sep = document.createElement('span');
+                    sep.textContent = ' ';
+                    sep.style.width = '8px';
+                    sep.style.display = 'inline-block';
+                    tip.appendChild(sep);
+                }
+            });
+
+            document.body.appendChild(tip);
+            requestAnimationFrame(function () { tip.classList.add('visible'); });
+            keyHintTips.push(tip);
+        });
+    }
+
+    function hideKeyHints() {
+        altHeld = false;
+        var tips = keyHintTips.slice();
+        keyHintTips = [];
+        tips.forEach(function (tip) {
+            tip.classList.remove('visible');
+            setTimeout(function () { if (tip.parentNode) tip.remove(); }, 150);
+        });
+    }
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Alt' && !e.repeat) showKeyHints();
+    });
+    document.addEventListener('keyup', function (e) {
+        if (e.key === 'Alt') hideKeyHints();
+    });
+    window.addEventListener('blur', function () {
+        hideKeyHints();
     });
     document.addEventListener('click', function (e) {
         if (!dom.sidebar.classList.contains('hidden') && !dom.sidebar.contains(e.target) && e.target !== dom.btnChatList) {

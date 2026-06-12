@@ -814,6 +814,7 @@ def chat_stream_send():
                 if first_display and not tts_enabled:
                     reply_clean = clean_display(clean)
                     yield f"data: {json.dumps({'status': 'text_ready', 'reply': reply_clean, 'chat_id': chat_id})}\n\n"
+                    first_display = False
                 break
 
             if tool_feedback:
