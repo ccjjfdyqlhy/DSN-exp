@@ -591,12 +591,12 @@ class ChatDBManager:
             raise
 
     def get_chat_history(self, user_id: int, chat_id: int) -> List[Dict[str, str]]:
-        """获取指定聊天会话的所有消息（需验证用户所有权）"""
+        """获取指定聊天会话的所有消息（需验证用户所有权，系统内部聊天拒绝）"""
         conn = self._get_connection()
         try:
-            # 先验证该聊天属于该用户
+            # 先验证该聊天属于该用户且非系统聊天
             row = conn.execute(
-                "SELECT 1 FROM chats WHERE chat_id = ? AND user_id = ?",
+                "SELECT 1 FROM chats WHERE chat_id = ? AND user_id = ? AND chat_name != '__steward__'",
                 (chat_id, user_id),
             ).fetchone()
             if not row:
@@ -613,7 +613,7 @@ class ChatDBManager:
             raise
 
     def list_chats(self, user_id: int) -> List[Dict[str, Any]]:
-        """列出用户的所有聊天会话"""
+        """列出用户的所有聊天会话（排除系统内部聊天）"""
         conn = self._get_connection()
         try:
             rows = conn.execute(
@@ -622,7 +622,7 @@ class ChatDBManager:
                        COUNT(m.message_id) AS message_count
                 FROM chats c
                 LEFT JOIN messages m ON c.chat_id = m.chat_id
-                WHERE c.user_id = ?
+                WHERE c.user_id = ? AND c.chat_name != '__steward__'
                 GROUP BY c.chat_id
                 ORDER BY c.created_at DESC
                 """,
