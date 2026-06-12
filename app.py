@@ -567,6 +567,7 @@ engine = create_engine_with_defaults(
     world_engine=_world_engine,
     world_state_manager=_world_state_manager,
     narrative_model=_narrative_model,
+    task_manager=task_manager,
 )
 app.logger.info("DSNEngine 已创建 (插件: %s)", engine.plugin_manager.list_plugins())
 
@@ -663,273 +664,39 @@ def chat_send():
 @app.route("/api/chat/stream_send", methods=["POST"])
 @login_required
 def chat_stream_send():
-    """流式发送消息 — Agent Loop：使用 engine 组件但保留 SSE 代理循环"""
+    """流式发送消息 — 使用引擎管线（含世界状态注入、旁白生成、Agent 循环、TTS）"""
     data = request.get_json()
     if not data or "message" not in data:
         return jsonify({"error": "Missing message"}), 400
 
-    message = data["message"]
-    chat_id = data.get("chat_id")
-    chat_name = data.get("chat_name", "未命名")
-    tts_enabled = data.get("tts_enabled", True)
-    is_asr_input = data.get("is_asr_input", False)
-    model_type = data.get("model_type")
-    image_data = data.get("image_data")
     user_id = g.user["uid"]
 
-    def _extract_actions(raw: str) -> list:
-        actions = []
-        for td in parse_task_instructions(raw):
-            if td.get("type") == "action":
-                p = td.get("params", {})
-                if "action_type" not in p:
-                    p["action_type"] = "shell"
-                actions.append({"action_type": p.get("action_type", "shell"), "params": p})
-        return actions
-
-    def _extract_and_save_impressions(text: str) -> None:
-        if not _impression_manager:
-            return
-        import re
-        pat = re.compile(r"IMPRESSION\s*:\s*(.+?)\s*:\s*(.+?)\s*:\s*(\d+)", re.IGNORECASE)
-        for m in pat.finditer(text):
-            try:
-                _impression_manager.add(
-                    user_id, m.group(1).strip(), m.group(2).strip(),
-                    int(m.group(3)) / 100.0, "inferred",
-                )
-            except Exception:
-                pass
-
-    def _format_action_result(action_type: str, result: dict) -> str:
-        if result.get("success"):
-            return f"[系统] 你刚才的 {action_type} 操作已成功完成。\n输出:\n{result.get('output', '')}"[:2000]
-        return f"[系统] 你刚才的 {action_type} 操作执行失败。\n错误: {result.get('error', '未知错误')}"
-
-    def _process_tools_and_recall(raw: str) -> tuple[str, str]:
-        augmented = raw
-        tool_results: list[str] = []
-        if skill_registry is not None:
-            _pat = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
-            for m in _pat.finditer(raw):
+    def generate():
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            agen = engine.chat_stream(
+                message=data["message"],
+                user_id=user_id,
+                chat_id=data.get("chat_id"),
+                chat_name=data.get("chat_name", "未命名"),
+                model_type=data.get("model_type"),
+                nickname=g.user.get("nickname", "用户"),
+                tts_enabled=data.get("tts_enabled", True),
+                is_asr_input=data.get("is_asr_input", False),
+                image_data=data.get("image_data"),
+            ).__aiter__()
+            while True:
                 try:
-                    d = json.loads(m.group(1).strip())
-                    s_name = d.get("skill", "")
-                    t_name = d.get("tool", "")
-                    params = d.get("params", {})
-                    if s_name and t_name:
-                        r = skill_registry.call_tool(s_name, t_name, params)
-                        formatted = _format_tool_result(s_name, t_name, r)
-                        tool_results.append(formatted)
-                        app.logger.info("工具执行: %s.%s", s_name, t_name)
-                except Exception:
-                    pass
-            augmented = _pat.sub("", augmented).strip()
-        if memory_manager:
-            try:
-                rec = memory_manager.process_recall_tags(user_id, chat_id, raw)
-                if rec != raw:
-                    augmented = rec
-            except Exception:
-                pass
-        feedback = "\n".join(tool_results) if tool_results else ""
-        return augmented, feedback
-
-    def generate_stream():
-        nonlocal chat_id, message
-        t_total = time.perf_counter()
-        timing = {}
-
-        # ---- PRE_PROCESS (含图片并行) ----
-        t_pre = time.perf_counter()
-        yield f"data: {json.dumps({'status': 'parsing'})}\n\n"
-
-        # 图片模态：后台并行处理，同时装配上下文
-        img_future = None
-        img_executor = None
-        if image_data:
-            img_executor = ThreadPoolExecutor(max_workers=1)
-            img_future = img_executor.submit(_process_image_input, message, image_data)
-            app.logger.info("图片描述已启动并行处理")
-
-        history = []
-        if chat_id:
-            history = db.get_chat_history(user_id, chat_id)
-        else:
-            chat_id = db.create_chat(user_id, chat_name)
-
-        if is_asr_input and filter_model is not None:
-            decision = filter_model.filter_input(message)
-            if decision == "HOLD":
-                mem = f"听到：{message}"
-                ridx = db.get_memory_count(user_id, chat_id) + 1
-                db.save_memory(user_id, chat_id, ridx, mem)
-                db.append_messages(user_id, chat_id, [{"role": "system", "content": f"记忆摘要：{mem}"}])
-                if img_future:
-                    img_future.cancel()
-                    img_executor.shutdown(wait=False)
-                yield f"data: {json.dumps({'status': 'completed', 'reply': '', 'chat_id': chat_id, 'filtered': True})}\n\n"
-                return
-
-        system_prompt = engine.prompt_engine.build_system_prompt({"uid": user_id, "nickname": g.user.get("nickname", "用户")})
-        if engine.memory_manager:
-            assembled = engine.memory_manager.assemble_context(user_id, chat_id, history)
-        else:
-            assembled = history
-        full_history = [{"role": "system", "content": system_prompt}] + assembled
-
-        # 等待图片描述完成
-        if img_future:
-            try:
-                message = img_future.result(timeout=60)
-            except Exception as e:
-                app.logger.error("图片并行处理失败: %s", e)
-                message = f"[无法识别图片: {e}]\n{message}"
-            finally:
-                img_executor.shutdown(wait=False)
-
-        timing["pre_process_ms"] = round((time.perf_counter() - t_pre) * 1000)
-
-        # ---- MODEL_INVOKE ----
-        t_model = time.perf_counter()
-        yield f"data: {json.dumps({'status': 'request'})}\n\n"
-
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        timestamped = f"[{current_time}] {message}"
-
-        chat = create_chat_client(model_type)
-        chat.messages = full_history.copy()
-        reply = chat.send_message(timestamped)
-
-        round_index = db.get_memory_count(user_id, chat_id) + 1
-        db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
-        original_reply = reply
-
-        timing["model_invoke_ms"] = round((time.perf_counter() - t_model) * 1000)
-
-        # ---- POST_PROCESS (Agent Loop) ----
-        t_post = time.perf_counter()
-
-        ssp_mode = bool(re.search(r"<ssp>", original_reply, re.IGNORECASE))
-        max_steps = 50 if ssp_mode else Config.AGENT_MAX_STEPS
-        if ssp_mode:
-            app.logger.info("SSP 自维持管线启动: uid=%d max_steps=%d", user_id, max_steps)
-            yield f"data: {json.dumps({'status': 'agent_action', 'desc': 'ssp_start'})}\n\n"
-
-        pending = original_reply
-        last_reply_for_tts = original_reply
-        first_display = True
-
-        for step in range(max_steps):
-            clean, tool_feedback = _process_tools_and_recall(pending)
-            actions = _extract_actions(clean)
-
-            if not tool_feedback and not actions:
-                if first_display and not tts_enabled:
-                    reply_clean = clean_display(clean)
-                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': reply_clean, 'chat_id': chat_id})}\n\n"
-                    first_display = False
-                break
-
-            if tool_feedback:
-                remaining = max_steps - step - 1
-                if remaining > 0:
-                    tool_feedback = f"[Agent 步数 {step + 1}/{max_steps}，剩余 {remaining} 次执行机会]\n\n{tool_feedback}"
-                chat.messages.append({"role": "system", "content": tool_feedback})
-                db.append_messages(user_id, chat_id, [{"role": "system", "content": tool_feedback}])
-                app.logger.info("Agent loop step %d: 工具结果已喂回 AI", step + 1)
-                pending = chat.send_message(tool_feedback)
-                db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
-                last_reply_for_tts = pending
-                _extract_and_save_impressions(pending)
-                if first_display and not tts_enabled:
-                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': clean_display(clean), 'chat_id': chat_id})}\n\n"
-                    first_display = False
-                if not tts_enabled:
-                    yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
-                continue
-
-            if actions:
-                yield f"data: {json.dumps({'status': 'execution', 'step': step + 1})}\n\n"
-                batch_results = []
-                for act in actions:
-                    atype = act["action_type"]
-                    yield f"data: {json.dumps({'status': 'agent_action', 'desc': atype})}\n\n"
-                    result = task_manager.execute_action_sync(user_id, chat_id, act["params"])
-                    batch_results.append((atype, result))
-                    app.logger.info("Agent loop step %d: %s 完成 (success=%s)", step + 1, atype, result.get("success"))
-                if not batch_results:
+                    event = loop.run_until_complete(agen.__anext__())
+                    yield event
+                except StopAsyncIteration:
                     break
-                feedback = "\n\n".join(_format_action_result(t, r) for t, r in batch_results)
-                remaining = max_steps - step - 1
-                if remaining > 0:
-                    feedback = f"[Agent 步数 {step + 1}/{max_steps}，剩余 {remaining} 次执行机会]\n\n{feedback}"
-                chat.messages.append({"role": "system", "content": feedback})
-                db.append_messages(user_id, chat_id, [{"role": "system", "content": feedback}])
-                pending = chat.send_message(feedback)
-                db.append_messages(user_id, chat_id, chat.messages[-2:], round_index=round_index)
-                last_reply_for_tts = pending
-                _extract_and_save_impressions(pending)
-                if first_display and not tts_enabled:
-                    yield f"data: {json.dumps({'status': 'text_ready', 'reply': clean_display(clean), 'chat_id': chat_id})}\n\n"
-                    first_display = False
-                if not tts_enabled:
-                    yield f"data: {json.dumps({'status': 'text_update', 'reply': clean_display(pending)})}\n\n"
+        finally:
+            loop.close()
 
-        timing["post_process_ms"] = round((time.perf_counter() - t_post) * 1000)
-
-        # ---- POST_TTS (逐行合成) ----
-        t_tts = time.perf_counter()
-        audio_b64 = None
-        tts_error = None
-        tts_lines = None
-        global _tts_available
-
-        if tts_enabled and _tts_available:
-            app.logger.info("开始逐行 TTS 合成")
-            tts_lines = _synthesize_tts_lines(last_reply_for_tts)
-            if tts_lines:
-                yield f"data: {json.dumps({'status': 'tts', 'line_count': len(tts_lines)})}\n\n"
-                all_audio_parts: list[bytes] = []
-                for line_data in tts_lines:
-                    yield f"data: {json.dumps({
-                        'status': 'line',
-                        'index': line_data['index'],
-                        'total': line_data['total'],
-                        'text': line_data['text'],
-                        'audio_b64': line_data['audio_b64'],
-                    })}\n\n"
-                    if line_data.get("audio_b64"):
-                        all_audio_parts.append(base64.b64decode(line_data["audio_b64"]))
-                if all_audio_parts:
-                    audio_b64 = base64.b64encode(b"".join(all_audio_parts)).decode("utf-8")
-
-        if (not tts_lines or not tts_enabled) and first_display:
-            reply_clean = clean_display(last_reply_for_tts)
-            if reply_clean:
-                yield f"data: {json.dumps({'status': 'text_ready', 'reply': reply_clean, 'chat_id': chat_id})}\n\n"
-
-        timing["tts_ms"] = round((time.perf_counter() - t_tts) * 1000)
-
-        if memory_manager:
-            try:
-                memory_manager.record_dialog_and_summary(
-                    user_id, chat_id, round_index,
-                    [{"role": "user", "content": message}, {"role": "assistant", "content": original_reply}],
-                    async_mode=True,
-                )
-            except Exception as e:
-                app.logger.error("记忆摘要失败: %s", e)
-
-        timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
-        yield f"data: {json.dumps({
-            'status': 'completed',
-            'audio': audio_b64,
-            'tts_error': tts_error,
-            'timing': timing,
-        })}\n\n"
-
-    return Response(stream_with_context(generate_stream()), mimetype="text/event-stream")
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 @app.route("/api/chat/list", methods=["GET"])
 @login_required
