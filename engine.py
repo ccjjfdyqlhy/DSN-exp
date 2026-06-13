@@ -337,10 +337,10 @@ class DSNEngine:
             self.world_state_manager.start()
             if Config.NARRATIVE_ENABLED:
                 self.narrative_model = NarrativeModel(
-                    model_type=Config.MAIN_MODEL_TYPE,
+                    model_type=Config.NARRATIVE_MODEL_TYPE,
                     model_name=Config.NARRATIVE_MODEL,
                     api_key=Config.DEEPSEEK_API_KEY,
-                    base_url=Config.LMSTUDIO_BASE_URL if Config.MAIN_MODEL_TYPE == "lmstudio" else None,
+                    base_url=Config.LMSTUDIO_BASE_URL if Config.NARRATIVE_MODEL_TYPE == "lmstudio" else None,
                     temperature=Config.NARRATIVE_TEMPERATURE,
                     max_tokens=Config.NARRATIVE_MAX_TOKENS,
                     keep_history=Config.NARRATIVE_KEEP_HISTORY,
@@ -848,11 +848,17 @@ def create_engine_with_defaults(
 
     if engine.world_engine:
         from world import WorldPlugin
+        from world.action_narrator import ActionNarrator
+        action_narrator = ActionNarrator(
+            narrative_model=engine.narrative_model,
+            world_engine=engine.world_engine,
+        )
         engine.plugin_manager.register(WorldPlugin(
             world_engine=engine.world_engine,
             world_state_manager=engine.world_state_manager,
             narrative_model=engine.narrative_model,
             personality_v2=pers_v2,
+            action_narrator=action_narrator,
         ))
 
     pe = engine.prompt_engine

@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
+from config import Config
 
 logger = logging.getLogger("WorldPlugin")
 
@@ -15,12 +16,12 @@ class WorldPlugin(Plugin):
     """
     叙事世界插件。
 
-    PRE_PROCESS:  将世界状态注入 system prompt（让主模型看到世界环境）
-    POST_PROCESS: 生成叙事旁白 + 更新世界状态（时间前进、事件记录、工具→房间移动）
+    PRE_PROCESS:  世界状态注入 system prompt + 前置旁白生成
+    POST_PROCESS: 后置旁白 + 世界更新 + 动作旁白收集器注入
     """
 
     name = "world"
-    description = "叙事世界模型 — 世界状态注入 + 旁白生成"
+    description = "叙事世界模型 — 世界状态注入 + 前置/后置/动作旁白"
     hooks = [HookPoint.PRE_PROCESS, HookPoint.POST_PROCESS]
     priority = 15
 
@@ -30,19 +31,22 @@ class WorldPlugin(Plugin):
         world_state_manager=None,
         narrative_model=None,
         personality_v2=None,
+        action_narrator=None,
     ):
         self._engine = world_engine
         self._state_mgr = world_state_manager
         self._narrator = narrative_model
         self._persona = personality_v2
+        self._action_narrator = action_narrator
 
     def on_load(self) -> None:
         if self._engine is None:
             logger.warning("world_engine 未注入")
         else:
-            logger.info("WorldPlugin 已加载: engine=%s, narrator=%s",
+            logger.info("WorldPlugin 已加载: engine=%s, narrator=%s, action_narrator=%s",
                          "OK" if self._engine else "MISSING",
-                         "OK" if self._narrator else "MISSING")
+                         "OK" if self._narrator else "MISSING",
+                         "OK" if self._action_narrator else "MISSING")
         if self._narrator is None:
             logger.warning("narrative_model 未注入（旁白功能禁用）")
 
@@ -70,6 +74,22 @@ class WorldPlugin(Plugin):
                         snapshot.get("location", {}).get("name", ""),
                         snapshot.get("weather", {}).get("current", ""))
 
+        # 前置旁白
+        if Config.NARRATIVE_PRE_ENABLED and self._narrator is not None:
+            try:
+                world_context = self._engine.get_complete_context()
+                mood_label = self._get_mood_label(ctx)
+                pre = self._narrator.narrate_pre(
+                    user_msg=ctx.message,
+                    world_context=world_context,
+                    mood_label=mood_label,
+                )
+                if pre:
+                    ctx.extra["pre_narrative"] = pre
+                    logger.info("PRE_PROCESS: 前置旁白已生成 (%d 字)", len(pre))
+            except Exception as e:
+                logger.warning("前置旁白生成失败: %s", e)
+
         return ctx
 
     # ── POST_PROCESS ──
@@ -77,6 +97,10 @@ class WorldPlugin(Plugin):
     def _on_post_process(self, ctx: PluginContext) -> PluginContext:
         if self._engine is None:
             return ctx
+
+        # 注入 ActionNarrator 到 ctx，供 AgentPlugin / SkillsPlugin / TaskPlugin 使用
+        if self._action_narrator is not None:
+            ctx.extra["_action_narrator"] = self._action_narrator
 
         self._update_location_from_tools(ctx)
 

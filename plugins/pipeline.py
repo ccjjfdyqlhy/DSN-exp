@@ -77,6 +77,12 @@ class ChatPipeline:
 
         # 4
         tts_lines = None
+
+        # 创建动作旁白收集器
+        from world.action_narrator import ActionNarrativeCollector
+        collector = ActionNarrativeCollector()
+        ctx.extra["_narrative_collector"] = collector
+
         if ctx.tts_enabled and ctx.original_reply and self._tts_client:
             tts_task = asyncio.create_task(
                 self._synthesize_lines(ctx.original_reply)
@@ -85,6 +91,11 @@ class ChatPipeline:
             tts_lines = await tts_task
         else:
             ctx = await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
+
+        # 排空动作旁白
+        action_narratives = collector.drain()
+        if action_narratives:
+            ctx.extra["action_narratives"] = action_narratives
 
         # 5 — TTS: 使用并行合成的结果或走插件
         if tts_lines is not None:
@@ -268,6 +279,16 @@ class ChatPipeline:
                 self._assemble_prompt(ctx)
                 ctx = await self._dispatch_pre_process(ctx)
 
+                # 前置旁白
+                pre_narrative = ctx.extra.get("pre_narrative", "")
+                if pre_narrative:
+                    yield f"data: {json.dumps({
+                        'status': 'narrative_update',
+                        'text': pre_narrative,
+                        'speaker': 'narrator',
+                        'style': 'pre',
+                    })}\n\n"
+
             elif hook == HookPoint.MODEL_INVOKE:
                 ctx = await self.pm.dispatch(hook, ctx)
 
@@ -279,6 +300,11 @@ class ChatPipeline:
                     })}\n\n"
 
             elif hook == HookPoint.POST_PROCESS:
+                # 创建动作旁白收集器
+                from world.action_narrator import ActionNarrativeCollector
+                collector = ActionNarrativeCollector()
+                ctx.extra["_narrative_collector"] = collector
+
                 # TTS 并行：在 executor 中后台合成，同时运行 POST_PROCESS
                 tts_task = None
                 if ctx.tts_enabled and ctx.original_reply and self._tts_client:
@@ -291,14 +317,25 @@ class ChatPipeline:
                 if tts_task:
                     tts_lines = await tts_task
 
-                # 叙事文本
+                # 后置旁白
                 narrative = ctx.extra.get("narrative", "")
                 if narrative:
                     yield f"data: {json.dumps({
                         'status': 'narrative_update',
                         'text': narrative,
                         'speaker': 'narrator',
+                        'style': 'post',
                     })}\n\n"
+
+                # 动作旁白（后台线程生成，排空已有结果）
+                for text in collector.drain():
+                    if text:
+                        yield f"data: {json.dumps({
+                            'status': 'narrative_update',
+                            'text': text,
+                            'speaker': 'narrator',
+                            'style': 'action',
+                        })}\n\n"
 
             elif hook == HookPoint.POST_TTS:
                 if tts_lines is not None:

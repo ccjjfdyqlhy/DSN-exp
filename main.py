@@ -191,16 +191,57 @@ def _cmd_status(auth_manager, db):
         print("  [配对码] 存在未使用的配对码")
 
 
+SENSITIVE_CONFIG_KEYS = {
+    "DEEPSEEK_API_KEY", "LITTLESKIN_CLIENT_SECRET",
+    "LITTLESKIN_CLIENT_ID", "JWT_SECRET",
+}
+
+
+def _mask_value(key: str, val) -> str:
+    if key in SENSITIVE_CONFIG_KEYS:
+        if not val:
+            return "(未设置)"
+        s = str(val)
+        if len(s) <= 8:
+            return "*" * len(s)
+        return s[:4] + "*" * (len(s) - 8) + s[-4:]
+    return str(val)
+
+
+def _cmd_listconfig(config_cls):
+    """列出所有配置项，敏感信息隐藏"""
+    print("\n  [bold]当前配置项[/]")
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("配置项", style="bold")
+    table.add_column("值", style="dim")
+    table.add_column("敏感", justify="center")
+
+    for key in sorted(dir(config_cls)):
+        if key.startswith("_"):
+            continue
+        val = getattr(config_cls, key, None)
+        if callable(val):
+            continue
+        is_sensitive = key in SENSITIVE_CONFIG_KEYS
+        tag = "[red]Y[/]" if is_sensitive else ""
+        table.add_row(key, _mask_value(key, val), tag)
+
+    console.print(table)
+    print()
+
+
 def _cmd_help():
     """显示帮助信息"""
     print("""
   可用命令 (必须以 / 开头):
-    /newbind   生成新的设备配对码
-    /users     列出所有注册用户
-    /status    显示服务器状态摘要
-    /plugin    列出所有插件及运行状态
+    /newbind    生成新的设备配对码
+    /users      列出所有注册用户
+    /status     显示服务器状态摘要
+    /plugin     列出所有插件及运行状态
     /plugin <名称>  查询指定插件的详细信息
-    /help      显示此帮助信息
+    /listconfig 列出所有配置项 (敏感信息隐藏)
+    /stop       安全停止服务器 (等同于 Ctrl+C)
+    /help       显示此帮助信息
 
   其他输入将被转发给驻守模型 (如果已启用)。
 """)
@@ -262,7 +303,7 @@ def _cmd_plugin(plugin_manager, name: str = None):
     console.print(table)
 
 
-def _execute_command(line, auth_manager, db, plugin_manager):
+def _execute_command(line, auth_manager, db, plugin_manager, config_cls=None, shutdown_event=None):
     """解析并执行命令"""
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -276,6 +317,12 @@ def _execute_command(line, auth_manager, db, plugin_manager):
     elif cmd == "/plugin":
         name = parts[1].strip() if len(parts) > 1 else None
         _cmd_plugin(plugin_manager, name)
+    elif cmd == "/listconfig":
+        _cmd_listconfig(config_cls)
+    elif cmd == "/stop":
+        print("  正在停止服务器...")
+        if shutdown_event:
+            shutdown_event.set()
     elif cmd == "/help":
         _cmd_help()
     else:
@@ -393,7 +440,7 @@ def main():
                 continue
 
             if line.startswith("/"):
-                _execute_command(line, auth_manager, db, plugin_manager)
+                _execute_command(line, auth_manager, db, plugin_manager, Config, _shutdown_flag)
             else:
                 _handle_steward_chat(line)
 
