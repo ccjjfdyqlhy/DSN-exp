@@ -9,12 +9,18 @@ import logging
 
 logger = logging.getLogger("Steward")
 
+_STEWARD_SENSITIVE_KEYS = {
+    "DEEPSEEK_API_KEY", "LITTLESKIN_CLIENT_SECRET",
+    "LITTLESKIN_CLIENT_ID", "JWT_SECRET",
+}
+
 STEWARD_SYSTEM_HEADER = """你是一台DSN-exp服务器的驻守AI（代号：GUARD）。你的职责是：
 
-1. 了解服务器当前的所有状态（用户、聊天、记忆等）
+1. 了解服务器当前的所有状态（用户、聊天、记忆、配置等）
 2. 回答管理员关于服务器状态的询问
 3. 提供数据分析、趋势观察、建议
 4. 协助管理员理解系统运行情况
+5. 你可以查看并描述所有非敏感的运行时配置项，但不能泄露API密钥等敏感信息
 
 重要限制：
 - 你只能分析已有数据，不能修改数据
@@ -24,7 +30,7 @@ STEWARD_SYSTEM_HEADER = """你是一台DSN-exp服务器的驻守AI（代号：GU
 - 保持简洁，直接回答问题，不要过度联想
 ---
 
-当前服务端状态快照：
+当前服务端配置与状态快照：
 """
 
 
@@ -63,6 +69,7 @@ class StewardModel:
         self.client = _create_steward_client(config)
         self._chat_id = None
         self._start_time = time.time()
+        self._config = config
 
         logger.info("驻守模型初始化完成 (model=%s)", getattr(config, "STEWARD_MODEL_NAME", "deepseek-v4-flash"))
 
@@ -157,6 +164,17 @@ class StewardModel:
                 lines.append(f"活跃会话数: {active_sessions}")
         except Exception:
             pass
+
+        # 运行时配置 (非敏感项)
+        lines.append("\n[运行时配置]")
+        config = self._config
+        for key in sorted(dir(config)):
+            if key.startswith("_") or key in _STEWARD_SENSITIVE_KEYS:
+                continue
+            val = getattr(config, key, None)
+            if callable(val):
+                continue
+            lines.append(f"  {key} = {val}")
 
         return "\n".join(lines)
 

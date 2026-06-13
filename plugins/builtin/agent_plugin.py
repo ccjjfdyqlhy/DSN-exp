@@ -89,7 +89,7 @@ class AgentPlugin(Plugin):
         if not tool_matches:
             return ctx
 
-        tool_results = self._execute_tools(tool_matches)
+        tool_results = self._execute_tools(tool_matches, ctx)
 
         cleaned = _TOOL_RE.sub("", ctx.reply if ctx.reply else original).strip()
         if tool_results:
@@ -131,7 +131,7 @@ class AgentPlugin(Plugin):
             logger.info("Agent 第 %d 步: 发现 %d 个工具调用", step_count, len(tool_matches))
 
             # 执行工具
-            tool_results = self._execute_tools(tool_matches)
+            tool_results = self._execute_tools(tool_matches, ctx)
 
             # 将本轮 AI 回复加入消息历史
             base_messages.append({
@@ -183,9 +183,12 @@ class AgentPlugin(Plugin):
 
     # ── 工具执行 ──
 
-    def _execute_tools(self, tool_matches: list) -> list[str]:
-        """执行一组 <tool> 标签，返回格式化结果文本列表"""
+    def _execute_tools(self, tool_matches: list, ctx: PluginContext = None) -> list[str]:
+        """执行一组 <tool> 标签，返回格式化结果文本列表。同时异步生成动作旁白。"""
         results: list[str] = []
+        action_narrator = ctx.extra.get("_action_narrator") if ctx else None
+        collector = ctx.extra.get("_narrative_collector") if ctx else None
+        mood_label = ctx.extra.get("world_snapshot", {}).get("mood_label", "") if ctx else ""
 
         for match in tool_matches:
             try:
@@ -198,10 +201,17 @@ class AgentPlugin(Plugin):
             skill_name = tool_data.get("skill", "")
             tool_name = tool_data.get("tool", "")
             params = tool_data.get("params", {})
+            action_type = f"{skill_name}.{tool_name}" if skill_name and tool_name else "unknown"
 
             if not skill_name or not tool_name:
                 results.append("工具调用缺少 skill 或 tool 字段")
                 continue
+
+            # 异步生成动作旁白（不阻塞工具执行）
+            if action_narrator is not None and collector is not None:
+                action_narrator.fire_action_narrative(
+                    action_type, params, mood_label, collector,
+                )
 
             try:
                 result = self._skill_registry.call_tool(skill_name, tool_name, params)

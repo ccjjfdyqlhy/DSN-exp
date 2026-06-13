@@ -110,15 +110,17 @@ class Config:
     WORLD_UPDATE_INTERVAL = int(_env("WORLD_UPDATE_INTERVAL", "60"))
 
     NARRATIVE_ENABLED = _env("NARRATIVE_ENABLED", "true").lower() in ("1", "true", "yes")
-    NARRATIVE_MODEL = _env("NARRATIVE_MODEL", "deepseek-v4-flash")
+    NARRATIVE_MODEL_TYPE = _env("NARRATIVE_MODEL_TYPE", "lmstudio")
+    NARRATIVE_MODEL = _env("NARRATIVE_MODEL", "google/gemma-3-4b")
     NARRATIVE_TEMPERATURE = float(_env("NARRATIVE_TEMPERATURE", "0.9"))
     NARRATIVE_MAX_TOKENS = int(_env("NARRATIVE_MAX_TOKENS", "150"))
     NARRATIVE_KEEP_HISTORY = _env("NARRATIVE_KEEP_HISTORY", "false").lower() in ("1", "true", "yes")
+    NARRATIVE_PRE_ENABLED = _env("NARRATIVE_PRE_ENABLED", "true").lower() == "true"
 
     # ==================== 驻守模型 ====================
     STEWARD_ENABLED = _env("STEWARD_ENABLED", "true").lower() == "true"
-    STEWARD_MODEL_TYPE = _env("STEWARD_MODEL_TYPE", "deepseek")
-    STEWARD_MODEL_NAME = _env("STEWARD_MODEL_NAME", "deepseek-v4-flash")
+    STEWARD_MODEL_TYPE = _env("STEWARD_MODEL_TYPE", "lmstudio")
+    STEWARD_MODEL_NAME = _env("STEWARD_MODEL_NAME", "google/gemma-3-4b")
     STEWARD_TIMEOUT = int(_env("STEWARD_TIMEOUT", "300"))
 
     # ==================== 视觉多模态 ====================
