@@ -55,6 +55,8 @@ class DeepSeekChat:
 
         # 初始化对话历史
         self.messages: List[Dict[str, str]] = []
+        self.last_usage = None
+        self.last_model = self.model
 
         # 设置日志记录器
         if logger is not None:
@@ -107,6 +109,9 @@ class DeepSeekChat:
             response.raise_for_status()
             result = response.json()
             self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False))
+
+            self.last_usage = result.get("usage")
+            self.last_model = result.get("model", self.model)
 
             # 提取助手回复
             assistant_message = result["choices"][0]["message"]["content"]
@@ -191,6 +196,8 @@ class LMStudioChat:
         self.max_tokens = max_tokens
 
         self.messages: List[Dict[str, str]] = []
+        self.last_usage = None
+        self.last_model = self.model_name or "lmstudio"
 
         if logger is not None:
             self.logger = logger
@@ -245,7 +252,10 @@ class LMStudioChat:
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
                 response.raise_for_status()
-                return response.json()
+                result = response.json()
+                self.last_usage = result.get("usage")
+                self.last_model = result.get("model", self.model_name)
+                return result
             except requests.exceptions.HTTPError as e:
                 if attempt == 0 and self._is_no_model_error(e.response):
                     self.logger.info("检测到 LMStudio 未加载模型，自动加载后重试……")

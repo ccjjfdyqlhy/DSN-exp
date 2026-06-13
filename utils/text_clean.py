@@ -26,10 +26,10 @@ def clean_display(raw: str, preserve_newlines: bool = True) -> str:
 
 def clean_tts_text(raw: str) -> str:
     """
-    为 TTS 合成移除所有标签，不保留 <text> 内容。
+    为 TTS 合成移除所有标签，保留换行结构以便按句切分合成。
 
     :param raw: 原始回复
-    :return: 纯文本，无换行
+    :return: 纯文本，句子以 \\n 分隔
     """
     import re
 
@@ -39,5 +39,7 @@ def clean_tts_text(raw: str) -> str:
     for tag in ("task", "tool", "recall"):
         t = re.sub(rf"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
     t = re.sub(r'<[^>]+>', '', t)
-    t = re.sub(r'\s+', ' ', t).strip()
+    t = re.sub(r'[^\S\n]+', ' ', t)
+    t = re.sub(r'([。！？.!?])\s+', r'\1\n', t)
+    t = t.strip()
     return t

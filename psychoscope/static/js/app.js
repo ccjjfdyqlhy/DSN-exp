@@ -36,7 +36,23 @@
     var lineQueue = [];
     var isProcessingLines = false;
     var pendingTiming = null;
+    var pendingUsage = null;
     var forceScrollToNew = false;
+    // voice input
+    var inputMode = 'text';
+    var recordState = 'idle';
+    var recordStartTime = 0;
+    var mediaRecorder = null;
+    var audioChunks = [];
+    var audioStream = null;
+    var mouseInsideRecord = true;
+    var altDuringRecord = false;
+    var spaceHeldForRecord = false;
+    var waveformInterval = null;
+    var audioCtx = null;
+    var audioAnalyser = null;
+    var tabHoldTimer = null;
+    var tabHoldFired = false;
 
     // DOM
     var $ = function (s) { return document.querySelector(s); };
@@ -74,6 +90,13 @@
         imagePreview: $('#image-preview'),
         previewImg: $('#preview-img'),
         btnRemoveImage: $('#btn-remove-image'),
+        inputTextMode: $('#input-text-mode'),
+        inputVoiceMode: $('#input-voice-mode'),
+        btnRecord: $('#btn-record'),
+        recordLabel: $('#record-label'),
+        recordWaveform: $('#record-waveform'),
+        btnModeSwitch: $('#btn-mode-switch'),
+        modeSwitchIcon: $('#mode-switch-icon'),
     };
 
     // utils
@@ -436,7 +459,7 @@
         renderChatList();
         dom.sidebar.classList.add('hidden');
         dom.textBox.querySelectorAll('.text-line').forEach(function (e) { e.remove(); });
-        dom.msgInput.focus();
+        if (inputMode === 'text') dom.msgInput.focus();
         updateStatusBar();
     }
 
@@ -454,7 +477,7 @@
             dom.previewImg.src = ev.target.result;
             dom.imagePreview.classList.remove('hidden');
             dom.btnImage.classList.add('has-image');
-            dom.msgInput.focus();
+            if (inputMode === 'text') dom.msgInput.focus();
         };
         reader.readAsDataURL(file);
     }
@@ -465,10 +488,242 @@
         dom.imagePreview.classList.add('hidden');
         dom.btnImage.classList.remove('has-image');
         dom.imageInput.value = '';
-        dom.msgInput.focus();
+        if (inputMode === 'text') dom.msgInput.focus();
     }
 
-    // SSE streaming send
+    // ── Voice Input ──
+    function switchInputMode(mode) {
+        if (mode === inputMode) return;
+        inputMode = mode;
+        if (mode === 'voice') {
+            dom.inputTextMode.classList.add('hidden');
+            dom.inputVoiceMode.classList.remove('hidden');
+            dom.btnModeSwitch.classList.add('active');
+            dom.modeSwitchIcon.innerHTML = '<path d="M17 7h-4V3h-2v4H7v2h4v4h2V9h4V7z"/><path d="M20 11c0 3.53-2.61 6.43-6 6.92V21h-4v-3.08c-3.39-.49-6-3.39-6-6.92h2c0 2.76 2.24 5 5 5s5-2.24 5-5h2z"/>';
+            dom.btnModeSwitch.title = '切换到文字输入模式';
+        } else {
+            dom.inputVoiceMode.classList.add('hidden');
+            dom.inputTextMode.classList.remove('hidden');
+            dom.btnModeSwitch.classList.remove('active');
+            dom.modeSwitchIcon.innerHTML = '<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>';
+            dom.btnModeSwitch.title = '切换语音输入模式';
+            dom.msgInput.focus();
+        }
+    }
+
+    async function startRecording() {
+        if (recordState !== 'idle' || isProcessing) return;
+        try {
+            audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioChunks = [];
+            mediaRecorder = new MediaRecorder(audioStream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' });
+            mediaRecorder.ondataavailable = function (e) { if (e.data.size > 0) audioChunks.push(e.data); };
+            mediaRecorder.start(100);
+            recordStartTime = Date.now();
+            recordState = 'recording';
+            mouseInsideRecord = true;
+            altDuringRecord = false;
+            dom.btnRecord.classList.add('recording');
+            dom.btnRecord.classList.remove('cancelling');
+            dom.inputVoiceMode.classList.add('recording');
+            dom.inputVoiceMode.classList.remove('cancelling');
+            dom.recordLabel.textContent = '松开 发送';
+            startWaveform();
+        } catch (e) {
+            notify('麦克风不可用: ' + e.message, true);
+        }
+    }
+
+    function stopRecording(send) {
+        var duration = (Date.now() - recordStartTime) / 1000;
+        stopWaveform();
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.onstop = function () {
+                if (audioStream) { audioStream.getTracks().forEach(function (t) { t.stop(); }); audioStream = null; }
+                if (send && duration >= 1.0) {
+                    var blob = new Blob(audioChunks, { type: audioChunks[0] ? audioChunks[0].type : 'audio/webm' });
+                    sendRecording(blob, duration);
+                }
+                mediaRecorder = null;
+                audioChunks = [];
+            };
+            mediaRecorder.stop();
+        }
+        recordState = 'idle';
+        dom.btnRecord.classList.remove('recording', 'cancelling');
+        dom.inputVoiceMode.classList.remove('recording', 'cancelling');
+        dom.recordLabel.textContent = '按住 说话';
+    }
+
+    function cancelRecording() {
+        if (recordState !== 'recording') return;
+        recordState = 'cancelling';
+        dom.btnRecord.classList.add('cancelling');
+        dom.btnRecord.classList.remove('recording');
+        dom.inputVoiceMode.classList.add('cancelling');
+        dom.inputVoiceMode.classList.remove('recording');
+        dom.recordLabel.textContent = '松开 丢弃';
+    }
+
+    function uncancelRecording() {
+        if (recordState !== 'cancelling') return;
+        recordState = 'recording';
+        dom.btnRecord.classList.remove('cancelling');
+        dom.btnRecord.classList.add('recording');
+        dom.inputVoiceMode.classList.remove('cancelling');
+        dom.inputVoiceMode.classList.add('recording');
+        dom.recordLabel.textContent = '松开 发送';
+    }
+
+    function startWaveform() {
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            var source = audioCtx.createMediaStreamSource(audioStream);
+            audioAnalyser = audioCtx.createAnalyser();
+            audioAnalyser.fftSize = 256;
+            source.connect(audioAnalyser);
+            var canvas = dom.recordWaveform;
+            var ctx = canvas.getContext('2d');
+            canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+            canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
+            var bufferLength = audioAnalyser.frequencyBinCount;
+            var dataArray = new Uint8Array(bufferLength);
+            waveformInterval = setInterval(function () {
+                if (!audioAnalyser) return;
+                audioAnalyser.getByteFrequencyData(dataArray);
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                var barWidth = canvas.width / bufferLength;
+                var isCancelling = recordState === 'cancelling';
+                for (var i = 0; i < bufferLength; i++) {
+                    var x = canvas.width - (i + 1) * barWidth;
+                    var h = (dataArray[i] / 255) * canvas.height * 0.8;
+                    var y = (canvas.height - h) / 2;
+                    ctx.fillStyle = isCancelling
+                        ? 'rgba(255,60,60,' + (0.4 + dataArray[i] / 510) + ')'
+                        : 'rgba(255,255,255,' + (0.15 + dataArray[i] / 510) + ')';
+                    ctx.fillRect(x, y, barWidth - 1, h);
+                }
+            }, 50);
+        } catch (_) {}
+    }
+
+    function stopWaveform() {
+        if (waveformInterval) { clearInterval(waveformInterval); waveformInterval = null; }
+        if (audioCtx) { audioCtx.close().catch(function () {}); audioCtx = null; audioAnalyser = null; }
+        var canvas = dom.recordWaveform;
+        var ctx = canvas.getContext('2d');
+        canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+        canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function blobToBase64(blob) {
+        return new Promise(function (resolve) {
+            var reader = new FileReader();
+            reader.onloadend = function () {
+                var b64 = reader.result.split(',')[1] || reader.result;
+                resolve(b64);
+            };
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    async function sendRecording(audioBlob, durationSec) {
+        var seconds = durationSec.toFixed(1);
+        addSystemLine('录音 ' + seconds + 's');
+        isProcessing = true;
+        forceScrollToNew = true;
+        dom.btnModeSwitch.classList.add('processing');
+        streamAbort = new AbortController();
+        try {
+            var b64 = await blobToBase64(audioBlob);
+            var auth = getAuthHeader();
+            var reqHeaders = { 'Content-Type': 'application/json' };
+            if (auth) reqHeaders['Authorization'] = auth;
+            var reqBody = { audio_b64: b64, chat_id: currentChatId, chat_name: 'Psychoscope', tts_enabled: ttsEnabled };
+            if (currentImageData) {
+                reqBody.image_data = currentImageData;
+                currentImageData = null;
+                dom.previewImg.src = '';
+                dom.imagePreview.classList.add('hidden');
+                dom.btnImage.classList.remove('has-image');
+                dom.imageInput.value = '';
+            }
+            updateStatusBar();
+            var res = await fetch(API_BASE + '/api/asr/passthrough', {
+                method: 'POST',
+                headers: reqHeaders,
+                body: JSON.stringify(reqBody),
+                signal: streamAbort.signal,
+            });
+            if (res.status === 401) { logout(); return; }
+            if (!res.ok) {
+                var je = await res.json().catch(function () { return {}; });
+                addErrorLine(je.error || 'request failed (' + res.status + ')');
+                return;
+            }
+            var reader = res.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+            var audioB64 = null;
+            while (true) {
+                var chunk = await reader.read();
+                if (chunk.done) break;
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i];
+                    if (line.indexOf('data: ') !== 0) continue;
+                    try {
+                        var ev = JSON.parse(line.slice(6));
+                        switch (ev.status) {
+                            case 'narrative_update':
+                                if (ev.text) addNarratorLine(ev.text);
+                                break;
+                            case 'text_ready':
+                                if (ttsEnabled) break;
+                                if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
+                                if (ev.reply) await addMessage(aiName, ev.reply, true);
+                                break;
+                            case 'agent_action':
+                                addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
+                                updateStatusBar();
+                                break;
+                            case 'text_update':
+                                if (ev.reply) await addMessage(aiName, ev.reply, false);
+                                break;
+                            case 'line':
+                                if (ev.text) { lineQueue.push(ev); processLineQueue(); }
+                                break;
+                            case 'completed':
+                                if (ev.timing) pendingTiming = ev.timing;
+                                if (ev.usage) pendingUsage = ev.usage;
+                                if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
+                                break;
+                        }
+                    } catch (_) {}
+                }
+            }
+            while (isProcessingLines || lineQueue.length > 0) { await wait(100); }
+            while (activeTypewriter) { await wait(100); }
+            if (pendingTiming) { showTimingLine(pendingTiming, pendingUsage); pendingTiming = null; pendingUsage = null; }
+            if (currentChatId) { await loadChats(); renderChatList(); }
+            updateStatusBar();
+        } catch (e) {
+            console.error('[sendRecording] ERROR:', e.name, e.message, e);
+            if (e.name !== 'AbortError') addErrorLine('ERROR: ' + e.message);
+        } finally {
+            isProcessing = false;
+            activeTypewriter = null;
+            streamAbort = null;
+            forceScrollToNew = false;
+            dom.btnModeSwitch.classList.remove('processing');
+            if (inputMode === 'voice') {
+                dom.recordLabel.textContent = '按住 说话';
+            }
+        }
+    }
     var ACTION_LABELS = {
         shell: 'executing shell', python: 'executing python',
         write_file: 'writing file', edit_file: 'editing file',
@@ -556,6 +811,7 @@
                                 if (ev.timing) {
                                     pendingTiming = ev.timing;
                                 }
+                                if (ev.usage) pendingUsage = ev.usage;
                                 if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
                                 break;
                         }
@@ -571,8 +827,9 @@
                 await wait(100);
             }
             if (pendingTiming) {
-                showTimingLine(pendingTiming);
+                showTimingLine(pendingTiming, pendingUsage);
                 pendingTiming = null;
+                pendingUsage = null;
             }
 
             if (currentChatId) { await loadChats(); renderChatList(); }
@@ -589,7 +846,7 @@
             dom.btnSend.textContent = '→';
             dom.btnSend.classList.remove('stop-mode');
             dom.msgInput.disabled = false;
-            dom.msgInput.focus();
+            if (inputMode === 'text') dom.msgInput.focus();
         }
     }
 
@@ -615,7 +872,7 @@
         dom.btnSend.classList.remove('stop-mode');
         dom.msgInput.disabled = false;
         dom.msgInput.style.height = 'auto';
-        dom.msgInput.focus();
+        if (inputMode === 'text') dom.msgInput.focus();
     }
 
     // TTS
@@ -673,19 +930,26 @@
             }
             isProcessingLines = false;
             if (pendingTiming && lineQueue.length === 0) {
-                showTimingLine(pendingTiming);
+                showTimingLine(pendingTiming, pendingUsage);
                 pendingTiming = null;
+                pendingUsage = null;
             }
         })();
     }
 
-    function showTimingLine(timing) {
+    function showTimingLine(timing, usage) {
         if (!timing) return;
         var parts = [];
         if (timing.model_invoke_ms) parts.push('MODEL ' + (timing.model_invoke_ms / 1000).toFixed(1) + 's');
         if (timing.post_process_ms) parts.push('AGENT ' + (timing.post_process_ms / 1000).toFixed(1) + 's');
         if (timing.tts_ms) parts.push('TTS ' + (timing.tts_ms / 1000).toFixed(1) + 's');
         parts.push('TOTAL ' + (timing.total_ms / 1000).toFixed(1) + 's');
+        if (usage) {
+            var tok = usage.total_tokens || 0;
+            var pin = usage.prompt_tokens || 0;
+            var pout = usage.completion_tokens || 0;
+            if (tok > 0) parts.push('TOK ' + pin + '+' + pout + '=' + tok);
+        }
         var line = document.createElement('div');
         line.className = 'text-line timing-line active';
         line.textContent = parts.join('  \u00b7  ');
@@ -719,6 +983,42 @@
     dom.btnImage.addEventListener('click', selectImage);
     dom.imageInput.addEventListener('change', handleImageSelected);
     dom.btnRemoveImage.addEventListener('click', removeImage);
+    // ── 语音输入绑定 ──
+    dom.btnModeSwitch.addEventListener('click', function () {
+        switchInputMode(inputMode === 'text' ? 'voice' : 'text');
+    });
+    dom.btnRecord.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        if (inputMode !== 'voice' || isProcessing) return;
+        startRecording();
+    });
+    dom.btnRecord.addEventListener('mouseup', function () {
+        if (mediaRecorder && recordState === 'recording') {
+            stopRecording(true);
+        } else if (mediaRecorder && recordState === 'cancelling') {
+            stopRecording(false);
+        }
+    });
+    dom.btnRecord.addEventListener('mouseleave', function () {
+        mouseInsideRecord = false;
+        if (mediaRecorder && recordState === 'recording') cancelRecording();
+    });
+    dom.btnRecord.addEventListener('mouseenter', function () {
+        mouseInsideRecord = true;
+        if (mediaRecorder && recordState === 'cancelling' && !altDuringRecord) uncancelRecording();
+    });
+    dom.btnRecord.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        if (inputMode !== 'voice' || isProcessing) return;
+        startRecording();
+    });
+    dom.btnRecord.addEventListener('touchend', function () {
+        if (mediaRecorder && recordState === 'recording') {
+            stopRecording(true);
+        } else if (mediaRecorder && recordState === 'cancelling') {
+            stopRecording(false);
+        }
+    });
     // ── 键盘绑定 ──
     dom.msgInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -736,6 +1036,29 @@
     });
 
     document.addEventListener('keydown', function (e) {
+        // Ctrl: hold 2s switch mode
+        if (e.key === 'Control' && !e.repeat && !tabHoldFired) {
+            if (!tabHoldTimer) {
+                tabHoldTimer = setTimeout(function () {
+                    tabHoldFired = true;
+                    tabHoldTimer = null;
+                    switchInputMode(inputMode === 'text' ? 'voice' : 'text');
+                }, 2000);
+            }
+            return;
+        }
+        // Space: voice recording
+        if (e.key === ' ' && inputMode === 'voice' && recordState === 'idle' && !isProcessing && document.activeElement !== dom.msgInput) {
+            e.preventDefault();
+            spaceHeldForRecord = true;
+            startRecording();
+            return;
+        }
+        // Alt during recording = cancel
+        if (e.key === 'Alt' && recordState === 'recording') {
+            altDuringRecord = true;
+            cancelRecording();
+        }
         if (e.altKey && (e.key === 't' || e.key === 'T')) {
             e.preventDefault(); toggleTTS();
         }
@@ -744,6 +1067,37 @@
                 e.preventDefault();
                 if (confirm('确定退出登录？')) logout();
             }
+        }
+    });
+
+    document.addEventListener('keyup', function (e) {
+        // Ctrl: if released before 2s, do nothing
+        if (e.key === 'Control') {
+            if (tabHoldTimer && !tabHoldFired) {
+                clearTimeout(tabHoldTimer);
+                tabHoldTimer = null;
+            }
+            if (tabHoldFired) {
+                e.preventDefault();
+                tabHoldFired = false;
+            }
+            return;
+        }
+        // Space: stop recording
+        if (e.key === ' ' && spaceHeldForRecord && (recordState === 'recording' || recordState === 'cancelling')) {
+            e.preventDefault();
+            spaceHeldForRecord = false;
+            var shouldSend = recordState === 'recording';
+            if (recordState === 'cancelling' && altDuringRecord) {
+                shouldSend = false;
+            }
+            stopRecording(shouldSend);
+            altDuringRecord = false;
+            return;
+        }
+        // Alt released after cancelling - stay cancelled
+        if (e.key === 'Alt' && recordState === 'cancelling' && altDuringRecord) {
+            altDuringRecord = false;
         }
     });
 
@@ -838,6 +1192,12 @@
     });
     window.addEventListener('blur', function () {
         hideKeyHints();
+        if (recordState === 'recording' || recordState === 'cancelling') {
+            stopRecording(false);
+            altDuringRecord = false;
+            spaceHeldForRecord = false;
+        }
+        if (tabHoldTimer) { clearTimeout(tabHoldTimer); tabHoldTimer = null; tabHoldFired = false; }
     });
     document.addEventListener('click', function (e) {
         if (!dom.sidebar.classList.contains('hidden') && !dom.sidebar.contains(e.target) && e.target !== dom.btnChatList) {
@@ -873,7 +1233,7 @@
             if (e.message && e.message.indexOf('login') >= 0) logout();
             else { notify('init failed: ' + e.message, true); dom.loginOverlay.classList.add('hidden'); updateStatusBar(); }
         }
-        dom.msgInput.focus();
+        if (inputMode === 'text') dom.msgInput.focus();
     }
     init();
 })();

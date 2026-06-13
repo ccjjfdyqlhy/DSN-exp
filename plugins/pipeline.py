@@ -380,9 +380,13 @@ class ChatPipeline:
 
         # 完成
         timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
-        yield f"data: {json.dumps({
+        completed = {
             'status': 'completed',
             'audio': ctx.audio_b64,
             'tts_error': ctx.tts_error,
             'timing': timing,
-        })}\n\n"
+        }
+        if ctx.usage:
+            completed['usage'] = ctx.usage
+            completed['model_name'] = ctx.model_name
+        yield f"data: {json.dumps(completed)}\n\n"

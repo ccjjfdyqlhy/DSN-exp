@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import signal
+import shutil
 import logging
 import threading
+from pathlib import Path
 from datetime import datetime
 from collections import deque
 
@@ -29,6 +32,77 @@ LOG_LOCK = threading.Lock()
 _LOG_HANDLER_INSTALLED = False
 
 _server_start_time = None
+
+_ENV_PATH = Path(__file__).parent / ".env"
+_MAX_ENV_BACKUPS = 3
+
+
+def _env_backup_rotate():
+    """轮转备份: .env → .env.bak.0, .env.bak.0 → .env.bak.1, ..."""
+    for i in range(_MAX_ENV_BACKUPS - 1, -1, -1):
+        src = _ENV_PATH.parent / f".env.bak.{i}"
+        dst = _ENV_PATH.parent / f".env.bak.{i + 1}"
+        if src.exists():
+            if dst == _ENV_PATH.parent / f".env.bak.{_MAX_ENV_BACKUPS}":
+                dst.unlink(missing_ok=True)
+            shutil.move(str(src), str(dst))
+    if _ENV_PATH.exists():
+        shutil.copy2(str(_ENV_PATH), str(_ENV_PATH.parent / ".env.bak.0"))
+
+
+def _env_backup_restore():
+    """恢复最近备份: .env.bak.0 → .env，其余前移"""
+    bak0 = _ENV_PATH.parent / ".env.bak.0"
+    if not bak0.exists():
+        return False
+    shutil.copy2(str(bak0), str(_ENV_PATH))
+    for i in range(_MAX_ENV_BACKUPS):
+        src = _ENV_PATH.parent / f".env.bak.{i + 1}"
+        dst = _ENV_PATH.parent / f".env.bak.{i}"
+        if src.exists():
+            shutil.move(str(src), str(dst))
+        else:
+            dst.unlink(missing_ok=True)
+            break
+    return True
+
+
+def _env_backup_count() -> int:
+    n = 0
+    for i in range(_MAX_ENV_BACKUPS):
+        if (_ENV_PATH.parent / f".env.bak.{i}").exists():
+            n += 1
+    return n
+
+
+def _env_write(key: str, value: str):
+    """将 key=value 写入 .env 文件（更新已有行或追加）"""
+    env_key = key.upper()
+    lines: list[str] = []
+    found = False
+
+    if _ENV_PATH.exists():
+        with open(_ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.lstrip()
+                if stripped.startswith("#") or stripped == "":
+                    lines.append(line)
+                    continue
+                if "=" in stripped:
+                    k = stripped.split("=", 1)[0].strip()
+                    if k.upper() == env_key:
+                        lines.append(f"{key}={value}\n")
+                        found = True
+                        continue
+                lines.append(line)
+    else:
+        lines.append("# DSN-exp .env (auto-generated)\n")
+
+    if not found:
+        lines.append(f"{key}={value}\n")
+
+    with open(_ENV_PATH, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
 
 def append_log(module: str, level: str, message: str):
@@ -196,6 +270,12 @@ SENSITIVE_CONFIG_KEYS = {
     "LITTLESKIN_CLIENT_ID", "JWT_SECRET",
 }
 
+READONLY_CONFIG_KEYS = {
+    "DEEPSEEK_API_KEY", "LITTLESKIN_CLIENT_SECRET",
+    "LITTLESKIN_CLIENT_ID", "JWT_SECRET", "SERVER_HOST",
+    "SERVER_PORT", "LOCAL_CALLBACK_PORT",
+}
+
 
 def _mask_value(key: str, val) -> str:
     if key in SENSITIVE_CONFIG_KEYS:
@@ -208,8 +288,58 @@ def _mask_value(key: str, val) -> str:
     return str(val)
 
 
-def _cmd_listconfig(config_cls):
-    """列出所有配置项，敏感信息隐藏"""
+def _try_convert(value_str: str, target_type):
+    """尝试将字符串转换为目标类型，失败返回 None"""
+    if target_type is bool:
+        lowered = value_str.lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        elif lowered in ("false", "0", "no"):
+            return False
+        return None
+    try:
+        return target_type(value_str)
+    except (ValueError, TypeError):
+        return None
+
+
+def _cmd_config(config_cls, args: str):
+    """配置管理: listall / set <key> <value> / undo"""
+    if config_cls is None:
+        print("  错误: Config 不可用")
+        return
+
+    parts = args.split(maxsplit=2)
+    sub = parts[0].lower() if parts else ""
+
+    if sub == "listall":
+        _cmd_config_listall(config_cls)
+    elif sub == "set":
+        if len(parts) < 3:
+            print("  用法: /config set <配置项> <值>")
+            print("  示例: /config set MEMORY_ENABLED false")
+            return
+        key = parts[1]
+        val_str = parts[2]
+        _cmd_config_set(config_cls, key, val_str)
+    elif sub == "undo":
+        _cmd_config_undo()
+    else:
+        print("""
+  /config 子命令:
+    /config listall         列出所有配置项 (敏感信息隐藏)
+    /config set <键> <值>   动态修改配置并写入 .env
+    /config undo            回退 .env 到上一版本 (最多 3 步)
+
+  示例:
+    /config set MEMORY_ENABLED false
+    /config set NARRATIVE_MODEL google/gemma-3-4b
+    /config undo
+""")
+
+
+def _cmd_config_listall(config_cls):
+    """列出所有配置项"""
     print("\n  [bold]当前配置项[/]")
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
     table.add_column("配置项", style="bold")
@@ -230,6 +360,60 @@ def _cmd_listconfig(config_cls):
     print()
 
 
+def _cmd_config_set(config_cls, key: str, val_str: str):
+    """动态设置配置项，同步写入 .env"""
+    if not hasattr(config_cls, key):
+        print(f"  错误: 配置项 '{key}' 不存在")
+        return
+
+    if key in READONLY_CONFIG_KEYS:
+        print(f"  错误: '{key}' 是敏感/只读配置项，禁止通过 /config 修改")
+        return
+
+    current_val = getattr(config_cls, key)
+    if callable(current_val):
+        print(f"  错误: '{key}' 不是配置值")
+        return
+
+    target_type = type(current_val)
+    new_val = _try_convert(val_str, target_type)
+
+    if new_val is None:
+        type_name = target_type.__name__
+        print(f"  错误: 类型不匹配 — '{key}' 需要 {type_name} 类型，无法将 '{val_str}' 转为 {type_name}")
+        return
+
+    _env_backup_rotate()
+    _env_write(key, str(new_val))
+    setattr(config_cls, key, new_val)
+    append_log("system", "INFO", f"配置变更: {key} = {new_val} (原值: {current_val})")
+    print(f"  [green]OK[/] {key} = {new_val} (原值: {current_val})")
+
+
+def _cmd_config_undo():
+    """回退 .env 到上一个备份版本"""
+    count = _env_backup_count()
+    if count == 0:
+        print("  没有可回退的备份")
+        return
+
+    if _env_backup_restore():
+        remaining = _env_backup_count()
+        print(f"  [green]已回退[/] 到上一版本 (剩余 {remaining} 个历史版本)")
+
+        from dotenv import load_dotenv
+        load_dotenv(_ENV_PATH, override=True)
+        print("  [dim]注意: .env 已恢复，部分配置需重启服务器后完全生效[/]")
+        append_log("system", "INFO", "配置已回退到上一版本")
+    else:
+        print("  回退失败")
+
+
+def _cmd_listconfig(config_cls):
+    """列出所有配置项，敏感信息隐藏 (兼容旧指令)"""
+    _cmd_config_listall(config_cls)
+
+
 def _cmd_help():
     """显示帮助信息"""
     print("""
@@ -239,7 +423,10 @@ def _cmd_help():
     /status     显示服务器状态摘要
     /plugin     列出所有插件及运行状态
     /plugin <名称>  查询指定插件的详细信息
-    /listconfig 列出所有配置项 (敏感信息隐藏)
+    /config listall   列出所有配置项 (敏感信息隐藏)
+    /config set <键> <值>  动态修改配置并写入 .env
+    /config undo      回退 .env 到上一版本 (最多 3 步)
+    /listconfig 同 /config listall (兼容)
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -317,6 +504,9 @@ def _execute_command(line, auth_manager, db, plugin_manager, config_cls=None, sh
     elif cmd == "/plugin":
         name = parts[1].strip() if len(parts) > 1 else None
         _cmd_plugin(plugin_manager, name)
+    elif cmd == "/config":
+        args = parts[1].strip() if len(parts) > 1 else ""
+        _cmd_config(config_cls, args)
     elif cmd == "/listconfig":
         _cmd_listconfig(config_cls)
     elif cmd == "/stop":

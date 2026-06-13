@@ -18,23 +18,26 @@ class TTSProcessModel:
     """TTS 友好化处理模型 — 使用本地 LMStudio 后端，对主模型输出进行朗读优化。"""
 
     TTS_PROCESS_PROMPT = '''
-你是一个专门擅长将文本转换为中文朗读文本的AI。你的任务是将输入的文本转换为适合中文语音合成（TTS）朗读的自然文本。
+你是一个专为语音合成做文本预处理的AI。你的任务是将输入文本转换为适合TTS朗读的自然形式，语言必须与原文完全一致。
 
-请严格遵循以下规则：
-1. 阿拉伯数字转中文读法：
-   - 整数：将阿拉伯数字序列转换为中文数字读法，如 "123" → "一百二十三"，"2024" → "二零二四"
-   - 小数：逐位读出，如 "3.14" → "三点一四"
-   - 百分数："50%" → "百分之五十"
-   - 电话号码、日期格式（如2024-06-12）、版本号（如v1.2.3）、ID编号等标识性数字保持原样
-   - 金额："100元" → "一百元"，"3.5万" → "三点五万"
-
-2. 专有词汇处理：
-   - 英文缩写（如API、HTTP、JSON）保持原样，逐个字母读出
-   - 知名品牌/公司名转为中文通用读法（如 "NVIDIA" → "英伟达"，"iPhone" → "苹果手机"）
-
-3. 保持原文的标点符号和换行结构，不要修改停顿和语气。
-
-4. 仅输出转换后的纯文本，不要添加任何解释、说明或引导语。
+规则：
+1. 首先识别整段文本的主语言（中文 / English）。
+2. 若为中文：
+   - 阿拉伯数字转中文读法：整数如"123"→"一百二十三"，小数如"3.14"→"三点一四"，百分数"50%"→"百分之五十"
+   - 电话号码、日期(2024-06-12)、版本号(v1.2.3)、ID编号保持原样
+   - 金额："100元"→"一百元"，"3.5万"→"三点五万"
+   - 中文里嵌入的缩写(API, HTTP, JSON)逐个字母读出，不要翻译成中文
+   - 知名品牌转为中文通用读法（如"NVIDIA"→"英伟达"，"iPhone"→"苹果手机"）
+3. 若为英文：
+   - 阿拉伯数字保持原样（不要转为英文单词），TTS引擎会自动处理
+   - 缩写保持大写原样以便逐个字母读出
+   - 不要翻译任何内容到中文
+   - 保持自然的英文标点和空格
+4. 若文本中同时包含中英双语：
+   - 中文部分按规则2处理，英文部分按规则3处理
+   - 不要混读：中文术语不要音译成英文，英文术语不要意译成中文
+5. 保持原文的标点符号和换行结构，不要修改停顿和语气。
+6. 仅输出转换后的纯文本，不要添加任何解释、说明或引导语。
 
 需要你处理的文本：
 '''
@@ -52,6 +55,30 @@ class TTSProcessModel:
     _LIST_MARKER_RE = re.compile(r'^[\s]*[-*+]\s+', re.MULTILINE)
     _NUM_LIST_RE = re.compile(r'^[\s]*\d+[.)]\s+', re.MULTILINE)
     _HTML_TAG_RE = re.compile(r'<[^>]+>')
+
+    _DIGITS_CN = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+
+    @classmethod
+    def _arabic_to_cn(cls, n: int) -> str:
+        if n == 0:
+            return cls._DIGITS_CN[0]
+        if n <= 9:
+            return cls._DIGITS_CN[n]
+        if n <= 19:
+            return "十" + (cls._DIGITS_CN[n - 10] if n > 10 else "")
+        if n <= 99:
+            tens = cls._DIGITS_CN[n // 10]
+            ones = cls._DIGITS_CN[n % 10] if n % 10 else ""
+            return tens + "十" + ones
+        return str(n)
+
+    @classmethod
+    def _convert_num_marker(cls, match: re.Match) -> str:
+        raw = match.group(0)
+        num_str = re.search(r'\d+', raw).group(0)
+        n = int(num_str)
+        cn = cls._arabic_to_cn(n)
+        return cn + "。"
 
     def __init__(
         self,
@@ -114,7 +141,7 @@ class TTSProcessModel:
         text = self._QUOTE_RE.sub('', text)
         text = self._HR_RE.sub('', text)
         text = self._LIST_MARKER_RE.sub('', text)
-        text = self._NUM_LIST_RE.sub('', text)
+        text = self._NUM_LIST_RE.sub(self._convert_num_marker, text)
         text = self._HTML_TAG_RE.sub('', text)
         text = re.sub(r'\s+', ' ', text)
         return text.strip()

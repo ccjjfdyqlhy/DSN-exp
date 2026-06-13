@@ -67,6 +67,8 @@ class ModelsPlugin(Plugin):
             chat = self._create_chat(effective_type)
             chat.messages = full_messages.copy()
             reply = chat.send_message(timestamped)
+            ctx.usage = getattr(chat, 'last_usage', None)
+            ctx.model_name = getattr(chat, 'last_model', effective_type)
         except Exception as e:
             logger.error("模型调用失败: %s", e)
             ctx.reply = "抱歉，AI 服务暂不可用，请稍后重试。"
