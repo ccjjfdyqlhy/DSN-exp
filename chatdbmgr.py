@@ -413,10 +413,24 @@ class ChatDBManager:
 
     def search_memories(self, user_id: int, chat_id: int, keywords: list[str],
                         count: int = 5, threshold: float = 0.3) -> list[dict]:
-        """
-        关键词检索记忆，按匹配分数降序返回。
-        每个 keyword 对 summary + keywords 字段做 LIKE 匹配，加权计分。
-        """
+        """全文检索记忆 — 对摘要做分词匹配，加权计分"""
+        import re as _re
+
+        def _tokenize(text: str) -> list[str]:
+            """混合分词：中文逐字 + 英文按词，过滤停用字符"""
+            tokens = []
+            for part in _re.split(r"(\w+)", text.lower().strip()):
+                part = part.strip()
+                if not part:
+                    continue
+                if _re.match(r"^\w+$", part):
+                    tokens.append(part)
+                else:
+                    for ch in part:
+                        if ch.strip() and not _re.match(r"^[\s\d\W_]+$", ch):
+                            tokens.append(ch)
+            return tokens
+
         conn = self._get_connection()
         try:
             rows = conn.execute(
@@ -428,21 +442,35 @@ class ChatDBManager:
             if not rows:
                 return []
 
-            # 计算评分
+            search_terms = [kw.lower().strip() for kw in keywords if kw.strip()]
+            if not search_terms:
+                return []
+            search_tokens = set()
+            for t in search_terms:
+                search_tokens.update(_tokenize(t))
+
             total_rounds = max(r["round_index"] for r in rows) if rows else 1
             scored = []
-            search_terms = [kw.lower().strip() for kw in keywords if kw.strip()]
 
             for r in rows:
-                summary_lower = (r["summary"] or "").lower()
-                kw_lower = (r["keywords"] or "").lower()
-                hit_score = 0.0
+                summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
+                kw_decrypted = self._cipher.decrypt(user_id, r["keywords"] or "")
+                summary_lower = summary_decrypted.lower()
 
-                for term in search_terms:
-                    if term in summary_lower:
-                        hit_score += 1.0
-                    elif term in kw_lower:
-                        hit_score += 0.8
+                summary_tokens = set(_tokenize(summary_lower))
+
+                if not search_tokens or not summary_tokens:
+                    continue
+
+                intersection = search_tokens & summary_tokens
+                if not intersection:
+                    for term in search_terms:
+                        if term in summary_lower:
+                            intersection.add(term)
+                    if not intersection:
+                        continue
+
+                hit_score = len(intersection) / len(search_tokens)
 
                 if hit_score > 0:
                     recency_bonus = 1.0 - (r["round_index"] / (total_rounds + 1))
@@ -451,8 +479,8 @@ class ChatDBManager:
                         scored.append({
                             "memory_id": r["memory_id"],
                             "round_index": r["round_index"],
-                            "summary": r["summary"],
-                            "keywords": r["keywords"],
+                            "summary": summary_decrypted,
+                            "keywords": kw_decrypted,
                             "message_start_id": r["message_start_id"],
                             "message_end_id": r["message_end_id"],
                             "created_at": r["created_at"],
@@ -531,6 +559,20 @@ class ChatDBManager:
             self.logger.error("统计记忆条目失败: %s", e)
             raise
 
+    def get_next_round_index(self, chat_id: int) -> int:
+        """获取下一个可用的 round_index（基于消息表中最大 round_index 计算）"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT MAX(round_index) FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            max_ri = row[0] if row and row[0] is not None else 0
+            return max_ri + 1
+        except sqlite3.Error as e:
+            self.logger.error("获取下一个 round_index 失败: %s", e)
+            raise
+
     def delete_oldest_memory(self, user_id: int, chat_id: int, n: int = 1) -> int:
         """删除最旧n条记忆"""
         conn = self._get_connection()
@@ -584,9 +626,10 @@ class ChatDBManager:
                 if role not in ("user", "assistant", "system") or not isinstance(content, str):
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
+                encrypted = self._cipher.encrypt(user_id, content)
                 conn.execute(
                     "INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)",
-                    (chat_id, role, content),
+                    (chat_id, role, encrypted),
                 )
             conn.commit()
             self.logger.info("已保存聊天会话 %d (用户 %d, 消息数: %d)", chat_id, user_id, len(messages))

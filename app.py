@@ -319,6 +319,9 @@ def _handle_reasoner_completion(task, result):
 
 def _handle_action_completion(task, result, retry_depth: int = 0):
     """处理动作任务完成 — 注入结果系统消息，支持自纠正"""
+    if not result.get("requires_ai_notification", True):
+        return
+
     app.logger.info("动作任务完成: task_id=%s, type=%s", task.task_id, result.get("action_type"))
     short_id = task.task_id[:8]
     action_type = result.get("action_type", "unknown")

@@ -10,23 +10,30 @@ from datetime import datetime
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
+from tasks import TaskType
 
 logger = logging.getLogger("TaskPlugin")
 
 
 class TaskPlugin(Plugin):
     """
-    解析 AI 回复中的 <task> 和 <tool> 标签，创建并执行后台任务。
+    解析 AI 回复中的 <task> 标签，创建并执行后台任务。
 
-    依赖: task_manager (TaskManager 实例，可选),
-          db (ChatDBManager 实例，可选),
-          skill_registry (SkillRegistry 实例，可选 — 技能系统完成后使用)
+    POST_PROCESS (priority=40):
+    - 解析 <task> 标签 + ```action 代码块
+    - 创建后台任务（提醒 / 推理 / 动作）
+    - 将 task_id 写入 ctx.extra["_pending_tasks"]，供 Pipeline 轮询
+
+    依赖: task_manager (TaskManager), db, skill_registry
     """
 
     name = "task"
-    description = "任务解析 — 解析 <task>/<tool> 标签并调度执行"
+    description = "任务解析 — <task> 标签调度执行"
     hooks = [HookPoint.POST_PROCESS]
     priority = 40
+
+    _ACTION_RE = re.compile(r"```action\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+    _TASK_RE = re.compile(r"<task>(.*?)</task>", re.DOTALL | re.IGNORECASE)
 
     def __init__(self, task_manager=None, db=None, skill_registry=None):
         self._task_mgr = task_manager
@@ -45,24 +52,21 @@ class TaskPlugin(Plugin):
         if not tasks:
             return ctx
 
+        pending = ctx.extra.setdefault("_pending_tasks", set())
         for task_data in tasks:
-            self._handle_task(task_data, ctx)
+            tid = self._handle_task(task_data, ctx)
+            if tid:
+                pending.add(tid)
 
         return ctx
 
     # ---- 解析 ----
 
-    _ACTION_RE = re.compile(r"```action\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
-    _TASK_RE = re.compile(r"<task>(.*?)</task>", re.DOTALL | re.IGNORECASE)
-
     @classmethod
     def _parse_tasks(cls, text: str) -> list[dict]:
-        """解析回复中的 <task> 指令，支持两种顺序的 action 代码块配对"""
         tasks: list[dict] = []
-
         action_matches = list(cls._ACTION_RE.finditer(text))
         task_matches = list(cls._TASK_RE.finditer(text))
-
         if not task_matches:
             return tasks
 
@@ -99,31 +103,29 @@ class TaskPlugin(Plugin):
 
         return tasks
 
-    # ---- 任务处理 ----
+    # ---- 任务创建 ----
 
-    def _handle_task(self, task_data: dict, ctx: PluginContext) -> None:
-        from tasks import TaskType
-
+    def _handle_task(self, task_data: dict, ctx: PluginContext) -> str | None:
         task_type = task_data.get("type")
         params = task_data.get("params", {})
-
         try:
             if task_type == "reminder":
-                self._create_reminder(params, ctx)
+                return self._create_reminder(params, ctx)
             elif task_type == "reasoner":
-                self._create_reasoner(params, ctx)
+                return self._create_reasoner(params, ctx)
             elif task_type == "action":
-                self._create_action(params, ctx)
+                return self._create_action(params, ctx)
         except Exception:
             logger.exception("处理任务失败: %s", task_data)
+        return None
 
-    def _create_reminder(self, params: dict, ctx: PluginContext) -> None:
+    def _create_reminder(self, params: dict, ctx: PluginContext) -> str | None:
         time_str = params.get("time")
         if not time_str:
-            return
+            return None
         scheduled_time = datetime.fromisoformat(time_str)
         task_id = self._task_mgr.create_task(
-            task_type=1,  # TaskType.REMINDER
+            task_type=TaskType.REMINDER,
             user_id=ctx.user_id,
             chat_id=ctx.chat_id,
             params=params,
@@ -131,10 +133,11 @@ class TaskPlugin(Plugin):
             scheduled_time=scheduled_time,
         )
         logger.info("已创建提醒任务: %s, 时间: %s", task_id, scheduled_time)
+        return task_id
 
-    def _create_reasoner(self, params: dict, ctx: PluginContext) -> None:
+    def _create_reasoner(self, params: dict, ctx: PluginContext) -> str:
         task_id = self._task_mgr.create_task(
-            task_type=2,  # TaskType.REASONER
+            task_type=TaskType.REASONER,
             user_id=ctx.user_id,
             chat_id=ctx.chat_id,
             params=params,
@@ -142,12 +145,13 @@ class TaskPlugin(Plugin):
         )
         self._task_mgr.execute_task(task_id)
         logger.info("已创建并执行推理任务: %s", task_id)
+        return task_id
 
-    def _create_action(self, params: dict, ctx: PluginContext) -> None:
+    def _create_action(self, params: dict, ctx: PluginContext) -> str:
         if "action_type" not in params:
             params["action_type"] = "shell"
         task_id = self._task_mgr.create_task(
-            task_type=3,  # TaskType.ACTION
+            task_type=TaskType.ACTION,
             user_id=ctx.user_id,
             chat_id=ctx.chat_id,
             params=params,
@@ -155,3 +159,4 @@ class TaskPlugin(Plugin):
         )
         self._task_mgr.execute_task(task_id)
         logger.info("已创建并执行动作任务: %s (类型: %s)", task_id, params.get("action_type"))
+        return task_id

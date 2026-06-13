@@ -62,7 +62,7 @@ class ASRFilterPlugin(Plugin):
         """将过滤掉的语音输入保存为记忆"""
         try:
             memory_content = f"听到：{ctx.message}"
-            round_index = self._db.get_memory_count(ctx.user_id, ctx.chat_id) + 1
+            round_index = self._db.get_next_round_index(ctx.chat_id)
             self._db.save_memory(ctx.user_id, ctx.chat_id, round_index, memory_content)
             self._db.append_messages(
                 ctx.user_id,

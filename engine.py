@@ -189,12 +189,8 @@ class DSNEngine:
                     self._handle_reasoner_completion(task, result)
                 elif task.task_type == TaskType.ACTION:
                     retry_depth = 0
-                    if hasattr(self.task_manager, '_retry_depths'):
-                        if hasattr(self.task_manager, '_retry_lock'):
-                            with self.task_manager._retry_lock:
-                                retry_depth = self.task_manager._retry_depths.pop(task_id, 0)
-                        else:
-                            retry_depth = self.task_manager._retry_depths.pop(task_id, 0)
+                    with self.task_manager._retry_lock:
+                        retry_depth = self.task_manager._retry_depths.pop(task_id, 0)
                     self._handle_engine_action_completion(task, result, retry_depth)
             except Exception as e:
                 self._logger.error("任务完成通知处理失败: %s", e)
@@ -299,11 +295,6 @@ class DSNEngine:
                 params=params, priority=1,
             )
             self.task_manager.execute_task(new_id)
-            if not hasattr(self.task_manager, '_retry_depths'):
-                self.task_manager._retry_depths = {}
-            if not hasattr(self.task_manager, '_retry_lock'):
-                import threading as _thr
-                self.task_manager._retry_lock = _thr.Lock()
             with self.task_manager._retry_lock:
                 self.task_manager._retry_depths[new_id] = retry_depth + 1
 
@@ -614,7 +605,7 @@ class DSNEngine:
                       **kwargs) -> PluginContext:
         """构建 PluginContext"""
         ec = self._engine_cfg
-        return PluginContext(
+        ctx = PluginContext(
             user_id=user_id,
             message=message,
             chat_id=chat_id,
@@ -629,13 +620,20 @@ class DSNEngine:
             agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else 5),
             agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 8000),
         )
+        if self.task_manager:
+            ctx.extra["_task_manager"] = self.task_manager
+        if hasattr(self, '_completion_queue'):
+            ctx.extra["_completion_queue"] = self._completion_queue
+        if self.db:
+            ctx.extra["_db"] = self.db
+        return ctx
 
     def chat(self, message: str, user_id: int = 1,
              chat_id: int | None = None, chat_name: str = "未命名",
              history: list | None = None, model_type: str | None = None,
              nickname: str = "用户", **kwargs) -> dict:
         """同步对话"""
-        if history is not None and not history and chat_id and self.db:
+        if history is None and chat_id and self.db:
             history = self.db.get_chat_history(user_id, chat_id)
 
         if chat_id is None and self.db:
@@ -669,7 +667,7 @@ class DSNEngine:
                           history: list | None = None, model_type: str | None = None,
                           nickname: str = "用户", **kwargs) -> AsyncGenerator[str, None]:
         """异步流式对话"""
-        if history is not None and not history and chat_id and self.db:
+        if history is None and chat_id and self.db:
             history = self.db.get_chat_history(user_id, chat_id)
 
         if chat_id is None and self.db:
@@ -875,14 +873,12 @@ def create_engine_with_defaults(
         ))
 
     if skill_registry:
-        from plugins.builtin.skills_plugin import SkillsPlugin
-        engine.plugin_manager.register(SkillsPlugin(skill_registry=skill_registry))
-
         from plugins.builtin.agent_plugin import AgentPlugin
         engine.plugin_manager.register(AgentPlugin(
             skill_registry=skill_registry,
             models_plugin=models_plugin,
             impression_manager=impression_manager,
+            db=db,
         ))
 
     if engine.task_manager:
@@ -908,15 +904,7 @@ def create_engine_with_defaults(
             db=db,
         ))
 
-    # ---- 补充注册：TaskPlugin / RecallPlugin / SSPPlugin ----
-
-    if engine.task_manager and skill_registry:
-        from plugins.builtin.task_plugin import TaskPlugin
-        engine.plugin_manager.register(TaskPlugin(
-            task_manager=engine.task_manager,
-            db=db,
-            skill_registry=skill_registry,
-        ))
+    # ---- 补充注册：RecallPlugin / SSPPlugin ----
 
     if memory_manager and db:
         try:

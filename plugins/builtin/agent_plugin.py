@@ -52,6 +52,7 @@ class AgentPlugin(Plugin):
         token_budget: int = 8000,
         agent_timeout: float = 120.0,
         impression_manager=None,
+        db=None,
     ):
         self._skill_registry = skill_registry
         self._models_plugin = models_plugin
@@ -59,6 +60,7 @@ class AgentPlugin(Plugin):
         self._default_token_budget = token_budget
         self._default_timeout = agent_timeout
         self._impression = impression_manager
+        self._db = db
 
     def on_load(self) -> None:
         if self._skill_registry is None:
@@ -91,9 +93,11 @@ class AgentPlugin(Plugin):
 
         tool_results = self._execute_tools(tool_matches, ctx)
 
-        cleaned = _TOOL_RE.sub("", ctx.reply if ctx.reply else original).strip()
+        cleaned = _TOOL_RE.sub("", original).strip()
         if tool_results:
             cleaned += "\n\n" + "\n".join(tool_results)
+        if not cleaned:
+            cleaned = "…"
 
         ctx.reply = cleaned
         return ctx
@@ -105,12 +109,11 @@ class AgentPlugin(Plugin):
         max_steps = ctx.agent_max_steps or self._default_max_steps
         deadline = time.time() + self._default_timeout
         step_count = 0
+        reply_updated = False
 
-        # 构建消息列表：system prompt + 原始历史
         base_messages = [{"role": "system", "content": ctx.system_prompt}]
         base_messages.extend(ctx.full_history)
 
-        # 追加用户消息（含时间戳）
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         base_messages.append({
@@ -118,48 +121,47 @@ class AgentPlugin(Plugin):
             "content": f"[{now}] {ctx.message}",
         })
 
-        current_reply = ctx.original_reply  # LLM 首轮回复（含标签）
+        current_reply = ctx.original_reply
+        q = ctx.extra.get("_progress_queue")
 
         while step_count < max_steps and time.time() < deadline:
-            # 解析当前回复中的工具调用
             tool_matches = list(_TOOL_RE.finditer(current_reply))
             if not tool_matches:
-                break  # 无工具标签，循环结束
+                break
 
             step_count += 1
             ctx.agent_step_count = step_count
             logger.info("Agent 第 %d 步: 发现 %d 个工具调用", step_count, len(tool_matches))
 
-            # 执行工具
+            if q:
+                q.put({"status": "thinking", "text": f"Agent 第{step_count}步: 执行 {len(tool_matches)} 个工具...", "plugin": "agent"})
+
             tool_results = self._execute_tools(tool_matches, ctx)
 
-            # 将本轮 AI 回复加入消息历史
             base_messages.append({
                 "role": "assistant",
                 "content": current_reply,
             })
-
-            # 将工具结果作为用户消息注入
             for result_text in tool_results:
                 base_messages.append({
                     "role": "user",
                     "content": f"[工具结果]\n{result_text}",
                 })
 
-            # 检查 token 预算
             total_chars = sum(len(m.get("content", "")) for m in base_messages)
             budget = ctx.agent_token_budget or self._default_token_budget
             if total_chars > budget:
-                # 裁剪：保留 system prompt + 最近的消息
-                kept = [base_messages[0]]  # system prompt
-                kept.extend(base_messages[-20:])  # 最近 20 条
+                kept = [base_messages[0]]
+                kept.extend(base_messages[-20:])
                 base_messages = kept
                 logger.info("Agent 第 %d 步: 超出 token 预算，已裁剪历史", step_count)
 
-            # 再次调用 LLM
             if self._models_plugin is None:
                 logger.warning("models_plugin 未注入，无法继续 Agent 循环")
                 break
+
+            if q:
+                q.put({"status": "thinking", "text": f"Agent 第{step_count}步: 等待 LLM 响应...", "plugin": "agent"})
 
             try:
                 current_reply = self._models_plugin.invoke(base_messages, ctx)
@@ -171,10 +173,23 @@ class AgentPlugin(Plugin):
                     current_reply = "工具已执行，但生成回复时出错。\n" + "\n".join(tool_results)
                 break
 
-        # 循环结束 — 清理最终回复
+            reply_updated = True
+
         clean = _TOOL_RE.sub("", current_reply).strip()
-        ctx.reply = clean
+        ctx.reply = clean if clean else "…"
         ctx.extra["agent_steps_executed"] = step_count
+
+        if reply_updated:
+            ctx.extra["_agent_reply_dirty"] = True
+            if self._db and ctx.chat_id:
+                try:
+                    self._db.append_messages(
+                        ctx.user_id, ctx.chat_id,
+                        [{"role": "assistant", "content": ctx.reply}],
+                    )
+                    logger.info("Agent 最终回复已保存到聊天 %d", ctx.chat_id)
+                except Exception as e:
+                    logger.error("保存 Agent 最终回复失败: %s", e)
 
         if step_count >= max_steps:
             logger.warning("Agent 达到最大步数 %d", max_steps)

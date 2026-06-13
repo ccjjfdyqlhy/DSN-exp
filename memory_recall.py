@@ -1,9 +1,8 @@
 # DSN-exp/memory_recall.py
-# 动态记忆召回引擎 — 关键词检索 + 细节还原
-# v1.0 2026-05-16
+# 动态记忆召回引擎 — 全文检索 + 细节还原
+# v2.0 2026-06-13
 
 import logging
-import re
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -11,96 +10,56 @@ from chatdbmgr import ChatDBManager
 
 logger = logging.getLogger("MemoryRecallEngine")
 
-# 摘要解析正则: "[关键词: kw1, kw2, kw3]" 或 "[keywords: kw1, kw2]"
-_KEYWORDS_RE = re.compile(r"\[(?:关键词|keywords)\s*:\s*([^\]]+)\]", re.IGNORECASE)
-
-MAX_DETAIL_CHARS_PER_ROUND = 4000  # 每轮细节最大字符数
-MAX_TOTAL_DETAIL_CHARS = 16000     # 单次召回总字符上限
+MAX_DETAIL_CHARS_PER_ROUND = 4000
+MAX_TOTAL_DETAIL_CHARS = 16000
 
 
 class MemoryRecallEngine:
-    """
-    动态记忆召回引擎。
-    
-    职责:
-    - search(): 关键词检索，返回排序的记忆命中列表
-    - get_detail(): 按轮次还原原始对话消息
-    - extract_keywords_from_summary(): 从 LLM 生成的摘要中解析关键词
-    - format_search_results(): 格式化检索结果（给 AI / 用户看）
-    - format_detail_results(): 格式化细节还原结果
-    """
+    """动态记忆召回引擎。全文搜索记忆摘要 + 按轮次还原对话。"""
 
     def __init__(self, db: ChatDBManager):
         self.db = db
 
-    # ── 检索 ──
-
     def search(self, user_id: int, chat_id: int,
                keywords: list[str], count: int = 5,
                threshold: float = 0.3) -> List[dict]:
-        """
-        关键词检索记忆。
-        
-        返回 [{memory_id, round_index, summary, keywords, score, created_at, ...}, ...]
-        """
         if not keywords:
             return []
         return self.db.search_memories(user_id, chat_id, keywords, count, threshold)
 
-    # ── 细节还原 ──
-
     def get_detail(self, user_id: int, chat_id: int,
                    round_indices: list[int]) -> Dict[int, List[dict]]:
-        """
-        按轮次还原原始对话消息。
-        
-        返回 {round_index: [{role, content, timestamp}, ...]}
-        """
         return self.db.get_messages_by_rounds(user_id, chat_id, round_indices)
 
-    # ── 关键词提取 ──
-
     @staticmethod
-    def extract_keywords_from_summary(summary: str, fallback_count: int = 5) -> str:
-        """
-        从 LLM 生成的摘要中解析关键词字段。
-        
-        格式: "摘要文本...[关键词: kw1, kw2, kw3]"
-               "Summary text...[keywords: kw1, kw2, kw3]"
-        
-        返回逗号分隔的关键词字符串（如 "kw1,kw2,kw3"），或 ""。
-        """
-        match = _KEYWORDS_RE.search(summary)
-        if match:
-            raw = match.group(1).strip()
-            kws = [kw.strip().lower() for kw in re.split(r"[,，;\s]+", raw) if kw.strip()]
-            return ",".join(kws[:fallback_count])
-
-        # 降级: 尝试从文本末尾提取逗号分隔的短词
-        lines = summary.strip().split("\n")
-        last_line = lines[-1].strip() if lines else ""
-        if last_line and len(last_line) < 120 and "," in last_line:
-            tokens = [t.strip().lower() for t in last_line.split(",") if t.strip() and len(t.strip()) < 20]
-            if 2 <= len(tokens) <= 10:
-                return ",".join(tokens[:fallback_count])
-
-        return ""
-
-    @staticmethod
-    def strip_keywords_from_summary(summary: str) -> str:
-        """从摘要文本中移除 [关键词: ...] 行，返回纯净摘要。"""
-        return _KEYWORDS_RE.sub("", summary).strip()
-
-    # ── 格式化输出 ──
+    def _format_timedelta(ts_str: str) -> str:
+        """将创建时间戳转为可读的时间差标注"""
+        if not ts_str:
+            return ""
+        try:
+            fmt = "%Y-%m-%d %H:%M:%S"
+            if len(ts_str) <= 10:
+                fmt = "%Y-%m-%d"
+            ts = datetime.strptime(ts_str[:19] if len(ts_str) > 19 else ts_str, fmt)
+            delta = datetime.now() - ts
+            if delta.days > 30:
+                return f"{delta.days // 30}个月前"
+            elif delta.days > 0:
+                return f"{delta.days}天前"
+            elif delta.seconds > 3600:
+                return f"{delta.seconds // 3600}小时前"
+            elif delta.seconds > 60:
+                return f"{delta.seconds // 60}分钟前"
+            else:
+                return "刚刚"
+        except Exception:
+            return ""
 
     @staticmethod
     def format_search_results(hits: List[dict], search_keywords: list[str]) -> str:
-        """
-        格式化检索结果为 AI 友好的文本。
-        """
         if not hits:
             kw_str = ", ".join(search_keywords) if search_keywords else ""
-            return f"[记忆检索结果] 未找到与 \"{kw_str}\" 相关的记忆。"
+            return f"[记忆检索结果] 未找到与 \"{kw_str}\" 相关的记忆。请调整关键词重试。"
 
         kw_str = ", ".join(search_keywords) if search_keywords else ""
         lines = [f"[记忆检索结果] 找到 {len(hits)} 条相关记忆 (关键词: {kw_str}):"]
@@ -109,13 +68,13 @@ class MemoryRecallEngine:
         for i, hit in enumerate(hits, 1):
             rd = hit["round_index"]
             ts = hit.get("created_at", "") or ""
-            if isinstance(ts, str) and len(ts) > 10:
-                ts = ts[:10]
+            date_str = ts[:10] if isinstance(ts, str) and len(ts) > 10 else ts
+            ago = MemoryRecallEngine._format_timedelta(ts)
+            time_label = f"{date_str} ({ago})" if ago else date_str
             score = hit.get("score", 0)
-            summary = MemoryRecallEngine.strip_keywords_from_summary(hit.get("summary", ""))
-            # 截断摘要
-            if len(summary) > 300:
-                summary = summary[:300] + "..."
+            summary = hit.get("summary", "")
+            if len(summary) > 200:
+                summary = summary[:200] + "..."
 
             msg_range = ""
             s_id = hit.get("message_start_id")
@@ -123,8 +82,8 @@ class MemoryRecallEngine:
             if s_id and e_id:
                 msg_range = f"消息 #{s_id}~#{e_id}"
 
-            lines.append(f"#{rd} ({ts}) [得分: {score:.2f}]")
-            lines.append(f"  摘要: {summary}")
+            lines.append(f"第{rd}轮 · {time_label} · 匹配度: {score:.2f}")
+            lines.append(f"  {summary}")
             if msg_range:
                 lines.append(f"  {msg_range}")
             lines.append("─" * 56)
@@ -134,9 +93,6 @@ class MemoryRecallEngine:
 
     @staticmethod
     def format_detail_results(detail: Dict[int, List[dict]]) -> str:
-        """
-        格式化细节还原结果为 AI 友好的文本。
-        """
         if not detail:
             return "[记忆细节还原] 未找到对应轮次的对话记录。"
 
@@ -149,7 +105,6 @@ class MemoryRecallEngine:
             if not messages:
                 continue
 
-            # 推断日期
             ts = ""
             for msg in messages:
                 if msg.get("timestamp"):
@@ -158,7 +113,9 @@ class MemoryRecallEngine:
                         ts = ts[:10]
                     break
 
-            lines.append(f"第{round_idx}轮 ({ts}):")
+            ago = MemoryRecallEngine._format_timedelta(ts)
+            time_label = f"{ts} ({ago})" if ago else ts
+            lines.append(f"第{round_idx}轮 ({time_label}):")
             lines.append("─" * 56)
 
             for msg in messages:
@@ -183,48 +140,31 @@ class MemoryRecallEngine:
 
     @staticmethod
     def format_success_message(search_keywords: list[str], hit_count: int) -> str:
-        """生成人类化的检索成功过渡语（供 AI 在回复中参考，不自动注入）。"""
         if hit_count == 0:
             return f"抱歉，我没有找到关于 {', '.join(search_keywords)} 的相关记忆。"
         elif hit_count == 1:
-            return f"我想起来了，之前讨论过这个话题。"
+            return "我想起来了，之前讨论过这个话题。"
         else:
             return f"我回忆起了 {hit_count} 段相关的对话。"
 
-    # ── 端到端便利方法 ──
-
     def handle_recall(self, user_id: int, chat_id: int,
                       payload: dict) -> Optional[str]:
-        """
-        处理一个 <recall> 请求的完整流程。
-        
-        payload 格式:
-          {"keywords": [...], "count": 5}     — 关键词检索
-          {"detail": [1, 2, 3]}               — 细节还原
-          {"keywords": [...], "detail": true} — 检索后自动展开细节
-        
-        返回格式化的结果字符串，或 None 表示无效请求。
-        """
         keywords = payload.get("keywords", [])
         detail_indices = payload.get("detail", [])
-        auto_detail = payload.get("detail") is True  # 混合模式
+        auto_detail = payload.get("detail") is True
         count = payload.get("count", 5)
 
-        # 模式: 细节还原
         if isinstance(detail_indices, list) and detail_indices:
             detail = self.get_detail(user_id, chat_id, detail_indices)
             return self.format_detail_results(detail)
 
-        # 模式: 关键词检索
         if keywords:
             hits = self.search(user_id, chat_id, keywords, count)
-
             if not hits:
                 return self.format_search_results([], keywords)
 
             search_text = self.format_search_results(hits, keywords)
 
-            # 混合模式: 检索后自动展开所有命中记忆的细节
             if auto_detail and hits:
                 indices = [h["round_index"] for h in hits]
                 detail = self.get_detail(user_id, chat_id, indices)

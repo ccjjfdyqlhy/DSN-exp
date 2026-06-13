@@ -86,7 +86,7 @@ class SkillsPlugin(Plugin):
                 tool_results.append(f"\n\n[工具执行异常: {skill_name}.{tool_name}] {e}")
 
         # 移除 <tool> 标签，追加工具结果
-        cleaned = _TOOL_RE.sub("", ctx.reply if ctx.reply else original).strip()
+        cleaned = _TOOL_RE.sub("", original).strip()
 
         if tool_results:
             cleaned += "\n\n" + "\n".join(tool_results)
