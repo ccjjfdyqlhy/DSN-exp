@@ -88,6 +88,7 @@ class Config:
     # ==================== ASR 配置 ====================
     ASR_ENABLED = _env("ASR_ENABLED", "false").lower() == "true"
     ASR_DEVICE = _env("ASR_DEVICE", "cuda")
+    DEBUG_ASR = _env("DEBUG_ASR", "false").lower() == "true"
 
     # ==================== ASR 过滤 ====================
     ASR_FILTER_ENABLED = _env("ASR_FILTER_ENABLED", "false").lower() == "true"
@@ -126,3 +127,11 @@ class Config:
     # ==================== 视觉多模态 ====================
     VISION_ENABLED = _env("VISION_ENABLED", "true").lower() == "true"
     VISION_PROMPT = _env("VISION_PROMPT", "请详细描述这张图片的内容")
+
+    # ==================== Token 消耗定价 (USD / 1M tokens) ====================
+    # DeepSeek v4-flash (cache miss)
+    DEEPSEEK_FLASH_INPUT_PRICE = 0.14
+    DEEPSEEK_FLASH_OUTPUT_PRICE = 0.28
+    # DeepSeek v4-pro (cache miss)
+    DEEPSEEK_PRO_INPUT_PRICE = 0.435
+    DEEPSEEK_PRO_OUTPUT_PRICE = 0.87

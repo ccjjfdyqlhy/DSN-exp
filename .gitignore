@@ -6,6 +6,7 @@ tests/*.wav
 *.jpg
 *.db
 *.bak
+*.bak.*
 *.pyc
 .vscode/*
 .dsn/*

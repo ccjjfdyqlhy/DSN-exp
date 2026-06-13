@@ -155,6 +155,48 @@ from utils.formatter import format_tool_result as _format_tool_result
 from utils.text_clean import clean_display, clean_tts_text
 
 
+def _save_debug_audio(audio_bytes: bytes):
+    """DEBUG_ASR 模式下保存收到的音频到 logs/asr_history/"""
+    import os as _os
+    from datetime import datetime as _dt
+    _dir = _os.path.join(_os.path.dirname(__file__), "logs", "asr_history")
+    _os.makedirs(_dir, exist_ok=True)
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = _os.path.join(_dir, f"{ts}.webm")
+    with open(path, "wb") as f:
+        f.write(audio_bytes)
+    app.logger.debug("DEBUG_ASR: 音频已保存 → %s (%d bytes)", path, len(audio_bytes))
+
+
+def _convert_audio_to_wav(audio_bytes: bytes) -> bytes:
+    """用 ffmpeg 将任意音频格式转为 16kHz 单声道 PCM WAV"""
+    import subprocess as _sp
+    import shutil as _sh
+
+    ffmpeg = _sh.which("ffmpeg")
+    if not ffmpeg:
+        app.logger.warning("ffmpeg 未找到，跳过音频格式转换")
+        return audio_bytes
+
+    try:
+        proc = _sp.run(
+            [ffmpeg, "-y", "-i", "pipe:0",
+             "-f", "wav", "-acodec", "pcm_s16le",
+             "-ar", "16000", "-ac", "1", "pipe:1"],
+            input=audio_bytes,
+            capture_output=True,
+            timeout=15,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            app.logger.debug("音频格式转换完成: %d → %d bytes", len(audio_bytes), len(proc.stdout))
+            return proc.stdout
+        app.logger.warning("ffmpeg 转换失败 (rc=%d): %s", proc.returncode, proc.stderr.decode(errors="replace")[:200])
+        return audio_bytes
+    except Exception as e:
+        app.logger.warning("ffmpeg 转换异常: %s", e)
+        return audio_bytes
+
+
 def _synthesize_tts_lines(text: str) -> list[dict]:
     """按换行符切割文本，逐行合成 TTS 音频。返回 [{text, audio_b64}]。"""
     if not text or not _tts_available:
@@ -730,7 +772,12 @@ def asr_recognize():
     
     file = request.files['audio']
     audio_bytes = file.read()
-    
+
+    if Config.DEBUG_ASR:
+        _save_debug_audio(audio_bytes)
+
+    audio_bytes = _convert_audio_to_wav(audio_bytes)
+
     try:
         res = asr_model.generate(
             input=audio_bytes,
@@ -743,6 +790,75 @@ def asr_recognize():
     except Exception as e:
         app.logger.error("ASR识别错误: %s", e)
         return jsonify({"error": "ASR processing failed"}), 500
+
+
+@app.route("/api/asr/passthrough", methods=["POST"])
+@login_required
+def asr_passthrough():
+    """接收 base64 音频 → ASR 识别 → 聊天管线直通 (SSE)"""
+    if not app.config.get("ASR_ENABLED", False):
+        return jsonify({"error": "ASR service is disabled"}), 403
+
+    data = request.get_json()
+    if not data or "audio_b64" not in data:
+        return jsonify({"error": "Missing audio_b64"}), 400
+
+    audio_b64 = data["audio_b64"]
+    try:
+        audio_bytes = __import__("base64").b64decode(audio_b64)
+    except Exception:
+        return jsonify({"error": "Invalid base64 audio data"}), 400
+
+    if Config.DEBUG_ASR:
+        _save_debug_audio(audio_bytes)
+
+    audio_bytes = _convert_audio_to_wav(audio_bytes)
+
+    recognized_text = ""
+    try:
+        res = asr_model.generate(
+            input=audio_bytes,
+            use_itn=True,
+            batch_size_s=60,
+            language="zh"
+        )
+        recognized_text = res[0].get("text", "").strip() if res and len(res) > 0 else ""
+    except Exception as e:
+        app.logger.error("ASR passthrough 识别失败: %s", e)
+        return jsonify({"error": "ASR processing failed"}), 500
+
+    if not recognized_text:
+        return jsonify({"reply": "", "chat_id": data.get("chat_id"), "filtered": True})
+
+    message = f"你听到用户那边传来的声音：{recognized_text}"
+    user_id = g.user["uid"]
+
+    def generate():
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            agen = engine.chat_stream(
+                message=message,
+                user_id=user_id,
+                chat_id=data.get("chat_id"),
+                chat_name=data.get("chat_name", "Psychoscope"),
+                model_type=data.get("model_type"),
+                nickname=g.user.get("nickname", "用户"),
+                tts_enabled=data.get("tts_enabled", True),
+                is_asr_input=True,
+                image_data=data.get("image_data"),
+            ).__aiter__()
+            while True:
+                try:
+                    event = loop.run_until_complete(agen.__anext__())
+                    yield event
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 @app.route("/api/chat/<int:chat_id>", methods=["DELETE"])
 @login_required

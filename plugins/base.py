@@ -43,6 +43,8 @@ class PluginContext:
     audio_b64: Optional[str] = None
     filtered: bool = False       # PRE_FILTER 短路标记
     tts_error: Optional[str] = None
+    usage: Optional[dict] = None           # API 返回的 usage 字段
+    model_name: Optional[str] = None       # 实际调用的模型名
 
     # ---- Agent 循环状态 (AgentPlugin 使用) ----
     agent_active: bool = False            # 是否启用了 agent 循环
