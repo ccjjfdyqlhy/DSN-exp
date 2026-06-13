@@ -1,5 +1,5 @@
 # skills/builtin/web_search/tools/search.py
-# 网页搜索工具 — 使用 DuckDuckGo Instant Answer API (免 API key)
+# 网页搜索工具 — 使用 Bing / 360 搜索 (国内可用，免 API key)
 
 import logging
 import requests
@@ -9,86 +9,61 @@ logger = logging.getLogger("skill.web_search")
 
 
 class WebSearchTool:
-    """网页搜索工具 — 使用 DuckDuckGo HTML 搜索（无需 API key）"""
+    """网页搜索工具 — 使用 Bing HTML 搜索 + 360 搜索备用"""
 
     def __init__(self, config: dict[str, Any] = None):
         self.config = config or {}
         self.timeout = self.config.get("timeout", 15)
 
+    @property
+    def _headers(self) -> dict:
+        return {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+
     def search(self, query: str, max_results: int = 5) -> dict[str, Any]:
-        """
-        执行网页搜索。
-
-        :param query: 搜索关键词
-        :param max_results: 最大结果数
-        :return: 搜索结果字典
-        """
         try:
-            # 使用 DuckDuckGo Lite (HTML) — 无需 API key
-            url = "https://lite.duckduckgo.com/lite/"
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-            resp = requests.post(
-                url,
-                data={"q": query},
-                headers=headers,
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-
-            results = self._parse_ddg_lite(resp.text, max_results)
-
+            results = self._search_bing(query, max_results)
             return {
                 "success": True,
                 "query": query,
                 "results": results,
                 "count": len(results),
+                "provider": "bing",
             }
         except requests.RequestException as e:
-            logger.warning("DuckDuckGo Lite 请求失败: %s, 尝试 DuckDuckGo Instant Answer API", e)
-            return self._fallback_search(query, max_results)
+            logger.warning("Bing 搜索失败: %s, 尝试 360 搜索", e)
+            return self._fallback_360(query, max_results)
 
-    def _fallback_search(self, query: str, max_results: int) -> dict[str, Any]:
+    def _search_bing(self, query: str, max_results: int) -> list[dict]:
+        url = "https://www.bing.com/search"
+        params = {
+            "q": query,
+            "setlang": "zh-CN",
+            "count": str(max_results + 2),
+        }
+        resp = requests.get(url, params=params, headers=self._headers, timeout=self.timeout)
+        resp.raise_for_status()
+        return self._parse_bing(resp.text, max_results)
+
+    def _fallback_360(self, query: str, max_results: int) -> dict[str, Any]:
         try:
-            url = "https://api.duckduckgo.com/"
-            params = {
-                "q": query,
-                "format": "json",
-                "no_html": "1",
-                "skip_disambig": "1",
-            }
-            resp = requests.get(url, params=params, timeout=self.timeout)
+            url = "https://www.so.com/s"
+            params = {"q": query, "pn": "1"}
+            resp = requests.get(url, params=params, headers=self._headers, timeout=self.timeout)
             resp.raise_for_status()
-            data = resp.json()
-
-            results = []
-            # 提取 Abstract
-            if data.get("AbstractText"):
-                results.append({
-                    "title": data.get("AbstractSource", "DuckDuckGo"),
-                    "url": data.get("AbstractURL", ""),
-                    "snippet": data.get("AbstractText", ""),
-                })
-            # 提取 RelatedTopics
-            for topic in data.get("RelatedTopics", [])[:max_results]:
-                if isinstance(topic, dict) and topic.get("Text"):
-                    results.append({
-                        "title": topic.get("FirstURL", "").split("/")[-1].replace("_", " "),
-                        "url": topic.get("FirstURL", ""),
-                        "snippet": topic.get("Text", ""),
-                    })
-
+            results = self._parse_360(resp.text, max_results)
             return {
                 "success": True,
                 "query": query,
-                "results": results[:max_results],
-                "count": min(len(results), max_results),
+                "results": results,
+                "count": len(results),
+                "provider": "360",
             }
         except Exception as e:
             logger.error("搜索失败: %s", e)
@@ -100,34 +75,53 @@ class WebSearchTool:
             }
 
     @staticmethod
-    def _parse_ddg_lite(html: str, max_results: int) -> list[dict]:
-        """解析 DuckDuckGo Lite 返回的 HTML"""
+    def _parse_bing(html: str, max_results: int) -> list[dict]:
         import re
+
         results = []
-        # DDG Lite 结果格式: <a rel="nofollow" href="URL">Title</a><br><span>Snippet</span>
-        # 简化解析: 查找链接和描述
-        link_pattern = re.compile(
-            r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
-            re.DOTALL
-        )
-        snippet_pattern = re.compile(
-            r'<span class="link-text">(.*?)</span>',
-            re.DOTALL
-        )
+        algo_blocks = re.split(r'<li class="b_algo"', html)[1:]
 
-        links = link_pattern.findall(html)
-        # 过滤掉内部链接
-        links = [(url, title.strip()) for url, title in links
-                 if not url.startswith("//duckduckgo.com") and "duckduckgo.com" not in url[:50]]
+        for block in algo_blocks[:max_results]:
+            link_m = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+            if not link_m:
+                continue
+            url = link_m.group(1)
+            title = re.sub(r'<[^>]+>', '', link_m.group(2)).strip()
+            if "bing.com" in url or "microsoft.com/bing" in url:
+                continue
 
-        snippets = snippet_pattern.findall(html)
+            snippet = ""
+            cap_m = re.search(r'<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+            if not cap_m:
+                cap_m = re.search(r'<div class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>', block, re.DOTALL)
+            if cap_m:
+                snippet = re.sub(r'<[^>]+>', '', cap_m.group(1)).strip()
 
-        for i, (url, title) in enumerate(links[:max_results]):
-            results.append({
-                "title": re.sub(r'<[^>]+>', '', title).strip(),
-                "url": url,
-                "snippet": re.sub(r'<[^>]+>', '', snippets[i]).strip()
-                if i < len(snippets) else "",
-            })
+            results.append({"title": title, "url": url, "snippet": snippet})
+
+        return results
+
+    @staticmethod
+    def _parse_360(html: str, max_results: int) -> list[dict]:
+        import re
+
+        results = []
+        blocks = re.split(r'<li class="res-list"', html)[1:]
+
+        for block in blocks[:max_results]:
+            link_m = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+            if not link_m:
+                continue
+            url = link_m.group(1)
+            title = re.sub(r'<[^>]+>', '', link_m.group(2)).strip()
+            if "so.com" in url or "360.cn" in url:
+                continue
+
+            snippet = ""
+            desc_m = re.search(r'<p class="res-desc"[^>]*>(.*?)</p>', block, re.DOTALL)
+            if desc_m:
+                snippet = re.sub(r'<[^>]+>', '', desc_m.group(1)).strip()
+
+            results.append({"title": title, "url": url, "snippet": snippet})
 
         return results

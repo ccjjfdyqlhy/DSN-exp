@@ -59,7 +59,7 @@ class MemoryPlugin(Plugin):
             return ctx
 
         try:
-            round_index = self._db.get_memory_count(ctx.user_id, ctx.chat_id) + 1
+            round_index = self._db.get_next_round_index(ctx.chat_id)
             self._memory.record_dialog_and_summary(
                 user_id=ctx.user_id,
                 chat_id=ctx.chat_id,

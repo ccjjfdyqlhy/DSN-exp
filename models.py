@@ -73,19 +73,20 @@ class DeepSeekChat:
         self.logger.info("DeepSeekChat客户端初始化完成，模型：%s", self.model)
 
     def send_message(self, message: str) -> str:
-        """
-        发送一条用户消息，获取模型回复。
-
-        :param message: 用户输入的消息文本
-        :return: 模型的回复内容
-        :raises: 请求失败或响应异常时会抛出相应异常
-        """
+        """发送一条用户消息，获取模型回复。"""
         if not message or not isinstance(message, str):
             raise ValueError("消息内容必须为非空字符串")
 
-        # 将用户消息加入历史
         self.messages.append({"role": "user", "content": message})
-        self.logger.info("发送用户消息: %s", message[:50] + "..." if len(message) > 50 else message)
+        return self._call_and_append()
+
+    def continue_conversation(self) -> str:
+        """不追加新用户消息，直接用当前消息列表调用 LLM（用于 Agent 工具反馈循环）。"""
+        return self._call_and_append()
+
+    def _call_and_append(self) -> str:
+        """核心调用逻辑：发送 self.messages → 获取回复 → 追加到 history → 返回"""
+        self.logger.info("发送请求，消息数: %d", len(self.messages))
 
         # 准备请求
         headers = {
@@ -264,18 +265,19 @@ class LMStudioChat:
                 raise
 
     def send_message(self, message: str) -> str:
-        """
-        发送一条用户消息，获取模型回复。
-
-        :param message: 用户输入的消息文本
-        :return: 模型的回复内容
-        """
+        """发送一条用户消息，获取模型回复。"""
         if not message or not isinstance(message, str):
             raise ValueError("消息内容必须为非空字符串")
 
         self.messages.append({"role": "user", "content": message})
         self.logger.info("发送用户消息: %s", message[:50] + "..." if len(message) > 50 else message)
+        return self._call_and_append()
 
+    def continue_conversation(self) -> str:
+        """不追加新用户消息，直接用当前消息列表调用 LLM（用于 Agent 工具反馈循环）。"""
+        return self._call_and_append()
+
+    def _call_and_append(self) -> str:
         payload = {
             "messages": self.messages,
             "temperature": self.temperature,
@@ -363,18 +365,11 @@ class LMStudioChat:
 class LMSummaryModel:
     """摘要模型 — 支持 DeepSeek API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
 
-    SUMMARY_PROMPT = '''
-你是一个专门擅长概括对话内容的AI，你的任务是根据输入的对话内容，提取出其中的关键信息，并用一句100字以内的话进行概括，作为回答输出。
-你管理着系统的长期记忆。你生成的概括语句必须以AI的视角概括描述输入的对话内容。
-不要输出"概括如下"或者"总结："等引导语。你必须仅仅输出概括的内容。
-
-此外，请在概括语句后换行，输出一行关键词标签，格式为:
-概括语句
-[关键词: kw1, kw2, kw3, kw4, kw5]
-关键词必须是对话中讨论的核心主题词（中文或英文，3~5个，逗号分隔）。
-
-需要你概括的对话内容如下：\n
-'''
+    SUMMARY_PROMPT = (
+        "用至多两句话（不超过50字）概括下方对话的核心事实与结论，"
+        "以AI视角描述。仅输出概括语句，不要引导词，不要标签，不要关键词。\n\n"
+        "对话内容：\n"
+    )
 
     def __init__(
         self,

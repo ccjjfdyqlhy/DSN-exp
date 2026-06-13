@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import time
 import logging
 from copy import copy
@@ -15,6 +16,42 @@ from .base import HookPoint, PluginContext
 from .manager import PluginManager
 
 logger = logging.getLogger("ChatPipeline")
+
+
+def _extract_narrations(raw: str) -> list[str]:
+    """从原始回复中提取标签，生成人类可读的动作旁白"""
+    import re as _re
+    results = []
+    for tag, label_gen in [
+        ("recall", lambda _: "检索了相关记忆"),
+        ("tool", lambda inner: _desc_tool(inner)),
+        ("task", lambda inner: _desc_task(inner)),
+    ]:
+        for m in _re.finditer(rf"<{tag}>\s*(.*?)\s*</{tag}>", raw, _re.DOTALL):
+            try:
+                inner = m.group(1).strip()
+                results.append(label_gen(inner))
+            except Exception:
+                pass
+    return results
+
+
+def _desc_tool(inner: str) -> str:
+    try:
+        d = json.loads(inner)
+        return f"使用了工具 {d.get('tool', d.get('skill', ''))}"
+    except Exception:
+        return "调用了外部工具"
+
+
+def _desc_task(inner: str) -> str:
+    try:
+        d = json.loads(inner)
+        m = {"reminder": "设置了一个提醒", "reasoner": "开始深度推理",
+             "action": "执行了一个操作", "analysis": "开始分析任务"}
+        return m.get(d.get("type", ""), "安排了一个任务")
+    except Exception:
+        return "执行了一项后台任务"
 
 
 class ChatPipeline:
@@ -293,31 +330,125 @@ class ChatPipeline:
                 ctx = await self.pm.dispatch(hook, ctx)
 
                 if ctx.original_reply:
-                    yield f"data: {json.dumps({
-                        'status': 'text_ready',
-                        'reply': ctx.reply or ctx.original_reply,
-                        'chat_id': ctx.chat_id,
-                    })}\n\n"
+                    if ctx.reply and ctx.reply != "…":
+                        yield f"data: {json.dumps({
+                            'status': 'text_ready',
+                            'reply': ctx.reply,
+                            'chat_id': ctx.chat_id,
+                        })}\n\n"
+
+                    narrations = _extract_narrations(ctx.original_reply)
+                    for n in narrations:
+                        yield f"data: {json.dumps({
+                            'status': 'narrative_update',
+                            'text': n,
+                            'speaker': 'narrator',
+                            'style': 'action',
+                        })}\n\n"
 
             elif hook == HookPoint.POST_PROCESS:
-                # 创建动作旁白收集器
                 from world.action_narrator import ActionNarrativeCollector
                 collector = ActionNarrativeCollector()
                 ctx.extra["_narrative_collector"] = collector
 
-                # TTS 并行：在 executor 中后台合成，同时运行 POST_PROCESS
                 tts_task = None
                 if ctx.tts_enabled and ctx.original_reply and self._tts_client:
                     tts_task = asyncio.create_task(
                         self._synthesize_lines(ctx.original_reply)
                     )
 
-                ctx = await self.pm.dispatch(hook, ctx)
+                plugins = self.pm.get_hooks_for(HookPoint.POST_PROCESS)
+                enabled = [p for p in plugins if self.pm.is_enabled(p.name)]
+
+                progress_q: asyncio.Queue = asyncio.Queue()
+                thread_q = queue.Queue()
+                ctx.extra["_progress_queue"] = thread_q
+
+                async def bridge():
+                    loop = asyncio.get_event_loop()
+                    while True:
+                        evt = await loop.run_in_executor(None, thread_q.get)
+                        if evt is None:
+                            break
+                        await progress_q.put(evt)
+
+                bridge_task = asyncio.create_task(bridge())
+
+                async def run_all():
+                    nonlocal ctx
+                    for plugin in enabled:
+                        desc = getattr(plugin, 'description', plugin.name)
+                        await progress_q.put({
+                            "status": "thinking",
+                            "text": desc,
+                            "plugin": plugin.name,
+                        })
+                        try:
+                            ctx = await self.pm._call_plugin(plugin, hook, ctx)
+                        except Exception:
+                            logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
+                        if ctx.filtered:
+                            break
+
+                    task_mgr = ctx.extra.get("_task_manager")
+                    pending = ctx.extra.get("_pending_tasks", set())
+                    if task_mgr and pending:
+                        remaining = set(pending)
+                        await progress_q.put({
+                            "status": "thinking",
+                            "text": f"等待 {len(remaining)} 个异步任务完成...",
+                        })
+                        from tasks import TaskStatus
+                        deadline = time.time() + 120
+                        while remaining and time.time() < deadline:
+                            for tid in list(remaining):
+                                task = task_mgr.get_task(tid)
+                                if task and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                                    remaining.discard(tid)
+                                    result = task.result or {}
+                                    success = result.get("success", False) if isinstance(result, dict) else False
+                                    output = result.get("output", "") if isinstance(result, dict) else ""
+                                    error = task.error or result.get("error", "") if isinstance(result, dict) else ""
+                                    evt = {
+                                        "status": "task_result",
+                                        "task_id": tid[:8],
+                                        "success": success,
+                                    }
+                                    if output:
+                                        out = str(output).strip()
+                                        if len(out) > 2000:
+                                            out = out[:2000] + "\n...(输出截断)"
+                                        evt["output"] = out
+                                    if error:
+                                        evt["error"] = str(error)[:500]
+                                    await progress_q.put(evt)
+                            if remaining:
+                                await asyncio.sleep(0.3)
+
+                    thread_q.put(None)
+                    await progress_q.put(None)
+
+                runner = asyncio.create_task(run_all())
+
+                import asyncio as _asyncio
+                while True:
+                    try:
+                        evt = await _asyncio.wait_for(progress_q.get(), timeout=3.0)
+                        if evt is None:
+                            break
+                        yield f"data: {json.dumps(evt)}\n\n"
+                    except _asyncio.TimeoutError:
+                        yield f"data: {json.dumps({
+                            'status': 'thinking',
+                            'text': '正在处理...',
+                        })}\n\n"
+
+                await runner
+                await bridge_task
 
                 if tts_task:
                     tts_lines = await tts_task
 
-                # 后置旁白
                 narrative = ctx.extra.get("narrative", "")
                 if narrative:
                     yield f"data: {json.dumps({
@@ -327,7 +458,6 @@ class ChatPipeline:
                         'style': 'post',
                     })}\n\n"
 
-                # 动作旁白（后台线程生成，排空已有结果）
                 for text in collector.drain():
                     if text:
                         yield f"data: {json.dumps({
@@ -336,6 +466,23 @@ class ChatPipeline:
                             'speaker': 'narrator',
                             'style': 'action',
                         })}\n\n"
+
+                if ctx.extra.get("_agent_reply_dirty") and ctx.reply:
+                    db = ctx.extra.get("_db")
+                    if db and ctx.chat_id:
+                        try:
+                            db.append_messages(
+                                ctx.user_id, ctx.chat_id,
+                                [{"role": "assistant", "content": ctx.reply}],
+                            )
+                        except Exception:
+                            logger.exception("保存 Agent 回复到 DB 失败")
+                    yield f"data: {json.dumps({
+                        'status': 'text_ready',
+                        'reply': ctx.reply,
+                        'chat_id': ctx.chat_id,
+                    })}\n\n"
+                    ctx.extra["_agent_reply_dirty"] = False
 
             elif hook == HookPoint.POST_TTS:
                 if tts_lines is not None:

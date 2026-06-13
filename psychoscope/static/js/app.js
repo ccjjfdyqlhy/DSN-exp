@@ -681,6 +681,9 @@
                             case 'narrative_update':
                                 if (ev.text) addNarratorLine(ev.text);
                                 break;
+                            case 'thinking':
+                                if (ev.text) updateStatusBarText(ev.text);
+                                break;
                             case 'text_ready':
                                 if (ttsEnabled) break;
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
@@ -785,9 +788,12 @@
                     if (line.indexOf('data: ') !== 0) continue;
                     try {
                         var ev = JSON.parse(line.slice(6));
-                        switch (ev.status) {
+                    switch (ev.status) {
                             case 'narrative_update':
                                 if (ev.text) addNarratorLine(ev.text);
+                                break;
+                            case 'thinking':
+                                if (ev.text) updateStatusBarText(ev.text);
                                 break;
                             case 'text_ready':
                                 if (ttsEnabled) break;
@@ -808,6 +814,7 @@
                                 }
                                 break;
                             case 'completed':
+                                if (ev.reply) await addMessage(aiName, ev.reply, true);
                                 if (ev.timing) {
                                     pendingTiming = ev.timing;
                                 }
@@ -961,6 +968,9 @@
     function updateStatusBar() {
         var count = dom.textBox.querySelectorAll('.text-line').length;
         dom.statusBar.textContent = 'INDEX: ' + count;
+    }
+    function updateStatusBarText(text) {
+        dom.statusBar.textContent = text;
     }
 
     // events

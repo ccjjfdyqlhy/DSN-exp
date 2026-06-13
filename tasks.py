@@ -131,6 +131,8 @@ class TaskManager:
         self.lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
         self.running = True
+        self._retry_depths: dict[str, int] = {}
+        self._retry_lock = threading.Lock()
         
         # 初始化数据库表
         self._init_db()
@@ -233,6 +235,14 @@ class TaskManager:
                     # 如果是定时任务且状态为PENDING，重新调度
                     if task.task_type == TaskType.REMINDER and task.status == TaskStatus.PENDING and task.scheduled_time:
                         self._schedule_reminder_task(task)
+
+                    # 服务器重启时的 RUNNING 任务无法恢复，标记为失败
+                    if task.status == TaskStatus.RUNNING:
+                        task.status = TaskStatus.FAILED
+                        task.error = "Server restarted during task execution"
+                        task.completed_at = datetime.now()
+                        self._save_task(task)
+                        self.logger.warning("已将重启后残留的 RUNNING 任务标记为 FAILED: %s", task.task_id)
                         
                 except Exception as e:
                     self.logger.error("加载任务失败 (task_id=%s): %s", row["task_id"], e)
@@ -356,7 +366,8 @@ class TaskManager:
         if task_type == TaskType.REMINDER and scheduled_time:
             self._schedule_reminder_task(task)
         
-        self.logger.info("创建任务: %s (类型: %s, 用户: %d)", task_id, task_type.value, user_id)
+        self.logger.info("创建任务: %s (类型: %s, 用户: %d)", task_id,
+                         task_type.value if hasattr(task_type, 'value') else task_type, user_id)
         return task_id
     
     def execute_task(self, task_id: str) -> Future:
@@ -705,7 +716,8 @@ class TaskManager:
     
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务信息"""
-        return self.tasks.get(task_id)
+        with self.lock:
+            return self.tasks.get(task_id)
     
     def get_user_tasks(self, user_id: int, status: Optional[TaskStatus] = None) -> List[Task]:
         """获取用户的任务列表"""

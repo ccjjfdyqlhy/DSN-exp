@@ -423,6 +423,9 @@ def _cmd_help():
     /status     显示服务器状态摘要
     /plugin     列出所有插件及运行状态
     /plugin <名称>  查询指定插件的详细信息
+    /memory users    列出用户及记忆统计
+    /memory chats <用户ID>  列出用户的聊天
+    /memory list <用户ID> <聊天ID> [轮次]  列出/查看记忆
     /config listall   列出所有配置项 (敏感信息隐藏)
     /config set <键> <值>  动态修改配置并写入 .env
     /config undo      回退 .env 到上一版本 (最多 3 步)
@@ -490,6 +493,193 @@ def _cmd_plugin(plugin_manager, name: str = None):
     console.print(table)
 
 
+def _cmd_memory(auth_manager, db, args: str):
+    """记忆系统管理命令"""
+    parts = args.split()
+    sub = parts[0].lower() if parts else ""
+
+    if not db:
+        print("  错误: 数据库不可用")
+        return
+
+    if sub == "users":
+        _cmd_memory_users(auth_manager, db)
+    elif sub == "chats":
+        if len(parts) < 2:
+            print("  用法: /memory chats <用户ID>")
+            return
+        _cmd_memory_chats(db, parts[1])
+    elif sub == "list":
+        if len(parts) < 3:
+            print("  用法: /memory list <用户ID> <聊天ID> [轮次索引]")
+            return
+        uid_str, cid_str = parts[1], parts[2]
+        round_str = parts[3] if len(parts) > 3 else None
+        _cmd_memory_list(db, uid_str, cid_str, round_str)
+    else:
+        _cmd_memory_help()
+
+
+def _cmd_memory_users(auth_manager, db):
+    """列出所有用户及其聊天/记忆统计"""
+    if not auth_manager:
+        print("  错误: AuthManager 不可用")
+        return
+    users = auth_manager.list_users()
+    if not users:
+        print("  暂无注册用户")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("UID", style="dim")
+    table.add_column("显示名", style="bold")
+    table.add_column("聊天数")
+    table.add_column("记忆数")
+
+    conn = db._get_connection()
+    for u in users:
+        uid = u["uid"]
+        chat_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM chats WHERE user_id = ? AND chat_name != '__steward__'",
+            (uid,),
+        ).fetchone()
+        mem_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ?",
+            (uid,),
+        ).fetchone()
+        table.add_row(
+            str(uid),
+            u["display_name"],
+            str(chat_row["cnt"]) if chat_row else "0",
+            str(mem_row["cnt"]) if mem_row else "0",
+        )
+    console.print(table)
+
+
+def _cmd_memory_chats(db, uid_str: str):
+    """列出指定用户的所有聊天"""
+    try:
+        uid = int(uid_str)
+    except ValueError:
+        print(f"  无效的用户 ID: {uid_str}")
+        return
+
+    chats = db.list_chats(uid)
+    if not chats:
+        print(f"  用户 {uid} 暂无聊天会话")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("聊天ID", style="dim")
+    table.add_column("名称", style="bold")
+    table.add_column("消息数")
+    table.add_column("创建时间")
+
+    conn = db._get_connection()
+    for c in chats:
+        cid = c["chat_id"]
+        mem_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ? AND chat_id = ?",
+            (uid, cid),
+        ).fetchone()
+        mem_count = f" ({mem_row['cnt']} 记忆)" if mem_row and mem_row["cnt"] > 0 else ""
+        table.add_row(
+            str(cid),
+            c["chat_name"] + mem_count,
+            str(c["message_count"]),
+            c["created_at"],
+        )
+    console.print(table)
+
+
+def _cmd_memory_list(db, uid_str: str, cid_str: str, round_str: str | None):
+    """列出指定聊天的记忆条目"""
+    try:
+        uid = int(uid_str)
+        cid = int(cid_str)
+    except ValueError:
+        print("  无效的用户 ID 或聊天 ID")
+        return
+
+    # 验证聊天所有权
+    conn = db._get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM chats WHERE chat_id = ? AND user_id = ? AND chat_name != '__steward__'",
+        (cid, uid),
+    ).fetchone()
+    if not row:
+        print(f"  用户 {uid} 无权访问聊天 {cid}")
+        return
+
+    memories = db.get_memories(uid, cid)
+    if not memories:
+        print(f"  聊天 {cid} 暂无记忆条目")
+        return
+
+    # 如果指定了 round_index，只显示该条
+    if round_str is not None:
+        try:
+            target_round = int(round_str)
+        except ValueError:
+            print(f"  无效的轮次索引: {round_str}")
+            return
+        memories = [m for m in memories if m["round_index"] == target_round]
+        if not memories:
+            print(f"  聊天 {cid} 中未找到轮次 {target_round} 的记忆")
+            return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("轮次", style="dim", justify="right")
+    table.add_column("摘要", style="bold", max_width=60)
+    table.add_column("关键词", max_width=30)
+    table.add_column("消息区间")
+    table.add_column("创建时间", style="dim")
+
+    for m in memories:
+        msg_range = f"{m['message_start_id']}-{m['message_end_id']}" if m.get("message_start_id") else "-"
+        kw_str = m.get("keywords", "") or ""
+        if len(kw_str) > 28:
+            kw_str = kw_str[:26] + "..."
+        summary_str = m.get("summary", "") or ""
+        if len(summary_str) > 58:
+            summary_str = summary_str[:56] + "..."
+
+        table.add_row(
+            str(m["round_index"]),
+            summary_str,
+            kw_str,
+            msg_range,
+            m.get("created_at", "-"),
+        )
+
+    if round_str is not None:
+        # 单条详情
+        m = memories[0]
+        details = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        details.add_column("字段", style="dim")
+        details.add_column("值", style="bold")
+        details.add_row("轮次", str(m["round_index"]))
+        details.add_row("摘要", m.get("summary", ""))
+        details.add_row("关键词", m.get("keywords", ""))
+        details.add_row("消息起始ID", str(m.get("message_start_id", "-")))
+        details.add_row("消息结束ID", str(m.get("message_end_id", "-")))
+        details.add_row("创建时间", m.get("created_at", "-"))
+        console.print(details)
+    else:
+        console.print(table)
+
+
+def _cmd_memory_help():
+    """显示 memory 命令帮助"""
+    print("""
+  /memory 命令用法:
+    /memory users                    列出所有用户及其聊天/记忆统计
+    /memory chats <用户ID>           列出指定用户的所有聊天
+    /memory list <用户ID> <聊天ID>   列出指定聊天的所有记忆
+    /memory list <用户ID> <聊天ID> <轮次>  查看指定轮次的记忆详情
+""")
+
+
 def _execute_command(line, auth_manager, db, plugin_manager, config_cls=None, shutdown_event=None):
     """解析并执行命令"""
     parts = line.split(maxsplit=1)
@@ -504,6 +694,9 @@ def _execute_command(line, auth_manager, db, plugin_manager, config_cls=None, sh
     elif cmd == "/plugin":
         name = parts[1].strip() if len(parts) > 1 else None
         _cmd_plugin(plugin_manager, name)
+    elif cmd == "/memory":
+        args = parts[1].strip() if len(parts) > 1 else ""
+        _cmd_memory(auth_manager, db, args)
     elif cmd == "/config":
         args = parts[1].strip() if len(parts) > 1 else ""
         _cmd_config(config_cls, args)

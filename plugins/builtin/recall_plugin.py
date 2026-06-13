@@ -49,7 +49,7 @@ class RecallPlugin(Plugin):
             return ctx
 
         # 优先使用 ctx 上的 recall_engine，回退到构造时注入的
-        engine = ctx.recall_engine or self._recall_engine
+        engine = self._recall_engine
         if engine is None:
             return ctx
 

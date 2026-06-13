@@ -55,16 +55,13 @@ class MemoryManager:
             if not summary:
                 return None
 
-            keywords = MemoryRecallEngine.extract_keywords_from_summary(summary)
-            clean_summary = MemoryRecallEngine.strip_keywords_from_summary(summary)
-
             msg_start_id, msg_end_id = self.db.get_last_message_ids(chat_id, count=len(messages))
 
             with self.lock:
                 memory_id = self.db.save_memory(
                     user_id, chat_id, round_index,
-                    clean_summary if clean_summary else summary,
-                    keywords=keywords,
+                    summary,
+                    keywords="",
                     message_start_id=msg_start_id,
                     message_end_id=msg_end_id,
                 )
@@ -72,15 +69,14 @@ class MemoryManager:
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("MemoryManager 生成摘要失败: %s", e)
-            return None
-            with self.lock:
-                memory_id = self.db.save_memory(user_id, chat_id, round_index, summary)
-            return memory_id
-        except Exception as e:
-            # 仅记录错误，不抛给主流程
-            import logging
-            logging.getLogger(__name__).error(f"MemoryManager 生成摘要失败: {e}")
-            return None
+            try:
+                with self.lock:
+                    memory_id = self.db.save_memory(user_id, chat_id, round_index, summary)
+                return memory_id
+            except Exception as e2:
+                import logging
+                logging.getLogger(__name__).error("MemoryManager 生成摘要(fallback)也失败: %s", e2)
+                return None
 
     def assemble_context(self, user_id: int, chat_id: int, full_history: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """拼接上下文：超过阈值后逐步用记忆摘要替换远端消息。"""
@@ -115,8 +111,27 @@ class MemoryManager:
 
         memory_msgs = []
         for mem in memories:
-            summary_text = MemoryRecallEngine.strip_keywords_from_summary(mem.get("summary", ""))
-            memory_msgs.append({"role": "system", "content": f"记忆摘要：{summary_text}"})
+            rd = mem.get("round_index", "?")
+            ts = mem.get("created_at", "")
+            ago = ""
+            if ts:
+                try:
+                    from datetime import datetime as _dt
+                    fmt = "%Y-%m-%d %H:%M:%S" if len(str(ts)) > 10 else "%Y-%m-%d"
+                    t = _dt.strptime(str(ts)[:19] if len(str(ts)) > 19 else str(ts), fmt)
+                    delta = _dt.now() - t
+                    if delta.days > 0:
+                        ago = f"{delta.days}天前"
+                    elif delta.seconds > 3600:
+                        ago = f"{delta.seconds // 3600}小时前"
+                    else:
+                        ago = f"{delta.seconds // 60}分钟前"
+                except Exception:
+                    pass
+            time_label = f"{ts} ({ago})" if ago else str(ts) if ts else ""
+            header = f"[记忆 · 轮次{rd}" + (f" · {time_label}" if time_label else "") + "]"
+            summary_text = mem.get("summary", "")
+            memory_msgs.append({"role": "system", "content": f"{header} {summary_text}"})
 
         self.logger.info(f"拼接完成 - 最终上下文: {len(memory_msgs)} 条记忆 + {len(remain)} 条近期消息 = {len(memory_msgs) + len(remain)} 条消息")
         return memory_msgs + remain

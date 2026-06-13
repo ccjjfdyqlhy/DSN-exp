@@ -83,7 +83,7 @@ class ModelsPlugin(Plugin):
         # 保存消息到数据库
         if self._db is not None and ctx.chat_id:
             try:
-                round_index = self._db.get_memory_count(ctx.user_id, ctx.chat_id) + 1
+                round_index = self._db.get_next_round_index(ctx.chat_id)
                 self._db.append_messages(
                     ctx.user_id, ctx.chat_id, chat.messages[-2:],
                     round_index=round_index,
@@ -114,14 +114,18 @@ class ModelsPlugin(Plugin):
     @staticmethod
     def _clean_reply(reply: str) -> str:
         import re
-        # <text> 保留内容
         cleaned = re.sub(r"<text>(.*?)</text>", r"\1", reply, flags=re.DOTALL | re.IGNORECASE)
-        # <task> 整体移除
+        cleaned = re.sub(r"```action\s*\n.*?```", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"<task>.*?</task>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        # 其他标签移除
+        cleaned = re.sub(r"<recall>.*?</recall>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<tool>.*?</tool>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<continue\s*/>", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"<[^>]+>", "", cleaned)
-        # 压缩空白
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = cleaned.strip()
+        if not cleaned:
+            cleaned = "…"
         return cleaned
 
     # ---- Agent 循环用 LLM 调用 ----
@@ -137,7 +141,7 @@ class ModelsPlugin(Plugin):
 
         chat = self._create_chat(effective_type)
         chat.messages = list(messages)
-        return chat.send_message("继续")
+        return chat.continue_conversation()
 
     def describe_image(self, data_url: str, prompt: str = "请详细描述这张图片的内容") -> str:
         """
