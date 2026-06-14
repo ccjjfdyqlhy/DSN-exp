@@ -601,6 +601,69 @@ except Exception as e:
 
 # ---------- 初始化 DSNEngine ----------
 from engine import create_engine_with_defaults
+
+# ---------- 初始化人格系统 V3 ----------
+personality_v3 = None
+_v3_enabled = Config.PERSONALITY_V3_ENABLED
+_v3_override = Config.PERSONALITY_V3_OVERRIDE_V2
+
+app.logger.info("人格系统 V3: enabled=%s override_v2=%s", _v3_enabled, _v3_override)
+
+if _v3_enabled:
+    try:
+        from prompt.personality_v3 import PersonalitySystemV3
+
+        app.logger.info("V3: 导入 PersonalitySystemV3 成功")
+
+        # 创建 V3 性格模型客户端（本地 LMStudio，低延迟）
+        _v3_personality_chat = create_chat_client("fast")
+        _v3_personality_chat.model = Config.PERSONALITY_MODEL_NAME
+        if hasattr(_v3_personality_chat, 'model_name'):
+            _v3_personality_chat.model_name = Config.PERSONALITY_MODEL_NAME
+        app.logger.info("V3: 性格模型客户端已创建 (model=%s)", Config.PERSONALITY_MODEL_NAME)
+
+        _v3_card_path = _os.path.join(_os.path.dirname(__file__), "character_cards", "exa.yaml")
+        app.logger.info("V3: 默认角色卡路径=%s (存在=%s)", _v3_card_path, _os.path.exists(_v3_card_path))
+
+        personality_v3 = PersonalitySystemV3(
+            db=db,
+            personality_model_chat=_v3_personality_chat,
+            default_card_path=_v3_card_path,
+        )
+        app.logger.info("V3: PersonalitySystemV3 实例已创建")
+
+        personality_v3.init_tables()
+        app.logger.info("V3: 持久层表已初始化")
+
+        # 配置蒸馏模型
+        if Config.DISTILLATION_MODEL == "lmstudio":
+            _distill_chat = create_chat_client("fast")
+            _distill_chat.model = Config.PERSONALITY_MODEL_NAME
+            if hasattr(_distill_chat, 'model_name'):
+                _distill_chat.model_name = Config.PERSONALITY_MODEL_NAME
+            personality_v3.set_distillation_model(fast_chat=_distill_chat)
+            app.logger.info("V3: 蒸馏模型使用 LMStudio (model=%s)", Config.PERSONALITY_MODEL_NAME)
+        else:
+            _distill_chat = create_chat_client("deep")
+            personality_v3.set_distillation_model(main_chat=_distill_chat)
+            app.logger.info("V3: 蒸馏模型使用 DeepSeek API")
+
+        # 注入到 PromptEngine
+        prompt_engine.personality_v3 = personality_v3
+        app.logger.info("V3: 已注入到全局 PromptEngine")
+
+        # 当 override_v2 时，禁用 V2 的性格提示词注入
+        if _v3_override:
+            prompt_engine.personality_v2 = None
+            app.logger.info("V3: PERSONALITY_V3_OVERRIDE_V2=true，已禁用 V2 性格注入")
+
+        app.logger.info("PersonalitySystemV3 初始化完成 (override_v2=%s)", _v3_override)
+    except Exception as e:
+        app.logger.warning("PersonalitySystemV3 初始化失败: %s", e, exc_info=True)
+        personality_v3 = None
+else:
+    app.logger.info("V3: PERSONALITY_V3_ENABLED=false，跳过初始化")
+
 engine = create_engine_with_defaults(
     db=db,
     memory_manager=memory_manager,
@@ -613,6 +676,7 @@ engine = create_engine_with_defaults(
     world_state_manager=_world_state_manager,
     narrative_model=_narrative_model,
     task_manager=task_manager,
+    personality_v3=personality_v3,
 )
 app.logger.info("DSNEngine 已创建 (插件: %s)", engine.plugin_manager.list_plugins())
 
@@ -878,14 +942,103 @@ def chat_delete(chat_id):
         return jsonify({"error": "Database error"}), 500
 
 
-# ========== 人格系统 v2 API ==========
+# ========== 人格系统 v3 API ==========
+
+@app.route("/api/v3/card/list", methods=["GET"])
+@login_required
+def v3_card_list():
+    """列出所有角色卡"""
+    if not personality_v3:
+        return jsonify({"error": "PersonalitySystemV3 not available"}), 503
+    cards = personality_v3.list_cards()
+    return jsonify({"cards": cards})
+
+
+@app.route("/api/v3/card/<card_id>", methods=["GET"])
+@login_required
+def v3_card_get(card_id):
+    """获取角色卡详情"""
+    if not personality_v3:
+        return jsonify({"error": "PersonalitySystemV3 not available"}), 503
+    card = personality_v3.get_card(card_id)
+    if not card:
+        return jsonify({"error": "Card not found"}), 404
+    return jsonify(card.to_dict())
+
+
+@app.route("/api/v3/card/upload", methods=["POST"])
+@login_required
+def v3_card_upload():
+    """上传角色卡 YAML"""
+    if not personality_v3:
+        return jsonify({"error": "PersonalitySystemV3 not available"}), 503
+    data = request.get_json()
+    if not data or "yaml" not in data:
+        return jsonify({"error": "Missing yaml content"}), 400
+    try:
+        from prompt.personality_v3 import CharacterCard
+        card = CharacterCard.from_yaml_string(data["yaml"])
+        ok = personality_v3.upload_card(card)
+        return jsonify({"success": ok, "card_id": card.card_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/v3/card/<card_id>/distill", methods=["POST"])
+@login_required
+def v3_card_distill(card_id):
+    """触发角色卡蒸馏"""
+    if not personality_v3:
+        return jsonify({"error": "PersonalitySystemV3 not available"}), 503
+    try:
+        distilled = personality_v3.distill(card_id)
+        if not distilled:
+            return jsonify({"error": "Distillation failed"}), 500
+        return jsonify({
+            "success": True,
+            "distillation_id": distilled.distillation_id,
+            "fingerprint": distilled.content_fingerprint,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v3/card/<card_id>/distillation", methods=["GET"])
+@login_required
+def v3_card_distillation_get(card_id):
+    """获取蒸馏产物"""
+    if not personality_v3:
+        return jsonify({"error": "PersonalitySystemV3 not available"}), 503
+    d = personality_v3.get_distillation(card_id)
+    if not d:
+        return jsonify({"error": "Distillation not found"}), 404
+    return jsonify(d.to_dict())
+
+
+@app.route("/api/v3/user/bind", methods=["POST"])
+@login_required
+def v3_user_bind():
+    """绑定用户到指定角色卡"""
+    if not personality_v3:
+        return jsonify({"error": "PersonalitySystemV3 not available"}), 503
+    data = request.get_json()
+    card_id = data.get("card_id", "") if data else ""
+    if not card_id:
+        return jsonify({"error": "Missing card_id"}), 400
+    ok = personality_v3.bind_user_card(g.user["uid"], card_id)
+    return jsonify({"success": ok})
+
+
+# ========== 人格系统 v2 API (兼容保留) ==========
 
 @app.route("/api/personality/status", methods=["GET"])
 @login_required
 def personality_status():
-    """获取当前人格状态摘要"""
+    """获取当前人格状态摘要 — V3 优先"""
+    if personality_v3:
+        return jsonify(personality_v3.get_personality_status(g.user["uid"]))
     if not _personality_v2:
-        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+        return jsonify({"error": "Personality system not available"}), 503
     state = _personality_v2.get_state(g.user["uid"])
     return jsonify(state)
 
@@ -893,9 +1046,11 @@ def personality_status():
 @app.route("/api/personality/current", methods=["GET"])
 @login_required
 def personality_current():
-    """获取完整人格状态"""
+    """获取完整人格状态 — V3 优先"""
+    if personality_v3:
+        return jsonify(personality_v3.get_personality_full(g.user["uid"]))
     if not _personality_v2:
-        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+        return jsonify({"error": "Personality system not available"}), 503
     state = _personality_v2.get_full_state(g.user["uid"])
     return jsonify(state)
 
@@ -903,24 +1058,33 @@ def personality_current():
 @app.route("/api/personality/list", methods=["GET"])
 @login_required
 def personality_list():
-    """列出所有可用性格预设"""
-    if not _personality_v2:
-        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
-    presets = _personality_v2.list_presets()
-    return jsonify({"presets": presets})
+    """列出所有可用性格 — V3 角色卡 + V2 预设"""
+    result = {"presets": []}
+    if personality_v3:
+        result["cards"] = personality_v3.list_cards()
+    if _personality_v2:
+        result["presets"] = _personality_v2.list_presets()
+    return jsonify(result)
 
 
 @app.route("/api/personality/switch", methods=["POST"])
 @login_required
 def personality_switch():
-    """切换到指定性格预设"""
-    if not _personality_v2:
-        return jsonify({"error": "PersonalitySystemV2 not available"}), 503
+    """切换到指定性格 — V3 绑角色卡 / V2 切换预设"""
     data = request.get_json()
-    if not data or "preset" not in data:
-        return jsonify({"error": "Missing preset name"}), 400
-    result = _personality_v2.switch_preset(g.user["uid"], data["preset"])
-    return jsonify(result)
+    if not data:
+        return jsonify({"error": "Missing data"}), 400
+
+    # V3: 通过 card_id 绑定角色卡
+    if personality_v3 and "card_id" in data:
+        ok = personality_v3.bind_user_card(g.user["uid"], data["card_id"])
+        return jsonify({"success": ok, "card_id": data["card_id"]})
+
+    # V2: 通过 preset 切换预设
+    if _personality_v2 and "preset" in data:
+        return jsonify(_personality_v2.switch_preset(g.user["uid"], data["preset"]))
+
+    return jsonify({"error": "Missing preset or card_id"}), 400
 
 
 # ========== 用户印象 API ==========

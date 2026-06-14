@@ -128,6 +128,14 @@ class Config:
     VISION_ENABLED = _env("VISION_ENABLED", "true").lower() == "true"
     VISION_PROMPT = _env("VISION_PROMPT", "请详细描述这张图片的内容")
 
+    # ==================== 人格系统 v3 ====================
+    PERSONALITY_V3_ENABLED = _env("PERSONALITY_V3_ENABLED", "true").lower() == "true"
+    PERSONALITY_V3_OVERRIDE_V2 = _env("PERSONALITY_V3_OVERRIDE_V2", "true").lower() == "true"
+    PERSONALITY_MODEL_NAME = _env("PERSONALITY_MODEL_NAME", "google/gemma-3-4b")
+    PERSONALITY_MODEL_URL = _env("PERSONALITY_MODEL_URL", None) or _env("LMSTUDIO_BASE_URL", "http://localhost:4501")
+    DISTILLATION_MODEL = _env("DISTILLATION_MODEL", "deepseek")  # "deepseek" | "lmstudio"
+    PERSONALITY_V3_DEFAULT_CARD = _env("PERSONALITY_V3_DEFAULT_CARD", "")
+
     # ==================== Token 消耗定价 (USD / 1M tokens) ====================
     # DeepSeek v4-flash (cache miss)
     DEEPSEEK_FLASH_INPUT_PRICE = 0.14
