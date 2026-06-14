@@ -21,7 +21,7 @@ class PromptEngine:
 
     组装顺序:
       1. core/         — 身份 · 格式 · 安全
-      2. 性格描述       — PersonalitySystemV2 动态生成
+      2. 性格描述       — PersonalitySystemV3 或 V2 动态生成
       3. capabilities/ — 能力定义
       4. skills/       — 已加载技能的提示词 (从 SkillRegistry 注入)
       5. extensions/   — 用户扩展
@@ -32,10 +32,12 @@ class PromptEngine:
         self,
         library: PromptLibrary | None = None,
         personality_v2=None,  # PersonalitySystemV2
+        personality_v3=None,  # PersonalitySystemV3
         skill_registry=None,  # SkillRegistry
     ):
         self.library = library or PromptLibrary()
         self._personality_v2 = personality_v2
+        self._personality_v3 = personality_v3
         self._skill_registry = skill_registry
 
     @property
@@ -45,6 +47,14 @@ class PromptEngine:
     @personality_v2.setter
     def personality_v2(self, value):
         self._personality_v2 = value
+
+    @property
+    def personality_v3(self):
+        return self._personality_v3
+
+    @personality_v3.setter
+    def personality_v3(self, value):
+        self._personality_v3 = value
 
     def set_skill_registry(self, registry) -> None:
         self._skill_registry = registry
@@ -63,8 +73,13 @@ class PromptEngine:
         if core:
             sections.append(core)
 
-        # 2. 性格描述 — v2
-        if self._personality_v2:
+        # 2. 性格描述 — V3 优先，回退到 V2
+        if self._personality_v3 and self._personality_v3.enabled:
+            uid = user_info.get("uid", 0)
+            v3_prompt = self._personality_v3.generate_personality_prompt(uid)
+            if v3_prompt:
+                sections.append(v3_prompt)
+        elif self._personality_v2:
             uid = user_info.get("uid", 0)
             sections.append(self._personality_v2.build_prompt(uid))
 
@@ -132,6 +147,7 @@ def init_prompt_engine(library_dirs: list[str] | None = None,
         except Exception as e:
             logger.warning("PersonalitySystemV2 初始化失败: %s", e)
 
+    # V3 在 app.py 中独立初始化后注入，这里不在此初始化
     engine = PromptEngine(library=lib, personality_v2=pers_v2)
     _default_engine = engine
 

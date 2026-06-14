@@ -489,7 +489,13 @@ class DSNEngine:
         # 2b. PersonalityPlugin (POST_PROCESS, priority 25)
         if enabled("personality"):
             pe = self.prompt_engine
-            if pe and pe.personality_v2:
+            # V3 plugin 优先
+            if pe and pe.personality_v3 and pe.personality_v3.enabled:
+                from plugins.builtin.personality_v3_plugin import PersonalityV3Plugin
+                self.plugin_manager.register(PersonalityV3Plugin(
+                    personality_v3=pe.personality_v3,
+                ))
+            elif pe and pe.personality_v2:
                 from plugins.builtin.personality_plugin import PersonalityPlugin
                 self.plugin_manager.register(PersonalityPlugin(
                     personality_v2=pe.personality_v2,
@@ -765,6 +771,7 @@ def create_engine_with_defaults(
     world_state_manager = None,
     narrative_model = None,
     task_manager = None,
+    personality_v3 = None,
 ) -> DSNEngine:
     """
     使用已有组件创建引擎（供 app.py 复用）。
@@ -806,18 +813,32 @@ def create_engine_with_defaults(
     if task_manager:
         engine.task_manager = task_manager
 
-    # PromptEngine — v2
+    # PromptEngine
     _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt")
-    pers_v2 = PersonalitySystemV2(db=db)
-    pers_v2.scan_presets(_os.path.join(_prompt_dir, "personality_v2", "presets"))
-    pers_v2.load_rules_from_files()
     lib = PromptLibrary()
     lib.scan_and_load(
         _os.path.join(_prompt_dir, "prompts", "core"),
         _os.path.join(_prompt_dir, "prompts", "capabilities"),
         _os.path.join(_prompt_dir, "prompts", "extensions"),
     )
+
+    # V3 存在且 override 时，跳过 V2 创建
+    _v3_override = personality_v3 and personality_v3.enabled
+    pers_v2 = None
+    if not _v3_override:
+        try:
+            from config import Config
+            pers_v2 = PersonalitySystemV2(db=db)
+            pers_v2.scan_presets(_os.path.join(_prompt_dir, "personality_v2", "presets"))
+            pers_v2.load_rules_from_files()
+            logging.getLogger("DSNEngine").info("PersonalitySystemV2 已在引擎内初始化")
+        except Exception as e:
+            logging.getLogger("DSNEngine").warning("PersonalitySystemV2 引擎内初始化失败: %s", e)
+
     engine.prompt_engine = PromptEngine(library=lib, personality_v2=pers_v2)
+    if personality_v3:
+        engine.prompt_engine.personality_v3 = personality_v3
+        logging.getLogger("DSNEngine").info("PersonalitySystemV3 已注入到引擎 PromptEngine")
     if skill_registry:
         engine.prompt_engine.set_skill_registry(skill_registry)
 
@@ -860,11 +881,18 @@ def create_engine_with_defaults(
         ))
 
     pe = engine.prompt_engine
-    if pe and pe.personality_v2:
+    if pe and pe.personality_v3 and pe.personality_v3.enabled:
+        from plugins.builtin.personality_v3_plugin import PersonalityV3Plugin
+        engine.plugin_manager.register(PersonalityV3Plugin(
+            personality_v3=pe.personality_v3,
+        ))
+        logging.getLogger("DSNEngine").info("PersonalityV3Plugin 已注册")
+    elif pe and pe.personality_v2:
         from plugins.builtin.personality_plugin import PersonalityPlugin
         engine.plugin_manager.register(PersonalityPlugin(
             personality_v2=pe.personality_v2,
         ))
+        logging.getLogger("DSNEngine").info("PersonalityPlugin (V2) 已注册")
 
     if engine.impression_manager:
         from plugins.builtin.impression_plugin import ImpressionPlugin

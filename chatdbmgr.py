@@ -172,6 +172,14 @@ class ChatDBManager:
                 from prompt.personality_v2.persistence import CREATE_PERSONALITY_TABLE
                 conn.execute(CREATE_PERSONALITY_TABLE)
 
+                # 人格系统 v3 持久层表
+                try:
+                    from prompt.personality_v3.persistence import ALL_TABLES as V3_TABLES
+                    for _name, _sql in V3_TABLES:
+                        conn.execute(_sql)
+                except Exception:
+                    pass  # V3 可能未完全部署
+
                 # 用户印象表
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS user_impressions (
