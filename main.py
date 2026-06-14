@@ -426,6 +426,7 @@ def _cmd_help():
     /memory users    列出用户及记忆统计
     /memory chats <用户ID>  列出用户的聊天
     /memory list <用户ID> <聊天ID> [轮次]  列出/查看记忆
+    /prompt [用户ID]   查看当前合成后的系统提示词
     /config listall   列出所有配置项 (敏感信息隐藏)
     /config set <键> <值>  动态修改配置并写入 .env
     /config undo      回退 .env 到上一版本 (最多 3 步)
@@ -669,6 +670,35 @@ def _cmd_memory_list(db, uid_str: str, cid_str: str, round_str: str | None):
         console.print(table)
 
 
+def _cmd_prompt(prompt_engine, args: str):
+    """获取当前最终合成后的系统提示词"""
+    if not prompt_engine:
+        print("  错误: PromptEngine 不可用")
+        return
+
+    uid_str = args.strip() if args else "0"
+    try:
+        uid = int(uid_str)
+    except ValueError:
+        print(f"  无效的用户 ID: {uid_str}")
+        return
+
+    user_info = {"uid": uid, "nickname": f"User_{uid}"}
+    try:
+        prompt = prompt_engine.build_system_prompt(user_info)
+    except Exception as e:
+        print(f"  构建提示词失败: {e}")
+        return
+
+    if not prompt:
+        print("  提示词为空")
+        return
+
+    print(f"\n  [bold]System Prompt (uid={uid}) — {len(prompt)} 字符[/]\n")
+    print(prompt)
+    print(f"\n  [dim]── 共 {len(prompt)} 字符 ──[/]\n")
+
+
 def _cmd_memory_help():
     """显示 memory 命令帮助"""
     print("""
@@ -680,7 +710,7 @@ def _cmd_memory_help():
 """)
 
 
-def _execute_command(line, auth_manager, db, plugin_manager, config_cls=None, shutdown_event=None):
+def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None):
     """解析并执行命令"""
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -697,6 +727,8 @@ def _execute_command(line, auth_manager, db, plugin_manager, config_cls=None, sh
     elif cmd == "/memory":
         args = parts[1].strip() if len(parts) > 1 else ""
         _cmd_memory(auth_manager, db, args)
+    elif cmd == "/prompt":
+        _cmd_prompt(prompt_engine, parts[1].strip() if len(parts) > 1 else "")
     elif cmd == "/config":
         args = parts[1].strip() if len(parts) > 1 else ""
         _cmd_config(config_cls, args)
@@ -733,6 +765,7 @@ def main():
     db = app_module.db
     engine = getattr(app_module, 'engine', None)
     plugin_manager = engine.plugin_manager if engine else None
+    prompt_engine = engine.prompt_engine if engine else None
 
     # ── 启动提示（替代旧自动配对码） ──
     try:
@@ -823,7 +856,7 @@ def main():
                 continue
 
             if line.startswith("/"):
-                _execute_command(line, auth_manager, db, plugin_manager, Config, _shutdown_flag)
+                _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, Config, _shutdown_flag)
             else:
                 _handle_steward_chat(line)
 

@@ -183,13 +183,10 @@ class AgentPlugin(Plugin):
             ctx.extra["_agent_reply_dirty"] = True
             if self._db and ctx.chat_id:
                 try:
-                    self._db.append_messages(
-                        ctx.user_id, ctx.chat_id,
-                        [{"role": "assistant", "content": ctx.reply}],
-                    )
-                    logger.info("Agent 最终回复已保存到聊天 %d", ctx.chat_id)
+                    self._db.replace_last_assistant(ctx.user_id, ctx.chat_id, ctx.reply)
+                    logger.info("Agent 最终回复已更新到聊天 %d", ctx.chat_id)
                 except Exception as e:
-                    logger.error("保存 Agent 最终回复失败: %s", e)
+                    logger.error("更新 Agent 最终回复失败: %s", e)
 
         if step_count >= max_steps:
             logger.warning("Agent 达到最大步数 %d", max_steps)

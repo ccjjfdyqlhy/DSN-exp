@@ -430,15 +430,19 @@
                     addLineStatic('>', content, 'active-group-top');
                 } else if (m.role === 'assistant') {
                     var p = parseControlTags(m.content);
-                    p.narrations.forEach(function (n) { addLineStatic('', n, 'narration-line'); });
+                    p.narrations.forEach(function (n) { addNarratorLine(n); });
                     addLineStatic(aiName, p.text, 'active-group-bottom');
                 } else if (m.role === 'system') {
-                    if (/^\[系统\]|^\[Agent|^\[工具结果/.test(m.content)) return;
+                    if (/^\[Agent|^\[工具结果/.test(m.content)) return;
                     addSystemLine(m.content);
                 }
             });
             var lines = dom.textBox.querySelectorAll('.text-line');
             lines.forEach(function (l) {
+                if (l.classList.contains('narrator-line')) {
+                    l.classList.add('active');
+                    return;
+                }
                 l.classList.remove('active', 'active-group-top', 'active-group-bottom');
                 l.classList.add('history');
             });
@@ -685,6 +689,7 @@
                                 if (ev.text) updateStatusBarText(ev.text);
                                 break;
                             case 'text_ready':
+                                console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
                                 if (ttsEnabled) break;
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
@@ -695,6 +700,8 @@
                                 break;
                             case 'text_update':
                                 if (ev.reply) await addMessage(aiName, ev.reply, false);
+                                break;
+                            case 'task_result':
                                 break;
                             case 'line':
                                 if (ev.text) { lineQueue.push(ev); processLineQueue(); }
@@ -796,6 +803,7 @@
                                 if (ev.text) updateStatusBarText(ev.text);
                                 break;
                             case 'text_ready':
+                                console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
                                 if (ttsEnabled) break;
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
@@ -804,8 +812,10 @@
                                 addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
                                 updateStatusBar();
                                 break;
-                            case 'text_update':
+                case 'text_update':
                                 if (ev.reply) await addMessage(aiName, ev.reply, false);
+                                break;
+                            case 'task_result':
                                 break;
                             case 'line':
                                 if (ev.text) {
@@ -814,7 +824,7 @@
                                 }
                                 break;
                             case 'completed':
-                                if (ev.reply) await addMessage(aiName, ev.reply, true);
+                                // wait for typewriter + line queue below
                                 if (ev.timing) {
                                     pendingTiming = ev.timing;
                                 }

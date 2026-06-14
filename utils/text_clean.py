@@ -18,7 +18,8 @@ def clean_display(raw: str, preserve_newlines: bool = True) -> str:
         t = re.sub(rf"<{tag}>.*?</{tag}>", '', t, flags=re.DOTALL)
     t = re.sub(r'<[^>]+>', '', t)
     if preserve_newlines:
-        t = re.sub(r'[^\S\n]+', ' ', t).strip()
+        t = re.sub(r'[^\S\n]+', ' ', t)
+        t = re.sub(r'\n{2,}', '\n', t).strip()
     else:
         t = re.sub(r'\s+', ' ', t).strip()
     return t

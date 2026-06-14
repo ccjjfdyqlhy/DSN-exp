@@ -18,6 +18,69 @@ from .manager import PluginManager
 logger = logging.getLogger("ChatPipeline")
 
 
+async def _task_completion_llm_reply(ctx, progress_q, output: str, error: str, success: bool):
+    """任务完成后调用 LLM 生成自然语言回复，推送 text_ready，保存到 DB"""
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+
+    def _invoke():
+        pm = ctx.extra.get("_plugin_manager")
+        if not pm:
+            return None
+        models_plugin = None
+        for p in pm.get_hooks_for(HookPoint.MODEL_INVOKE):
+            if p.__class__.__name__ == 'ModelsPlugin':
+                models_plugin = p
+                break
+        if not models_plugin:
+            return None
+
+        from datetime import datetime
+        msgs = [{"role": "system", "content": ctx.system_prompt}]
+        msgs.extend(ctx.full_history)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+        msgs.append({"role": "assistant", "content": ctx.original_reply})
+        msg = f"[异步任务结果]\n"
+        if success:
+            msg += f"任务执行成功。\n输出:\n{output}"
+        else:
+            msg += f"任务执行失败。\n错误: {error}"
+        msgs.append({"role": "user", "content": msg})
+
+        try:
+            return models_plugin.invoke(msgs, ctx)
+        except Exception as e:
+            logger.error("任务完成 LLM 调用失败: %s", e)
+            return None
+
+    reply = await loop.run_in_executor(None, _invoke)
+    if not reply:
+        return
+
+    import re as _re
+    clean = _re.sub(r"<[^>]+>", "", reply)
+    clean = _re.sub(r"[^\S\n]+", " ", clean)
+    clean = _re.sub(r"\n{2,}", "\n", clean).strip()
+    if not clean:
+        return
+
+    ctx.reply = clean
+    logger.info("[text_ready:task_llm] reply=%s", clean[:60])
+    db = ctx.extra.get("_db")
+    if db and ctx.chat_id:
+        try:
+            db.replace_last_assistant(ctx.user_id, ctx.chat_id, clean)
+        except Exception:
+            logger.exception("保存任务 LLM 回复到 DB 失败")
+
+    await progress_q.put({
+        "status": "text_ready",
+        "reply": clean,
+        "chat_id": ctx.chat_id,
+    })
+
+
 def _extract_narrations(raw: str) -> list[str]:
     """从原始回复中提取标签，生成人类可读的动作旁白"""
     import re as _re
@@ -331,6 +394,7 @@ class ChatPipeline:
 
                 if ctx.original_reply:
                     if ctx.reply and ctx.reply != "…":
+                        logger.info("[text_ready:model_invoke] reply=%s", ctx.reply[:60])
                         yield f"data: {json.dumps({
                             'status': 'text_ready',
                             'reply': ctx.reply,
@@ -363,6 +427,7 @@ class ChatPipeline:
                 progress_q: asyncio.Queue = asyncio.Queue()
                 thread_q = queue.Queue()
                 ctx.extra["_progress_queue"] = thread_q
+                ctx.extra["_plugin_manager"] = self.pm
 
                 async def bridge():
                     loop = asyncio.get_event_loop()
@@ -422,6 +487,11 @@ class ChatPipeline:
                                     if error:
                                         evt["error"] = str(error)[:500]
                                     await progress_q.put(evt)
+
+                                    if output and success:
+                                        await _task_completion_llm_reply(
+                                            ctx, progress_q, output, error, success
+                                        )
                             if remaining:
                                 await asyncio.sleep(0.3)
 
@@ -471,17 +541,15 @@ class ChatPipeline:
                     db = ctx.extra.get("_db")
                     if db and ctx.chat_id:
                         try:
-                            db.append_messages(
-                                ctx.user_id, ctx.chat_id,
-                                [{"role": "assistant", "content": ctx.reply}],
-                            )
+                            db.replace_last_assistant(ctx.user_id, ctx.chat_id, ctx.reply)
                         except Exception:
-                            logger.exception("保存 Agent 回复到 DB 失败")
+                            logger.exception("更新 Agent 回复到 DB 失败")
                     yield f"data: {json.dumps({
                         'status': 'text_ready',
                         'reply': ctx.reply,
                         'chat_id': ctx.chat_id,
                     })}\n\n"
+                    logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
                     ctx.extra["_agent_reply_dirty"] = False
 
             elif hook == HookPoint.POST_TTS:
