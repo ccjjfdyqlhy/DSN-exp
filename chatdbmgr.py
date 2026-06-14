@@ -9,6 +9,7 @@ from typing import List, Dict, Optional, Any
 
 from crypto_utils import MessageCipher
 
+# Config.py 优先于下面这个，没填配置的时候fallback
 DEFAULT_DB_FILE = "chats.db"
 
 
@@ -689,6 +690,29 @@ class ChatDBManager:
         except sqlite3.Error as e:
             self.logger.error("列出聊天会话失败: %s", e)
             raise
+
+    def replace_last_assistant(self, user_id: int, chat_id: int, new_content: str) -> bool:
+        """用新内容替换聊天中最后一条助手消息（用于 Agent 循环更新回复）"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT message_id FROM messages WHERE chat_id = ? AND role = 'assistant' "
+                "ORDER BY message_id DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+            if not row:
+                return False
+            encrypted = self._cipher.encrypt(user_id, new_content)
+            conn.execute(
+                "UPDATE messages SET content = ? WHERE message_id = ?",
+                (encrypted, row["message_id"]),
+            )
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            self.logger.error("替换最后助手消息失败: %s", e)
+            conn.rollback()
+            return False
 
     def delete_chat(self, user_id: int, chat_id: int) -> bool:
         """删除聊天会话（需验证所有权）"""

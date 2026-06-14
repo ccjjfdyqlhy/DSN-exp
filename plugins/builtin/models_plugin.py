@@ -122,7 +122,7 @@ class ModelsPlugin(Plugin):
         cleaned = re.sub(r"<continue\s*/>", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"<[^>]+>", "", cleaned)
         cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
-        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = re.sub(r"\n{2,}", "\n", cleaned)
         cleaned = cleaned.strip()
         if not cleaned:
             cleaned = "…"

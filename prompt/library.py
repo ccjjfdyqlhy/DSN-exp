@@ -59,6 +59,8 @@ class PromptLibrary:
                 continue
             for f in sorted(p.rglob("*")):
                 if f.suffix in (".md", ".yaml", ".yml"):
+                    if f.stem.upper() == "README":
+                        continue
                     try:
                         self.load_file(str(f))
                         count += 1
@@ -83,6 +85,7 @@ class PromptLibrary:
             meta = {}
             content = text.strip()
 
+        has_fm = m is not None
         entry = PromptEntry(
             name=meta.get("name", Path(path).stem),
             category=meta.get("category", "extensions"),
@@ -90,7 +93,7 @@ class PromptLibrary:
             description=meta.get("description", ""),
             tags=meta.get("tags", []),
             priority=int(meta.get("priority", 50)),
-            enabled=meta.get("enabled", True),
+            enabled=meta.get("enabled", has_fm),
             content=content,
             source_file=str(path),
         )
