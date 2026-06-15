@@ -508,6 +508,11 @@ class DSNEngine:
                 impression_manager=self.impression_manager,
             ))
 
+        # 2d. ConfirmPlugin (PRE_PROCESS + POST_PROCESS, priority 32)
+        if enabled("confirm"):
+            from plugins.builtin.confirm_plugin import ConfirmPlugin
+            self.plugin_manager.register(ConfirmPlugin())
+
         # 3. RecallPlugin (POST_PROCESS, priority 33)
         if enabled("recall") and self.memory_manager:
             try:
@@ -932,7 +937,13 @@ def create_engine_with_defaults(
             db=db,
         ))
 
-    # ---- 补充注册：RecallPlugin / SSPPlugin ----
+    # ---- 补充注册：ConfirmPlugin / RecallPlugin / SSPPlugin ----
+
+    try:
+        from plugins.builtin.confirm_plugin import ConfirmPlugin
+        engine.plugin_manager.register(ConfirmPlugin())
+    except Exception as e:
+        engine._logger.warning("ConfirmPlugin 加载失败: %s", e)
 
     if memory_manager and db:
         try:

@@ -285,6 +285,96 @@ input, textarea, button {
     opacity: 0.3;
 }
 
+/* ── Quick Confirm ── */
+#quick-confirm {
+    position: absolute;
+    left: 12px;
+    bottom: 100%;
+    margin-bottom: 10px;
+    opacity: 0;
+    transform: translateY(10px);
+    pointer-events: none;
+    transition: opacity 0.35s cubic-bezier(0.22, 1, 0.36, 1), transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#quick-confirm.active {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+#quick-confirm.hidden {
+    display: none;
+}
+
+#quick-confirm.active-hidden {
+    opacity: 0;
+    transform: translateY(10px);
+    pointer-events: none;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+#btn-confirm {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px) saturate(150%);
+    -webkit-backdrop-filter: blur(12px) saturate(150%);
+    border: 1px solid rgba(46, 204, 113, 0.4);
+    color: rgba(46, 204, 113, 0.9);
+    font-family: 'LanaPixel', sans-serif;
+    font-size: 15px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    white-space: nowrap;
+}
+
+#btn-confirm:hover {
+    background: rgba(46, 204, 113, 0.15);
+    border-color: rgba(46, 204, 113, 0.7);
+    color: rgba(46, 204, 113, 1);
+    box-shadow: 0 0 20px rgba(46, 204, 113, 0.25);
+    transform: translateY(-2px);
+}
+
+#btn-confirm:active {
+    transform: scale(0.96);
+    transition: transform 0.1s ease;
+}
+
+#confirm-icon {
+    flex-shrink: 0;
+    transition: stroke 0.25s ease;
+}
+
+#confirm-label {
+    transition: color 0.25s ease;
+}
+
+#confirm-progress {
+    width: 100%;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.08);
+    margin-top: 4px;
+    overflow: hidden;
+}
+
+#confirm-progress-bar {
+    height: 100%;
+    width: 100%;
+    background: rgba(46, 204, 113, 0.6);
+    transform-origin: left center;
+    transition: width 0.1s linear;
+}
+
+/* input-area shrink when confirm is active */
+#input-area.has-confirm #input-text-mode {
+    /* the quick-confirm sits above-left, input shrinks visually via the wrapper */
+}
+
 .input-row {
     display: flex;
     align-items: flex-end;
