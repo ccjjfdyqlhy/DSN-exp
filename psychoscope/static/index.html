@@ -22,6 +22,15 @@
 </div>
 
 <div id="input-area">
+    <div id="quick-confirm" class="hidden">
+        <button id="btn-confirm" title="接受 (Enter)">
+            <svg id="confirm-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <span id="confirm-label">接受</span>
+        </button>
+        <div id="confirm-progress"><div id="confirm-progress-bar"></div></div>
+    </div>
     <div id="image-preview" class="hidden">
         <img id="preview-img" src="" alt="preview">
         <button id="btn-remove-image" title="移除图片">&times;</button>

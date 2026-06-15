@@ -768,6 +768,7 @@ def chat_send():
         "chat_id": result["chat_id"],
         "audio": result.get("audio_b64"),
         "tts_error": result.get("tts_error"),
+        "confirm_requested": result.get("extra", {}).get("confirm_requested", False),
     })
 
 @app.route("/api/chat/stream_send", methods=["POST"])

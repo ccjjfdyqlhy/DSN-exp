@@ -1,0 +1,350 @@
+name: github
+display_name: "GitHub 操作"
+description: "提供 Git 和 GitHub 操作能力：克隆/拉取仓库、分支管理、提交推送、创建 PR、查看 Issues/PRs"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 55
+
+tools:
+  # ---- 仓库操作 ----
+  - name: clone
+    display_name: "克隆仓库"
+    description: "git clone 仓库到本地，已存在则 pull 更新"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: clone
+        description: "克隆远端仓库到本地，支持自定义目标路径"
+        parameters:
+          repo_url:
+            type: string
+            description: "仓库 URL (HTTPS 或 SSH)"
+            required: true
+          repo_name:
+            type: string
+            description: "本地目录名，默认从 URL 推断"
+            required: false
+          target_path:
+            type: string
+            description: "自定义克隆目标路径。未指定则默认克隆到 ~/dsn_workspace。支持 ~ 展开"
+            required: false
+
+  - name: pull
+    display_name: "拉取代码"
+    description: "git pull 拉取远程最新代码"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: pull
+        description: "从远程拉取最新提交"
+        parameters:
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+          branch:
+            type: string
+            description: "指定拉取的分支名"
+            required: false
+
+  - name: fetch
+    display_name: "获取远程信息"
+    description: "git fetch 获取所有远程分支信息"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: fetch
+        description: "从远程获取分支和标签信息"
+        parameters:
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  # ---- 分支操作 ----
+  - name: branch
+    display_name: "创建分支"
+    description: "创建并切换到新分支"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: branch
+        description: "基于当前 HEAD 创建新分支并切换"
+        parameters:
+          name:
+            type: string
+            description: "新分支名"
+            required: true
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: checkout
+    display_name: "切换分支"
+    description: "切换到已有分支"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: checkout
+        description: "切换到指定分支"
+        parameters:
+          branch:
+            type: string
+            description: "目标分支名"
+            required: true
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: list_branches
+    display_name: "列出分支"
+    description: "列出本地和远程分支"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: list_branches
+        description: "列出所有本地和远程分支"
+        parameters:
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  # ---- 查看与对比 ----
+  - name: status
+    display_name: "查看状态"
+    description: "查看仓库文件变更状态 (git status)"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: status
+        description: "列出所有已修改、新增、删除的文件"
+        parameters:
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: diff
+    display_name: "查看差异"
+    description: "查看代码改动详情 (git diff)"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: diff
+        description: "对比工作区与暂存区的差异"
+        parameters:
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+          staged:
+            type: boolean
+            description: "是否查看已暂存的改动"
+            default: false
+          files:
+            type: array
+            description: "限定查看的文件列表"
+            required: false
+
+  - name: log
+    display_name: "查看日志"
+    description: "查看 git 提交历史"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: log
+        description: "列出最近 N 条提交记录"
+        parameters:
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+          count:
+            type: integer
+            description: "显示的提交数量"
+            default: 10
+
+  # ---- 文件操作 ----
+  - name: write_file
+    display_name: "写入文件"
+    description: "在仓库中写入或修改文件"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: write_file
+        description: "创建或覆盖仓库中的文件"
+        parameters:
+          path:
+            type: string
+            description: "文件相对路径"
+            required: true
+          content:
+            type: string
+            description: "文件内容"
+            required: true
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: read_file
+    display_name: "读取文件"
+    description: "读取仓库中的文件内容"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: read_file
+        description: "读取仓库中指定文件的内容"
+        parameters:
+          path:
+            type: string
+            description: "文件相对路径"
+            required: true
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+          limit:
+            type: integer
+            description: "最大读取字符数"
+            default: 5000
+
+  # ---- 提交与推送 ----
+  - name: commit
+    display_name: "提交更改"
+    description: "git add 并 commit 所有更改"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: commit
+        description: "暂存所有改动并提交"
+        parameters:
+          message:
+            type: string
+            description: "提交信息"
+            required: true
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: push
+    display_name: "推送分支"
+    description: "推送分支到远程仓库"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: push
+        description: "将本地提交推送到 origin"
+        parameters:
+          branch:
+            type: string
+            description: "要推送的分支名"
+            required: true
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+          force:
+            type: boolean
+            description: "是否强制推送"
+            default: false
+
+  # ---- GitHub 操作 ----
+  - name: create_pr
+    display_name: "创建 PR"
+    description: "在 GitHub 上创建 Pull Request"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: create_pr
+        description: "创建 Pull Request"
+        parameters:
+          title:
+            type: string
+            description: "PR 标题"
+            required: true
+          body:
+            type: string
+            description: "PR 描述内容"
+            required: true
+          head:
+            type: string
+            description: "源分支名"
+            required: true
+          base:
+            type: string
+            description: "目标分支名"
+            default: "main"
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: list_issues
+    display_name: "查看 Issues"
+    description: "列出仓库的 Issues"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: list_issues
+        description: "列出仓库 Issues"
+        parameters:
+          state:
+            type: string
+            description: "过滤状态 (open/closed/all)"
+            default: "open"
+          limit:
+            type: integer
+            description: "最大返回数"
+            default: 10
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+  - name: list_prs
+    display_name: "查看 PRs"
+    description: "列出仓库的 Pull Requests"
+    module: "tools.git_tool"
+    class: "GitTool"
+    methods:
+      - name: list_prs
+        description: "列出仓库 Pull Requests"
+        parameters:
+          state:
+            type: string
+            description: "过滤状态 (open/closed/merged/all)"
+            default: "open"
+          limit:
+            type: integer
+            description: "最大返回数"
+            default: 10
+          repo_path:
+            type: string
+            description: "仓库本地路径"
+            required: false
+
+activation:
+  keywords:
+    - git
+    - github
+    - PR
+    - pull request
+    - 推送
+    - 提交
+    - 分支
+    - 克隆
+    - 仓库
+    - clone
+    - commit
+
+dependencies: []
+tags: [git, github, code, contribution, vcs]

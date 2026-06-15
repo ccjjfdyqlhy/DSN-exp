@@ -53,6 +53,8 @@
     var audioAnalyser = null;
     var tabHoldTimer = null;
     var tabHoldFired = false;
+    var confirmTimer = null;
+    var confirmActive = false;
 
     // DOM
     var $ = function (s) { return document.querySelector(s); };
@@ -97,6 +99,9 @@
         recordWaveform: $('#record-waveform'),
         btnModeSwitch: $('#btn-mode-switch'),
         modeSwitchIcon: $('#mode-switch-icon'),
+        quickConfirm: $('#quick-confirm'),
+        btnConfirm: $('#btn-confirm'),
+        confirmProgressBar: $('#confirm-progress-bar'),
     };
 
     // utils
@@ -703,6 +708,9 @@
                                 break;
                             case 'task_result':
                                 break;
+                            case 'confirm_requested':
+                                showConfirm();
+                                break;
                             case 'line':
                                 if (ev.text) { lineQueue.push(ev); processLineQueue(); }
                                 break;
@@ -817,6 +825,9 @@
                                 break;
                             case 'task_result':
                                 break;
+                            case 'confirm_requested':
+                                showConfirm();
+                                break;
                             case 'line':
                                 if (ev.text) {
                                     lineQueue.push(ev);
@@ -830,6 +841,7 @@
                                 }
                                 if (ev.usage) pendingUsage = ev.usage;
                                 if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
+                                if (ev.confirm_requested) showConfirm();
                                 break;
                         }
                     } catch (_) {}
@@ -870,6 +882,7 @@
     function sendMessage() {
         var text = dom.msgInput.value.trim();
         if (!text || isProcessing) return;
+        hideConfirm();
         isProcessing = true;
         dom.btnSend.textContent = '■';
         dom.btnSend.classList.add('stop-mode');
@@ -1056,6 +1069,12 @@
     });
 
     document.addEventListener('keydown', function (e) {
+        // Enter: quick confirm
+        if (e.key === 'Enter' && confirmActive && !e.ctrlKey && !e.metaKey && !isProcessing) {
+            e.preventDefault();
+            doConfirm();
+            return;
+        }
         // Ctrl: hold 2s switch mode
         if (e.key === 'Control' && !e.repeat && !tabHoldFired) {
             if (!tabHoldTimer) {
@@ -1225,7 +1244,66 @@
         }
     });
 
-    // init
+    // ── Quick Confirm ──
+    var CONFIRM_TIMEOUT = 15000;
+
+    function showConfirm() {
+        if (confirmActive) return;
+        confirmActive = true;
+        dom.quickConfirm.classList.remove('hidden');
+        dom.quickConfirm.classList.add('active');
+        dom.inputArea.classList.add('has-confirm');
+        dom.quickConfirm.classList.remove('active-hidden');
+
+        // 进度条从满到空，15s
+        var startTime = Date.now();
+        dom.confirmProgressBar.style.width = '100%';
+        dom.confirmProgressBar.style.transition = 'none';
+
+        if (confirmTimer) clearInterval(confirmTimer);
+        confirmTimer = setInterval(function () {
+            var elapsed = Date.now() - startTime;
+            var remaining = Math.max(0, CONFIRM_TIMEOUT - elapsed);
+            var pct = (remaining / CONFIRM_TIMEOUT) * 100;
+            dom.confirmProgressBar.style.transition = 'width 0.1s linear';
+            dom.confirmProgressBar.style.width = pct + '%';
+
+            if (remaining <= 0) {
+                hideConfirm();
+            }
+        }, 100);
+    }
+
+    function hideConfirm() {
+        if (confirmTimer) { clearInterval(confirmTimer); confirmTimer = null; }
+        dom.confirmProgressBar.style.width = '0%';
+        dom.quickConfirm.classList.remove('active');
+        dom.quickConfirm.classList.add('active-hidden');
+        dom.inputArea.classList.remove('has-confirm');
+
+        setTimeout(function () {
+            if (!confirmActive) {
+                dom.quickConfirm.classList.add('hidden');
+                dom.quickConfirm.classList.remove('active-hidden');
+            }
+        }, 350);
+
+        confirmActive = false;
+    }
+
+    function doConfirm() {
+        hideConfirm();
+        dom.msgInput.value = '接受';
+        sendMessage();
+    }
+
+    dom.btnConfirm.addEventListener('click', function (e) {
+        e.preventDefault();
+        if (!confirmActive) return;
+        doConfirm();
+    });
+
+    // ── init
     async function init() {
         // Check server auth status
         try {

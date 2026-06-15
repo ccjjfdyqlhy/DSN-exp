@@ -528,6 +528,11 @@ class ChatPipeline:
                         'style': 'post',
                     })}\n\n"
 
+                if ctx.extra.get("confirm_requested"):
+                    yield f"data: {json.dumps({
+                        'status': 'confirm_requested',
+                    })}\n\n"
+
                 for text in collector.drain():
                     if text:
                         yield f"data: {json.dumps({
@@ -601,6 +606,8 @@ class ChatPipeline:
             'tts_error': ctx.tts_error,
             'timing': timing,
         }
+        if ctx.extra.get("confirm_requested"):
+            completed["confirm_requested"] = True
         if ctx.usage:
             completed['usage'] = ctx.usage
             completed['model_name'] = ctx.model_name
