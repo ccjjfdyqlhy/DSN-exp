@@ -2,8 +2,10 @@
 # DSN-exp/memory.py
 # UPD v3_260328
 
+import re
 import threading
 import logging
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, Future
 from typing import List, Dict, Any, Optional
 
@@ -11,6 +13,8 @@ from config import Config
 from chatdbmgr import ChatDBManager
 from models import LMSummaryModel
 from memory_recall import MemoryRecallEngine
+
+_RECALL_TAG_RE = re.compile(r"<recall>\s*(.*?)\s*</recall>", re.DOTALL)
 
 
 class MemoryManager:
@@ -91,10 +95,11 @@ class MemoryManager:
         self.logger.info(f"可用记忆数量: {len(memories)}")
 
         # 所有历史（不含系统）
+        if len(full_history) <= threshold or not memories:
+            self.logger.info(f"未触发记忆替换 - 历史消息数({len(full_history)}) <= 阈值({threshold}) 或 无可用记忆")
+            return full_history
+
         payload = [m.copy() for m in full_history]
-        if len(payload) <= threshold or not memories:
-            self.logger.info(f"未触发记忆替换 - 历史消息数({len(payload)}) <= 阈值({threshold}) 或 无可用记忆")
-            return payload
 
         # 从最远消息开始替换，将最旧 round 替换为 memory.summary，并以 role=system表示记忆
         replace_count = len(payload) - threshold
@@ -110,16 +115,17 @@ class MemoryManager:
                 content_preview = msg.get('content', '')[:50] + ('...' if len(msg.get('content', '')) > 50 else '')
 
         memory_msgs = []
+        now = datetime.now()
         for mem in memories:
             rd = mem.get("round_index", "?")
             ts = mem.get("created_at", "")
             ago = ""
             if ts:
                 try:
-                    from datetime import datetime as _dt
-                    fmt = "%Y-%m-%d %H:%M:%S" if len(str(ts)) > 10 else "%Y-%m-%d"
-                    t = _dt.strptime(str(ts)[:19] if len(str(ts)) > 19 else str(ts), fmt)
-                    delta = _dt.now() - t
+                    ts_str = str(ts)[:19] if len(str(ts)) > 19 else str(ts)
+                    fmt = "%Y-%m-%d %H:%M:%S" if len(ts_str) > 10 else "%Y-%m-%d"
+                    t = datetime.strptime(ts_str, fmt)
+                    delta = now - t
                     if delta.days > 0:
                         ago = f"{delta.days}天前"
                     elif delta.seconds > 3600:
@@ -141,11 +147,9 @@ class MemoryManager:
         处理回复文本中的 <recall> 标签，替换为检索/细节结果。
         供 app.py 和 RecallPlugin 共用。
         """
-        import re as re_mod
         import json as json_mod
 
-        recall_re = re_mod.compile(r"<recall>\s*(.*?)\s*</recall>", re_mod.DOTALL)
-        matches = list(recall_re.finditer(reply_text))
+        matches = list(_RECALL_TAG_RE.finditer(reply_text))
         if not matches:
             return reply_text
 
@@ -162,7 +166,7 @@ class MemoryManager:
             if result:
                 results.append(result)
 
-        cleaned = recall_re.sub("", reply_text).strip()
+        cleaned = _RECALL_TAG_RE.sub("", reply_text).strip()
         if results:
             cleaned += "\n\n" + "\n\n".join(results)
         return cleaned

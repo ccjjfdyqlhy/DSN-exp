@@ -41,6 +41,9 @@ class SkillsPlugin(Plugin):
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
         if self._skill_registry is None:
             return ctx
+        # agent 活跃模式下由 AgentPlugin 处理 <tool>，避免双重执行
+        if ctx.agent_active:
+            return ctx
 
         if hook == HookPoint.POST_PROCESS:
             return self._on_post_process(ctx)

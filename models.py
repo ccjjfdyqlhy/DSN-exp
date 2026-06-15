@@ -31,6 +31,7 @@ class DeepSeekChat:
         logger: Optional[logging.Logger] = None,
         timeout: int = 114514,
         use_reasoner: bool = False,
+        max_history: int = 0,
     ):
         """
         初始化DeepSeek聊天客户端。
@@ -41,6 +42,7 @@ class DeepSeekChat:
         :param logger: 日志记录器实例，若不提供则创建默认logger
         :param timeout: 请求超时时间（秒）
         :param use_reasoner: 是否使用reasoner模型
+        :param max_history: 最大历史消息数（0表示无限制），超过时丢弃最旧消息
         """
         self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
         if not self.api_key:
@@ -52,6 +54,7 @@ class DeepSeekChat:
         self.api_url = api_url
         self.timeout = timeout
         self.use_reasoner = use_reasoner
+        self.max_history = max_history
 
         # 初始化对话历史
         self.messages: List[Dict[str, str]] = []
@@ -87,6 +90,15 @@ class DeepSeekChat:
     def _call_and_append(self) -> str:
         """核心调用逻辑：发送 self.messages → 获取回复 → 追加到 history → 返回"""
         self.logger.info("发送请求，消息数: %d", len(self.messages))
+
+        # 上下文窗口裁剪：保留最多 max_history 条消息
+        if self.max_history > 0 and len(self.messages) > self.max_history:
+            system_msgs = [m for m in self.messages if m.get("role") == "system"]
+            other_msgs = [m for m in self.messages if m.get("role") != "system"]
+            if other_msgs:
+                other_msgs = other_msgs[-(self.max_history - len(system_msgs)):]
+            self.messages = system_msgs + other_msgs
+            self.logger.info("上下文裁剪后消息数: %d", len(self.messages))
 
         # 准备请求
         headers = {
@@ -388,6 +400,7 @@ class LMSummaryModel:
         self.summary_length = summary_length
         self.timeout = timeout
         self.logger = logger or logging.getLogger(self.__class__.__name__)
+        self._http_session = requests.Session()
 
         if self.backend == "deepseek":
             self.api_key = api_key or Config.DEEPSEEK_API_KEY
@@ -395,6 +408,50 @@ class LMSummaryModel:
         else:
             self.base_url = base_url or Config.LMSTUDIO_BASE_URL
             self.api_key = None
+
+    def _call_llm(self, prompt: str, max_length: int, backend_name: str,
+                   url: str, headers: dict, is_lmstudio: bool = False) -> str:
+        """统一的 LLM 调用后端。"""
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_length,
+            "temperature": 0.3,
+            "stream": False,
+        }
+
+        for attempt in range(2 if is_lmstudio else 1):
+            try:
+                self.logger.debug("%s summary request → %s", backend_name, self.model_name)
+                response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
+                response.raise_for_status()
+                result = response.json()
+
+                if "choices" in result and result["choices"]:
+                    summary = result["choices"][0]["message"]["content"].strip()
+                    if len(summary) > max_length * 2:
+                        summary = summary[:max_length * 2].rstrip() + "..."
+                    self.logger.info("%s 摘要: %s", backend_name,
+                                     summary[:80] + ("..." if len(summary) > 80 else ""))
+                    return summary
+                else:
+                    raise ValueError(f"{backend_name} 响应格式异常")
+            except requests.exceptions.Timeout:
+                self.logger.error("%s 摘要请求超时 (%d秒)", backend_name, self.timeout)
+                raise
+            except requests.exceptions.ConnectionError:
+                self.logger.error("无法连接到 %s: %s", backend_name, self.base_url)
+                raise
+            except requests.exceptions.HTTPError as e:
+                if is_lmstudio and attempt == 0 and self._is_no_model_error(e.response):
+                    self.logger.info("摘要模型未加载，自动加载后重试……")
+                    if self._auto_load_model():
+                        continue
+                self.logger.error("%s 摘要请求失败: %s", backend_name, str(e))
+                raise
+            except (KeyError, ValueError) as e:
+                self.logger.error("%s 摘要响应解析失败: %s", backend_name, str(e))
+                raise
 
     def summarize_text(self, text: str, max_length: Optional[int] = None) -> str:
         """生成摘要。根据 backend 自动选择 DeepSeek 或 LMStudio。"""
@@ -407,97 +464,17 @@ class LMSummaryModel:
         prompt = self.SUMMARY_PROMPT.strip() + "\n" + text
         self.logger.debug("生成摘要输入 (%d 字符)", len(text))
 
-        import requests
-
         if self.backend == "deepseek":
-            return self._call_deepseek(prompt, max_length)
+            url = f"{self.base_url}/chat/completions"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            }
+            return self._call_llm(prompt, max_length, "DeepSeek", url, headers)
         else:
-            return self._call_lmstudio(prompt, max_length)
-
-    def _call_deepseek(self, prompt: str, max_length: int) -> str:
-        """调用 DeepSeek API 生成摘要。"""
-        import requests
-
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-        payload = {
-            "model": self.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_length,
-            "temperature": 0.3,
-            "stream": False,
-        }
-
-        try:
-            self.logger.debug("DeepSeek summary request → %s", self.model_name)
-            response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            result = response.json()
-
-            if "choices" in result and result["choices"]:
-                summary = result["choices"][0]["message"]["content"].strip()
-                if len(summary) > max_length * 2:
-                    summary = summary[:max_length * 2].rstrip() + "..."
-                self.logger.info("DeepSeek 摘要: %s", summary[:80] + ("..." if len(summary) > 80 else ""))
-                return summary
-            else:
-                raise ValueError("DeepSeek 响应格式异常")
-        except requests.exceptions.Timeout:
-            self.logger.error("DeepSeek 摘要请求超时 (%d秒)", self.timeout)
-            raise
-        except requests.exceptions.RequestException as e:
-            self.logger.error("DeepSeek 摘要请求失败: %s", str(e))
-            raise
-        except (KeyError, ValueError) as e:
-            self.logger.error("DeepSeek 摘要响应解析失败: %s", str(e))
-            raise
-
-    def _call_lmstudio(self, prompt: str, max_length: int) -> str:
-        """调用本地 LMStudio API 生成摘要，模型未加载时自动加载后重试"""
-        url = f"{self.base_url}/v1/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "model": self.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_length,
-            "temperature": 0.3,
-            "stream": False,
-        }
-
-        for attempt in range(2):
-            try:
-                self.logger.debug("LMStudio summary request → %s", url)
-                response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-                response.raise_for_status()
-                result = response.json()
-
-                if "choices" in result and result["choices"]:
-                    summary = result["choices"][0]["message"]["content"].strip()
-                    if len(summary) > max_length * 2:
-                        summary = summary[:max_length * 2].rstrip() + "..."
-                    self.logger.info("LMStudio 摘要: %s", summary[:80] + ("..." if len(summary) > 80 else ""))
-                    return summary
-                else:
-                    raise ValueError("LMStudio 响应格式异常")
-            except requests.exceptions.Timeout:
-                self.logger.error("LMStudio 摘要请求超时 (%d秒)", self.timeout)
-                raise
-            except requests.exceptions.ConnectionError:
-                self.logger.error("无法连接到 LMStudio 服务器: %s", self.base_url)
-                raise
-            except requests.exceptions.HTTPError as e:
-                if attempt == 0 and self._is_no_model_error(e.response):
-                    self.logger.info("摘要模型未加载，自动加载后重试……")
-                    if self._auto_load_model():
-                        continue
-                self.logger.error("LMStudio 摘要请求失败: %s", str(e))
-                raise
-            except (KeyError, ValueError) as e:
-                self.logger.error("LMStudio 摘要响应解析失败: %s", str(e))
-                raise
+            url = f"{self.base_url}/v1/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            return self._call_llm(prompt, max_length, "LMStudio", url, headers, is_lmstudio=True)
 
     def _auto_load_model(self) -> bool:
         """用配置的 self.model_name 直接加载 LMStudio 模型"""

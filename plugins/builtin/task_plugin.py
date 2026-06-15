@@ -48,7 +48,10 @@ class TaskPlugin(Plugin):
         if self._task_mgr is None:
             return ctx
 
-        tasks = self._parse_tasks(ctx.original_reply)
+        # agent 循环修改了 reply 时使用 ctx.reply（含 agent 最终输出中的 <task> 和代码块），
+        # 否则使用 ctx.original_reply（原始 LLM 输出，<task> 和代码块未被 _clean_reply 清除）
+        text = ctx.reply if ctx.extra.get("_agent_reply_dirty") else ctx.original_reply
+        tasks = self._parse_tasks(text)
         if not tasks:
             return ctx
 
@@ -57,6 +60,12 @@ class TaskPlugin(Plugin):
             tid = self._handle_task(task_data, ctx)
             if tid:
                 pending.add(tid)
+
+        # 从 ctx.reply 中移除已处理的 <task> 和 ```action``` 标签
+        ctx.reply = self._ACTION_RE.sub("", ctx.reply).strip()
+        ctx.reply = self._TASK_RE.sub("", ctx.reply).strip()
+        if not ctx.reply:
+            ctx.reply = "…"
 
         return ctx
 

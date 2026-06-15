@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import locale
+import re as _re
 import threading
 import time
 import uuid
@@ -128,6 +129,7 @@ class TaskManager:
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.scheduler = schedule.Scheduler()
         self.tasks: Dict[str, Task] = {}
+        self._user_task_index: dict[int, set[str]] = {}
         self.lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
         self.running = True
@@ -338,9 +340,10 @@ class TaskManager:
     
     def _run_scheduler(self):
         """运行调度器线程"""
-        while self.running:
+        _stop = threading.Event()
+        while self.running and not _stop.is_set():
             self.scheduler.run_pending()
-            time.sleep(1)
+            _stop.wait(timeout=1)
     
     def create_task(self, task_type: TaskType, user_id: int, chat_id: int, 
                    params: Dict[str, Any], priority: TaskPriority = TaskPriority.NORMAL,
@@ -360,6 +363,7 @@ class TaskManager:
         
         with self.lock:
             self.tasks[task_id] = task
+            self._user_task_index.setdefault(user_id, set()).add(task_id)
             self._save_task(task)
         
         # 如果是提醒任务，进行调度
@@ -722,7 +726,8 @@ class TaskManager:
     def get_user_tasks(self, user_id: int, status: Optional[TaskStatus] = None) -> List[Task]:
         """获取用户的任务列表"""
         with self.lock:
-            tasks = [task for task in self.tasks.values() if task.user_id == user_id]
+            task_ids = self._user_task_index.get(user_id, set())
+            tasks = [self.tasks[tid] for tid in task_ids if tid in self.tasks]
             
             if status:
                 tasks = [task for task in tasks if task.status == status]
@@ -801,23 +806,19 @@ class ComplexityAnalyzer:
             score += 0.15
             reasons.append(f"问题中等长度 ({text_length} 字符)")
         
-        # 2. 关键词分析
-        complex_count = 0
-        for keyword in self.complex_keywords:
-            if keyword in text:
-                complex_count += 1
-        
+        # 2. 关键词分析 (单次正则扫描替代多次 in 搜索)
+        complex_pat = _re.compile("|".join(_re.escape(k) for k in self.complex_keywords))
+        complex_matches = complex_pat.findall(text)
+        complex_count = len(complex_matches)
         if complex_count > 0:
             keyword_score = min(0.4, complex_count * 0.1)
             score += keyword_score
             reasons.append(f"包含 {complex_count} 个复杂关键词")
         
         # 3. 简单关键词抵消
-        simple_count = 0
-        for keyword in self.simple_keywords:
-            if keyword in text:
-                simple_count += 1
-        
+        simple_pat = _re.compile("|".join(_re.escape(k) for k in self.simple_keywords))
+        simple_matches = simple_pat.findall(text)
+        simple_count = len(simple_matches)
         if simple_count > 0:
             score = max(0, score - (simple_count * 0.05))
             reasons.append(f"包含 {simple_count} 个简单关键词")
@@ -828,8 +829,8 @@ class ComplexityAnalyzer:
             reasons.append(f"上下文较复杂 ({context_length} 轮对话)")
         
         # 5. 问题类型判断
-        question_types = ["?", "？", "什么", "如何", "为什么", "怎样"]
-        question_count = sum(1 for q in question_types if q in text)
+        question_pat = _re.compile(r"[?？]|什么|如何|为什么|怎样")
+        question_count = len(question_pat.findall(text))
         if question_count > 1:
             score += 0.1
             reasons.append("包含多个疑问点")

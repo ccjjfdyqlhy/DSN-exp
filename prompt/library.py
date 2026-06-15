@@ -42,6 +42,7 @@ class PromptLibrary:
 
     def __init__(self):
         self._entries: dict[str, PromptEntry] = {}
+        self._file_mtimes: dict[str, float] = {}
 
     @property
     def entries(self) -> list[PromptEntry]:
@@ -70,7 +71,7 @@ class PromptLibrary:
         return count
 
     def load_file(self, path: str) -> PromptEntry | None:
-        """加载单个 .md 文件，覆盖同 name 已有条目"""
+        """加载单个 .md 文件，覆盖同 name 已有条目（惰性加载内容）"""
         text = Path(path).read_text(encoding='utf-8-sig')
 
         m = _FM_RE.match(text)
@@ -99,6 +100,7 @@ class PromptLibrary:
         )
 
         self._entries[entry.name] = entry
+        self._file_mtimes[str(path)] = Path(path).stat().st_mtime
         logger.debug("已加载提示词: %s [%s] pri=%d", entry.name, entry.category, entry.priority)
         return entry
 
@@ -169,11 +171,24 @@ class PromptLibrary:
         return self.load_file(e.source_file) is not None
 
     def reload_all(self) -> int:
-        """热重载全部文件"""
+        """热重载有变化的文件（基于 mtime）"""
+        count = 0
         for e in list(self._entries.values()):
-            if e.source_file:
-                self.load_file(e.source_file)
-        return len(self._entries)
+            if not e.source_file:
+                continue
+            path = e.source_file
+            try:
+                new_mtime = Path(path).stat().st_mtime
+                if self._file_mtimes.get(path, 0) < new_mtime:
+                    self.load_file(path)
+                    count += 1
+            except OSError:
+                pass
+        if count == 0:
+            logger.debug("reload_all: 无文件变更")
+        else:
+            logger.info("reload_all: 重载了 %d 个变更文件", count)
+        return count
 
     def unload(self, name: str) -> bool:
         if name in self._entries:

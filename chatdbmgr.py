@@ -164,6 +164,7 @@ class ChatDBManager:
                 self._migrate_add_column(conn, "memories", "message_start_id", "INTEGER DEFAULT NULL")
                 self._migrate_add_column(conn, "memories", "message_end_id", "INTEGER DEFAULT NULL")
                 self._migrate_add_column(conn, "messages", "round_index", "INTEGER DEFAULT NULL")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_round ON messages(chat_id, round_index)")
                 
                 # 迁移: 移除 messages 表 role 列的 CHECK 约束，允许 'system' role
                 self._migrate_messages_role(conn)
@@ -324,7 +325,7 @@ class ChatDBManager:
                         min_confidence: float = 0.0, limit: int = 50) -> list[dict]:
         conn = self._get_connection()
         try:
-            query = "SELECT * FROM user_impressions WHERE uid = ?"
+            query = "SELECT impression_id, uid, category, content, confidence, source, evidence, created_at, updated_at FROM user_impressions WHERE uid = ?"
             params: list = [uid]
             if category:
                 query += " AND category = ?"
@@ -442,10 +443,19 @@ class ChatDBManager:
 
         conn = self._get_connection()
         try:
+            # 先获取总轮次数和可用的记忆条数，限制查询范围
+            count_row = conn.execute(
+                "SELECT COUNT(*) AS cnt, MAX(round_index) AS max_round FROM memories WHERE user_id = ? AND chat_id = ?",
+                (user_id, chat_id),
+            ).fetchone()
+            if not count_row or count_row["cnt"] == 0:
+                return []
+            total_rounds = count_row["max_round"] or 1
+
             rows = conn.execute(
                 "SELECT memory_id, round_index, summary, keywords, message_start_id, message_end_id, created_at "
-                "FROM memories WHERE user_id = ? AND chat_id = ?",
-                (user_id, chat_id),
+                "FROM memories WHERE user_id = ? AND chat_id = ? ORDER BY round_index DESC LIMIT ?",
+                (user_id, chat_id, count * 20),
             ).fetchall()
 
             if not rows:
@@ -458,13 +468,20 @@ class ChatDBManager:
             for t in search_terms:
                 search_tokens.update(_tokenize(t))
 
-            total_rounds = max(r["round_index"] for r in rows) if rows else 1
             scored = []
 
             for r in rows:
-                summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
                 kw_decrypted = self._cipher.decrypt(user_id, r["keywords"] or "")
-                summary_lower = summary_decrypted.lower()
+                kw_lower = kw_decrypted.lower()
+                # 关键词匹配检查（轻量预检）
+                if not any(term in kw_lower for term in search_terms):
+                    summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
+                    summary_lower = summary_decrypted.lower()
+                    if not any(term in summary_lower for term in search_terms):
+                        continue
+                else:
+                    summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
+                    summary_lower = summary_decrypted.lower()
 
                 summary_tokens = set(_tokenize(summary_lower))
 
@@ -629,6 +646,7 @@ class ChatDBManager:
                 (user_id, chat_name),
             )
             chat_id = cursor.lastrowid
+            batch = []
             for msg in messages:
                 role = msg.get("role")
                 content = msg.get("content")
@@ -636,9 +654,11 @@ class ChatDBManager:
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
                 encrypted = self._cipher.encrypt(user_id, content)
-                conn.execute(
+                batch.append((chat_id, role, encrypted))
+            if batch:
+                conn.executemany(
                     "INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)",
-                    (chat_id, role, encrypted),
+                    batch,
                 )
             conn.commit()
             self.logger.info("已保存聊天会话 %d (用户 %d, 消息数: %d)", chat_id, user_id, len(messages))
@@ -738,7 +758,8 @@ class ChatDBManager:
             raise
 
     def append_messages(self, user_id: int, chat_id: int, messages: List[Dict[str, str]],
-                        skip_memory_check: bool = False, round_index: int = None) -> None:
+                        skip_memory_check: bool = False, round_index: int = None,
+                        skip_ownership_check: bool = False) -> None:
         """
         向指定聊天会话追加消息（需验证用户所有权）。
 
@@ -747,18 +768,20 @@ class ChatDBManager:
         :param messages: 消息列表，格式 [{"role": "user"/"assistant", "content": "..."}]
         :param skip_memory_check: 是否跳过记忆化检查（用于系统触发的AI提醒消息）
         :param round_index: 当前对话轮次索引，用于记忆召回时的消息定位
+        :param skip_ownership_check: 跳过所有权验证（用于系统内部调用）
         :raises ValueError: 如果聊天不属于该用户
         :raises sqlite3.Error: 数据库错误
         """
         conn = self._get_connection()
         try:
-            # 验证聊天属于该用户
-            row = conn.execute(
-                "SELECT 1 FROM chats WHERE chat_id = ? AND user_id = ?",
-                (chat_id, user_id),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"聊天 {chat_id} 不存在或不属于用户 {user_id}")
+            # 验证聊天属于该用户（系统内部调用可跳过）
+            if not skip_ownership_check:
+                row = conn.execute(
+                    "SELECT 1 FROM chats WHERE chat_id = ? AND user_id = ?",
+                    (chat_id, user_id),
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"聊天 {chat_id} 不存在或不属于用户 {user_id}")
 
             for msg in messages:
                 role = msg.get("role")

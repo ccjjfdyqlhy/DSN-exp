@@ -50,7 +50,7 @@ class PluginContext:
     agent_active: bool = False            # 是否启用了 agent 循环
     agent_step_count: int = 0             # 当前步数
     agent_max_steps: int = 5             # 最大步数
-    agent_token_budget: int = 8000       # token 预算（按消息字符数简单估算）
+    agent_token_budget: int = 1000000    # token 预算（按消息字符数简单估算）
 
     # ---- 扩展 ----
     extra: dict = field(default_factory=dict)
