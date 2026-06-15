@@ -36,6 +36,19 @@ logger = logging.getLogger("DSNEngine")
 
 _pipeline_cache: dict[str, ChatPipeline] = {}
 
+# 持久事件循环，避免每次同步 chat() 调用创建/销毁
+_engine_loop: asyncio.AbstractEventLoop | None = None
+_engine_loop_lock = threading.Lock()
+
+
+def _get_event_loop() -> asyncio.AbstractEventLoop:
+    global _engine_loop
+    if _engine_loop is None or _engine_loop.is_closed():
+        with _engine_loop_lock:
+            if _engine_loop is None or _engine_loop.is_closed():
+                _engine_loop = asyncio.new_event_loop()
+    return _engine_loop
+
 _ENGINE_CONFIG_PATH = "engine.yaml"
 
 
@@ -56,7 +69,7 @@ class EngineConfig:
     task_manager_enabled: bool = True
     task_max_workers: int = 5
     agent_max_steps: int = 5
-    agent_token_budget: int = 8000
+    agent_token_budget: int = 1000000
     agent_timeout: float = 120.0
 
     @staticmethod
@@ -155,6 +168,7 @@ class DSNEngine:
         try:
             import queue
             self._completion_queue = queue.Queue()
+            self._task_completion_stop = threading.Event()
             self.task_manager = TaskManager(
                 db=self.db,
                 max_workers=self._engine_cfg.task_max_workers,
@@ -173,9 +187,9 @@ class DSNEngine:
 
     def _process_task_completion(self):
         from tasks import TaskType
-        while True:
+        while not self._task_completion_stop.is_set():
             try:
-                item = self._completion_queue.get()
+                item = self._completion_queue.get(timeout=1.0)
                 if item is None:
                     break
                 task_id, result = item
@@ -629,7 +643,7 @@ class DSNEngine:
             image_data=kwargs.get("image_data"),
             agent_active=kwargs.get("agent_active", True),
             agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else 5),
-            agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 8000),
+            agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 1000000),
         )
         if self.task_manager:
             ctx.extra["_task_manager"] = self.task_manager
@@ -657,11 +671,15 @@ class DSNEngine:
             nickname=nickname, **kwargs
         )
 
-        loop = asyncio.new_event_loop()
+        loop = _get_event_loop()
         try:
             result_ctx = loop.run_until_complete(self.pipeline.process(ctx))
-        finally:
-            loop.close()
+        except RuntimeError:
+            # 事件循环已关闭时重建
+            global _engine_loop
+            with _engine_loop_lock:
+                _engine_loop = asyncio.new_event_loop()
+            result_ctx = _engine_loop.run_until_complete(self.pipeline.process(ctx))
 
         return {
             "reply": result_ctx.reply,
@@ -736,9 +754,10 @@ class DSNEngine:
             schedule.every().day.at("09:00").do(job)
 
         self._logger.info("定时调度已启动: %s → %s", cron_expr, prompt[:50])
-        while True:
+        _stop_event = threading.Event()
+        while not _stop_event.is_set():
             schedule.run_pending()
-            time.sleep(30)
+            _stop_event.wait(timeout=30)
 
     # ── 实用方法 ──
 

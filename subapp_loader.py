@@ -56,7 +56,7 @@ class SubAppConfig:
 
     # Agent
     agent_max_steps: int = 5
-    agent_token_budget: int = 8000
+    agent_token_budget: int = 1000000
     agent_timeout: float = 120.0
 
     # 记忆
@@ -133,7 +133,7 @@ def _build_config(data: dict, subapp_dir: str) -> SubAppConfig:
         schedule_prompt=schedule.get("prompt", ""),
         database_path=data.get("database_path", ""),
         agent_max_steps=agent.get("max_steps", 5),
-        agent_token_budget=agent.get("token_budget", 8000),
+            agent_token_budget=agent.get("token_budget", 1000000),
         agent_timeout=agent.get("timeout", 120.0),
         memory_enabled=data.get("memory_enabled", True),
         memory_summary_length=data.get("memory_summary_length", 100),

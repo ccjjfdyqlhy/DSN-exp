@@ -14,6 +14,7 @@ from typing import AsyncGenerator, Callable, Awaitable, Optional
 
 from .base import HookPoint, PluginContext
 from .manager import PluginManager
+from world.action_narrator import ActionNarrativeCollector
 
 logger = logging.getLogger("ChatPipeline")
 
@@ -179,7 +180,6 @@ class ChatPipeline:
         tts_lines = None
 
         # 创建动作旁白收集器
-        from world.action_narrator import ActionNarrativeCollector
         collector = ActionNarrativeCollector()
         ctx.extra["_narrative_collector"] = collector
 
@@ -189,6 +189,9 @@ class ChatPipeline:
             )
             ctx = await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
             tts_lines = await tts_task
+            # Agent 修改了回复时，丢弃旧 TTS，对最终回复重新合成
+            if ctx.extra.get("_agent_reply_dirty") and ctx.reply and ctx.reply != ctx.original_reply:
+                tts_lines = await self._synthesize_lines(ctx.reply)
         else:
             ctx = await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
 
@@ -411,7 +414,6 @@ class ChatPipeline:
                         })}\n\n"
 
             elif hook == HookPoint.POST_PROCESS:
-                from world.action_narrator import ActionNarrativeCollector
                 collector = ActionNarrativeCollector()
                 ctx.extra["_narrative_collector"] = collector
 
@@ -555,6 +557,9 @@ class ChatPipeline:
                         'chat_id': ctx.chat_id,
                     })}\n\n"
                     logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
+                    # Agent 修改了回复时，丢弃旧 TTS，对最终回复重新合成
+                    if ctx.tts_enabled and self._tts_client and ctx.reply != ctx.original_reply:
+                        tts_lines = await self._synthesize_lines(ctx.reply)
                     ctx.extra["_agent_reply_dirty"] = False
 
             elif hook == HookPoint.POST_TTS:

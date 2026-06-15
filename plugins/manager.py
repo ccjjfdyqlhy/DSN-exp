@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 from typing import Union
 
@@ -12,6 +13,9 @@ from .base import HookPoint, PluginContext, Plugin, AsyncPlugin
 logger = logging.getLogger("PluginManager")
 
 _PluginT = Union[Plugin, AsyncPlugin]
+
+# 轻量同步插件白名单: 这些插件 on_hook 不需跑 executor
+_LIGHTWEIGHT_PLUGINS = frozenset()
 
 
 class PluginManager:
@@ -109,17 +113,19 @@ class PluginManager:
         """调用单个插件，返回更新后的 ctx"""
         if isinstance(plugin, AsyncPlugin):
             return await plugin.on_hook(hook, ctx)
+        elif plugin.name in _LIGHTWEIGHT_PLUGINS:
+            return plugin.on_hook(hook, ctx)
         else:
             return await asyncio.get_event_loop().run_in_executor(
                 None, plugin.on_hook, hook, ctx
             )
 
-    async def dispatch(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
-        """
-        按优先级依次调用该钩子下所有已启用的插件。
-        遇到 ctx.filtered == True 时短路返回。
-        """
+    async def _dispatch_filtered(self, hook: HookPoint, ctx: PluginContext,
+                                  plugin_filter) -> PluginContext:
+        """通用的插件调度核心，接受一个 filter 函数决定是否调用该插件"""
         for plugin in self._hook_index[hook]:
+            if not plugin_filter(plugin):
+                continue
             if not self._enabled.get(plugin.name, False):
                 continue
 
@@ -134,61 +140,31 @@ class PluginManager:
                 break
 
         return ctx
+
+    async def dispatch(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
+        """按优先级依次调用该钩子下所有已启用的插件。"""
+        return await self._dispatch_filtered(hook, ctx, lambda _: True)
 
     async def dispatch_except(self, hook: HookPoint, ctx: PluginContext,
                               skip_names: set[str]) -> PluginContext:
-        """
-        按优先级调度该钩子下所有已启用的插件，跳过指定名称的插件。
-        用于并行分叉场景（如跳过 VisionPlugin，与其他插件并行运行）。
-        """
-        for plugin in self._hook_index[hook]:
-            if plugin.name in skip_names:
-                continue
-            if not self._enabled.get(plugin.name, False):
-                continue
-
-            try:
-                ctx = await self._call_plugin(plugin, hook, ctx)
-            except Exception:
-                logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
-                continue
-
-            if ctx.filtered:
-                logger.debug("管道在钩子 %s 被插件 %s 短路", hook.value, plugin.name)
-                break
-
-        return ctx
+        """跳过指定名称的插件。"""
+        return await self._dispatch_filtered(
+            hook, ctx, lambda p: p.name not in skip_names,
+        )
 
     async def dispatch_only(self, hook: HookPoint, ctx: PluginContext,
                             names: set[str]) -> PluginContext:
-        """
-        只调度指定名称的插件（按优先级顺序）。
-        用于并行分叉场景（如单独运行 VisionPlugin）。
-        """
-        for plugin in self._hook_index[hook]:
-            if plugin.name not in names:
-                continue
-            if not self._enabled.get(plugin.name, False):
-                continue
-
-            try:
-                ctx = await self._call_plugin(plugin, hook, ctx)
-            except Exception:
-                logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
-                continue
-
-            if ctx.filtered:
-                logger.debug("管道在钩子 %s 被插件 %s 短路", hook.value, plugin.name)
-                break
-
-        return ctx
+        """只调度指定名称的插件。"""
+        return await self._dispatch_filtered(
+            hook, ctx, lambda p: p.name in names,
+        )
 
     # ---- 内部 ----
 
     def _index_hooks(self, plugin: _PluginT) -> None:
         for hook in plugin.hooks:
-            self._hook_index[hook].append(plugin)
-            self._hook_index[hook].sort(key=lambda p: p.priority)
+            lst = self._hook_index[hook]
+            bisect.insort(lst, plugin, key=lambda p: p.priority)
 
     def _unindex_hooks(self, name: str) -> None:
         for hook in HookPoint:
