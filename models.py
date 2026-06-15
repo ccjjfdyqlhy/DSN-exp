@@ -8,6 +8,39 @@ import os
 import logging
 from typing import List, Dict, Optional, Union
 
+
+def _is_no_model_error(response) -> bool:
+    """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
+    if response is None or response.status_code != 400:
+        return False
+    try:
+        body = response.text or ""
+        return "no model" in body.lower() or "No models loaded" in body
+    except Exception:
+        return False
+
+
+def _load_lmstudio_model(base_url: str, model_name: str, label: str, timeout: int = 180) -> bool:
+    """向 LMStudio 发送模型加载请求，返回是否成功"""
+    if not model_name:
+        logging.getLogger("models").error("未配置 model_name，无法自动加载 %s", label)
+        return False
+    try:
+        logging.getLogger("models").info("正在加载 %s: %s", label, model_name)
+        load_resp = requests.post(
+            f"{base_url}/api/v1/models/load",
+            json={"model": model_name},
+            timeout=timeout,
+        )
+        load_resp.raise_for_status()
+        result = load_resp.json()
+        logging.getLogger("models").info(
+            "%s 加载完成 (%.1fs): %s", label, result.get("load_time_seconds", 0), model_name)
+        return True
+    except Exception as e:
+        logging.getLogger("models").error("自动加载 %s 失败 (%s): %s", label, model_name, e)
+        return False
+
 class DeepSeekChat:
     """
     DeepSeek API 聊天客户端类，支持多轮对话历史管理。
@@ -221,38 +254,7 @@ class LMStudioChat:
         self.logger.info("LMStudioChat客户端初始化完成，地址：%s，模型：%s", self.base_url, self.model_name or "默认")
 
     def _ensure_model_loaded(self) -> bool:
-        """
-        通过 REST API 加载 self.model_name 指定的模型。
-        LMStudio 未加载任何模型时列表为空，因此直接用配置的模型名加载。
-        """
-        if not self.model_name:
-            self.logger.error("未配置 model_name，无法自动加载 LMStudio 模型")
-            return False
-        try:
-            self.logger.info("正在加载 LMStudio 模型: %s", self.model_name)
-            load_resp = requests.post(
-                f"{self.base_url}/api/v1/models/load",
-                json={"model": self.model_name},
-                timeout=180,
-            )
-            load_resp.raise_for_status()
-            result = load_resp.json()
-            self.logger.info("模型加载完成 (%.1fs): %s", result.get("load_time_seconds", 0), self.model_name)
-            return True
-        except Exception as e:
-            self.logger.error("自动加载 LMStudio 模型失败 (%s): %s", self.model_name, e)
-            return False
-
-    @staticmethod
-    def _is_no_model_error(response) -> bool:
-        """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
-        if response is None or response.status_code != 400:
-            return False
-        try:
-            body = response.text or ""
-            return "no model" in body.lower() or "No models loaded" in body
-        except Exception:
-            return False
+        return _load_lmstudio_model(self.base_url, self.model_name, "LMStudio 模型")
 
     # ---- 底层 API 调用（含自动加载重试） ----
 
@@ -270,7 +272,7 @@ class LMStudioChat:
                 self.last_model = result.get("model", self.model_name)
                 return result
             except requests.exceptions.HTTPError as e:
-                if attempt == 0 and self._is_no_model_error(e.response):
+                if attempt == 0 and _is_no_model_error(e.response):
                     self.logger.info("检测到 LMStudio 未加载模型，自动加载后重试……")
                     if self._ensure_model_loaded():
                         continue
@@ -477,35 +479,7 @@ class LMSummaryModel:
             return self._call_llm(prompt, max_length, "LMStudio", url, headers, is_lmstudio=True)
 
     def _auto_load_model(self) -> bool:
-        """用配置的 self.model_name 直接加载 LMStudio 模型"""
-        if not self.model_name:
-            self.logger.error("未配置 model_name，无法自动加载 LMStudio 摘要模型")
-            return False
-        try:
-            self.logger.info("正在加载 LMStudio 摘要模型: %s", self.model_name)
-            load_resp = requests.post(
-                f"{self.base_url}/api/v1/models/load",
-                json={"model": self.model_name},
-                timeout=180,
-            )
-            load_resp.raise_for_status()
-            result = load_resp.json()
-            self.logger.info("摘要模型加载完成 (%.1fs): %s", result.get("load_time_seconds", 0), self.model_name)
-            return True
-        except Exception as e:
-            self.logger.error("自动加载 LMStudio 摘要模型失败 (%s): %s", self.model_name, e)
-            return False
-
-    @staticmethod
-    def _is_no_model_error(response) -> bool:
-        """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
-        if response is None or response.status_code != 400:
-            return False
-        try:
-            body = response.text or ""
-            return "no model" in body.lower() or "No models loaded" in body
-        except Exception:
-            return False
+        return _load_lmstudio_model(self.base_url, self.model_name, "摘要模型")
 
     def summarize_dialog(self, messages: List[Dict[str, str]], max_length: Optional[int] = None) -> str:
         """根据消息列表生成一条整体摘要。"""

@@ -715,40 +715,66 @@ def _cmd_memory_help():
 
 
 def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None, personality_v3=None):
-    """解析并执行命令"""
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
 
-    if cmd == "/newbind":
-        _cmd_newbind(auth_manager)
-    elif cmd == "/users":
-        _cmd_users(auth_manager, db)
-    elif cmd == "/status":
-        _cmd_status(auth_manager, db)
-    elif cmd == "/plugin":
-        name = parts[1].strip() if len(parts) > 1 else None
-        _cmd_plugin(plugin_manager, name)
-    elif cmd == "/memory":
-        args = parts[1].strip() if len(parts) > 1 else ""
-        _cmd_memory(auth_manager, db, args)
-    elif cmd == "/prompt":
-        _cmd_prompt(prompt_engine, parts[1].strip() if len(parts) > 1 else "")
-    elif cmd == "/config":
-        args = parts[1].strip() if len(parts) > 1 else ""
-        _cmd_config(config_cls, args)
-    elif cmd == "/listconfig":
-        _cmd_listconfig(config_cls)
-    elif cmd == "/persona":
-        args = parts[1].strip() if len(parts) > 1 else ""
-        _cmd_persona(personality_v3, args)
-    elif cmd == "/stop":
+    if cmd == "/stop":
         print("  正在停止服务器...")
         if shutdown_event:
             shutdown_event.set()
-    elif cmd == "/help":
-        _cmd_help()
+        return
+
+    handler = _CMD_TABLE.get(cmd)
+    if handler:
+        handler(auth_manager, db, plugin_manager, prompt_engine, config_cls, personality_v3, arg)
     else:
         print(f"  未知命令: {cmd}，输入 /help 查看可用命令")
+
+
+def _h_newbind(am, db, pm, pe, cc, pv, arg):
+    _cmd_newbind(am)
+
+def _h_users(am, db, pm, pe, cc, pv, arg):
+    _cmd_users(am, db)
+
+def _h_status(am, db, pm, pe, cc, pv, arg):
+    _cmd_status(am, db)
+
+def _h_plugin(am, db, pm, pe, cc, pv, arg):
+    _cmd_plugin(pm, arg or None)
+
+def _h_memory(am, db, pm, pe, cc, pv, arg):
+    _cmd_memory(am, db, arg)
+
+def _h_prompt(am, db, pm, pe, cc, pv, arg):
+    _cmd_prompt(pe, arg)
+
+def _h_config(am, db, pm, pe, cc, pv, arg):
+    _cmd_config(cc, arg)
+
+def _h_listconfig(am, db, pm, pe, cc, pv, arg):
+    _cmd_listconfig(cc)
+
+def _h_persona(am, db, pm, pe, cc, pv, arg):
+    _cmd_persona(pv, arg)
+
+def _h_help(am, db, pm, pe, cc, pv, arg):
+    _cmd_help()
+
+
+_CMD_TABLE = {
+    "/newbind": _h_newbind,
+    "/users": _h_users,
+    "/status": _h_status,
+    "/plugin": _h_plugin,
+    "/memory": _h_memory,
+    "/prompt": _h_prompt,
+    "/config": _h_config,
+    "/listconfig": _h_listconfig,
+    "/persona": _h_persona,
+    "/help": _h_help,
+}
 
 
 def _cmd_persona(personality_v3, args: str):

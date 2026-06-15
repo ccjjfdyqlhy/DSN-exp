@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import threading
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -197,17 +195,21 @@ class DSNEngine:
                 if not task:
                     continue
                 self._logger.info("任务完成: %s (type=%s)", task_id, task.task_type.value)
-                if task.task_type == TaskType.REMINDER:
-                    self._handle_reminder_completion(task, result)
-                elif task.task_type == TaskType.REASONER:
-                    self._handle_reasoner_completion(task, result)
-                elif task.task_type == TaskType.ACTION:
-                    retry_depth = 0
-                    with self.task_manager._retry_lock:
-                        retry_depth = self.task_manager._retry_depths.pop(task_id, 0)
-                    self._handle_engine_action_completion(task, result, retry_depth)
+                self._dispatch_task_completion(task, result)
             except Exception as e:
                 self._logger.error("任务完成通知处理失败: %s", e)
+
+    def _dispatch_task_completion(self, task, result):
+        from tasks import TaskType
+        if task.task_type == TaskType.REMINDER:
+            self._handle_reminder_completion(task, result)
+        elif task.task_type == TaskType.REASONER:
+            self._handle_reasoner_completion(task, result)
+        elif task.task_type == TaskType.ACTION:
+            retry_depth = 0
+            with self.task_manager._retry_lock:
+                retry_depth = self.task_manager._retry_depths.pop(task.task_id, 0)
+            self._handle_engine_action_completion(task, result, retry_depth)
 
     def _handle_engine_action_completion(self, task, result, retry_depth: int = 0):
         if not result.get("requires_ai_notification", True):
@@ -451,62 +453,59 @@ class DSNEngine:
 
     def _init_plugins(self):
         ec = self._engine_cfg
-        enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
-        disable_set = set(self._cfg.plugins_disable) if self._cfg else set()
+        self._enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
+        self._disable_set = set(self._cfg.plugins_disable) if self._cfg else set()
 
-        # 决定哪些插件启用
-        def enabled(name: str) -> bool:
-            if enable_set:
-                return name in enable_set
-            if disable_set:
-                return name not in disable_set
-            return True
+        self._register_filter_plugins()
+        self._register_model_plugin()
+        self._register_context_plugins()
+        self._register_personality_plugins()
+        self._register_execution_plugins()
+        self._register_output_plugins()
 
-        # ---- 创建插件（按依赖顺序） ----
+    def _plugin_enabled(self, name: str) -> bool:
+        if self._enable_set:
+            return name in self._enable_set
+        if self._disable_set:
+            return name not in self._disable_set
+        return True
 
-        # 0. ASRFilterPlugin (PRE_FILTER, priority 10)
-        if enabled("asr_filter"):
-            from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
-            self.plugin_manager.register(ASRFilterPlugin(
-                filter_model=self._filter_model,
-                db=self.db,
-            ))
+    def _register_filter_plugins(self):
+        if not self._plugin_enabled("asr_filter"):
+            return
+        from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
+        self.plugin_manager.register(ASRFilterPlugin(
+            filter_model=self._filter_model,
+            db=self.db,
+        ))
 
-        # 1. ModelsPlugin (MODEL_INVOKE, priority 50)
-        if enabled("models"):
-            from plugins.builtin.models_plugin import ModelsPlugin
-            models_plugin = ModelsPlugin(
-                model_type=ec.model_type,
-                deepseek_api_key=ec.deepseek_api_key,
-                lmstudio_base_url=ec.lmstudio_base_url,
-                lmstudio_model_name=ec.model_name,
-                lmstudio_temperature=ec.lmstudio_temperature,
-                lmstudio_max_tokens=ec.lmstudio_max_tokens,
-                lmstudio_timeout=ec.lmstudio_timeout,
-                db=self.db,
-            )
-            self.plugin_manager.register(models_plugin)
-            self._models_plugin = models_plugin
-        else:
+    def _register_model_plugin(self):
+        if not self._plugin_enabled("models"):
             self._models_plugin = None
+            return
+        from plugins.builtin.models_plugin import ModelsPlugin
+        self._models_plugin = ModelsPlugin(
+            model_type=self._engine_cfg.model_type,
+            deepseek_api_key=self._engine_cfg.deepseek_api_key,
+            lmstudio_base_url=self._engine_cfg.lmstudio_base_url,
+            lmstudio_model_name=self._engine_cfg.model_name,
+            lmstudio_temperature=self._engine_cfg.lmstudio_temperature,
+            lmstudio_max_tokens=self._engine_cfg.lmstudio_max_tokens,
+            lmstudio_timeout=self._engine_cfg.lmstudio_timeout,
+            db=self.db,
+        )
+        self.plugin_manager.register(self._models_plugin)
 
-        # 2. MemoryPlugin (PRE_PROCESS + POST_PROCESS, priority 30)
-        if enabled("memory"):
+    def _register_context_plugins(self):
+        if self._plugin_enabled("memory"):
             from plugins.builtin.memory_plugin import MemoryPlugin
             self.plugin_manager.register(MemoryPlugin(
-                memory_manager=self.memory_manager,
-                db=self.db,
+                memory_manager=self.memory_manager, db=self.db,
             ))
-
-        # 2a. VisionPlugin (PRE_PROCESS, priority 28)
-        if enabled("vision") and self._models_plugin:
+        if self._plugin_enabled("vision") and self._models_plugin:
             from plugins.builtin.vision_plugin import VisionPlugin
-            self.plugin_manager.register(VisionPlugin(
-                models_plugin=self._models_plugin,
-            ))
-
-        # 2a. WorldPlugin (PRE_PROCESS + POST_PROCESS, priority 15)
-        if enabled("world") and self.world_engine:
+            self.plugin_manager.register(VisionPlugin(models_plugin=self._models_plugin))
+        if self._plugin_enabled("world") and self.world_engine:
             from world import WorldPlugin
             self.plugin_manager.register(WorldPlugin(
                 world_engine=self.world_engine,
@@ -515,11 +514,9 @@ class DSNEngine:
                 personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
             ))
 
-
-        # 2b. PersonalityPlugin (POST_PROCESS, priority 25)
-        if enabled("personality"):
+    def _register_personality_plugins(self):
+        if self._plugin_enabled("personality"):
             pe = self.prompt_engine
-            # V3 plugin 优先
             if pe and pe.personality_v3 and pe.personality_v3.enabled:
                 from plugins.builtin.personality_v3_plugin import PersonalityV3Plugin
                 self.plugin_manager.register(PersonalityV3Plugin(
@@ -530,100 +527,75 @@ class DSNEngine:
                 self.plugin_manager.register(PersonalityPlugin(
                     personality_v2=pe.personality_v2,
                 ))
-
-        # 2c. ImpressionPlugin (PRE_PROCESS + POST_PROCESS, priority 22)
-        if enabled("impression"):
+        if self._plugin_enabled("impression"):
             from plugins.builtin.impression_plugin import ImpressionPlugin
             self.plugin_manager.register(ImpressionPlugin(
                 impression_manager=self.impression_manager,
             ))
-
-        # 2d. ConfirmPlugin (PRE_PROCESS + POST_PROCESS, priority 32)
-        if enabled("confirm"):
+        if self._plugin_enabled("confirm"):
             from plugins.builtin.confirm_plugin import ConfirmPlugin
             self.plugin_manager.register(ConfirmPlugin())
 
-        # 3. RecallPlugin (POST_PROCESS, priority 33)
-        if enabled("recall") and self.memory_manager:
+    def _register_execution_plugins(self):
+        if self._plugin_enabled("recall") and self.memory_manager:
             try:
                 from plugins.builtin.recall_plugin import RecallPlugin
                 from memory_recall import MemoryRecallEngine
-                recall_engine = MemoryRecallEngine(db=self.db)
-                self.plugin_manager.register(RecallPlugin(recall_engine=recall_engine))
+                self.plugin_manager.register(RecallPlugin(
+                    recall_engine=MemoryRecallEngine(db=self.db),
+                ))
             except Exception as e:
                 self._logger.warning("RecallPlugin 加载失败: %s", e)
-
-        # 4. SkillsPlugin (POST_PROCESS, priority 35)
-        if enabled("skills"):
+        if self._plugin_enabled("skills"):
             from plugins.builtin.skills_plugin import SkillsPlugin
-            self.plugin_manager.register(SkillsPlugin(
-                skill_registry=self.skill_registry,
-            ))
-
-        # 5. AgentPlugin (POST_PROCESS, priority 35)
-        if enabled("agent"):
+            self.plugin_manager.register(SkillsPlugin(skill_registry=self.skill_registry))
+        if self._plugin_enabled("agent"):
             from plugins.builtin.agent_plugin import AgentPlugin
             self.plugin_manager.register(AgentPlugin(
                 skill_registry=self.skill_registry,
                 models_plugin=self._models_plugin,
-                max_steps=ec.agent_max_steps,
-                token_budget=ec.agent_token_budget,
-                agent_timeout=ec.agent_timeout,
+                max_steps=self._engine_cfg.agent_max_steps,
+                token_budget=self._engine_cfg.agent_token_budget,
+                agent_timeout=self._engine_cfg.agent_timeout,
                 impression_manager=self.impression_manager,
             ))
-
-        # 5c. SSPPlugin (POST_PROCESS, priority 50)
-        if enabled("ssp"):
+        if self._plugin_enabled("ssp"):
             from plugins.builtin.ssp_plugin import SSPPlugin
             self.plugin_manager.register(SSPPlugin(
-                db=self.db,
-                impression_manager=self.impression_manager,
-                models_plugin=self._models_plugin,
-                skill_registry=self.skill_registry,
+                db=self.db, impression_manager=self.impression_manager,
+                models_plugin=self._models_plugin, skill_registry=self.skill_registry,
             ))
-
-        # 5b. TaskPlugin (POST_PROCESS, priority 40)
-        if enabled("task") and self.task_manager:
+        if self._plugin_enabled("task") and self.task_manager:
             from plugins.builtin.task_plugin import TaskPlugin
             self.plugin_manager.register(TaskPlugin(
-                task_manager=self.task_manager,
-                db=self.db,
+                task_manager=self.task_manager, db=self.db,
                 skill_registry=self.skill_registry,
             ))
-
-        # 5d. TodoPlugin (POST_PROCESS, priority 33)
-        if enabled("todo") and self._models_plugin:
+        if self._plugin_enabled("todo") and self._models_plugin:
             from plugins.builtin.todo_plugin import TodoPlugin
             self.plugin_manager.register(TodoPlugin(
                 models_plugin=self._models_plugin,
                 complexity_analyzer=self.complexity_analyzer,
-                skill_registry=self.skill_registry,
-                db=self.db,
+                skill_registry=self.skill_registry, db=self.db,
             ))
 
-        # 6. TTSPlugin (POST_TTS, priority 60)
-        if enabled("tts") and self._tts_client:
+    def _register_output_plugins(self):
+        if self._plugin_enabled("tts") and self._tts_client:
             from plugins.builtin.tts_plugin import TTSPlugin
             self.plugin_manager.register(TTSPlugin(
                 tts_client=self._tts_client,
                 profile_manager=self._tts_profile_mgr,
                 tts_process_model=self._tts_process_model,
             ))
-
-        # 7. DistillPlugin (POST_PROCESS, priority 100)
-        if enabled("distill") and self.skill_manager and self._models_plugin:
+        if self._plugin_enabled("distill") and self.skill_manager and self._models_plugin:
             try:
                 from plugins.builtin.distill_plugin import DistillPlugin
                 from skills.distill import DistillationEngine
-                distill_engine = DistillationEngine(
-                    db=self.db,
-                    skill_manager=self.skill_manager,
-                    llm_client=None,
-                )
-                v3_sys = self.prompt_engine.personality_v3 if self.prompt_engine else None
                 self.plugin_manager.register(DistillPlugin(
-                    distillation_engine=distill_engine,
-                    v3_system=v3_sys,
+                    distillation_engine=DistillationEngine(
+                        db=self.db, skill_manager=self.skill_manager, llm_client=None,
+                    ),
+                    v3_system=self.prompt_engine.personality_v3 if self.prompt_engine else None,
                     card_id=self._cfg.card_id if self._cfg else "exa",
                 ))
             except Exception as e:

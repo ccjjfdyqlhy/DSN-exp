@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from .traits import format_deviant_dimensions
@@ -60,6 +61,10 @@ PERSONALITY_PROMPT_TEMPLATE = """你是一个"人格提示词生成器"。你的
 class PersonalityPromptGenerator:
     def __init__(self, chat=None):
         self._chat = chat
+        self._cached_prompt: str = ""
+        self._cache_valid = False
+        self._generating = False
+        self._gen_lock = threading.Lock()
         logger.info("PersonalityGenerator: 初始化 chat=%s", "available" if chat else "none")
 
     def set_chat(self, chat) -> None:
@@ -72,10 +77,45 @@ class PersonalityPromptGenerator:
 
     def generate(self, snapshot: DynamicSnapshot, user_message: str = "",
                  conversation_tone: str = "中性") -> str:
+        if self._cache_valid and self._cached_prompt:
+            return self._cached_prompt
+
         if not self._chat:
-            logger.warning("PersonalityGenerator: 模型不可用，返回回退描述")
             return self._fallback(snapshot)
 
+        # 首次调用：立即返回 fallback，后台触发 LLM 生成
+        fallback = self._fallback(snapshot)
+        self._trigger_async_generation(snapshot, user_message, conversation_tone)
+        return fallback
+
+    def invalidate_cache(self):
+        with self._gen_lock:
+            self._cache_valid = False
+
+    def _trigger_async_generation(self, snapshot, user_message, conversation_tone):
+        with self._gen_lock:
+            if self._generating:
+                return
+            self._generating = True
+
+        def _run():
+            try:
+                result = self._do_llm_generate(snapshot, user_message, conversation_tone)
+                with self._gen_lock:
+                    self._cached_prompt = result
+                    self._cache_valid = True
+                    self._generating = False
+                logger.info("PersonalityGenerator: 异步生成完成 len=%d", len(result))
+            except Exception as e:
+                logger.error("PersonalityGenerator: 异步生成失败: %s", e)
+                with self._gen_lock:
+                    self._generating = False
+
+        t = threading.Thread(target=_run, daemon=True, name="personality-gen")
+        t.start()
+
+    def _do_llm_generate(self, snapshot: DynamicSnapshot, user_message: str,
+                          conversation_tone: str) -> str:
         foundation = snapshot.foundation_description or "暂无角色描述"
         behavioral = self._format_patterns(snapshot.behavioral_patterns)
         speech = self._format_patterns(snapshot.speech_patterns)
@@ -101,17 +141,10 @@ class PersonalityPromptGenerator:
             conv_tone=conversation_tone,
         )
 
-        logger.debug("PersonalityGenerator: 生成性格提示词 card=%s affinity=%.0f mood=%s",
-                     snapshot.card_id, snapshot.affinity_value, mood_summary)
-
-        try:
-            raw = self._send_with_temp(self._chat, prompt, 0.6, 600)
-            result = self._extract_personality_section(raw)
-            logger.debug("PersonalityGenerator: 生成完成 len=%d", len(result))
-            return result
-        except Exception as e:
-            logger.error("PersonalityGenerator: 生成失败: %s", e)
-            return self._fallback(snapshot)
+        logger.debug("PersonalityGenerator: LLM 生成性格提示词 card=%s affinity=%.0f",
+                     snapshot.card_id, snapshot.affinity_value)
+        raw = self._send_with_temp(self._chat, prompt, 0.6, 600)
+        return self._extract_personality_section(raw)
 
     @staticmethod
     def _send_with_temp(chat, prompt: str, temperature: float, max_tokens: int) -> str:

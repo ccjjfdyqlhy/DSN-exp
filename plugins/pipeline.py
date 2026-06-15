@@ -336,6 +336,68 @@ class ChatPipeline:
                      sum(1 for r in results if r["audio_b64"]), len(results))
         return results
 
+    @staticmethod
+    async def _bridge_progress(thread_q: queue.Queue, progress_q: asyncio.Queue):
+        loop = asyncio.get_event_loop()
+        while True:
+            evt = await loop.run_in_executor(None, thread_q.get)
+            if evt is None:
+                break
+            await progress_q.put(evt)
+
+    async def _run_all_plugins(self, enabled: list, hook: HookPoint,
+                                ctx: PluginContext, progress_q: asyncio.Queue):
+        for plugin in enabled:
+            desc = getattr(plugin, 'description', plugin.name)
+            await progress_q.put({"status": "thinking", "text": desc, "plugin": plugin.name})
+            try:
+                ctx = await self.pm._call_plugin(plugin, hook, ctx)
+            except Exception:
+                logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
+            if ctx.filtered:
+                break
+
+        task_mgr = ctx.extra.get("_task_manager")
+        pending = ctx.extra.get("_pending_tasks", set())
+        if task_mgr and pending:
+            await self._poll_pending_tasks(ctx, pending, progress_q)
+
+        thread_q = ctx.extra.get("_progress_queue")
+        if thread_q:
+            thread_q.put(None)
+        await progress_q.put(None)
+
+    async def _poll_pending_tasks(self, ctx, remaining, progress_q):
+        from tasks import TaskStatus
+        deadline = time.time() + 120
+        await progress_q.put({
+            "status": "thinking",
+            "text": f"等待 {len(remaining)} 个异步任务完成...",
+        })
+        while remaining and time.time() < deadline:
+            for tid in list(remaining):
+                task_mgr = ctx.extra.get("_task_manager")
+                task = task_mgr.get_task(tid) if task_mgr else None
+                if task and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    remaining.discard(tid)
+                    result = task.result or {}
+                    success = result.get("success", False) if isinstance(result, dict) else False
+                    output = result.get("output", "") if isinstance(result, dict) else ""
+                    error = task.error or result.get("error", "") if isinstance(result, dict) else ""
+                    evt = {"status": "task_result", "task_id": tid[:8], "success": success}
+                    if output:
+                        out = str(output).strip()
+                        if len(out) > 2000:
+                            out = out[:2000] + "\n...(输出截断)"
+                        evt["output"] = out
+                    if error:
+                        evt["error"] = str(error)[:500]
+                    await progress_q.put(evt)
+                    if output and success:
+                        await _task_completion_llm_reply(ctx, progress_q, output, error, success)
+            if remaining:
+                await asyncio.sleep(0.3)
+
     # ---- 流式管道（SSE） ----
 
     _HOOK_SSE_STATUS = {
@@ -431,76 +493,8 @@ class ChatPipeline:
                 ctx.extra["_progress_queue"] = thread_q
                 ctx.extra["_plugin_manager"] = self.pm
 
-                async def bridge():
-                    loop = asyncio.get_event_loop()
-                    while True:
-                        evt = await loop.run_in_executor(None, thread_q.get)
-                        if evt is None:
-                            break
-                        await progress_q.put(evt)
-
-                bridge_task = asyncio.create_task(bridge())
-
-                async def run_all():
-                    nonlocal ctx
-                    for plugin in enabled:
-                        desc = getattr(plugin, 'description', plugin.name)
-                        await progress_q.put({
-                            "status": "thinking",
-                            "text": desc,
-                            "plugin": plugin.name,
-                        })
-                        try:
-                            ctx = await self.pm._call_plugin(plugin, hook, ctx)
-                        except Exception:
-                            logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
-                        if ctx.filtered:
-                            break
-
-                    task_mgr = ctx.extra.get("_task_manager")
-                    pending = ctx.extra.get("_pending_tasks", set())
-                    if task_mgr and pending:
-                        remaining = set(pending)
-                        await progress_q.put({
-                            "status": "thinking",
-                            "text": f"等待 {len(remaining)} 个异步任务完成...",
-                        })
-                        from tasks import TaskStatus
-                        deadline = time.time() + 120
-                        while remaining and time.time() < deadline:
-                            for tid in list(remaining):
-                                task = task_mgr.get_task(tid)
-                                if task and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                                    remaining.discard(tid)
-                                    result = task.result or {}
-                                    success = result.get("success", False) if isinstance(result, dict) else False
-                                    output = result.get("output", "") if isinstance(result, dict) else ""
-                                    error = task.error or result.get("error", "") if isinstance(result, dict) else ""
-                                    evt = {
-                                        "status": "task_result",
-                                        "task_id": tid[:8],
-                                        "success": success,
-                                    }
-                                    if output:
-                                        out = str(output).strip()
-                                        if len(out) > 2000:
-                                            out = out[:2000] + "\n...(输出截断)"
-                                        evt["output"] = out
-                                    if error:
-                                        evt["error"] = str(error)[:500]
-                                    await progress_q.put(evt)
-
-                                    if output and success:
-                                        await _task_completion_llm_reply(
-                                            ctx, progress_q, output, error, success
-                                        )
-                            if remaining:
-                                await asyncio.sleep(0.3)
-
-                    thread_q.put(None)
-                    await progress_q.put(None)
-
-                runner = asyncio.create_task(run_all())
+                bridge_task = asyncio.create_task(self._bridge_progress(thread_q, progress_q))
+                runner = asyncio.create_task(self._run_all_plugins(enabled, hook, ctx, progress_q))
 
                 import asyncio as _asyncio
                 while True:
@@ -515,6 +509,7 @@ class ChatPipeline:
                             'text': '正在处理...',
                         })}\n\n"
 
+                await runner
                 await runner
                 await bridge_task
 
@@ -557,7 +552,6 @@ class ChatPipeline:
                         'chat_id': ctx.chat_id,
                     })}\n\n"
                     logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
-                    # Agent 修改了回复时，丢弃旧 TTS，对最终回复重新合成
                     if ctx.tts_enabled and self._tts_client and ctx.reply != ctx.original_reply:
                         tts_lines = await self._synthesize_lines(ctx.reply)
                     ctx.extra["_agent_reply_dirty"] = False

@@ -138,6 +138,7 @@ class PersonalitySystemV3:
         logger.info("V3: 角色卡指纹已变 (new=%s)，执行蒸馏...", fingerprint[:20])
         distilled = self._distillation_engine.run(card, model_name=model_name)
         self._state_manager.save_distillation(distilled)
+        self._generator.invalidate_cache()
         logger.info("V3: 蒸馏完成 distillation_id=%s version=%d dims=%d",
                      distilled.distillation_id, distilled.version,
                      len(distilled.indicator_vector))
