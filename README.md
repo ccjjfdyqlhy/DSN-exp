@@ -1,15 +1,19 @@
 # DSN-exp
-本文件一览：我最近在干嘛？
 
-**本次更新：后端第27条**
+-> 本文件不是文档，文档往这看：[![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/ccjjfdyqlhy/DSN-exp)  
+-> 代码库复杂度分析往这看：[**屎山代码分析报告**](https://github.com/ccjjfdyqlhy/DSN-exp/blob/main/REPORT.md)  
+
+所以，我最近在干嘛？
+
+**本次更新：Concept 3**
 
 Concepts
 ---
-- 剧本系统：两端皆可使用，起到引导用户/做游戏的作用（？ 
-- ~~写个插件接入ncm！！~~
-- 从ncm插件的歌词蒸馏人格特点
-- 环境全模态感知协议接口（转后端13、20、21）
-- 开发编年史。
+- 剧本系统：两端皆可使用，起到引导用户/做游戏的作用（？  
+- ~~写个技能接入ncm！！~~  
+- ~~从ncm技能的歌词蒸馏人格特点~~  
+- 环境全模态感知协议接口（转后端13、20、21）  
+- 开发提交前钩子——屎山分析、编年史添加、README更新，自动化。  
 
 后端
 ---
@@ -41,6 +45,8 @@ Concepts
 25、图书馆：存放个人UGC，闲置的时候读一读，加深了解。  
 ~~26、内置GitHub技能。~~  
 ~~27、优化处理效率（第一波）~~  
+28、检查并修复记忆系统的提示词丢失问题。  
+29、优化性格抽取模型的异步流程。  
 
 前端
 ---

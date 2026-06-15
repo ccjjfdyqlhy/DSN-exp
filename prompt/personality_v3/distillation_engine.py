@@ -62,11 +62,11 @@ PASS2_FEATURE_EXTRACTION = """你是一个角色分析师。基于以下角色�
 
 3. "emotional_model": 情绪反应模型描述
    - "description": 整体描述
-   - "triggers": 数组，每个元素 {"stimulus": 触发情景, "response": 反应, "intensity": 强度0~1, "recovery": "fast"/"medium"/"slow"}
+    - "triggers": 数组，每个元素 {{"stimulus": 触发情景, "response": 反应, "intensity": 强度0~1, "recovery": "fast"/"medium"/"slow"}}
 
 4. "relational_model": 关系动态模型
-   - "description": 整体描述
-   - "stages": 数组，每个元素 {"level": 0, "label": 阶段名, "description": 行为描述}
+    - "description": 整体描述
+    - "stages": 数组，每个元素 {{"level": 0, "label": 阶段名, "description": 行为描述}}
    - 从陌生到亲密的渐进过程，至少 4 个阶段
 
 5. "trait_narrative": 性格维度自然语言描述
@@ -99,7 +99,7 @@ PASS3_QUANTIZATION = """你是一个性格测量专家。基于提供的角色�
 {manual_overrides_text}
 
 请以 JSON 数组输出，每个元素:
-{"id": "A1", "value": 0.72, "reasoning": "角色对新鲜事物持谨慎开放态度，愿意尝试但不冲动"}
+{{"id": "A1", "value": 0.72, "reasoning": "角色对新鲜事物持谨慎开放态度，愿意尝试但不冲动"}}
 
 只输出 JSON 数组，不要有其他文字。"""
 

@@ -1,0 +1,49 @@
+name: personality_materials
+display_name: "性格素材管理"
+description: "管理 AI 的性格蒸馏素材库：导入歌词、文章等文本为经历素材，查看已导入的素材条目"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "capabilities"
+prompt_priority: 70
+
+tags:
+  - 性格
+  - 蒸馏
+  - 素材
+  - 歌词
+  - 进化
+  - personality
+
+activation:
+  keywords:
+    - 加入素材
+    - 导入素材
+    - 蒸馏素材
+    - 性格素材
+    - 素材库
+    - 查看素材
+    - 性格进化
+    - 导入歌词
+    - 蒸馏人格
+    - 更新人格
+    - 重新蒸馏
+
+tools:
+  - name: import_experience
+    display_name: "导入经历素材"
+    description: "将一段文本导入为 AI 的性格蒸馏素材（经历/知识背景）。导入后系统会在适当时机自动蒸馏，将新材料融入人格。长文本会自动概括。"
+    module: "tools.importer"
+    class: "PersonalityImporter"
+    methods:
+      - import_experience
+
+  - name: list_experiences
+    display_name: "列出已导入素材"
+    description: "列出已导入 AI 性格蒸馏素材库的所有经历条目，含来源和字数"
+    module: "tools.importer"
+    class: "PersonalityImporter"
+    methods:
+      - list_experiences

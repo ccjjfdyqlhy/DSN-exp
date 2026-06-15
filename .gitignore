@@ -25,3 +25,5 @@ note.txt
 *.ttf
 /skills/claw_skills/*
 /temp/
+/skills/builtin/ncm_music/music/*
+/character_cards/materials/*

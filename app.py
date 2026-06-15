@@ -680,6 +680,18 @@ engine = create_engine_with_defaults(
 )
 app.logger.info("DSNEngine 已创建 (插件: %s)", engine.plugin_manager.list_plugins())
 
+# ---------- 注入 V3 引用到 personality_materials 技能 ----------
+try:
+    if personality_v3 and skill_registry:
+        for key, instance in skill_registry._tool_instances.items():
+            if key.startswith("personality_materials."):
+                instance._v3 = personality_v3
+                app.logger.info("PersonalityMaterials: V3 已注入到 %s", key)
+    else:
+        app.logger.warning("PersonalityMaterials: V3 或 SkillRegistry 未初始化，跳过注入")
+except Exception as e:
+    app.logger.warning("PersonalityMaterials: 注入 V3 失败: %s", e)
+
 # ---------- 认证装饰器 ----------
 def login_required(f):
     @wraps(f)

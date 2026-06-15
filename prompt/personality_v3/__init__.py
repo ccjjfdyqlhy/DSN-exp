@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Optional
+import threading
 
 from .character_card import CharacterCard, NaturalLanguage, CorpusEntry, ExperienceEntry, DynamicConfig
 from .experience_importer import ExperienceImporter
@@ -54,7 +55,8 @@ class PersonalitySystemV3:
         logger.info("V3: 默认角色卡路径=%s", self._default_card_path)
 
         self._enabled = True
-        self._distillation_needed = False
+        self._distillation_pending: dict[str, bool] = {}
+        self._distill_lock = threading.Lock()
 
     def init_tables(self) -> None:
         logger.info("V3: 开始初始化持久层表...")
@@ -146,6 +148,64 @@ class PersonalitySystemV3:
         if d:
             logger.debug("V3: 获取蒸馏产物 card_id=%s version=%d", card_id, d.version)
         return d
+
+    # === 经历素材导入 ===
+
+    def import_experience(self, card_id: str, text: str, source: str = "") -> ExperienceEntry | None:
+        logger.info("V3: 导入经历素材 card_id=%s source=%s len=%d", card_id, source, len(text))
+        card = self.get_card(card_id)
+        if not card:
+            logger.error("V3: 导入失败 — 角色卡不存在 card_id=%s", card_id)
+            return None
+
+        entry = self._experience_importer.import_text(text, source)
+        card.experiences.append(entry)
+        self.upload_card(card)
+        with self._distill_lock:
+            self._distillation_pending[card_id] = True
+        logger.info("V3: 素材已导入 card_id=%s total_experiences=%d distillation_pending=True",
+                     card_id, len(card.experiences))
+        return entry
+
+    def import_pending_materials(self, card_id: str) -> int:
+        materials_dir = Path(__file__).parent.parent.parent / "character_cards" / "materials" / card_id
+        if not materials_dir.exists():
+            return 0
+        card = self.get_card(card_id)
+        if not card:
+            return 0
+        imported_files = {e.file for e in card.experiences if e.file}
+        count = 0
+        for f in sorted(materials_dir.glob("*.txt")):
+            if str(f) in imported_files:
+                continue
+            logger.info("V3: 发现新素材 %s/%s", card_id, f.name)
+            try:
+                entry = self._experience_importer.import_file(str(f))
+                card.experiences.append(entry)
+                count += 1
+            except Exception as e:
+                logger.error("V3: 导入素材文件失败 %s: %s", f.name, e)
+        if count > 0:
+            self.upload_card(card)
+            with self._distill_lock:
+                self._distillation_pending[card_id] = True
+            logger.info("V3: %s 导入了 %d 个素材文件，标记蒸馏待处理", card_id, count)
+        return count
+
+    def is_distillation_needed(self, card_id: str = None) -> bool:
+        with self._distill_lock:
+            if card_id:
+                return self._distillation_pending.get(card_id, False)
+            return any(self._distillation_pending.values())
+
+    def mark_distillation_needed(self, card_id: str) -> None:
+        with self._distill_lock:
+            self._distillation_pending[card_id] = True
+
+    def mark_distillation_done(self, card_id: str) -> None:
+        with self._distill_lock:
+            self._distillation_pending[card_id] = False
 
     # === 用户绑定 ===
 
