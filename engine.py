@@ -388,8 +388,24 @@ class DSNEngine:
         try:
             loaded = self.skill_manager.scan_and_load()
             self._logger.info("Skills 加载完成: %d", loaded)
+            # 注入 V3 引用到 ExaEvolution 技能
+            self._inject_v3_to_exa_evolution()
         except Exception as e:
             self._logger.warning("Skills 加载失败: %s", e)
+
+    def _inject_v3_to_exa_evolution(self):
+        """将 V3 引用注入到 SkillRegistry 中的 personality_materials 工具实例"""
+        try:
+            v3 = self.prompt_engine.personality_v3 if self.prompt_engine else None
+            if not v3:
+                self._logger.warning("PersonalityMaterials: V3 未初始化，跳过注入")
+                return
+            for key, instance in self.skill_registry._tool_instances.items():
+                if key.startswith("personality_materials."):
+                    instance._v3 = v3
+                    self._logger.info("PersonalityMaterials: V3 已注入到 %s", key)
+        except Exception as e:
+            self._logger.warning("PersonalityMaterials: 注入 V3 失败: %s", e)
 
     def _init_prompt(self):
         lib = PromptLibrary()
@@ -604,8 +620,11 @@ class DSNEngine:
                     skill_manager=self.skill_manager,
                     llm_client=None,
                 )
+                v3_sys = self.prompt_engine.personality_v3 if self.prompt_engine else None
                 self.plugin_manager.register(DistillPlugin(
                     distillation_engine=distill_engine,
+                    v3_system=v3_sys,
+                    card_id=self._cfg.card_id if self._cfg else "exa",
                 ))
             except Exception as e:
                 self._logger.warning("DistillPlugin 加载失败: %s", e)
@@ -984,6 +1003,25 @@ def create_engine_with_defaults(
             ))
         except Exception as e:
             engine._logger.warning("SSPPlugin 加载失败: %s", e)
+
+    # DistillPlugin — 双引擎蒸馏（V3 性格 + 技能模式）
+    if engine.skill_manager and models_plugin:
+        try:
+            from plugins.builtin.distill_plugin import DistillPlugin
+            from skills.distill import DistillationEngine
+            _distill_engine = DistillationEngine(
+                db=db,
+                skill_manager=engine.skill_manager,
+                llm_client=None,
+            )
+            _v3_sys = engine.prompt_engine.personality_v3 if engine.prompt_engine else None
+            engine.plugin_manager.register(DistillPlugin(
+                distillation_engine=_distill_engine,
+                v3_system=_v3_sys,
+                card_id="exa",
+            ))
+        except Exception as e:
+            engine._logger.warning("DistillPlugin 加载失败: %s", e)
 
     # ---- TTS 文本预处理 ----
     if Config.TTS_PROCESS_ENABLED:

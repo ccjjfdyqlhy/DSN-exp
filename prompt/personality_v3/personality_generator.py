@@ -54,7 +54,7 @@ PERSONALITY_PROMPT_TEMPLATE = """你是一个"人格提示词生成器"。你的
 
 输出格式：
 ## 角色设定
-{你的生成文本}"""
+{{你的生成文本}}"""
 
 
 class PersonalityPromptGenerator:

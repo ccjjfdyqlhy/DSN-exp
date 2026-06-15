@@ -430,7 +430,11 @@ def _cmd_help():
     /config listall   列出所有配置项 (敏感信息隐藏)
     /config set <键> <值>  动态修改配置并写入 .env
     /config undo      回退 .env 到上一版本 (最多 3 步)
-    /listconfig 同 /config listall (兼容)
+     /listconfig 同 /config listall (兼容)
+    /persona list                  列出所有角色卡
+    /persona status <角色卡名>    查看人格动态状态
+    /persona distill <角色卡名>   立即启动人格蒸馏
+    /persona materials <角色卡名> 列出蒸馏素材
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -710,7 +714,7 @@ def _cmd_memory_help():
 """)
 
 
-def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None):
+def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None, personality_v3=None):
     """解析并执行命令"""
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -734,6 +738,9 @@ def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, conf
         _cmd_config(config_cls, args)
     elif cmd == "/listconfig":
         _cmd_listconfig(config_cls)
+    elif cmd == "/persona":
+        args = parts[1].strip() if len(parts) > 1 else ""
+        _cmd_persona(personality_v3, args)
     elif cmd == "/stop":
         print("  正在停止服务器...")
         if shutdown_event:
@@ -744,7 +751,166 @@ def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, conf
         print(f"  未知命令: {cmd}，输入 /help 查看可用命令")
 
 
-# ── 主入口 ──
+def _cmd_persona(personality_v3, args: str):
+    """人格系统管理命令: status / distill / materials"""
+    parts = args.split(maxsplit=1)
+    sub = parts[0].lower() if parts else ""
+
+    if not personality_v3:
+        print("  错误: PersonalitySystemV3 未初始化")
+        return
+
+    if sub not in ("status", "distill", "materials", "list"):
+        print("""
+  /persona 命令用法:
+    /persona list                  列出所有角色卡
+    /persona status <角色卡名>      查看人格动态状态（情绪、亲和度、性格向量）
+    /persona distill <角色卡名>     立即启动人格蒸馏
+    /persona materials <角色卡名>   列出蒸馏素材及目录内容
+
+  示例: /persona status exa
+""")
+        return
+
+    if sub == "list":
+        _persona_list(personality_v3)
+        return
+
+    card_id = parts[1].strip() if len(parts) > 1 else "exa"
+    if sub == "status":
+        _persona_status(personality_v3, card_id)
+    elif sub == "distill":
+        _persona_distill(personality_v3, card_id)
+    elif sub == "materials":
+        _persona_materials(personality_v3, card_id)
+
+
+def _persona_status(v3, card_id: str):
+    card = v3.get_card(card_id)
+    d = v3.get_distillation(card_id)
+    if not card:
+        print(f"  角色卡 '{card_id}' 不存在")
+        return
+
+    print(f"\n  [bold]角色卡: {card.display_name or card.name} (id={card_id})[/]")
+    print(f"  版本: {card.version}  描述: {card.description}")
+    print(f"  经历素材数: {len(card.experiences)}  语料条目: {len(card.corpus)}")
+    print(f"  蒸馏状态: {'已就绪' if d else '未蒸馏'}")
+
+    if d:
+        print(f"    指纹: {d.content_fingerprint[:30]}...  版本: {d.version}")
+        print(f"    模型: {d.model_used}  蒸馏时间: {d.created_at}")
+        print(f"    向量维度: {len(d.indicator_vector)}")
+
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 1))
+        table.add_column("ID", style="dim")
+        table.add_column("名称")
+        table.add_column("值", justify="right")
+        table.add_column("倾向", max_width=30)
+        for tid in sorted(d.indicator_vector):
+            val = d.indicator_vector[tid]
+            bar = "█" * int(val * 20)
+            label = ""
+            if val < 0.3:
+                label = "[dim]↓低[/] " + bar
+            elif val > 0.7:
+                label = "[bold]↑高[/] " + bar
+            else:
+                label = bar
+            table.add_row(tid, _TRAIT_NAMES.get(tid, ""), f"{val:.2f}", label)
+        console.print(table)
+    print()
+
+
+def _persona_distill(v3, card_id: str):
+    card = v3.get_card(card_id)
+    if not card:
+        print(f"  角色卡 '{card_id}' 不存在")
+        return
+
+    print(f"\n  开始蒸馏 {card_id}（后台执行，请查看日志）...")
+    append_log("system", "INFO", f"管理员触发蒸馏: {card_id}")
+
+    import threading as _th
+    def _run():
+        try:
+            d = v3.distill(card_id, model_name="deepseek")
+            if d:
+                v3.mark_distillation_done()
+                append_log("system", "INFO",
+                           f"蒸馏完成: {card_id} version={d.version} dims={len(d.indicator_vector)}")
+            else:
+                append_log("system", "WARNING",
+                           f"蒸馏跳过: {card_id}（指纹未变或已是最新）")
+        except Exception as e:
+            append_log("system", "ERROR", f"蒸馏失败: {card_id} error={e}")
+
+    _th.Thread(target=_run, daemon=True, name="persona-distill-cli").start()
+    print(f"  蒸馏已提交，完成时会输出日志。\n")
+
+
+
+def _persona_list(v3):
+    cards = v3.list_cards()
+    if not cards:
+        print("  无角色卡")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("ID", style="bold")
+    table.add_column("显示名")
+    table.add_column("版本")
+    table.add_column("作者", style="dim")
+    table.add_column("蒸馏状态")
+    table.add_column("素材数")
+
+    for c in cards:
+        cid = c.get("card_id", "?")
+        d = v3.get_distillation(cid)
+        card = v3.get_card(cid)
+        exp_count = len(card.experiences) if card else 0
+        distill_status = f"v{d.version}" if d else "未蒸馏"
+        table.add_row(
+            cid,
+            c.get("display_name", c.get("name", "")),
+            c.get("version", ""),
+            c.get("author", ""),
+            distill_status,
+            str(exp_count),
+        )
+
+    console.print(f"\n  [bold]角色卡列表 ({len(cards)} 张)[/]")
+    console.print(table)
+    print()
+
+
+def _persona_materials(v3, card_id: str):
+    card = v3.get_card(card_id)
+    if not card:
+        print(f"  角色卡 '{card_id}' 不存在")
+        return
+
+    materials_dir = Path(__file__).parent / "character_cards" / "materials" / card_id
+    print(f"\n  [bold]{card_id} 素材[/]")
+    print(f"  素材目录: {materials_dir}")
+    print(f"  目录存在: {'Y' if materials_dir.exists() else 'N'}")
+
+    files = sorted(materials_dir.glob("*.txt")) if materials_dir.exists() else []
+    print(f"  待处理文件: {len(files)}")
+    for f in files:
+        size = f.stat().st_size
+        print(f"    {f.name} ({size} bytes)")
+
+    experiences = card.experiences
+    print(f"\n  已导入经历: {len(experiences)} 条")
+    for e in experiences:
+        src = e.file or "文本输入"
+        summary_preview = (e.summary or e.text or "")[:80]
+        print(f"    [{e.original_length}字] {src}")
+        if summary_preview:
+            print(f"      {summary_preview}...")
+    print()
+
 
 def main():
     global _server_start_time
@@ -764,10 +930,11 @@ def main():
     auth_manager = flask_app.config.get("AUTH_MANAGER")
     db = app_module.db
     engine = getattr(app_module, 'engine', None)
+    personality_v3 = getattr(app_module, 'personality_v3', None)
     plugin_manager = engine.plugin_manager if engine else None
     prompt_engine = engine.prompt_engine if engine else None
 
-    # ── 启动提示（替代旧自动配对码） ──
+    # ── 启动提示 ──
     try:
         if auth_manager and auth_manager._user_count() == 0:
             console.print(
@@ -812,11 +979,6 @@ def main():
 
     _shutdown_flag = threading.Event()
 
-    def _sigterm_handler(sig, frame):
-        _shutdown_flag.set()
-
-    signal.signal(signal.SIGTERM, _sigterm_handler)
-
     console.print(f"[green]Server started.[/]")
     console.print(
         "[dim]  "
@@ -856,7 +1018,7 @@ def main():
                 continue
 
             if line.startswith("/"):
-                _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, Config, _shutdown_flag)
+                _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, Config, _shutdown_flag, personality_v3)
             else:
                 _handle_steward_chat(line)
 

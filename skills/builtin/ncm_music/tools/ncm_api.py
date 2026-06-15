@@ -161,7 +161,7 @@ class NCMApi:
     def get_lyrics(
         self,
         song_id: int,
-        save: bool = False,
+        save: bool = True,
     ) -> dict:
         """
         获取歌词。

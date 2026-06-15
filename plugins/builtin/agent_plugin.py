@@ -298,5 +298,23 @@ class AgentPlugin(Plugin):
                     f"({result.get('size', 0)} bytes)"
                 )
 
+        if skill == "personality_materials":
+            if tool == "import_experience":
+                if result.get("success"):
+                    return (
+                        f"素材已导入: {result.get('source', '')} "
+                        f"({result.get('original_length', 0)} 字, "
+                        f"已保存到 {result.get('saved_to', '')})"
+                    )
+                return f"素材导入失败: {result.get('error', '未知错误')}"
+            elif tool == "list_experiences":
+                if result.get("success"):
+                    items = result.get("items", [])
+                    lines = [f"角色卡 {result.get('card_name', '')} 已导入 {result.get('count', 0)} 条素材:"]
+                    for item in items:
+                        lines.append(f"  {item['index']}. {item['source'][:60]} ({item['original_length']}字)")
+                    return "\n".join(lines)
+                return f"列出素材失败: {result.get('error', '')}"
+
         # 通用格式
         return json.dumps(result, ensure_ascii=False, indent=2)
