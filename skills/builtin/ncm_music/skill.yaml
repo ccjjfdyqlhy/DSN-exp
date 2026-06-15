@@ -1,0 +1,69 @@
+name: ncm_music
+display_name: "网易云音乐"
+description: "搜索网易云音乐歌曲、获取播放链接、下载歌曲和歌词到本地"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "capabilities"
+prompt_priority: 55
+
+tags:
+  - 音乐
+  - 点歌
+  - 网易云
+  - 歌词
+  - entertainment
+  - download
+
+activation:
+  keywords:
+    - 点歌
+    - 放歌
+    - 音乐
+    - 歌单
+    - 歌词
+    - 网易云
+    - 唱首歌
+    - 来一首
+    - 搜首歌
+    - 播放
+    - 听歌
+    - 我想听
+    - 下一首
+    - 换首歌
+    - 下载歌
+
+tools:
+  - name: search_song
+    display_name: "搜索歌曲"
+    description: "根据关键词搜索网易云音乐的歌曲，返回歌曲列表（含歌曲名、歌手、专辑、时长、封面、播放链接等）；可指定是否自动下载第一首"
+    module: "tools.ncm_api"
+    class: "NCMApi"
+    methods:
+      - search_song
+
+  - name: get_song_url
+    display_name: "获取播放链接"
+    description: "通过歌曲 ID 获取歌曲播放链接和详细信息，可选择是否下载到本地"
+    module: "tools.ncm_api"
+    class: "NCMApi"
+    methods:
+      - get_song_url
+
+  - name: get_lyrics
+    display_name: "获取歌词"
+    description: "根据歌曲 ID 获取歌词，返回 LRC 时间轴歌词和纯文本歌词，可选择是否保存到本地文件"
+    module: "tools.ncm_api"
+    class: "NCMApi"
+    methods:
+      - get_lyrics
+
+  - name: list_downloaded
+    display_name: "列出已下载"
+    description: "列出本地已下载的歌曲文件和歌词文件"
+    module: "tools.ncm_api"
+    class: "NCMApi"
+    methods:
+      - list_downloaded
