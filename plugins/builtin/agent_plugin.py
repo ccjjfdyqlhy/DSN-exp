@@ -241,7 +241,6 @@ class AgentPlugin(Plugin):
         """从文本中提取 IMPRESSION: 标签并写入 DB"""
         if not self._impression:
             return
-        import re
         pat = re.compile(r"IMPRESSION\s*:\s*(.+?)\s*:\s*(.+?)\s*:\s*(\d+)", re.IGNORECASE)
         for m in pat.finditer(text):
             try:
@@ -259,62 +258,73 @@ class AgentPlugin(Plugin):
 
     @staticmethod
     def _format_tool_result(skill: str, tool: str, result) -> str:
-        """格式化单个工具结果为 LLM 友好的文本"""
         if not isinstance(result, dict):
             return str(result)[:_MAX_TOOL_RESULT_LEN]
-
         if not result.get("success", False):
             return f"skill={skill}, tool={tool}, 执行失败: {result.get('error', '未知错误')}"
-
-        # 根据技能类型优化格式
-        if skill == "web_search" and tool == "search":
-            lines = [f"搜索完成 (query={result.get('query', '')}):"]
-            for i, r in enumerate(result.get("results", []), 1):
-                lines.append(f"  {i}. {r.get('title', '')}")
-                if r.get("snippet"):
-                    lines.append(f"     {r['snippet'][:300]}")
-                if r.get("url"):
-                    lines.append(f"     URL: {r['url']}")
-            return "\n".join(lines)
-
-        if skill == "file_manager":
-            if tool == "list_dir":
-                lines = [f"目录 {result.get('path', '')} 内容:"]
-                for item in result.get("items", []):
-                    type_mark = "[DIR]" if item.get("type") == "dir" else "[FILE]"
-                    lines.append(f"  {type_mark} {item['name']}")
-                return "\n".join(lines)
-            elif tool == "read_file":
-                content = result.get("content", "")
-                if len(content) > _MAX_TOOL_RESULT_LEN:
-                    content = content[:_MAX_TOOL_RESULT_LEN] + "\n...(已截断)"
-                return (
-                    f"文件 {result.get('path', '')} "
-                    f"({result.get('size', 0)} bytes):\n{content}"
-                )
-            elif tool == "write_file":
-                return (
-                    f"已写入文件 {result.get('path', '')} "
-                    f"({result.get('size', 0)} bytes)"
-                )
-
-        if skill == "personality_materials":
-            if tool == "import_experience":
-                if result.get("success"):
-                    return (
-                        f"素材已导入: {result.get('source', '')} "
-                        f"({result.get('original_length', 0)} 字, "
-                        f"已保存到 {result.get('saved_to', '')})"
-                    )
-                return f"素材导入失败: {result.get('error', '未知错误')}"
-            elif tool == "list_experiences":
-                if result.get("success"):
-                    items = result.get("items", [])
-                    lines = [f"角色卡 {result.get('card_name', '')} 已导入 {result.get('count', 0)} 条素材:"]
-                    for item in items:
-                        lines.append(f"  {item['index']}. {item['source'][:60]} ({item['original_length']}字)")
-                    return "\n".join(lines)
-                return f"列出素材失败: {result.get('error', '')}"
-
-        # 通用格式
+        fn = _AGENT_FORMATTERS.get((skill, tool))
+        if fn:
+            return fn(result)
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+_AGENT_FORMATTERS: dict = {}
+
+
+def _afmt_web_search(result: dict) -> str:
+    lines = [f"搜索完成 (query={result.get('query', '')}):"]
+    for i, r in enumerate(result.get("results", []), 1):
+        lines.append(f"  {i}. {r.get('title', '')}")
+        if r.get("snippet"):
+            lines.append(f"     {r['snippet'][:300]}")
+        if r.get("url"):
+            lines.append(f"     URL: {r['url']}")
+    return "\n".join(lines)
+
+
+def _afmt_file_list_dir(result: dict) -> str:
+    lines = [f"目录 {result.get('path', '')} 内容:"]
+    for item in result.get("items", []):
+        lines.append(f"  {'[DIR]' if item.get('type') == 'dir' else '[FILE]'} {item['name']}")
+    return "\n".join(lines)
+
+
+def _afmt_file_read(result: dict) -> str:
+    content = result.get("content", "")
+    if len(content) > _MAX_TOOL_RESULT_LEN:
+        content = content[:_MAX_TOOL_RESULT_LEN] + "\n...(已截断)"
+    return f"文件 {result.get('path', '')} ({result.get('size', 0)} bytes):\n{content}"
+
+
+def _afmt_file_write(result: dict) -> str:
+    return f"已写入文件 {result.get('path', '')} ({result.get('size', 0)} bytes)"
+
+
+def _afmt_import_experience(result: dict) -> str:
+    if result.get("success"):
+        return (
+            f"素材已导入: {result.get('source', '')} "
+            f"({result.get('original_length', 0)} 字, "
+            f"已保存到 {result.get('saved_to', '')})"
+        )
+    return f"素材导入失败: {result.get('error', '未知错误')}"
+
+
+def _afmt_list_experiences(result: dict) -> str:
+    if result.get("success"):
+        items = result.get("items", [])
+        lines = [f"角色卡 {result.get('card_name', '')} 已导入 {result.get('count', 0)} 条素材:"]
+        for item in items:
+            lines.append(f"  {item['index']}. {item['source'][:60]} ({item['original_length']}字)")
+        return "\n".join(lines)
+    return f"列出素材失败: {result.get('error', '')}"
+
+
+_AGENT_FORMATTERS.update({
+    ("web_search", "search"): _afmt_web_search,
+    ("file_manager", "list_dir"): _afmt_file_list_dir,
+    ("file_manager", "read_file"): _afmt_file_read,
+    ("file_manager", "write_file"): _afmt_file_write,
+    ("personality_materials", "import_experience"): _afmt_import_experience,
+    ("personality_materials", "list_experiences"): _afmt_list_experiences,
+})

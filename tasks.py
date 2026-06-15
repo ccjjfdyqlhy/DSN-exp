@@ -147,7 +147,14 @@ class TaskManager:
         self._load_persistent_tasks()
         
         self.logger.info("TaskManager 初始化完成")
-    
+
+    _ACTION_HANDLERS = {
+        "shell": "_action_shell",
+        "python": "_action_python",
+        "write_file": "_action_write_file",
+        "edit_file": "_action_edit_file",
+    }
+
     def _init_db(self):
         """初始化任务相关的数据库表"""
         conn = self.db._get_connection()
@@ -516,171 +523,121 @@ class TaskManager:
         return result
     
     def _execute_action_task(self, task: Task) -> Dict[str, Any]:
-        """执行动作任务（系统指令、Python代码、文件操作等）"""
         self.logger.info("开始执行动作任务: %s", task.task_id)
-        
-        # 获取动作参数
         action_type = task.params.get("action_type", "")
         content = task.params.get("content", "")
-        
+
         result = {
             "action_type": action_type,
             "timestamp": datetime.now().isoformat(),
             "task_type": "action",
-            "requires_ai_notification": True,  # 标记需要AI通知
-            "skip_memory": True  # 标记跳过记忆化
+            "requires_ai_notification": True,
+            "skip_memory": True,
         }
-        
+
+        handler_name = self._ACTION_HANDLERS.get(action_type)
+        if not handler_name:
+            result.update({"success": False, "error": f"未知的动作类型: {action_type}"})
+            return self._finalize_action(task, result)
+
+        handler = getattr(self, handler_name)
         try:
-            if action_type == "shell":
-                # 执行系统指令
-                import subprocess
-                _sub_encoding = locale.getpreferredencoding(False)
-                self.logger.info("执行shell命令: %s", content[:100] + "..." if len(content) > 100 else content)
-                process = subprocess.run(
-                    content,
-                    shell=True,
-                    capture_output=True,
-                    encoding=_sub_encoding, errors='replace',
-                    timeout=300,
-                    cwd=os.path.expanduser("~")
-                )
-                output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
-                exit_code = process.returncode
-                
-                result.update({
-                    "success": exit_code == 0,
-                    "exit_code": exit_code,
-                    "output": output,
-                    "content_preview": content[:200]
-                })
-                
-            elif action_type == "python":
-                # 执行Python代码段
-                self.logger.info("执行Python代码段")
-                
-                # 创建一个临时文件来执行代码
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8-sig') as f:
-                    f.write(content)
-                    temp_file = f.name
-                
-                try:
-                    import subprocess
-                    _sub_encoding = locale.getpreferredencoding(False)
-                    process = subprocess.run(
-                        ["python", temp_file],
-                        capture_output=True,
-                        encoding=_sub_encoding, errors='replace',
-                        timeout=300,
-                        cwd=os.path.dirname(temp_file)
-                    )
-                    output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
-                    exit_code = process.returncode
-                    
-                    result.update({
-                        "success": exit_code == 0,
-                        "exit_code": exit_code,
-                        "output": output,
-                        "content_preview": content[:200]
-                    })
-                finally:
-                    # 清理临时文件
-                    try:
-                        os.unlink(temp_file)
-                    except:
-                        pass
-                        
-            elif action_type == "write_file":
-                # 写入文件
-                file_path = task.params.get("file_path", "")
-                overwrite = task.params.get("overwrite", True)
-                
-                if not file_path:
-                    raise ValueError("文件路径不能为空")
-                
-                # 确保文件路径安全（相对路径转为绝对路径）
-                if not os.path.isabs(file_path):
-                    file_path = os.path.join(os.path.expanduser("~"), file_path)
-                
-                self.logger.info("写入文件: %s (长度: %d 字符)", file_path, len(content))
-                
-                # 检查文件是否存在
-                if os.path.exists(file_path) and not overwrite:
-                    raise FileExistsError(f"文件已存在: {file_path}")
-                
-                # 确保目录存在
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                
-                # 写入文件
-                with open(file_path, 'w', encoding='utf-8-sig') as f:
-                    f.write(content)
-                
-                result.update({
-                    "success": True,
-                    "file_path": file_path,
-                    "file_size": len(content),
-                    "content_preview": content[:200]
-                })
-                
-            elif action_type == "edit_file":
-                # 编辑文件
-                file_path = task.params.get("file_path", "")
-                pattern = task.params.get("pattern", "")
-                replacement = task.params.get("replacement", "")
-                
-                if not file_path:
-                    raise ValueError("文件路径不能为空")
-                
-                # 确保文件路径安全
-                if not os.path.isabs(file_path):
-                    file_path = os.path.join(os.path.expanduser("~"), file_path)
-                
-                self.logger.info("编辑文件: %s", file_path)
-                
-                # 检查文件是否存在
-                if not os.path.exists(file_path):
-                    raise FileNotFoundError(f"文件不存在: {file_path}")
-                
-                # 读取文件内容
-                with open(file_path, 'r', encoding='utf-8-sig') as f:
-                    file_content = f.read()
-                
-                # 执行替换
-                if pattern and replacement is not None:
-                    import re
-                    new_content = re.sub(pattern, replacement, file_content, flags=re.DOTALL | re.MULTILINE)
-                else:
-                    new_content = content  # 如果没有pattern，则用content直接替换
-                
-                # 写入文件
-                with open(file_path, 'w', encoding='utf-8-sig') as f:
-                    f.write(new_content)
-                
-                result.update({
-                    "success": True,
-                    "file_path": file_path,
-                    "old_size": len(file_content),
-                    "new_size": len(new_content),
-                    "content_preview": new_content[:200]
-                })
-                
-            else:
-                raise ValueError(f"未知的动作类型: {action_type}")
-            
-            self.logger.info("动作任务执行成功: %s", task.task_id)
-            
+            handler(task, content, result)
         except Exception as e:
             self.logger.error("动作任务执行失败 (task_id=%s): %s", task.task_id, e)
-            result.update({
-                "success": False,
-                "error": str(e)
-            })
-        
-        # 保存结果到数据库
+            result.update({"success": False, "error": str(e)})
+
+        return self._finalize_action(task, result)
+
+    def _finalize_action(self, task, result):
         self._save_task_result(task.task_id, json.dumps(result, ensure_ascii=False))
-        
         return result
+
+    def _action_shell(self, task, content, result):
+        import subprocess
+        encoding = locale.getpreferredencoding(False)
+        self.logger.info("执行shell命令: %s", content[:100] if len(content) <= 100 else content[:100] + "...")
+        process = subprocess.run(
+            content, shell=True, capture_output=True,
+            encoding=encoding, errors='replace', timeout=300,
+            cwd=os.path.expanduser("~"),
+        )
+        output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
+        result.update({
+            "success": process.returncode == 0,
+            "exit_code": process.returncode,
+            "output": output,
+            "content_preview": content[:200],
+        })
+
+    def _action_python(self, task, content, result):
+        import subprocess, tempfile
+        encoding = locale.getpreferredencoding(False)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8-sig') as f:
+            f.write(content)
+            temp_file = f.name
+        try:
+            process = subprocess.run(
+                ["python", temp_file], capture_output=True,
+                encoding=encoding, errors='replace', timeout=300,
+                cwd=os.path.dirname(temp_file),
+            )
+            output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
+            result.update({
+                "success": process.returncode == 0,
+                "exit_code": process.returncode,
+                "output": output,
+                "content_preview": content[:200],
+            })
+        finally:
+            try:
+                os.unlink(temp_file)
+            except Exception:
+                pass
+
+    def _action_write_file(self, task, content, result):
+        file_path = task.params.get("file_path", "")
+        overwrite = task.params.get("overwrite", True)
+        if not file_path:
+            raise ValueError("文件路径不能为空")
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(os.path.expanduser("~"), file_path)
+        self.logger.info("写入文件: %s (长度: %d 字符)", file_path, len(content))
+        if os.path.exists(file_path) and not overwrite:
+            raise FileExistsError(f"文件已存在: {file_path}")
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8-sig') as f:
+            f.write(content)
+        result.update({
+            "success": True, "file_path": file_path,
+            "file_size": len(content), "content_preview": content[:200],
+        })
+
+    def _action_edit_file(self, task, content, result):
+        file_path = task.params.get("file_path", "")
+        pattern = task.params.get("pattern", "")
+        replacement = task.params.get("replacement", "")
+        if not file_path:
+            raise ValueError("文件路径不能为空")
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(os.path.expanduser("~"), file_path)
+        self.logger.info("编辑文件: %s", file_path)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            file_content = f.read()
+        if pattern and replacement is not None:
+            import re
+            new_content = re.sub(pattern, replacement, file_content, flags=re.DOTALL | re.MULTILINE)
+        else:
+            new_content = content
+        with open(file_path, 'w', encoding='utf-8-sig') as f:
+            f.write(new_content)
+        result.update({
+            "success": True, "file_path": file_path,
+            "old_size": len(file_content), "new_size": len(new_content),
+            "content_preview": new_content[:200],
+        })
     
     def _save_task_result(self, task_id: str, content: str):
         """保存任务结果到数据库"""

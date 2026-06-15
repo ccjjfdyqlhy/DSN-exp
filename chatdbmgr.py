@@ -4,6 +4,7 @@
 
 import sqlite3
 import logging
+import re
 import threading
 from typing import List, Dict, Optional, Any
 
@@ -11,6 +12,22 @@ from crypto_utils import MessageCipher
 
 # Config.py 优先于下面这个，没填配置的时候fallback
 DEFAULT_DB_FILE = "chats.db"
+
+
+def _tokenize(text: str) -> list[str]:
+    """混合分词：中文逐字 + 英文按词，过滤停用字符"""
+    tokens = []
+    for part in re.split(r"(\w+)", text.lower().strip()):
+        part = part.strip()
+        if not part:
+            continue
+        if re.match(r"^\w+$", part):
+            tokens.append(part)
+        else:
+            for ch in part:
+                if ch.strip() and not re.match(r"^[\s\d\W_]+$", ch):
+                    tokens.append(ch)
+    return tokens
 
 
 class ChatDBManager:
@@ -423,27 +440,8 @@ class ChatDBManager:
 
     def search_memories(self, user_id: int, chat_id: int, keywords: list[str],
                         count: int = 5, threshold: float = 0.3) -> list[dict]:
-        """全文检索记忆 — 对摘要做分词匹配，加权计分"""
-        import re as _re
-
-        def _tokenize(text: str) -> list[str]:
-            """混合分词：中文逐字 + 英文按词，过滤停用字符"""
-            tokens = []
-            for part in _re.split(r"(\w+)", text.lower().strip()):
-                part = part.strip()
-                if not part:
-                    continue
-                if _re.match(r"^\w+$", part):
-                    tokens.append(part)
-                else:
-                    for ch in part:
-                        if ch.strip() and not _re.match(r"^[\s\d\W_]+$", ch):
-                            tokens.append(ch)
-            return tokens
-
         conn = self._get_connection()
         try:
-            # 先获取总轮次数和可用的记忆条数，限制查询范围
             count_row = conn.execute(
                 "SELECT COUNT(*) AS cnt, MAX(round_index) AS max_round FROM memories WHERE user_id = ? AND chat_id = ?",
                 (user_id, chat_id),
@@ -457,7 +455,6 @@ class ChatDBManager:
                 "FROM memories WHERE user_id = ? AND chat_id = ? ORDER BY round_index DESC LIMIT ?",
                 (user_id, chat_id, count * 20),
             ).fetchall()
-
             if not rows:
                 return []
 
@@ -469,55 +466,53 @@ class ChatDBManager:
                 search_tokens.update(_tokenize(t))
 
             scored = []
-
             for r in rows:
-                kw_decrypted = self._cipher.decrypt(user_id, r["keywords"] or "")
-                kw_lower = kw_decrypted.lower()
-                # 关键词匹配检查（轻量预检）
-                if not any(term in kw_lower for term in search_terms):
-                    summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
-                    summary_lower = summary_decrypted.lower()
-                    if not any(term in summary_lower for term in search_terms):
-                        continue
-                else:
-                    summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
-                    summary_lower = summary_decrypted.lower()
-
-                summary_tokens = set(_tokenize(summary_lower))
-
-                if not search_tokens or not summary_tokens:
-                    continue
-
-                intersection = search_tokens & summary_tokens
-                if not intersection:
-                    for term in search_terms:
-                        if term in summary_lower:
-                            intersection.add(term)
-                    if not intersection:
-                        continue
-
-                hit_score = len(intersection) / len(search_tokens)
-
-                if hit_score > 0:
-                    recency_bonus = 1.0 - (r["round_index"] / (total_rounds + 1))
-                    final_score = hit_score * 0.7 + recency_bonus * 0.3
-                    if final_score >= threshold:
-                        scored.append({
-                            "memory_id": r["memory_id"],
-                            "round_index": r["round_index"],
-                            "summary": summary_decrypted,
-                            "keywords": kw_decrypted,
-                            "message_start_id": r["message_start_id"],
-                            "message_end_id": r["message_end_id"],
-                            "created_at": r["created_at"],
-                            "score": round(final_score, 3),
-                        })
+                self._score_memory_row(r, user_id, search_terms, search_tokens, total_rounds, threshold, scored)
 
             scored.sort(key=lambda x: x["score"], reverse=True)
             return scored[:count]
         except sqlite3.Error as e:
             self.logger.error("搜索记忆失败: %s", e)
             raise
+
+    def _score_memory_row(self, r, user_id, search_terms, search_tokens, total_rounds, threshold, scored):
+        kw_decrypted = self._cipher.decrypt(user_id, r["keywords"] or "")
+        kw_lower = kw_decrypted.lower()
+        if not any(term in kw_lower for term in search_terms):
+            summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
+            summary_lower = summary_decrypted.lower()
+            if not any(term in summary_lower for term in search_terms):
+                return
+        else:
+            summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
+            summary_lower = summary_decrypted.lower()
+
+        summary_tokens = set(_tokenize(summary_lower))
+        if not search_tokens or not summary_tokens:
+            return
+        intersection = search_tokens & summary_tokens
+        if not intersection:
+            for term in search_terms:
+                if term in summary_lower:
+                    intersection.add(term)
+            if not intersection:
+                return
+        hit_score = len(intersection) / len(search_tokens)
+        if hit_score <= 0:
+            return
+        recency_bonus = 1.0 - (r["round_index"] / (total_rounds + 1))
+        final_score = hit_score * 0.7 + recency_bonus * 0.3
+        if final_score >= threshold:
+            scored.append({
+                "memory_id": r["memory_id"],
+                "round_index": r["round_index"],
+                "summary": summary_decrypted,
+                "keywords": kw_decrypted,
+                "message_start_id": r["message_start_id"],
+                "message_end_id": r["message_end_id"],
+                "created_at": r["created_at"],
+                "score": round(final_score, 3),
+            })
 
     def get_messages_by_rounds(self, user_id: int, chat_id: int,
                                round_indices: list[int]) -> dict[int, list[dict]]:
