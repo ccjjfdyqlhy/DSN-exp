@@ -692,6 +692,41 @@ try:
 except Exception as e:
     app.logger.warning("PersonalityMaterials: 注入 V3 失败: %s", e)
 
+# ---------- 初始化服务器维护模块 ----------
+try:
+    from maintenance import MaintenanceSystem
+    from maintenance.api import maintenance_bp
+    from maintenance.frontend_bridge import broadcast as maint_broadcast
+
+    maint_system = MaintenanceSystem(
+        db=db,
+        v3=personality_v3,
+        engine=engine,
+    )
+    maint_system.on_maintenance_start(lambda: app.logger.info("维护流程开始"))
+    maint_system.on_maintenance_progress(
+        lambda task, prog: maint_broadcast("maintenance_progress", {
+            "task": task.name,
+            "current": prog.current,
+            "total": prog.total,
+            "message": prog.message,
+        })
+    )
+    maint_system.on_maintenance_done(
+        lambda results: maint_broadcast("maintenance_complete", {
+            "results": results,
+            "total": len(results),
+            "success": sum(1 for r in results if r.get("success")),
+        })
+    )
+    maint_system.start()
+    app.config["MAINTENANCE_SYSTEM"] = maint_system
+    app.register_blueprint(maintenance_bp)
+    app.logger.info("维护模块已初始化")
+except Exception as e:
+    app.logger.warning("维护模块初始化失败: %s", e)
+    app.config["MAINTENANCE_SYSTEM"] = None
+
 # ---------- 认证装饰器 ----------
 def login_required(f):
     @wraps(f)
@@ -729,6 +764,23 @@ def add_cors_headers(response):
     response.headers["Access-Control-Expose-Headers"] = "Content-Type, Cache-Control"
     response.headers["Access-Control-Max-Age"] = "3600"
     return response
+
+# ---------- 维护状态检查 ----------
+@app.before_request
+def check_maintenance():
+    """维护中时拒绝请求；记录活跃度"""
+    if request.path.startswith("/api/maintenance/"):
+        return None
+    ms = app.config.get("MAINTENANCE_SYSTEM")
+    if ms is None:
+        return None
+    ms.record_user_request()
+    if ms.state.state.value == "maint":
+        return jsonify({
+            "error": "服务器整理中，请稍后访问",
+            "status": "maintenance",
+            "retry_after": 120,
+        }), 503
 
 @app.before_request
 def handle_preflight():
