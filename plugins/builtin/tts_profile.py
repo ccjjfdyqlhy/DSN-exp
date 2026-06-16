@@ -31,17 +31,36 @@ class TTSProfile:
     streaming_mode: bool = False
     description: str = ""
     extra_params: Dict[str, Any] = field(default_factory=dict)
+    architecture: str = "parallel"
 
     def build_params(self, text: str) -> Dict[str, Any]:
         """
         根据此 profile 和给定文本构造完整的 TTS 请求参数字典。
         :param text: 待合成的文本
         """
+        if self.architecture == "serial":
+            return self._build_serial_params(text)
+        return self._build_parallel_params(text)
+
+    def _build_parallel_params(self, text: str) -> Dict[str, Any]:
         params: Dict[str, Any] = {
             "text": text,
             "text_lang": self.text_lang,
             "ref_audio_path": self.ref_audio_path,
             "prompt_lang": self.prompt_lang,
+            "prompt_text": self.prompt_text,
+            "media_type": self.media_type,
+            "streaming_mode": self.streaming_mode,
+        }
+        params.update(self.extra_params)
+        return params
+
+    def _build_serial_params(self, text: str) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "text": text,
+            "text_language": self.text_lang,
+            "refer_wav_path": self.ref_audio_path,
+            "prompt_language": self.prompt_lang,
             "prompt_text": self.prompt_text,
             "media_type": self.media_type,
             "streaming_mode": self.streaming_mode,
@@ -69,6 +88,7 @@ class TTSProfile:
             streaming_mode=data.get("streaming_mode", False),
             description=data.get("description", ""),
             extra_params=data.get("extra_params", {}),
+            architecture=data.get("architecture", "parallel"),
         )
 
     def __repr__(self) -> str:

@@ -996,6 +996,119 @@
         dom.statusBar.textContent = text;
     }
 
+    // ── maintenance
+    var maintSSE = null;
+    var maintActive = false;
+    var maintTasks = [];
+    var maintTotalTasks = 0;
+    var maintCompletedTasks = 0;
+    var maintStartTime = null;
+
+    var maintDom = {
+        overlay: document.getElementById('maintenance-overlay'),
+        tasks: document.getElementById('maint-tasks'),
+        progressBar: document.getElementById('maint-progress-bar'),
+        eta: document.getElementById('maint-eta'),
+        log: document.getElementById('maint-log'),
+    };
+
+    function openMaintenanceSSE() {
+        if (maintSSE) return;
+        try {
+            maintSSE = new EventSource(API_BASE + '/api/maintenance/sse');
+            maintSSE.addEventListener('maintenance_start', function (e) {
+                var data = JSON.parse(e.data);
+                maintActive = true;
+                maintTotalTasks = (data.tasks || []).length;
+                maintCompletedTasks = 0;
+                maintStartTime = Date.now();
+                maintTasks = (data.tasks || []).map(function (t) { return { name: t, done: false }; });
+                maintDom.overlay.classList.remove('hidden');
+                maintDom.log.textContent = '';
+                renderMaintTasks();
+                updateMaintProgress();
+            });
+            maintSSE.addEventListener('maintenance_progress', function (e) {
+                var data = JSON.parse(e.data);
+                if (data.task) {
+                    var idx = maintTasks.findIndex(function (t) { return t.name === data.task; });
+                    if (idx >= 0) {
+                        maintTasks[idx].done = true;
+                        maintCompletedTasks = maintTasks.filter(function (t) { return t.done; }).length;
+                    }
+                }
+                if (data.total && data.current) {
+                    var barPct = Math.round((data.current / data.total) * 100);
+                    maintDom.progressBar.style.width = Math.min(barPct, 100) + '%';
+                }
+                if (data.message) {
+                    var logLine = document.createElement('div');
+                    logLine.textContent = new Date().toLocaleTimeString() + ' ' + data.message;
+                    maintDom.log.appendChild(logLine);
+                    maintDom.log.scrollTop = maintDom.log.scrollHeight;
+                }
+                renderMaintTasks();
+                updateMaintProgress();
+            });
+            maintSSE.addEventListener('maintenance_complete', function (e) {
+                maintDom.progressBar.style.width = '100%';
+                maintDom.eta.textContent = '维护完成，即将刷新...';
+                setTimeout(function () {
+                    maintActive = false;
+                    maintDom.overlay.classList.add('hidden');
+                    if (maintSSE) { maintSSE.close(); maintSSE = null; }
+                    window.location.reload();
+                }, 3000);
+            });
+            maintSSE.addEventListener('maintenance_error', function (e) {
+                var data = JSON.parse(e.data);
+                var logLine = document.createElement('div');
+                logLine.style.color = '#f44336';
+                logLine.textContent = new Date().toLocaleTimeString() + ' [错误] ' + (data.error || '未知错误');
+                maintDom.log.appendChild(logLine);
+            });
+            maintSSE.onerror = function () {
+                if (maintSSE) { maintSSE.close(); maintSSE = null; }
+                setTimeout(openMaintenanceSSE, 10000);
+            };
+        } catch (_) {}
+    }
+
+    function renderMaintTasks() {
+        maintDom.tasks.innerHTML = '';
+        maintTasks.forEach(function (t) {
+            var row = document.createElement('div');
+            row.className = 'maint-task' + (t.done ? ' maint-done' : ' maint-active');
+            row.innerHTML = '<span class="maint-task-name">' + (t.done ? '✓ ' : '○ ') + t.name + '</span>';
+            maintDom.tasks.appendChild(row);
+        });
+    }
+
+    function updateMaintProgress() {
+        if (maintTotalTasks === 0) return;
+        var pct = Math.round((maintCompletedTasks / maintTotalTasks) * 100);
+        maintDom.progressBar.style.width = pct + '%';
+        var elapsed = (Date.now() - maintStartTime) / 1000;
+        if (maintCompletedTasks > 0 && elapsed > 5) {
+            var totalEst = (elapsed / maintCompletedTasks) * maintTotalTasks;
+            var remain = Math.max(0, totalEst - elapsed);
+            maintDom.eta.textContent = '预计 ' + Math.ceil(remain) + ' 秒后完成';
+        } else {
+            maintDom.eta.textContent = '正在准备...';
+        }
+    }
+
+    function checkMaintStatus() {
+        fetch(API_BASE + '/api/maintenance/status')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.state === 'maint' && !maintActive) {
+                    window.location.reload();
+                }
+            })
+            .catch(function () {});
+    }
+
     // events
     dom.btnLogout.addEventListener('click', function () { if (confirm('logout?')) logout(); });
     dom.btnPair.addEventListener('click', tryPairLogin);
@@ -1327,6 +1440,8 @@
             dom.loginOverlay.classList.add('hidden');
             if (chats.length > 0 && chats[0].chat_id) await selectChat(chats[0].chat_id);
             updateStatusBar();
+            openMaintenanceSSE();
+            setInterval(checkMaintStatus, 30000);
         } catch (e) {
             if (e.message && e.message.indexOf('login') >= 0) logout();
             else { notify('init failed: ' + e.message, true); dom.loginOverlay.classList.add('hidden'); updateStatusBar(); }

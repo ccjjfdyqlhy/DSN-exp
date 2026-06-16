@@ -1,11 +1,12 @@
 # TTS 音色配置文件
 # 使用完整长版 prompt_text 与 ref_audio_path 的实际录音完全对齐
 
-default_profile: "default"
+default_profile: "advanced"
 
 profiles:
   default:
     description: "DSN-exp EN TTS profile 0"
+    architecture: parallel
     ref_audio_path: "./ref.wav"
     prompt_text: "Many people may feel lost at times. After all, it's impossible for everything to happen according to your own wishes."
     prompt_lang: "en"
@@ -20,3 +21,17 @@ profiles:
       fragment_interval: 0.3
       repetition_penalty: 1.35
       sample_steps: 32
+  advanced:
+    description: "Advanced TTS profile, trained from a certain anime game"
+    architecture: serial
+    ref_audio_path: "./ref_advanced.wav"
+    prompt_text: "哎呀，她的要求还是有点高啦。其实，只要让有乐感的人自由地放声歌唱，歌声就很悦耳了。"
+    prompt_lang: "zh"
+    text_lang: "zh"
+    media_type: "wav"
+    streaming_mode: false
+    extra_params:
+      top_k: 20
+      top_p: 0.6
+      temperature: 0.6
+      speed: 1.18
