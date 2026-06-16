@@ -53,6 +53,7 @@ class PersonalitySystemV3:
             Path(__file__).parent.parent.parent / "character_cards" / "exa.yaml"
         )
         logger.info("V3: 默认角色卡路径=%s", self._default_card_path)
+        self._cards_dir = Path(__file__).parent.parent.parent / "character_cards"
 
         self._enabled = True
         self._distillation_pending: dict[str, bool] = {}
@@ -103,17 +104,23 @@ class PersonalitySystemV3:
         if errors:
             logger.error("V3: 角色卡校验失败: %s", errors)
             return False
-        self._state_manager.save_card(card)
-        logger.info("V3: 角色卡已保存 card_id=%s", card.card_id)
+        yaml_path = self._cards_dir / f"{card.card_id}.yaml"
+        card.to_yaml_file(yaml_path)
+        logger.info("V3: 角色卡已写入文件 card_id=%s path=%s", card.card_id, yaml_path)
         return True
 
     def get_card(self, card_id: str) -> CharacterCard | None:
-        yaml_str = self._persistence.load_card_yaml(card_id)
-        if not yaml_str:
-            logger.debug("V3: 角色卡不存在 card_id=%s", card_id)
+        yaml_path = self._cards_dir / f"{card_id}.yaml"
+        if not yaml_path.exists():
+            logger.debug("V3: 角色卡文件不存在 card_id=%s path=%s", card_id, yaml_path)
             return None
-        logger.debug("V3: 角色卡已加载 card_id=%s", card_id)
-        return CharacterCard.from_yaml_string(yaml_str)
+        try:
+            card = CharacterCard.from_yaml_file(yaml_path)
+        except Exception as e:
+            logger.warning("V3: 角色卡文件解析失败 card_id=%s: %s", card_id, e)
+            return None
+        logger.debug("V3: 角色卡已从文件加载 card_id=%s", card_id)
+        return card
 
     def list_cards(self) -> list[dict]:
         cards = self._state_manager.list_cards()
@@ -123,7 +130,10 @@ class PersonalitySystemV3:
     # === 蒸馏 ===
 
     def distill(self, card_id: str, model_name: str = "deepseek") -> DistilledTraits | None:
-        logger.info("V3: 开始蒸馏 role_card=%s model=%s", card_id, model_name)
+        logger.info("V3: 开始蒸馏 card_id=%s model=%s", card_id, model_name)
+
+        self.import_pending_materials(card_id)
+
         card = self.get_card(card_id)
         if not card:
             logger.error("V3: 蒸馏失败 — 角色卡不存在 card_id=%s", card_id)
@@ -138,6 +148,13 @@ class PersonalitySystemV3:
         logger.info("V3: 角色卡指纹已变 (new=%s)，执行蒸馏...", fingerprint[:20])
         distilled = self._distillation_engine.run(card, model_name=model_name)
         self._state_manager.save_distillation(distilled)
+
+        if distilled.foundation_description:
+            card.distilled_description = distilled.foundation_description[:800]
+        from datetime import datetime as _dt, timezone as _tz
+        card.distilled_at = _dt.now(_tz.utc).isoformat()
+        self.upload_card(card)
+
         self._generator.invalidate_cache()
         logger.info("V3: 蒸馏完成 distillation_id=%s version=%d dims=%d",
                      distilled.distillation_id, distilled.version,
@@ -169,7 +186,7 @@ class PersonalitySystemV3:
         return entry
 
     def import_pending_materials(self, card_id: str) -> int:
-        materials_dir = Path(__file__).parent.parent.parent / "character_cards" / "materials" / card_id
+        materials_dir = self._cards_dir / "materials" / card_id
         if not materials_dir.exists():
             return 0
         card = self.get_card(card_id)
@@ -230,6 +247,11 @@ class PersonalitySystemV3:
             try:
                 distilled = self._distillation_engine.run(default)
                 self._state_manager.save_distillation(distilled)
+                if distilled.foundation_description:
+                    default.distilled_description = distilled.foundation_description[:800]
+                from datetime import datetime as _dt, timezone as _tz
+                default.distilled_at = _dt.now(_tz.utc).isoformat()
+                self.upload_card(default)
                 logger.info("V3: 默认角色卡首次蒸馏完成 distillation_id=%s", distilled.distillation_id)
             except Exception as e:
                 logger.warning("V3: 默认角色卡蒸馏失败 (将在首次使用性格模型时重试): %s", e)

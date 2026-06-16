@@ -1,5 +1,6 @@
 # prompt/personality_v3/persistence.py
-# V3 持久化层 — character_cards / distilled_traits / user_character_cards / character_experiences
+# V3 持久化层 — 仅保存动态运行时状态 (蒸馏产物 / 用户绑定状态)
+# 角色卡的可读配置完全托管在 character_cards/ 目录下，不落 DB
 
 from __future__ import annotations
 
@@ -11,20 +12,10 @@ from typing import Optional
 
 logger = logging.getLogger("PersonalityV3Persistence")
 
-CREATE_CARDS_TABLE = """
-CREATE TABLE IF NOT EXISTS character_cards (
-    card_id TEXT PRIMARY KEY,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    yaml_content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-)
-"""
-
 CREATE_DISTILLED_TABLE = """
 CREATE TABLE IF NOT EXISTS distilled_traits (
     distillation_id TEXT PRIMARY KEY,
-    card_id TEXT NOT NULL REFERENCES character_cards(card_id),
+    card_id TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1,
     content_fingerprint TEXT NOT NULL,
     model_used TEXT DEFAULT '',
@@ -36,7 +27,7 @@ CREATE TABLE IF NOT EXISTS distilled_traits (
 CREATE_USER_CARDS_TABLE = """
 CREATE TABLE IF NOT EXISTS user_character_cards (
     uid INTEGER NOT NULL,
-    card_id TEXT NOT NULL REFERENCES character_cards(card_id),
+    card_id TEXT NOT NULL,
     active_distillation_id TEXT DEFAULT '',
     total_interactions INTEGER NOT NULL DEFAULT 0,
     affinity_value REAL NOT NULL DEFAULT 20.0,
@@ -49,24 +40,9 @@ CREATE TABLE IF NOT EXISTS user_character_cards (
 )
 """
 
-CREATE_EXPERIENCES_TABLE = """
-CREATE TABLE IF NOT EXISTS character_experiences (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    card_id TEXT NOT NULL REFERENCES character_cards(card_id),
-    source_type TEXT NOT NULL DEFAULT 'inline',
-    original_filename TEXT DEFAULT '',
-    original_content_hash TEXT DEFAULT '',
-    summary_text TEXT NOT NULL,
-    original_length INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)
-"""
-
 ALL_TABLES = [
-    ("character_cards", CREATE_CARDS_TABLE),
     ("distilled_traits", CREATE_DISTILLED_TABLE),
     ("user_character_cards", CREATE_USER_CARDS_TABLE),
-    ("character_experiences", CREATE_EXPERIENCES_TABLE),
 ]
 
 
@@ -98,63 +74,11 @@ class V3Persistence:
             for name, sql in ALL_TABLES:
                 conn.execute(sql)
             conn.commit()
-            logger.info("V3 持久层表已就绪")
+            logger.info("V3 持久层表已就绪 (蒸馏产物 + 用户状态)")
         except Exception as e:
             logger.error("创建 V3 持久层表失败: %s", e)
             conn.rollback()
             raise
-
-    # ---- 角色卡 CRUD ----
-
-    def save_card(self, card_id: str, yaml_content: str) -> None:
-        if self._db is None:
-            return
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                """INSERT INTO character_cards (card_id, yaml_content, updated_at)
-                   VALUES (?, ?, datetime('now'))
-                   ON CONFLICT(card_id) DO UPDATE SET
-                   yaml_content = excluded.yaml_content,
-                   updated_at = datetime('now')""",
-                (card_id, yaml_content),
-            )
-            conn.commit()
-            logger.info("角色卡已保存: %s", card_id)
-        except Exception as e:
-            logger.error("保存角色卡失败 %s: %s", card_id, e)
-            conn.rollback()
-
-    def load_card_yaml(self, card_id: str) -> Optional[str]:
-        if self._db is None:
-            return None
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT yaml_content FROM character_cards WHERE card_id = ? AND is_active = 1",
-            (card_id,),
-        ).fetchone()
-        return row["yaml_content"] if row else None
-
-    def list_cards(self) -> list[dict]:
-        if self._db is None:
-            return []
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT card_id, is_active, created_at, updated_at FROM character_cards WHERE is_active = 1 ORDER BY card_id"
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def delete_card(self, card_id: str) -> None:
-        if self._db is None:
-            return
-        conn = self._get_conn()
-        try:
-            conn.execute("UPDATE character_cards SET is_active = 0 WHERE card_id = ?", (card_id,))
-            conn.commit()
-            logger.info("角色卡已标记删除: %s", card_id)
-        except Exception as e:
-            logger.error("删除角色卡失败 %s: %s", card_id, e)
-            conn.rollback()
 
     # ---- 蒸馏产物 CRUD ----
 
@@ -242,11 +166,10 @@ class V3Persistence:
             return None
         conn = self._get_conn()
         row = conn.execute(
-            """SELECT ucc.*, cc.yaml_content
-               FROM user_character_cards ucc
-               JOIN character_cards cc ON ucc.card_id = cc.card_id
-               WHERE ucc.uid = ? AND cc.is_active = 1
-               ORDER BY ucc.updated_at DESC LIMIT 1""",
+            """SELECT *
+               FROM user_character_cards
+               WHERE uid = ?
+               ORDER BY updated_at DESC LIMIT 1""",
             (uid,),
         ).fetchone()
         if not row:

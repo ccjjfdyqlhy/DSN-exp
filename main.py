@@ -21,6 +21,12 @@ from rich.table import Table
 from rich import box
 
 try:
+    from prompt.personality_v3.traits import TRAIT_MAP
+    _TRAIT_NAMES: dict[str, str] = {t.tid: t.name for t in TRAIT_MAP.values()}
+except ImportError:
+    _TRAIT_NAMES = {}
+
+try:
     from plugins.base import AsyncPlugin
 except ImportError:
     AsyncPlugin = None
@@ -862,7 +868,7 @@ def _persona_distill(v3, card_id: str):
         try:
             d = v3.distill(card_id, model_name="deepseek")
             if d:
-                v3.mark_distillation_done()
+                v3.mark_distillation_done(card_id)
                 append_log("system", "INFO",
                            f"蒸馏完成: {card_id} version={d.version} dims={len(d.indicator_vector)}")
             else:
