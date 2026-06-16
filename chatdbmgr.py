@@ -277,6 +277,13 @@ class ChatDBManager:
                         FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS system_kv (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT DEFAULT (datetime('now'))
+                    )
+                """)
                 
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
@@ -804,3 +811,28 @@ class ChatDBManager:
             self.logger.error("追加消息失败: %s", e)
             conn.rollback()
             raise
+
+    def save_kv(self, key: str, value: str) -> bool:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO system_kv (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+                (key, value),
+            )
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            self.logger.error("保存 KV 失败: %s", e)
+            conn.rollback()
+            return False
+
+    def load_kv(self, key: str) -> str:
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT value FROM system_kv WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else ""
+        except sqlite3.Error as e:
+            self.logger.error("加载 KV 失败: %s", e)
+            return ""

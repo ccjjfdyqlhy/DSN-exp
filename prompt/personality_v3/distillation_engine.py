@@ -16,20 +16,23 @@ from .traits import ALL_DIMENSIONS, TRAIT_IDS
 logger = logging.getLogger("DistillationEngine")
 
 
-PASS1_GLOBAL_UNDERSTANDING = """你是一个角色分析师。请仔细阅读以下材料，然后写一段角色全貌描述。
+PASS1_GLOBAL_UNDERSTANDING = """你是一个角色发展分析师。请仔细阅读以下所有材料，然后写一段更新后的角色全貌描述。
+
+重要原则：每一个经历条目（包括歌词、文章、对话记录等）都是角色真实遇到过的东西。你需要根据这些内容来发展角色的故事、气质和世界观。不要仅仅复述材料——要根据角色已有的性格基调，想象这些经历如何塑造、改变或深化了角色的内心世界。
 
 要求：
-1. 用自然语言描述这个角色，像写人物简介一样
+1. 用自然语言写一段人物小传，涵盖所有经历素材
 2. 必须涵盖：核心性格、行为模式、说话风格、价值观、情绪特质
-3. 特别关注经历描述中的因果链条——角色的性格是怎样形成的
-4. 识别角色最核心的性格矛盾或复杂性
-5. 描述亲密度变化方式——角色如何与不同距离的人相处
-6. 600~2000 字，中文
+3. 如果经历中包含了歌词/文学作品/文化素材——想象角色在哪个人生阶段、在什么心境下接触了这些内容。把这种"接触"本身变成角色故事的一部分。角色的音乐品味、阅读偏好、对某些歌词的共鸣——这些都是性格的线索
+4. 明确写出：哪些经历强化了哪些性格特质？哪些经历让角色产生了新的理解或微妙的变化？
+5. 识别角色最核心的性格矛盾或复杂性
+6. 描述亲密度变化方式——角色如何与不同距离的人相处
+7. 600~2000 字，中文，用现在时书写
 
 ===== 角色卡自然语言描述 =====
 {card_nl}
 
-===== 经历描述 =====
+===== 经历列表（从上到下是时间线） =====
 {experiences_text}
 
 ===== 语料素材 =====
@@ -38,7 +41,7 @@ PASS1_GLOBAL_UNDERSTANDING = """你是一个角色分析师。请仔细阅读以
 ===== 用户额外提示 =====
 {user_notes}
 
-请输出角色全貌描述："""
+请输出更新后的角色全貌描述："""
 
 
 PASS2_FEATURE_EXTRACTION = """你是一个角色分析师。基于以下角色全貌描述和原始材料，请提取系统化的特征。
@@ -173,12 +176,12 @@ class DistillationEngine:
 
         # Pass 1: 全局理解
         logger.info("[蒸馏 Pass 1/4] 全局理解...")
-        foundation = self._pass1_global_understanding(card_nl, experiences_text, corpus_text, user_notes, model_name)
+        foundation = self._pass1_global_understanding(card_nl, experiences_text, corpus_text, user_notes, model_name, card.card_id)
 
         # Pass 2: 特征抽取
         logger.info("[蒸馏 Pass 2/4] 特征抽取...")
         materials_summary = f"{card_nl[:2000]}\n\n{experiences_text[:2000]}\n\n{corpus_text[:1000]}"
-        features = self._pass2_feature_extraction(foundation, materials_summary, model_name)
+        features = self._pass2_feature_extraction(foundation, materials_summary, model_name, card.card_id)
 
         # Pass 3: 量化推断
         logger.info("[蒸馏 Pass 3/4] 量化推断...")
@@ -190,7 +193,7 @@ class DistillationEngine:
         dimensions_text = self._format_dimensions_for_prompt()
         manual_text = json.dumps(card.manual_overrides, ensure_ascii=False) if card.manual_overrides else "无"
         indicator_vector = self._pass3_quantization(
-            foundation, features_text, dimensions_text, manual_text, model_name
+            foundation, features_text, dimensions_text, manual_text, model_name, card.card_id
         )
         indicator_vector = self._apply_manual_overrides(indicator_vector, card.manual_overrides)
 
@@ -218,17 +221,39 @@ class DistillationEngine:
         logger.info("蒸馏完成: %s (耗时 %.1fs)", distilled.distillation_id, elapsed)
         return distilled
 
-    def _call_model(self, prompt: str, model_name: str, temperature: float = 0.3, max_tokens: int = 2000) -> str:
+    def _call_model(self, prompt: str, model_name: str, temperature: float = 0.3,
+                    max_tokens: int = 2000, pass_name: str = "", card_id: str = "") -> str:
         chat = self._main_chat or self._fast_chat
         if not chat:
             raise RuntimeError("蒸馏引擎未配置任何模型")
         try:
-            return self._send_with_temp(chat, prompt, temperature, max_tokens)
+            reply = self._send_with_temp(chat, prompt, temperature, max_tokens)
+            if pass_name and card_id:
+                self._log_distill_pass(card_id, pass_name, prompt, reply)
+            return reply
         except Exception as e:
             if self._fast_chat and chat is not self._fast_chat:
                 logger.warning("主模型调用失败(%s)，回退到快速模型", e)
-                return self._send_with_temp(self._fast_chat, prompt, temperature, max_tokens)
+                reply = self._send_with_temp(self._fast_chat, prompt, temperature, max_tokens)
+                if pass_name and card_id:
+                    self._log_distill_pass(card_id, pass_name, prompt, reply)
+                return reply
             raise
+
+    def _log_distill_pass(self, card_id: str, pass_name: str, prompt: str, reply: str) -> None:
+        try:
+            from pathlib import Path as _P
+            from datetime import datetime as _DT
+            log_dir = _P(__file__).parent.parent.parent / "logs" / "distill"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = _DT.now().strftime("%Y%m%d_%H%M%S")
+            prompt_path = log_dir / f"{card_id}_{ts}_{pass_name}_prompt.txt"
+            reply_path = log_dir / f"{card_id}_{ts}_{pass_name}_reply.txt"
+            prompt_path.write_text(prompt, encoding="utf-8")
+            reply_path.write_text(reply, encoding="utf-8")
+            logger.info("蒸馏日志已保存: %s", prompt_path.name)
+        except Exception:
+            pass
 
     @staticmethod
     def _send_with_temp(chat, prompt: str, temperature: float, max_tokens: int) -> str:
@@ -247,32 +272,38 @@ class DistillationEngine:
                 chat.max_tokens = old_max
 
     def _pass1_global_understanding(self, card_nl: str, experiences_text: str,
-                                     corpus_text: str, user_notes: str, model_name: str) -> str:
+                                      corpus_text: str, user_notes: str, model_name: str,
+                                      card_id: str = "") -> str:
         prompt = PASS1_GLOBAL_UNDERSTANDING.format(
             card_nl=card_nl or "（无）",
             experiences_text=experiences_text or "（无）",
             corpus_text=corpus_text or "（无）",
             user_notes=user_notes or "（无）",
         )
-        return self._call_model(prompt, model_name, temperature=0.4, max_tokens=2500)
+        return self._call_model(prompt, model_name, temperature=0.4, max_tokens=2500,
+                                pass_name="pass1", card_id=card_id)
 
-    def _pass2_feature_extraction(self, foundation: str, materials_summary: str, model_name: str) -> dict:
+    def _pass2_feature_extraction(self, foundation: str, materials_summary: str, model_name: str,
+                                   card_id: str = "") -> dict:
         prompt = PASS2_FEATURE_EXTRACTION.format(
             foundation=foundation,
             materials_summary=materials_summary[:4000],
         )
-        raw = self._call_model(prompt, model_name, temperature=0.3, max_tokens=3000)
+        raw = self._call_model(prompt, model_name, temperature=0.3, max_tokens=3000,
+                               pass_name="pass2", card_id=card_id)
         return self._parse_json_response(raw)
 
     def _pass3_quantization(self, foundation: str, features_text: str,
-                             dimensions_text: str, manual_text: str, model_name: str) -> dict[str, float]:
+                             dimensions_text: str, manual_text: str, model_name: str,
+                             card_id: str = "") -> dict[str, float]:
         prompt = PASS3_QUANTIZATION.format(
             foundation=foundation[:3000],
             features_text=features_text[:2000],
             dimensions_text=dimensions_text,
             manual_overrides_text=manual_text,
         )
-        raw = self._call_model(prompt, model_name, temperature=0.2, max_tokens=3000)
+        raw = self._call_model(prompt, model_name, temperature=0.2, max_tokens=3000,
+                               pass_name="pass3", card_id=card_id)
         items = self._parse_json_response(raw)
         if isinstance(items, dict):
             items = [items]

@@ -102,7 +102,7 @@ from maintenance.tracker import ActivityTracker
 
 def test_tracker_record():
     """记录请求后，计数递增"""
-    t = ActivityTracker()
+    t = ActivityTracker(db=None)
     assert t.request_count() == 0
     t.record_request()
     assert t.request_count() == 1
@@ -110,20 +110,24 @@ def test_tracker_record():
 
 def test_tracker_idle_probability():
     """没有历史数据的时段返回高空闲概率"""
-    t = ActivityTracker()
+    t = ActivityTracker(db=None)
     prob = t.idle_probability(3, 0)  # 凌晨 3:00
     assert prob > 0.9  # 默认返回接近 1
 
 
-def test_tracker_save_load(tmp_path):
-    """保存与加载追踪数据"""
-    path = str(tmp_path / "tracker.dat")
-    t1 = ActivityTracker(data_path=path)
+def test_tracker_save_load():
+    """保存与加载追踪数据（DB 持久化）"""
+    class MockDB:
+        def __init__(self): self._store = {}
+        def save_kv(self, k, v): self._store[k] = v; return True
+        def load_kv(self, k): return self._store.get(k, "")
+    db = MockDB()
+    t1 = ActivityTracker(db=db)
     t1.record_request()
     t1.record_request()
     t1.save()
-
-    t2 = ActivityTracker(data_path=path)
+    assert len(db._store) == 1
+    t2 = ActivityTracker(db=db)
     assert t2.load()
     assert t2.request_count() == 2
 
@@ -285,7 +289,7 @@ def test_sse_unsubscribe():
 
 def test_tracker_best_idle_window():
     """best_idle_window 应返回合理的时段"""
-    t = ActivityTracker()
+    t = ActivityTracker(db=None)
     window = t.best_idle_window(min_free_hours=2, max_hour=8)
     assert window is not None
     start, end = window
