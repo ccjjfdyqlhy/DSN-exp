@@ -1,9 +1,11 @@
 # prompt/personality_v3/state_manager.py
 # 运行时状态管理 — 用户-角色卡绑定、状态缓存、交互协调
+# 角色卡配置完全依赖 character_cards/ 目录下的 YAML 文件
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from .character_card import CharacterCard
@@ -14,6 +16,8 @@ from .persistence import V3Persistence
 logger = logging.getLogger("V3StateManager")
 
 _DEFAULT_CHARACTER_CARD_ID = "exa"
+
+_CARDS_DIR = Path(__file__).parent.parent.parent / "character_cards"
 
 
 class V3StateManager:
@@ -132,10 +136,10 @@ class V3StateManager:
         return self._get_distillation(card_id)
 
     def save_card(self, card: CharacterCard) -> None:
-        yaml_str = card.to_yaml()
-        self._persistence.save_card(card.card_id, yaml_str)
+        yaml_path = _CARDS_DIR / f"{card.card_id}.yaml"
+        card.to_yaml_file(yaml_path)
         self._card_cache[card.card_id] = card
-        logger.info("V3StateManager: 角色卡已缓存 card_id=%s", card.card_id)
+        logger.info("V3StateManager: 角色卡已写入文件 card_id=%s path=%s", card.card_id, yaml_path)
 
     def save_distillation(self, traits: DistilledTraits) -> None:
         self._persistence.save_distillation(
@@ -151,7 +155,27 @@ class V3StateManager:
                      traits.card_id, traits.version, traits.content_fingerprint[:20])
 
     def list_cards(self) -> list[dict]:
-        return self._persistence.list_cards()
+        cards = []
+        if not _CARDS_DIR.exists():
+            return cards
+        for yaml_path in sorted(_CARDS_DIR.glob("*.yaml")):
+            try:
+                card = CharacterCard.from_yaml_file(yaml_path)
+                d = self._get_distillation(card.card_id)
+                cards.append({
+                    "card_id": card.card_id,
+                    "name": card.name,
+                    "display_name": card.display_name,
+                    "version": card.version,
+                    "author": card.author,
+                    "distilled": d is not None,
+                    "distilled_at": card.distilled_at,
+                    "experience_count": len(card.experiences),
+                })
+            except Exception as e:
+                logger.warning("V3StateManager: 解析角色卡文件失败 %s: %s", yaml_path.name, e)
+        logger.debug("V3StateManager: 列出角色卡 count=%d", len(cards))
+        return cards
 
     def load_distilled(self, card_id: str) -> DistilledTraits | None:
         return self._get_distillation(card_id)
@@ -159,13 +183,17 @@ class V3StateManager:
     def _load_card(self, card_id: str) -> CharacterCard | None:
         if card_id in self._card_cache:
             return self._card_cache[card_id]
-        yaml_str = self._persistence.load_card_yaml(card_id)
-        if not yaml_str:
-            logger.debug("V3StateManager: 角色卡 YAML 未找到 card_id=%s", card_id)
+        yaml_path = _CARDS_DIR / f"{card_id}.yaml"
+        if not yaml_path.exists():
+            logger.debug("V3StateManager: 角色卡文件不存在 card_id=%s path=%s", card_id, yaml_path)
             return None
-        card = CharacterCard.from_yaml_string(yaml_str)
+        try:
+            card = CharacterCard.from_yaml_file(yaml_path)
+        except Exception as e:
+            logger.warning("V3StateManager: 角色卡文件解析失败 card_id=%s: %s", card_id, e)
+            return None
         self._card_cache[card_id] = card
-        logger.debug("V3StateManager: 角色卡已加载 card_id=%s name=%s", card_id, card.name)
+        logger.debug("V3StateManager: 角色卡已从文件加载 card_id=%s name=%s", card_id, card.name)
         return card
 
     def _get_distillation(self, card_id: str) -> DistilledTraits | None:

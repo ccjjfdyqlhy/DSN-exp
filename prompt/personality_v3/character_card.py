@@ -138,6 +138,9 @@ class CharacterCard:
     created: str = ""
     updated: str = ""
 
+    distilled_description: str = ""
+    distilled_at: str = ""
+
     def __post_init__(self):
         if not self.created:
             self.created = datetime.now(timezone.utc).isoformat()
@@ -178,7 +181,7 @@ class CharacterCard:
         return base
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "card_id": self.card_id,
             "name": self.name,
             "display_name": self.display_name,
@@ -192,9 +195,20 @@ class CharacterCard:
             "dynamic_config": self.dynamic_config.to_dict(),
             "manual_overrides": self.manual_overrides,
         }
+        if self.distilled_description:
+            d["distilled_description"] = self.distilled_description
+        if self.distilled_at:
+            d["distilled_at"] = self.distilled_at
+        return d
 
     def to_yaml(self) -> str:
         return yaml.dump(self.to_dict(), allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    def to_yaml_file(self, path: str | Path) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(self.to_yaml(), encoding="utf-8")
+        logger.info("角色卡已写入文件: %s", p)
 
     @classmethod
     def from_dict(cls, data: dict) -> CharacterCard:
@@ -213,6 +227,8 @@ class CharacterCard:
             extends=data.get("extends", ""),
         )
         card.manual_overrides = {k: float(v) for k, v in card.manual_overrides.items() if k in TRAIT_IDS}
+        card.distilled_description = data.get("distilled_description", "")
+        card.distilled_at = data.get("distilled_at", "")
         return card
 
     @classmethod
