@@ -11,6 +11,8 @@ var VoiceSensing = (function () {
 
     var enabled = false;
     var muted = false;
+    var sending = false;       // 正在发送，防止并发
+    var sendStarted = 0;       // 上次发送开始时间
     var audioCtx = null;
     var mediaStream = null;
     var analyser = null;
@@ -92,11 +94,19 @@ var VoiceSensing = (function () {
 
     function stopAndSend() {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+        if (sending) return;
+        var elapsed = Date.now() - sendStarted;
+        if (sendStarted > 0 && elapsed < 5000) return;  // 发完后 5s 内不发下一段
+        sending = true;
+        sendStarted = Date.now();
+        var chunks = audioChunks.slice();
+        var startTime = recordStartTime;
         mediaRecorder.onstop = function () {
-            if (muted || audioChunks.length === 0) return;
-            var blob = new Blob(audioChunks, { type: 'audio/webm' });
-            var duration = (Date.now() - recordStartTime) / 1000;
+            if (muted || chunks.length === 0) { sending = false; return; }
+            var blob = new Blob(chunks, { type: 'audio/webm' });
+            var duration = (Date.now() - startTime) / 1000;
             if (_sendRecording) _sendRecording(blob, duration);
+            setTimeout(function () { sending = false; }, 5000);
         };
         mediaRecorder.stop();
         mediaRecorder = null;
@@ -132,6 +142,9 @@ var VoiceSensing = (function () {
         if (enabled) return;
         enabled = true;
         gate.reset();
+        playbackQueue && playbackQueue.resume();
+        sending = false;
+
         navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
             mediaStream = stream;
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -140,7 +153,10 @@ var VoiceSensing = (function () {
             analyser.fftSize = 256;
             source.connect(analyser);
             pollTimer = setInterval(poll, POLL_INTERVAL);
-        }).catch(function () {});
+            updateStatus('空闲', '#888');
+        }).catch(function (e) {
+            updateStatus('麦克风不可用', '#f44336');
+        });
     }
 
     function stop() {

@@ -699,10 +699,10 @@
                             case 'thinking':
                                 if (ev.text) updateStatusBarText(ev.text);
                                 break;
-                            case 'text_ready':
+                             case 'text_ready':
                                 console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
-                                if (ttsEnabled) break;
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
+                                if (ttsEnabled) break;
                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
                                 break;
                             case 'agent_action':
@@ -816,10 +816,10 @@
                             case 'thinking':
                                 if (ev.text) updateStatusBarText(ev.text);
                                 break;
-                            case 'text_ready':
+                             case 'text_ready':
                                 console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
-                                if (ttsEnabled) break;
                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
+                                if (ttsEnabled) break;
                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
                                 break;
                             case 'agent_action':
@@ -1123,7 +1123,6 @@
 
     dom.btnSensing.addEventListener('click', function () {
         if (dom.sensingMode.classList.contains('hidden')) {
-            // 打开感知模式
             dom.sensingMode.classList.remove('hidden');
             dom.inputTextMode.classList.add('hidden');
             dom.inputVoiceMode.classList.add('hidden');
@@ -1133,7 +1132,6 @@
             dom.sensingStatusText.textContent = '空闲';
             dom.sensingStatusText.style.color = '#888';
         } else {
-            // 关闭感知模式
             dom.sensingMode.classList.add('hidden');
             dom.inputTextMode.classList.remove('hidden');
             dom.btnSensing.classList.remove('active');
