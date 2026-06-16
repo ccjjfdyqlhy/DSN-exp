@@ -441,6 +441,10 @@ def _cmd_help():
     /persona status <角色卡名>    查看人格动态状态
     /persona distill <角色卡名>   立即启动人格蒸馏
     /persona materials <角色卡名> 列出蒸馏素材
+    /persona rollback <角色卡名> 列出备份快照并回滚
+    /hibernate check             查看待机策略+活跃度分布
+    /hibernate archive <时间>    设定下次整理时间
+    /hibernate sleep             立刻进入待机
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -720,7 +724,7 @@ def _cmd_memory_help():
 """)
 
 
-def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None, personality_v3=None):
+def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None, personality_v3=None, maint_system=None):
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -729,6 +733,10 @@ def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, conf
         print("  正在停止服务器...")
         if shutdown_event:
             shutdown_event.set()
+        return
+
+    if cmd == "/hibernate":
+        _cmd_hibernate(maint_system, arg)
         return
 
     handler = _CMD_TABLE.get(cmd)
@@ -792,15 +800,17 @@ def _cmd_persona(personality_v3, args: str):
         print("  错误: PersonalitySystemV3 未初始化")
         return
 
-    if sub not in ("status", "distill", "materials", "list"):
+    if sub not in ("status", "distill", "materials", "list", "rollback"):
         print("""
   /persona 命令用法:
     /persona list                  列出所有角色卡
     /persona status <角色卡名>      查看人格动态状态（情绪、亲和度、性格向量）
     /persona distill <角色卡名>     立即启动人格蒸馏
     /persona materials <角色卡名>   列出蒸馏素材及目录内容
+    /persona rollback <角色卡名>    列出备份快照并回滚
 
   示例: /persona status exa
+        /persona rollback exa
 """)
         return
 
@@ -815,6 +825,12 @@ def _cmd_persona(personality_v3, args: str):
         _persona_distill(personality_v3, card_id)
     elif sub == "materials":
         _persona_materials(personality_v3, card_id)
+    elif sub == "rollback":
+        rollback_parts = card_id.split()
+        if len(rollback_parts) >= 2:
+            _persona_do_rollback(personality_v3, f"{rollback_parts[0]} {rollback_parts[1]}")
+        else:
+            _persona_rollback(personality_v3, rollback_parts[0])
 
 
 def _persona_status(v3, card_id: str):
@@ -944,6 +960,195 @@ def _persona_materials(v3, card_id: str):
     print()
 
 
+def _persona_rollback(v3, card_id: str):
+    backups = v3.list_backups(card_id)
+    if not backups:
+        print(f"  角色卡 '{card_id}' 无备份快照")
+        return
+
+    print(f"\n  [bold]{card_id} 备份快照 ({len(backups)} 个)[/]")
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("时间戳", style="bold")
+    table.add_column("时间", style="dim")
+    table.add_column("大小")
+
+    for i, b in enumerate(backups[:20], 1):
+        table.add_row(
+            str(i),
+            b["timestamp"],
+            b["time"][:19].replace("T", " ") if "T" in b["time"] else b["time"][:19],
+            f"{b['size']} B",
+        )
+    console.print(table)
+
+    if len(backups) > 20:
+        print(f"  ... 还有 {len(backups) - 20} 个快照未显示")
+
+    print(f"\n  回滚指令: /persona rollback {card_id} <时间戳>")
+    print(f"  示例: /persona rollback exa {backups[0]['timestamp']}")
+
+
+# 扩展 _cmd_persona() 处理 rollback <timestamp>
+# rollback 已经被调度到 _persona_rollback(), 需要区分列出和回滚
+
+# 实际上，rollback 子指令需要处理两个参数: card_id + timestamp
+# 在当前架构中，_persona_rollback(v3, card_id) 只收到 card_id
+# 而 parts[1] 包含了 "rollback exa 20260616_223941" 这样的完整参数字符串
+
+def _persona_do_rollback(v3, args: str):
+    """执行回滚到指定快照"""
+    parts = args.split()
+    if len(parts) < 2:
+        print("  用法: /persona rollback <角色卡名> <时间戳>")
+        return
+    card_id = parts[0]
+    ts = parts[1]
+    if v3.restore_backup(card_id, ts):
+        print(f"  [green]已回滚 {card_id} 到快照 {ts}[/]")
+        print(f"  已标记蒸馏待处理，下次对话时自动运行")
+    else:
+        print(f"  [red]回滚失败: 快照 {ts} 不存在或损坏[/]")
+
+
+def _cmd_hibernate(ms, args: str):
+    parts = args.split(maxsplit=1)
+    sub = parts[0].lower() if parts else ""
+
+    if not ms:
+        console.print("  错误: 维护系统不可用")
+        return
+
+    if sub not in ("check", "archive", "sleep"):
+        console.print("""
+  /hibernate 命令用法:
+    /hibernate check              查看当前策略、活跃度分布、预估下次维护时间
+    /hibernate archive <时间>      手动设定下次整理时间 (now / 7d / 3h / 30m / 600)
+    /hibernate sleep               立即进入待机模式
+
+  示例:
+    /hibernate archive now        立刻启动整理流程
+    /hibernate archive 3h         3 小时后启动整理
+    /hibernate archive 600        600 秒后启动整理
+""")
+        return
+
+    if sub == "check":
+        _cmd_hibernate_check(ms)
+    elif sub == "archive":
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        _cmd_hibernate_archive(ms, arg)
+    elif sub == "sleep":
+        _cmd_hibernate_sleep(ms)
+
+
+def _cmd_hibernate_check(ms):
+    from maintenance import config as mc
+    from datetime import datetime
+
+    state = ms.state.state.value
+    strategy = mc.SCHEDULE_STRATEGY
+    tracker = ms.tracker
+
+    console.print(f"\n  [bold]待机节律状态[/]")
+    console.print(f"  服务器状态: {state}")
+    console.print(f"  调度策略: {strategy}")
+
+    if strategy == "fixed":
+        console.print(f"  固定整理时间: 每天 {mc.FIXED_HOUR}:00")
+    else:
+        window = tracker.best_idle_window(mc.PREDICTIVE_MIN_FREE_HOURS, mc.PREDICTIVE_MAX_HOUR)
+        if window:
+            console.print(f"  预估最佳空闲窗口: {window[0]}:00 ~ {window[1]}:00")
+        console.print(f"  待机超时: {mc.IDLE_TIMEOUT_MINUTES} 分钟无请求")
+
+    tm = tracker.minutes_since_last_request()
+    console.print(f"  距离上次请求: {tm} 分钟")
+    console.print(f"  总请求数: {tracker.request_count()}")
+
+    # 24h progress bar
+    now = datetime.now()
+    console.print(f"\n  [bold]24h 活跃度分布 (当前 {now.hour:02d}:{now.minute:02d})[/]")
+
+    buf = tracker._buffer
+    bucket_counts = [sum(buf.get(m, [0]*7)) for m in range(1440)]
+    max_req = max(bucket_counts, default=1)
+
+    step = 20
+    segs = []
+    for h in range(24):
+        for m in range(0, 60, step):
+            total = sum(bucket_counts[h*60 + m: h*60 + m + step])
+            ratio = total / max(max_req, 1)
+            if ratio > 0.7: ch = '█'
+            elif ratio > 0.3: ch = '▓'
+            elif ratio > 0.05: ch = '▒'
+            else: ch = '.'
+            segs.append(ch)
+    bar = ''.join(segs)
+
+    tick_line = ''
+    ticks = ['0h','2h','4h','6h','8h','10h','12h','14h','16h','18h','20h','22h']
+    for i, t in enumerate(ticks):
+        tick_line += t.ljust(len(bar) // 12)
+    console.print(f"\n  {tick_line[:len(bar)]}")
+    console.print(f"  {bar}")
+
+    colored = Text()
+    clr = {'.': 'dim', '▒': 'bright_black', '▓': 'yellow', '█': 'green'}
+    for ch in bar:
+        colored.append(ch, style=clr.get(ch, 'dim'))
+    console.print("  ", colored)
+
+    console.print(f"\n  [bright_black]▒ 冷淡[/]  [yellow]▓ 中等[/]  [green]█ 活跃[/]  [dim]. 休眠[/]")
+    window = tracker.best_idle_window(3, 8) if strategy == "predictive" else (mc.FIXED_HOUR, mc.FIXED_HOUR+3)
+    if window:
+        console.print(f"  下次维护预估: 今天 {window[0]}:00 ~ {window[1]}:00")
+    tm_now = tracker.minutes_since_last_request()
+    if mc.IDLE_TIMEOUT_MINUTES > 0 and tm_now < mc.IDLE_TIMEOUT_MINUTES:
+        eta = mc.IDLE_TIMEOUT_MINUTES - tm_now
+        console.print(f"  下次待机预估: {eta} 分钟后（如无新请求）")
+    console.print()
+
+
+def _cmd_hibernate_archive(ms, arg: str):
+    if not arg:
+        console.print("  用法: /hibernate archive <now | 7d | 3h | 30m | 600>")
+        return
+
+    import re, time as _time
+    if arg.lower() == "now":
+        if not ms.trigger_maintenance():
+            console.print(f"  无法启动整理（当前状态: {ms.state.state.value}）")
+        else:
+            console.print("  [green]整理流程已启动[/]")
+        return
+
+    m = re.match(r'^(\d+)\s*(d|h|m)?$', arg, re.IGNORECASE)
+    if not m:
+        console.print(f"  时间格式错误: {arg}")
+        return
+
+    amount = int(m.group(1))
+    unit = (m.group(2) or 's').lower()
+    multipliers = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
+    seconds = amount * multipliers.get(unit, 1)
+
+    from datetime import datetime, timedelta
+    target = datetime.now() + timedelta(seconds=seconds)
+    ms._next_maint_at = target
+    console.print(f"  [green]已设定下次整理时间: {target.strftime('%Y-%m-%d %H:%M:%S')}"
+          f" (={amount}{unit})[/]")
+    append_log("system", "INFO", f"管理员设定下次整理时间: {target.isoformat()} ({arg})")
+
+
+def _cmd_hibernate_sleep(ms):
+    if not ms.trigger_standby():
+        console.print(f"  无法进入待机（当前状态: {ms.state.state.value}）")
+    else:
+        console.print("  [green]已进入待机模式[/]")
+
+
 def main():
     global _server_start_time
     _server_start_time = datetime.now()
@@ -963,6 +1168,7 @@ def main():
     db = app_module.db
     engine = getattr(app_module, 'engine', None)
     personality_v3 = getattr(app_module, 'personality_v3', None)
+    maint_system = getattr(app_module, 'maint_system', None)
     plugin_manager = engine.plugin_manager if engine else None
     prompt_engine = engine.prompt_engine if engine else None
 
@@ -1050,7 +1256,7 @@ def main():
                 continue
 
             if line.startswith("/"):
-                _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, Config, _shutdown_flag, personality_v3)
+                _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, Config, _shutdown_flag, personality_v3, maint_system)
             else:
                 _handle_steward_chat(line)
 

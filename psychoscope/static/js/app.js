@@ -1252,6 +1252,14 @@
         if (e.altKey && (e.key === 't' || e.key === 'T')) {
             e.preventDefault(); toggleTTS();
         }
+        if (e.altKey && (e.key === 'h' || e.key === 'H')) {
+            e.preventDefault(); dom.btnSensing.click();
+        }
+        if (e.altKey && (e.key === 'b' || e.key === 'B')) {
+            e.preventDefault();
+            dom.sensingMuteToggle.checked = !dom.sensingMuteToggle.checked;
+            dom.sensingMuteToggle.dispatchEvent(new Event('change'));
+        }
         if (e.ctrlKey || e.metaKey) {
             if (e.key === 'q' || e.key === 'Q') {
                 e.preventDefault();

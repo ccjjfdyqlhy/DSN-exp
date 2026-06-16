@@ -146,6 +146,10 @@ class PersonalitySystemV3:
             return existing
 
         logger.info("V3: 角色卡指纹已变 (new=%s)，执行蒸馏...", fingerprint[:20])
+
+        # 蒸馏前备份
+        self._backup_card(card)
+
         distilled = self._distillation_engine.run(card, model_name=model_name)
         self._state_manager.save_distillation(distilled)
 
@@ -224,6 +228,62 @@ class PersonalitySystemV3:
     def mark_distillation_done(self, card_id: str) -> None:
         with self._distill_lock:
             self._distillation_pending[card_id] = False
+
+    # === 蒸馏回滚 ===
+
+    def _backup_card(self, card) -> None:
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        backup_dir = Path(__file__).parent.parent.parent / "character_cards" / "backups" / card.card_id
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+        yaml_path = backup_dir / f"{ts}.yaml"
+        yaml_path.write_text(card.to_yaml(), encoding="utf-8")
+        existing = self.get_distillation(card.card_id)
+        if existing:
+            json_path = backup_dir / f"{ts}.distilled.json"
+            json_path.write_text(existing.to_json(), encoding="utf-8")
+        logger.info("V3: 角色卡已备份 card_id=%s ts=%s", card.card_id, ts)
+
+    def list_backups(self, card_id: str) -> list[dict]:
+        from datetime import datetime as _dt
+        backup_dir = Path(__file__).parent.parent.parent / "character_cards" / "backups" / card_id
+        if not backup_dir.exists():
+            return []
+        results = []
+        seen = set()
+        for f in sorted(backup_dir.glob("*.yaml"), reverse=True):
+            ts = f.stem
+            if ts in seen:
+                continue
+            seen.add(ts)
+            stat = f.stat()
+            results.append({
+                "timestamp": ts,
+                "size": stat.st_size,
+                "time": _dt.fromtimestamp(stat.st_mtime).isoformat(),
+                "yaml": str(f),
+            })
+        return results
+
+    def restore_backup(self, card_id: str, timestamp: str) -> bool:
+        backup_dir = Path(__file__).parent.parent.parent / "character_cards" / "backups" / card_id
+        yaml_path = backup_dir / f"{timestamp}.yaml"
+        if not yaml_path.exists():
+            logger.error("V3: 备份文件不存在: %s", yaml_path)
+            return False
+        try:
+            from .character_card import CharacterCard
+            card = CharacterCard.from_yaml_file(str(yaml_path))
+            self.upload_card(card)
+            self._generator.invalidate_cache()
+            with self._distill_lock:
+                self._distillation_pending[card_id] = True
+            logger.info("V3: 角色卡已回滚 card_id=%s ts=%s", card_id, timestamp)
+            return True
+        except Exception as e:
+            logger.error("V3: 回滚失败: %s", e)
+            return False
 
     # === 用户绑定 ===
 

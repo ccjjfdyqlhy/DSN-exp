@@ -12,19 +12,34 @@ from .character_card import ExperienceEntry
 
 logger = logging.getLogger("ExperienceImporter")
 
-EXPERIENCE_SUMMARY_PROMPT = """请将以下角色经历概括为不超过 1000 字的紧凑叙述。
+EXPERIENCE_SUMMARY_PROMPT = """你是一个角色故事作者。请根据以下素材，撰写一段角色经历了这件事的叙事。
 
-概括要求：
-1. 保留关键人物、关键事件、情感转折、性格转变
-2. 删除琐碎细节和无关的环境描写
-3. 保留因果链条：什么事件导致了什么性格变化
-4. 语言紧凑连贯，像在讲一个人的简史
-5. 必须是中文（除非原文是其他语言）
+叙事要求:
+1. 用第三人称或第一人称叙述，像在讲一个角色的生活片段
+2. 如果素材是歌词——想象角色在什么心境下听到了这首歌，歌词中的哪些内容与角色的某些内在特质产生了共鸣。描述这种共鸣
+3. 如果素材是文章/文本——描述角色读到这些内容时的感受、联想和反思
+4. 如果素材是对话记录——把对话提炼为核心的事件和情感变化
+5. 必须保留素材中能反映角色性格、价值观、情感特质的关键内容
+6. 语言自然流畅，不超过 1000 字
+7. 中文
 
---- 原文 ---
+--- 素材 ---
 {text}
 
---- 请输出概括（不超过 1000 字）---"""
+--- 请输出角色经历叙事（不超过 1000 字）---"""
+
+EXPERIENCE_NARRATIVE_PROMPT = """你是一个角色故事作者。请根据以下简短的素材片段，想象并撰写一段角色接触到这些内容的经历叙事。
+
+要求:
+1. 用第三人称叙述。像在写人物传记的一段。想象角色在什么样的情况下、带着什么样的心境接触到了这段素材
+2. 素材可能是一段歌词、一句话、一段文字——它们反映了角色的品味、情感或经历
+3. 这段叙事将作为角色性格建模的源材料，所以要突出角色因此产生的任何情感、思考或变化
+4. 150~500 字，中文
+
+--- 素材 ---
+{text}
+
+--- 请输出叙事（150~500 字）---"""
 
 EXPERIENCE_SUMMARY_MAX = 1000
 
@@ -69,43 +84,47 @@ class ExperienceImporter:
 
         entry.original_length = original_len
 
-        if original_len <= EXPERIENCE_SUMMARY_MAX:
-            entry.summary = text.strip()
-            logger.info("经历文本 %d 字，直接接收", original_len)
-        else:
-            entry.text = text
-            if self._chat:
-                try:
+        if self._chat:
+            try:
+                if original_len <= EXPERIENCE_SUMMARY_MAX:
+                    entry.summary = self._narrate(text)
+                    logger.info("经历文本 %d 字 → 已生成叙事 %d 字", original_len, len(entry.summary))
+                else:
                     entry.summary = self._summarize(text)
-                    logger.info("经历文本 %d 字 → 已概括为 %d 字", original_len, len(entry.summary))
-                except Exception as e:
-                    logger.error("概括经历文本失败: %s — 使用截断文本", e)
-                    entry.summary = text[:EXPERIENCE_SUMMARY_MAX]
-            else:
-                logger.warning("无概括模型可用，截断经历文本到 %d 字", EXPERIENCE_SUMMARY_MAX)
+                    logger.info("经历文本 %d 字 → 已概括为叙事 %d 字", original_len, len(entry.summary))
+            except Exception as e:
+                logger.error("处理经历文本失败: %s — 使用原始文本", e)
                 entry.summary = text[:EXPERIENCE_SUMMARY_MAX]
+        else:
+            logger.warning("无概括模型可用，存储原始文本")
+            entry.summary = text.strip()
 
         return entry
 
+    def _narrate(self, text: str) -> str:
+        prompt = EXPERIENCE_NARRATIVE_PROMPT.format(text=text[:4000])
+        return self._send_with_temp(self._chat, prompt, 0.5, 600)
+
     def _summarize(self, text: str) -> str:
         prompt = EXPERIENCE_SUMMARY_PROMPT.format(text=text[:8000])
-        old_temp = getattr(self._chat, 'temperature', None)
-        old_max = getattr(self._chat, 'max_tokens', None)
+        return self._send_with_temp(self._chat, prompt, 0.3, 1500)
+
+    @staticmethod
+    def _send_with_temp(chat, prompt: str, temperature: float, max_tokens: int) -> str:
+        old_temp = getattr(chat, 'temperature', None)
+        old_max = getattr(chat, 'max_tokens', None)
         try:
-            if hasattr(self._chat, 'temperature'):
-                self._chat.temperature = 0.3
-            if hasattr(self._chat, 'max_tokens'):
-                self._chat.max_tokens = 1500
-            reply = self._chat.send_message(prompt)
+            if hasattr(chat, 'temperature'):
+                chat.temperature = temperature
+            if hasattr(chat, 'max_tokens'):
+                chat.max_tokens = max_tokens
+            reply = chat.send_message(prompt)
+            return reply.strip()
         finally:
-            if old_temp is not None and hasattr(self._chat, 'temperature'):
-                self._chat.temperature = old_temp
-            if old_max is not None and hasattr(self._chat, 'max_tokens'):
-                self._chat.max_tokens = old_max
-        reply = reply.strip()
-        if len(reply) > EXPERIENCE_SUMMARY_MAX:
-            reply = reply[:EXPERIENCE_SUMMARY_MAX]
-        return reply
+            if old_temp is not None and hasattr(chat, 'temperature'):
+                chat.temperature = old_temp
+            if old_max is not None and hasattr(chat, 'max_tokens'):
+                chat.max_tokens = old_max
 
     @staticmethod
     def compute_hash(text: str) -> str:

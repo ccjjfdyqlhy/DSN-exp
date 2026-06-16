@@ -38,7 +38,8 @@ class MaintenanceSystem:
 
     def __init__(self, db=None, v3=None, engine=None, card_id: str = "exa"):
         self.state = ServerStateMachine()
-        self.tracker = ActivityTracker()
+        self.tracker = ActivityTracker(db=db)
+        self._next_maint_at = None
 
         self._task_executor = TaskExecutor()
         self._on_maintenance_start: list[Callable] = []
@@ -92,25 +93,35 @@ class MaintenanceSystem:
 
     def _should_start_maintenance(self) -> bool:
         now = datetime.now()
+
+        # 手动设定时间优先
+        if self._next_maint_at is not None and now >= self._next_maint_at:
+            self._next_maint_at = None
+            return True
+
         hour, minute = now.hour, now.minute
 
         if config.SCHEDULE_STRATEGY == "fixed":
             return hour == config.FIXED_HOUR and minute == 0
 
         if config.SCHEDULE_STRATEGY == "predictive":
-            # 1) 检查是否在预测的空闲窗口中
+            idle_min = self.tracker.minutes_since_last_request()
+            user_idle = idle_min >= config.PREDICTIVE_IDLE_TRIGGER_MINUTES
+            if not user_idle:
+                return False
+
+            total = self.tracker.total_requests()
+            if total < config.PREDICTIVE_MIN_DATA_SAMPLES:
+                return False
+
             window = self.tracker.best_idle_window(
                 min_free_hours=config.PREDICTIVE_MIN_FREE_HOURS,
                 max_hour=config.PREDICTIVE_MAX_HOUR,
             )
             in_window = window is not None and window[0] <= hour < window[1] if window else False
 
-            # 2) 检查用户当前是否不在使用
-            idle_min = self.tracker.minutes_since_last_request()
             prob = self.tracker.idle_probability(hour, minute)
-            user_idle = idle_min >= 15
-
-            return (in_window and user_idle) or (prob > 0.85 and user_idle)
+            return in_window or prob > 0.85
 
         return False
 

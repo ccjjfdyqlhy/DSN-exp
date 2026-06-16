@@ -693,6 +693,7 @@ except Exception as e:
     app.logger.warning("PersonalityMaterials: 注入 V3 失败: %s", e)
 
 # ---------- 初始化服务器维护模块 ----------
+maint_system = None
 try:
     from maintenance import MaintenanceSystem
     from maintenance.api import maintenance_bp

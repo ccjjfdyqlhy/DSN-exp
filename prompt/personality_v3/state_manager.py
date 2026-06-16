@@ -142,17 +142,12 @@ class V3StateManager:
         logger.info("V3StateManager: 角色卡已写入文件 card_id=%s path=%s", card.card_id, yaml_path)
 
     def save_distillation(self, traits: DistilledTraits) -> None:
-        self._persistence.save_distillation(
-            traits.distillation_id,
-            traits.card_id,
-            traits.version,
-            traits.content_fingerprint,
-            traits.model_used,
-            traits.to_json(),
-        )
+        import json as _json
+        json_path = _CARDS_DIR / f"{traits.card_id}.distilled.json"
+        json_path.write_text(traits.to_json(), encoding="utf-8")
         self._distillation_cache[traits.card_id] = traits
-        logger.info("V3StateManager: 蒸馏产物已缓存 card_id=%s version=%d fingerprint=%s",
-                     traits.card_id, traits.version, traits.content_fingerprint[:20])
+        logger.info("V3StateManager: 蒸馏产物已写文件 card_id=%s version=%d path=%s",
+                     traits.card_id, traits.version, json_path.name)
 
     def list_cards(self) -> list[dict]:
         cards = []
@@ -199,19 +194,21 @@ class V3StateManager:
     def _get_distillation(self, card_id: str) -> DistilledTraits | None:
         if card_id in self._distillation_cache:
             return self._distillation_cache[card_id]
-        row = self._persistence.load_distillation(card_id)
-        if not row:
+        json_path = _CARDS_DIR / f"{card_id}.distilled.json"
+        if not json_path.exists():
             logger.debug("V3StateManager: 无蒸馏产物 card_id=%s", card_id)
             return None
-        json_content = row.get("json_content", {})
-        if isinstance(json_content, str):
-            import json
-            json_content = json.loads(json_content)
-        traits = DistilledTraits(json_content)
-        self._distillation_cache[card_id] = traits
-        logger.debug("V3StateManager: 蒸馏产物已加载 card_id=%s version=%d",
-                     card_id, traits.version)
-        return traits
+        try:
+            import json as _json
+            data = _json.loads(json_path.read_text(encoding="utf-8"))
+            traits = DistilledTraits(data)
+            self._distillation_cache[card_id] = traits
+            logger.debug("V3StateManager: 蒸馏产物从文件加载 card_id=%s version=%d",
+                         card_id, traits.version)
+            return traits
+        except Exception as e:
+            logger.warning("V3StateManager: 加载蒸馏文件失败 card_id=%s: %s", card_id, e)
+            return None
 
     def _invalidate_snapshot(self, uid: int) -> None:
         self._snapshot_cache.pop(uid, None)

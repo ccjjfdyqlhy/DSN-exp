@@ -1,6 +1,6 @@
 # prompt/personality_v3/persistence.py
-# V3 持久化层 — 仅保存动态运行时状态 (蒸馏产物 / 用户绑定状态)
-# 角色卡的可读配置完全托管在 character_cards/ 目录下，不落 DB
+# V3 持久化层 — 仅保存动态运行时状态 (用户绑定 / 情绪状态)
+# 角色卡和蒸馏产物完全托管在 character_cards/ 目录下
 
 from __future__ import annotations
 
@@ -11,18 +11,6 @@ import time
 from typing import Optional
 
 logger = logging.getLogger("PersonalityV3Persistence")
-
-CREATE_DISTILLED_TABLE = """
-CREATE TABLE IF NOT EXISTS distilled_traits (
-    distillation_id TEXT PRIMARY KEY,
-    card_id TEXT NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1,
-    content_fingerprint TEXT NOT NULL,
-    model_used TEXT DEFAULT '',
-    json_content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)
-"""
 
 CREATE_USER_CARDS_TABLE = """
 CREATE TABLE IF NOT EXISTS user_character_cards (
@@ -41,7 +29,6 @@ CREATE TABLE IF NOT EXISTS user_character_cards (
 """
 
 ALL_TABLES = [
-    ("distilled_traits", CREATE_DISTILLED_TABLE),
     ("user_character_cards", CREATE_USER_CARDS_TABLE),
 ]
 
@@ -79,62 +66,6 @@ class V3Persistence:
             logger.error("创建 V3 持久层表失败: %s", e)
             conn.rollback()
             raise
-
-    # ---- 蒸馏产物 CRUD ----
-
-    def save_distillation(self, distillation_id: str, card_id: str, version: int,
-                          fingerprint: str, model_used: str, json_content: str) -> None:
-        if self._db is None:
-            return
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                """INSERT INTO distilled_traits (distillation_id, card_id, version,
-                   content_fingerprint, model_used, json_content)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (distillation_id, card_id, version, fingerprint, model_used, json_content),
-            )
-            conn.commit()
-            logger.info("蒸馏产物已保存: %s (v%d)", distillation_id, version)
-        except Exception as e:
-            logger.error("保存蒸馏产物失败: %s", e)
-            conn.rollback()
-
-    def load_distillation(self, card_id: str) -> Optional[dict]:
-        if self._db is None:
-            return None
-        conn = self._get_conn()
-        row = conn.execute(
-            """SELECT * FROM distilled_traits
-               WHERE card_id = ?
-               ORDER BY version DESC LIMIT 1""",
-            (card_id,),
-        ).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        try:
-            result["json_content"] = json.loads(result["json_content"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return result
-
-    def load_distillation_by_id(self, distillation_id: str) -> Optional[dict]:
-        if self._db is None:
-            return None
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT * FROM distilled_traits WHERE distillation_id = ?",
-            (distillation_id,),
-        ).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        try:
-            result["json_content"] = json.loads(result["json_content"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return result
 
     # ---- 用户角色卡绑定 CRUD ----
 
