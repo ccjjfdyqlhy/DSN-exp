@@ -46,6 +46,17 @@
                 <span id="record-label">按住 说话</span>
             </button>
         </div>
+        <div id="input-sensing-mode" class="input-wrapper hidden" data-key-hint="免提感知">
+            <div class="sensing-row">
+                <canvas id="sensing-waveform" width="200" height="40"></canvas>
+                <span id="sensing-status-text">空闲</span>
+                <label class="toggle-switch mute-switch-mini" title="屏蔽麦克风">
+                    <input type="checkbox" id="mute-toggle" checked>
+                    <span class="toggle-track mute-track"><span class="toggle-knob"></span></span>
+                    <span class="toggle-label">屏蔽</span>
+                </label>
+            </div>
+        </div>
         <div class="action-buttons">
             <input type="file" id="image-input" accept="image/*" style="display:none;">
             <button id="btn-image" title="上传图片" data-key-hint="点击:上传">
@@ -83,6 +94,7 @@
     <span class="header-sub">DSN-exp</span>
     <div class="header-actions">
         <button id="btn-new-chat" title="新对话">+</button>
+        <button id="btn-sensing" title="感知模式">🎙</button>
         <button id="btn-chat-list" title="对话列表">☰</button>
         <button id="btn-theme" title="切换主题">◐</button>
         <button id="btn-logout" title="退出" data-key-hint="Ctrl+Q:退出登录">⏻</button>
@@ -145,6 +157,7 @@
 <div id="notification" class="hidden"></div>
 
 <script src="/static/js/typewriter.js"></script>
+<script src="/static/js/voice.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>

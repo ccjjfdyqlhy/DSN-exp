@@ -642,6 +642,9 @@ class DSNEngine:
             ctx.extra["_completion_queue"] = self._completion_queue
         if self.db:
             ctx.extra["_db"] = self.db
+        sensing_hint = kwargs.get("sensing_hint", "")
+        if sensing_hint:
+            ctx.extra["_sensing_hint"] = sensing_hint
         return ctx
 
     def chat(self, message: str, user_id: int = 1,

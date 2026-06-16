@@ -1209,6 +1209,10 @@ strong.md-bold {
     to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
+    from { opacity: 0; transform: translateX(-50%%) translateY(-10px); }
+    to   { opacity: 1; transform: translateX(-50%%) translateY(0); }
+}
+
 /* ── Responsive ── */
 @media (max-width: 600px) {
     #text-box-wrapper { padding: 0 16px; }
@@ -1218,3 +1222,54 @@ strong.md-bold {
     .text-line { font-size: 18px; }
     #input-area { width: 92%; bottom: 4%; }
 }
+
+/* ── Sensing Input Bar ── */
+#input-sensing-mode .sensing-row {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; padding: 6px 0;
+}
+#sensing-waveform {
+    flex: 1; height: 40px;
+    border-radius: 6px;
+    background: var(--input-bg, #1e1e2e);
+}
+#sensing-status-text {
+    font-size: 12px; color: var(--text-dim, #888);
+    min-width: 50px; text-align: center;
+}
+
+/* ── Toggle switch (reused for mute in sensing bar) ── */
+.toggle-switch {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    cursor: pointer; user-select: none;
+}
+.toggle-switch input { display: none; }
+.toggle-track {
+    width: 38px; height: 20px;
+    background: #3a3a4a;
+    border-radius: 10px;
+    position: relative;
+    transition: background 0.2s;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.4);
+}
+.toggle-switch input:checked + .toggle-track {
+    background: #f44336;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.2), 0 0 8px rgba(244,67,54,0.3);
+}
+.toggle-knob {
+    position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    background: #eee;
+    border-radius: 50%;
+    transition: left 0.15s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+.toggle-switch input:checked + .toggle-track .toggle-knob { left: 20px; }
+.toggle-label {
+    font-size: 9px; color: var(--text-dim, #888);
+    text-transform: uppercase; letter-spacing: 1px;
+}
+.mute-switch-mini { flex-shrink: 0; }
+
+/* header sensing button active */
+#btn-sensing.active { color: #4caf50; }

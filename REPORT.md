@@ -13,7 +13,7 @@
 
 | 指标摘要 | 评分 |
 |------|-------|
-| **糟糕指数** | **83.26/100** |
+| **糟糕指数** | **83.34/100** |
 | 屎山等级 | 😐 微臭青年 |
 
 > 清新宜人，初闻像早晨的露珠
@@ -22,50 +22,50 @@
 
 | 指标 | 数值 |
 |--------|-------|
-| 总文件数 | 136 |
-| 已跳过 | 566 |
-| 耗时 | 748ms |
+| 总文件数 | 137 |
+| 已跳过 | 578 |
+| 耗时 | 814ms |
 
 ### 📋 项目概览
 
 | 指标 | 数值 |
 |--------|-------|
-| 总代码行数 | 22587 |
-| 总注释行数 | 1181 |
+| 总代码行数 | 22786 |
+| 总注释行数 | 1189 |
 | 整体注释比例 | 5.2% |
 | 平均文件大小 | 209 行 |
-| 最大文件 | `psychoscope/static/js/app.js` (1453) |
+| 最大文件 | `psychoscope/static/js/app.js` (1491) |
 
 #### 语言分布
 
 | 语言 | 文件数 |
 |:-----|------:|
 | Python | 134 |
-| JavaScript | 2 |
+| JavaScript | 3 |
 
 ## 评分指标详情 {#metrics-details}
 
 | 指标摘要 | 评分 | Min | Max | Median | 状态 |
 |:-----|------:|------:|------:|------:|:------:|
-| 循环复杂度 | 8.81% | 0.0% | 80.0% | 4.0% | ✓✓ |
-| 认知复杂度 | 12.70% | 0.0% | 67.0% | 8.0% | ✓✓ |
-| 嵌套深度 | 2.76% | 0.0% | 37.5% | 0.0% | ✓✓ |
-| 函数长度 | 5.58% | 0.0% | 49.8% | 0.6% | ✓✓ |
-| 文件长度 | 2.38% | 0.0% | 88.3% | 0.0% | ✓✓ |
-| 参数数量 | 14.09% | 0.0% | 98.5% | 0.0% | ✓✓ |
-| 代码重复 | 4.12% | 0.0% | 65.0% | 0.0% | ✓✓ |
-| 结构分析 | 4.04% | 0.0% | 40.5% | 0.0% | ✓✓ |
-| 错误处理 | 32.62% | 0.0% | 98.8% | 6.1% | ✓ |
-| 注释比例 | 35.36% | 0.0% | 100.0% | 28.8% | ○ |
-| 命名规范 | 26.82% | 0.0% | 94.7% | 22.6% | ✓ |
+| 循环复杂度 | 8.76% | 0.0% | 80.0% | 4.0% | ✓✓ |
+| 认知复杂度 | 12.63% | 0.0% | 67.0% | 8.0% | ✓✓ |
+| 嵌套深度 | 2.74% | 0.0% | 37.5% | 0.0% | ✓✓ |
+| 函数长度 | 5.54% | 0.0% | 49.9% | 0.4% | ✓✓ |
+| 文件长度 | 2.38% | 0.0% | 89.0% | 0.0% | ✓✓ |
+| 参数数量 | 13.99% | 0.0% | 98.5% | 0.0% | ✓✓ |
+| 代码重复 | 4.01% | 0.0% | 65.0% | 0.0% | ✓✓ |
+| 结构分析 | 4.01% | 0.0% | 40.5% | 0.0% | ✓✓ |
+| 错误处理 | 33.07% | 0.0% | 98.8% | 6.7% | ✓ |
+| 注释比例 | 35.54% | 0.0% | 100.0% | 29.0% | ○ |
+| 命名规范 | 26.62% | 0.0% | 94.7% | 22.6% | ✓ |
 
 ## 最屎代码排行榜 {#problem-files}
 
 ### 1. engine.py
 
-**糟糕指数: 44.12**
+**糟糕指数: 44.08**
 
-> 行数: 1010 总计, 869 代码, 18 注释 | 函数: 38 | 类: 2
+> 行数: 1013 总计, 872 代码, 18 注释 | 函数: 38 | 类: 2
 
 **问题**: 🔄 复杂度问题: 10, ⚠️ 其他问题: 6, 📋 重复问题: 3, 🏗️ 结构问题: 6, ❌ 错误处理问题: 4, 📝 注释问题: 1, 🏷️ 命名问题: 10
 
@@ -73,24 +73,24 @@
 
 | 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
 |:-----|------:|------:|------:|------:|------:|:------:|
-| `create_engine_with_defaults` | L777-1009 | 233 | 43 | 2 | 12 | ✓ |
+| `create_engine_with_defaults` | L780-1012 | 233 | 43 | 2 | 12 | ✓ |
 | `_init_prompt` | L412-452 | 41 | 16 | 4 | 1 | ✗ |
 | `_register_execution_plugins` | L539-580 | 42 | 11 | 2 | 1 | ✗ |
+| `build_context` | L615-648 | 34 | 10 | 1 | 8 | ✓ |
 | `_register_personality_plugins` | L517-537 | 21 | 9 | 2 | 1 | ✗ |
 | `_register_output_plugins` | L582-602 | 21 | 9 | 2 | 1 | ✗ |
-| `build_context` | L615-645 | 31 | 9 | 1 | 8 | ✓ |
-| `chat` | L647-683 | 37 | 9 | 2 | 8 | ✓ |
-| `chat_stream` | L685-704 | 20 | 8 | 1 | 8 | ✓ |
+| `chat` | L650-686 | 37 | 9 | 2 | 8 | ✓ |
+| `chat_stream` | L688-707 | 20 | 8 | 1 | 8 | ✓ |
 | `_generate_result_message` | L255-292 | 38 | 7 | 2 | 3 | ✗ |
 | `_register_context_plugins` | L499-515 | 17 | 7 | 1 | 1 | ✗ |
-| `run_scheduled` | L714-751 | 31 | 7 | 2 | 1 | ✓ |
+| `run_scheduled` | L717-754 | 31 | 7 | 2 | 1 | ✓ |
 | `_get_event_loop` | L42-48 | 7 | 6 | 3 | 0 | ✗ |
 | `_handle_engine_action_completion` | L214-228 | 15 | 6 | 2 | 4 | ✗ |
 | `_retry_engine_action` | L294-315 | 22 | 6 | 2 | 4 | ✗ |
 | `_init_world` | L335-360 | 26 | 6 | 2 | 1 | ✗ |
 | `_init_skills` | L380-396 | 17 | 6 | 2 | 1 | ✗ |
 | `_inject_v3_to_exa_evolution` | L398-410 | 13 | 6 | 3 | 1 | ✓ |
-| `get_info` | L755-763 | 9 | 6 | 0 | 1 | ✗ |
+| `get_info` | L758-766 | 9 | 6 | 0 | 1 | ✗ |
 | `_process_task_completion` | L186-200 | 15 | 5 | 3 | 1 | ✗ |
 | `_dispatch_task_completion` | L202-212 | 11 | 5 | 2 | 3 | ✗ |
 | `_init_memory` | L317-333 | 17 | 4 | 1 | 1 | ✗ |
@@ -105,30 +105,30 @@
 | `_handle_reminder_completion` | L230-239 | 10 | 2 | 1 | 3 | ✗ |
 | `_register_filter_plugins` | L473-480 | 8 | 2 | 1 | 1 | ✗ |
 | `_register_model_plugin` | L482-497 | 16 | 2 | 1 | 1 | ✗ |
-| `create_chat` | L706-707 | 2 | 2 | 0 | 3 | ✗ |
-| `get_history` | L709-710 | 2 | 2 | 0 | 3 | ✗ |
-| `job` | L726-732 | 7 | 2 | 1 | 0 | ✗ |
+| `create_chat` | L709-710 | 2 | 2 | 0 | 3 | ✗ |
+| `get_history` | L712-713 | 2 | 2 | 0 | 3 | ✗ |
+| `job` | L729-735 | 7 | 2 | 1 | 0 | ✗ |
 | `_init_from_subapp` | L139-154 | 16 | 1 | 0 | 1 | ✗ |
 | `_init_pipeline` | L604-611 | 8 | 1 | 0 | 1 | ✗ |
-| `create_engine` | L768-774 | 7 | 1 | 0 | 1 | ✓ |
+| `create_engine` | L771-777 | 7 | 1 | 0 | 1 | ✓ |
 
 **全部问题 (38)**
 
 - 🔄 `_init_prompt()` L412: 复杂度: 16
 - 🔄 `_register_execution_plugins()` L539: 复杂度: 11
-- 🔄 `create_engine_with_defaults()` L777: 复杂度: 43
+- 🔄 `create_engine_with_defaults()` L780: 复杂度: 43
 - 🔄 `_init_prompt()` L412: 认知复杂度: 24
 - 🔄 `_register_personality_plugins()` L517: 认知复杂度: 13
 - 🔄 `_register_execution_plugins()` L539: 认知复杂度: 15
 - 🔄 `_register_output_plugins()` L582: 认知复杂度: 13
-- 🔄 `chat()` L647: 认知复杂度: 13
-- 🔄 `create_engine_with_defaults()` L777: 认知复杂度: 47
+- 🔄 `chat()` L650: 认知复杂度: 13
+- 🔄 `create_engine_with_defaults()` L780: 认知复杂度: 47
 - 🔄 `_init_prompt()` L412: 嵌套深度: 4
-- 📏 `create_engine_with_defaults()` L777: 233 代码量
+- 📏 `create_engine_with_defaults()` L780: 233 代码量
 - 📏 `build_context()` L615: 8 参数数量
-- 📏 `chat()` L647: 8 参数数量
-- 📏 `chat_stream()` L685: 8 参数数量
-- 📏 `create_engine_with_defaults()` L777: 12 参数数量
+- 📏 `chat()` L650: 8 参数数量
+- 📏 `chat_stream()` L688: 8 参数数量
+- 📏 `create_engine_with_defaults()` L780: 12 参数数量
 - 📋 `_init_database()` L156: 重复模式: _init_database, _process_task_completion, _register_personality_plugins
 - 📋 `_handle_reasoner_completion()` L241: 重复模式: _handle_reasoner_completion, _register_context_plugins, _init_pipeline
 - 📋 `_init_tts()` L362: 重复模式: _init_tts, _register_output_plugins
@@ -136,12 +136,12 @@
 - 🏗️ `_process_task_completion()` L186: 中等嵌套: 3
 - 🏗️ `_inject_v3_to_exa_evolution()` L398: 中等嵌套: 3
 - 🏗️ `_init_prompt()` L412: 中等嵌套: 4
-- 🏗️ L1: 文件过大: 1010 行
+- 🏗️ L1: 文件过大: 1013 行
 - 🏗️ L1: 导入过多: 79
 - ❌ L215: 未处理的易出错调用
 - ❌ L225: 未处理的易出错调用
 - ❌ L271: 未处理的易出错调用
-- ❌ L730: 未处理的易出错调用
+- ❌ L733: 未处理的易出错调用
 - 🏷️ `_get_event_loop()` L42: "_get_event_loop" - snake_case
 - 🏷️ `__init__()` L104: "__init__" - snake_case
 - 🏷️ `_init_from_subapp()` L139: "_init_from_subapp" - snake_case
@@ -154,23 +154,23 @@
 - 🏷️ `_handle_reasoner_completion()` L241: "_handle_reasoner_completion" - snake_case
 
 **详情**:
-- 循环复杂度: 平均: 6.0, 最大: 43
+- 循环复杂度: 平均: 6.1, 最大: 43
 - 认知复杂度: 平均: 8.7, 最大: 47
 - 嵌套深度: 平均: 1.3, 最大: 4
-- 函数长度: 平均: 23.2 行, 最大: 233 行
-- 文件长度: 869 代码量 (1010 总计)
+- 函数长度: 平均: 23.3 行, 最大: 233 行
+- 文件长度: 872 代码量 (1013 总计)
 - 参数数量: 平均: 2.3, 最大: 12
 - 代码重复: 13.2% 重复 (5/38)
 - 结构分析: 6 个结构问题
-- 错误处理: 4/23 个错误被忽略 (17.4%)
-- 注释比例: 2.1% (18/869)
+- 错误处理: 4/24 个错误被忽略 (16.7%)
+- 注释比例: 2.1% (18/872)
 - 命名规范: 发现 27 个违规
 
 ### 2. plugins/pipeline.py
 
 **糟糕指数: 38.28**
 
-> 行数: 614 总计, 496 代码, 25 注释 | 函数: 15 | 类: 1
+> 行数: 618 总计, 499 代码, 25 注释 | 函数: 15 | 类: 1
 
 **问题**: 🔄 复杂度问题: 10, ⚠️ 其他问题: 5, 🏗️ 结构问题: 6, ❌ 错误处理问题: 12, 📝 注释问题: 1, 🏷️ 命名问题: 10
 
@@ -178,56 +178,56 @@
 
 | 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
 |:-----|------:|------:|------:|------:|------:|:------:|
-| `process_stream` | L411-613 | 203 | 40 | 5 | 3 | ✓ |
-| `_poll_pending_tasks` | L370-399 | 30 | 18 | 5 | 4 | ✗ |
+| `process_stream` | L415-617 | 203 | 40 | 5 | 3 | ✓ |
+| `_poll_pending_tasks` | L374-403 | 30 | 18 | 5 | 4 | ✗ |
 | `process` | L151-217 | 67 | 13 | 3 | 2 | ✓ |
-| `_synthesize_lines_sync` | L284-337 | 54 | 12 | 3 | 2 | ✓ |
+| `_synthesize_lines_sync` | L288-341 | 54 | 12 | 3 | 2 | ✓ |
 | `_invoke` | L27-56 | 30 | 7 | 2 | 0 | ✗ |
-| `_dispatch_pre_process` | L234-271 | 38 | 7 | 1 | 2 | ✓ |
-| `_run_all_plugins` | L348-368 | 21 | 7 | 2 | 5 | ✗ |
+| `_dispatch_pre_process` | L238-275 | 38 | 7 | 1 | 2 | ✓ |
+| `_run_all_plugins` | L352-372 | 21 | 7 | 2 | 5 | ✗ |
 | `_task_completion_llm_reply` | L22-82 | 31 | 6 | 2 | 5 | ✓ |
 | `_extract_narrations` | L85-100 | 16 | 4 | 3 | 1 | ✓ |
-| `_assemble_prompt` | L219-230 | 12 | 3 | 1 | 2 | ✓ |
-| `_bridge_progress` | L340-346 | 7 | 3 | 2 | 2 | ✗ |
+| `_assemble_prompt` | L219-234 | 16 | 4 | 1 | 2 | ✓ |
+| `_bridge_progress` | L344-350 | 7 | 3 | 2 | 2 | ✗ |
 | `_desc_tool` | L103-108 | 6 | 2 | 1 | 1 | ✗ |
 | `_desc_task` | L111-118 | 8 | 2 | 1 | 1 | ✗ |
 | `__init__` | L135-147 | 13 | 1 | 0 | 6 | ✗ |
-| `_synthesize_lines` | L275-282 | 8 | 1 | 0 | 2 | ✓ |
+| `_synthesize_lines` | L279-286 | 8 | 1 | 0 | 2 | ✓ |
 
 **全部问题 (42)**
 
 - 🔄 `process()` L151: 复杂度: 13
-- 🔄 `_synthesize_lines_sync()` L284: 复杂度: 12
-- 🔄 `_poll_pending_tasks()` L370: 复杂度: 18
-- 🔄 `process_stream()` L411: 复杂度: 40
+- 🔄 `_synthesize_lines_sync()` L288: 复杂度: 12
+- 🔄 `_poll_pending_tasks()` L374: 复杂度: 18
+- 🔄 `process_stream()` L415: 复杂度: 40
 - 🔄 `process()` L151: 认知复杂度: 19
-- 🔄 `_synthesize_lines_sync()` L284: 认知复杂度: 18
-- 🔄 `_poll_pending_tasks()` L370: 认知复杂度: 28
-- 🔄 `process_stream()` L411: 认知复杂度: 50
-- 🔄 `_poll_pending_tasks()` L370: 嵌套深度: 5
-- 🔄 `process_stream()` L411: 嵌套深度: 5
+- 🔄 `_synthesize_lines_sync()` L288: 认知复杂度: 18
+- 🔄 `_poll_pending_tasks()` L374: 认知复杂度: 28
+- 🔄 `process_stream()` L415: 认知复杂度: 50
+- 🔄 `_poll_pending_tasks()` L374: 嵌套深度: 5
+- 🔄 `process_stream()` L415: 嵌套深度: 5
 - 📏 `process()` L151: 67 代码量
-- 📏 `_synthesize_lines_sync()` L284: 54 代码量
-- 📏 `process_stream()` L411: 203 代码量
+- 📏 `_synthesize_lines_sync()` L288: 54 代码量
+- 📏 `process_stream()` L415: 203 代码量
 - 📏 `__init__()` L135: 6 参数数量
 - 🏗️ `_extract_narrations()` L85: 中等嵌套: 3
 - 🏗️ `process()` L151: 中等嵌套: 3
-- 🏗️ `_synthesize_lines_sync()` L284: 中等嵌套: 3
-- 🏗️ `_poll_pending_tasks()` L370: 嵌套过深: 5
-- 🏗️ `process_stream()` L411: 嵌套过深: 5
+- 🏗️ `_synthesize_lines_sync()` L288: 中等嵌套: 3
+- 🏗️ `_poll_pending_tasks()` L374: 嵌套过深: 5
+- 🏗️ `process_stream()` L415: 嵌套过深: 5
 - 🏗️ L1: 导入过多: 21
 - ❌ L78: 未处理的易出错调用
 - ❌ L207: 未处理的易出错调用
-- ❌ L346: 未处理的易出错调用
-- ❌ L352: 未处理的易出错调用
-- ❌ L367: 未处理的易出错调用
-- ❌ L368: 未处理的易出错调用
-- ❌ L373: 未处理的易出错调用
-- ❌ L395: 未处理的易出错调用
-- ❌ L528: 未处理的易出错调用
-- ❌ L542: 未处理的易出错调用
-- ❌ L572: 未处理的易出错调用
-- ❌ L608: 未处理的易出错调用
+- ❌ L350: 未处理的易出错调用
+- ❌ L356: 未处理的易出错调用
+- ❌ L371: 未处理的易出错调用
+- ❌ L372: 未处理的易出错调用
+- ❌ L377: 未处理的易出错调用
+- ❌ L399: 未处理的易出错调用
+- ❌ L532: 未处理的易出错调用
+- ❌ L546: 未处理的易出错调用
+- ❌ L576: 未处理的易出错调用
+- ❌ L612: 未处理的易出错调用
 - 🏷️ `_task_completion_llm_reply()` L22: "_task_completion_llm_reply" - snake_case
 - 🏷️ `_invoke()` L27: "_invoke" - snake_case
 - 🏷️ `_extract_narrations()` L85: "_extract_narrations" - snake_case
@@ -235,21 +235,21 @@
 - 🏷️ `_desc_task()` L111: "_desc_task" - snake_case
 - 🏷️ `__init__()` L135: "__init__" - snake_case
 - 🏷️ `_assemble_prompt()` L219: "_assemble_prompt" - snake_case
-- 🏷️ `_dispatch_pre_process()` L234: "_dispatch_pre_process" - snake_case
-- 🏷️ `_synthesize_lines()` L275: "_synthesize_lines" - snake_case
-- 🏷️ `_synthesize_lines_sync()` L284: "_synthesize_lines_sync" - snake_case
+- 🏷️ `_dispatch_pre_process()` L238: "_dispatch_pre_process" - snake_case
+- 🏷️ `_synthesize_lines()` L279: "_synthesize_lines" - snake_case
+- 🏷️ `_synthesize_lines_sync()` L288: "_synthesize_lines_sync" - snake_case
 
 **详情**:
-- 循环复杂度: 平均: 8.4, 最大: 40
-- 认知复杂度: 平均: 12.5, 最大: 50
+- 循环复杂度: 平均: 8.5, 最大: 40
+- 认知复杂度: 平均: 12.6, 最大: 50
 - 嵌套深度: 平均: 2.1, 最大: 5
-- 函数长度: 平均: 36.3 行, 最大: 203 行
-- 文件长度: 496 代码量 (614 总计)
+- 函数长度: 平均: 36.5 行, 最大: 203 行
+- 文件长度: 499 代码量 (618 总计)
 - 参数数量: 平均: 2.5, 最大: 6
 - 代码重复: 0.0% 重复 (0/15)
 - 结构分析: 6 个结构问题
-- 错误处理: 12/32 个错误被忽略 (37.5%)
-- 注释比例: 5.0% (25/496)
+- 错误处理: 12/33 个错误被忽略 (36.4%)
+- 注释比例: 5.0% (25/499)
 - 命名规范: 发现 13 个违规
 
 ### 3. main.py
@@ -536,137 +536,140 @@
 
 ### 5. psychoscope/static/js/app.js
 
-**糟糕指数: 34.43**
+**糟糕指数: 34.45**
 
-> 行数: 1453 总计, 1325 代码, 41 注释 | 函数: 57 | 类: 0
+> 行数: 1491 总计, 1356 代码, 45 注释 | 函数: 57 | 类: 0
 
-**问题**: 🔄 复杂度问题: 9, ⚠️ 其他问题: 3, 🏗️ 结构问题: 6, ❌ 错误处理问题: 32, 📝 注释问题: 1
+**问题**: 🔄 复杂度问题: 9, ⚠️ 其他问题: 3, 🏗️ 结构问题: 6, ❌ 错误处理问题: 35, 📝 注释问题: 1
 
 #### 函数详情
 
 | 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
 |:-----|------:|------:|------:|------:|------:|:------:|
-| `msgFlow` | L750-880 | 131 | 38 | 4 | 1 | ✗ |
-| `sendRecording` | L640-744 | 105 | 36 | 4 | 2 | ✗ |
-| `init` | L1420-1450 | 31 | 10 | 2 | 0 | ✓ |
-| `openMaintenanceSSE` | L1015-1075 | 61 | 9 | 2 | 0 | ✗ |
-| `selectChat` | L422-465 | 44 | 8 | 4 | 1 | ✗ |
-| `tryPairLogin` | L347-366 | 20 | 7 | 1 | 0 | ✗ |
-| `showTimingLine` | L970-988 | 19 | 7 | 2 | 2 | ✗ |
-| `showKeyHints` | L1273-1327 | 55 | 7 | 1 | 0 | ✗ |
-| `describeAction` | L188-202 | 15 | 6 | 1 | 2 | ✗ |
-| `addMessage` | L267-305 | 39 | 6 | 2 | 3 | ✗ |
-| `processLineQueue` | L942-968 | 27 | 6 | 2 | 0 | ✗ |
-| `parseControlTags` | L166-186 | 21 | 5 | 4 | 1 | ✗ |
-| `startRecording` | L523-544 | 22 | 5 | 1 | 0 | ✗ |
-| `stopRecording` | L546-565 | 20 | 5 | 2 | 1 | ✗ |
-| `startWaveform` | L587-617 | 31 | 5 | 1 | 0 | ✗ |
-| `getAuthHeader` | L308-313 | 6 | 4 | 1 | 0 | ✓ |
-| `tryRecoverLogin` | L368-387 | 20 | 4 | 1 | 0 | ✗ |
-| `abortStream` | L896-906 | 11 | 4 | 1 | 0 | ✗ |
-| `playAudioBase64Wait` | L926-940 | 15 | 4 | 1 | 1 | ✗ |
-| `showConfirm` | L1363-1388 | 26 | 4 | 1 | 0 | ✗ |
+| `msgFlow` | L756-886 | 131 | 38 | 4 | 1 | ✗ |
+| `sendRecording` | L646-750 | 105 | 36 | 4 | 2 | ✗ |
+| `init` | L1458-1488 | 31 | 10 | 2 | 0 | ✓ |
+| `openMaintenanceSSE` | L1021-1081 | 61 | 9 | 2 | 0 | ✗ |
+| `selectChat` | L428-471 | 44 | 8 | 4 | 1 | ✗ |
+| `tryPairLogin` | L353-372 | 20 | 7 | 1 | 0 | ✗ |
+| `showTimingLine` | L976-994 | 19 | 7 | 2 | 2 | ✗ |
+| `showKeyHints` | L1311-1365 | 55 | 7 | 1 | 0 | ✗ |
+| `describeAction` | L194-208 | 15 | 6 | 1 | 2 | ✗ |
+| `addMessage` | L273-311 | 39 | 6 | 2 | 3 | ✗ |
+| `processLineQueue` | L948-974 | 27 | 6 | 2 | 0 | ✗ |
+| `parseControlTags` | L172-192 | 21 | 5 | 4 | 1 | ✗ |
+| `startRecording` | L529-550 | 22 | 5 | 1 | 0 | ✗ |
+| `stopRecording` | L552-571 | 20 | 5 | 2 | 1 | ✗ |
+| `startWaveform` | L593-623 | 31 | 5 | 1 | 0 | ✗ |
+| `getAuthHeader` | L314-319 | 6 | 4 | 1 | 0 | ✓ |
+| `tryRecoverLogin` | L374-393 | 20 | 4 | 1 | 0 | ✗ |
+| `abortStream` | L902-912 | 11 | 4 | 1 | 0 | ✗ |
+| `playAudioBase64Wait` | L932-946 | 15 | 4 | 1 | 1 | ✗ |
+| `showConfirm` | L1401-1426 | 26 | 4 | 1 | 0 | ✗ |
 | `detectTheme` | L10-14 | 5 | 3 | 1 | 0 | ✓ |
-| `apiCall` | L314-319 | 6 | 3 | 1 | 3 | ✗ |
-| `apiGet` | L320-328 | 9 | 3 | 1 | 1 | ✗ |
-| `apiPost` | L331-336 | 6 | 3 | 1 | 2 | ✓ |
-| `apiPostJson` | L337-345 | 9 | 3 | 1 | 2 | ✗ |
-| `renderChatList` | L407-421 | 15 | 3 | 1 | 0 | ✗ |
-| `handleImageSelected` | L480-492 | 13 | 3 | 1 | 1 | ✗ |
-| `switchInputMode` | L504-521 | 18 | 3 | 1 | 1 | ✓ |
-| `stopWaveform` | L619-627 | 9 | 3 | 1 | 0 | ✗ |
-| `playAudioBase64` | L914-924 | 11 | 3 | 1 | 1 | ✗ |
-| `renderMaintTasks` | L1077-1085 | 9 | 3 | 0 | 0 | ✗ |
-| `updateMaintProgress` | L1087-1099 | 13 | 3 | 1 | 0 | ✗ |
-| `hideConfirm` | L1390-1405 | 16 | 3 | 1 | 0 | ✗ |
+| `apiCall` | L320-325 | 6 | 3 | 1 | 3 | ✗ |
+| `apiGet` | L326-334 | 9 | 3 | 1 | 1 | ✗ |
+| `apiPost` | L337-342 | 6 | 3 | 1 | 2 | ✓ |
+| `apiPostJson` | L343-351 | 9 | 3 | 1 | 2 | ✗ |
+| `renderChatList` | L413-427 | 15 | 3 | 1 | 0 | ✗ |
+| `handleImageSelected` | L486-498 | 13 | 3 | 1 | 1 | ✗ |
+| `switchInputMode` | L510-527 | 18 | 3 | 1 | 1 | ✓ |
+| `stopWaveform` | L625-633 | 9 | 3 | 1 | 0 | ✗ |
+| `playAudioBase64` | L920-930 | 11 | 3 | 1 | 1 | ✗ |
+| `renderMaintTasks` | L1083-1091 | 9 | 3 | 0 | 0 | ✗ |
+| `updateMaintProgress` | L1093-1105 | 13 | 3 | 1 | 0 | ✗ |
+| `hideConfirm` | L1428-1443 | 16 | 3 | 1 | 0 | ✗ |
 | `toggleTheme` | L19-21 | 3 | 2 | 0 | 0 | ✗ |
-| `addLineStatic` | L232-247 | 16 | 2 | 1 | 3 | ✗ |
-| `newChat` | L466-473 | 8 | 2 | 1 | 0 | ✗ |
-| `removeImage` | L494-501 | 8 | 2 | 1 | 0 | ✗ |
-| `cancelRecording` | L567-575 | 9 | 2 | 1 | 0 | ✗ |
-| `uncancelRecording` | L577-585 | 9 | 2 | 1 | 0 | ✗ |
-| `sendMessage` | L882-894 | 13 | 2 | 1 | 0 | ✗ |
-| `toggleTTS` | L909-913 | 5 | 2 | 0 | 0 | ✓ |
-| `checkMaintStatus` | L1101-1110 | 10 | 2 | 1 | 0 | ✗ |
-| `hideKeyHints` | L1329-1337 | 9 | 2 | 1 | 0 | ✗ |
+| `addLineStatic` | L238-253 | 16 | 2 | 1 | 3 | ✗ |
+| `newChat` | L472-479 | 8 | 2 | 1 | 0 | ✗ |
+| `removeImage` | L500-507 | 8 | 2 | 1 | 0 | ✗ |
+| `cancelRecording` | L573-581 | 9 | 2 | 1 | 0 | ✗ |
+| `uncancelRecording` | L583-591 | 9 | 2 | 1 | 0 | ✗ |
+| `sendMessage` | L888-900 | 13 | 2 | 1 | 0 | ✗ |
+| `toggleTTS` | L915-919 | 5 | 2 | 0 | 0 | ✓ |
+| `checkMaintStatus` | L1107-1116 | 10 | 2 | 1 | 0 | ✗ |
+| `hideKeyHints` | L1367-1375 | 9 | 2 | 1 | 0 | ✗ |
 | `applyTheme` | L15-18 | 4 | 1 | 0 | 1 | ✗ |
-| `archiveActiveLines` | L205-211 | 7 | 1 | 0 | 0 | ✓ |
-| `addNarrationLine` | L213-220 | 8 | 1 | 0 | 1 | ✗ |
-| `addNarratorLine` | L222-230 | 9 | 1 | 0 | 1 | ✗ |
-| `addSystemLine` | L249-256 | 8 | 1 | 0 | 1 | ✗ |
-| `addErrorLine` | L258-265 | 8 | 1 | 0 | 1 | ✗ |
-| `logout` | L389-400 | 12 | 1 | 0 | 0 | ✗ |
-| `loadChats` | L403-406 | 4 | 1 | 0 | 0 | ✓ |
-| `selectImage` | L476-478 | 3 | 1 | 0 | 0 | ✓ |
-| `blobToBase64` | L629-638 | 10 | 1 | 0 | 1 | ✗ |
-| `updateStatusBar` | L991-994 | 4 | 1 | 0 | 0 | ✓ |
-| `updateStatusBarText` | L995-997 | 3 | 1 | 0 | 1 | ✗ |
-| `createKeyCapSVG` | L1257-1267 | 11 | 1 | 0 | 1 | ✓ |
-| `doConfirm` | L1407-1411 | 5 | 1 | 0 | 0 | ✗ |
+| `archiveActiveLines` | L211-217 | 7 | 1 | 0 | 0 | ✓ |
+| `addNarrationLine` | L219-226 | 8 | 1 | 0 | 1 | ✗ |
+| `addNarratorLine` | L228-236 | 9 | 1 | 0 | 1 | ✗ |
+| `addSystemLine` | L255-262 | 8 | 1 | 0 | 1 | ✗ |
+| `addErrorLine` | L264-271 | 8 | 1 | 0 | 1 | ✗ |
+| `logout` | L395-406 | 12 | 1 | 0 | 0 | ✗ |
+| `loadChats` | L409-412 | 4 | 1 | 0 | 0 | ✓ |
+| `selectImage` | L482-484 | 3 | 1 | 0 | 0 | ✓ |
+| `blobToBase64` | L635-644 | 10 | 1 | 0 | 1 | ✗ |
+| `updateStatusBar` | L997-1000 | 4 | 1 | 0 | 0 | ✓ |
+| `updateStatusBarText` | L1001-1003 | 3 | 1 | 0 | 1 | ✗ |
+| `createKeyCapSVG` | L1295-1305 | 11 | 1 | 0 | 1 | ✓ |
+| `doConfirm` | L1445-1449 | 5 | 1 | 0 | 0 | ✗ |
 
-**全部问题 (49)**
+**全部问题 (52)**
 
-- 🔄 `sendRecording()` L640: 复杂度: 36
-- 🔄 `msgFlow()` L750: 复杂度: 38
-- 🔄 `selectChat()` L422: 认知复杂度: 16
-- 🔄 `sendRecording()` L640: 认知复杂度: 44
-- 🔄 `msgFlow()` L750: 认知复杂度: 46
-- 🔄 `parseControlTags()` L166: 嵌套深度: 4
-- 🔄 `selectChat()` L422: 嵌套深度: 4
-- 🔄 `sendRecording()` L640: 嵌套深度: 4
-- 🔄 `msgFlow()` L750: 嵌套深度: 4
-- 📏 `sendRecording()` L640: 105 代码量
-- 📏 `msgFlow()` L750: 131 代码量
-- 🏗️ `parseControlTags()` L166: 中等嵌套: 4
-- 🏗️ `selectChat()` L422: 中等嵌套: 4
-- 🏗️ `sendRecording()` L640: 中等嵌套: 4
-- 🏗️ `msgFlow()` L750: 中等嵌套: 4
-- 🏗️ L1: 文件过大: 1453 行
+- 🔄 `sendRecording()` L646: 复杂度: 36
+- 🔄 `msgFlow()` L756: 复杂度: 38
+- 🔄 `selectChat()` L428: 认知复杂度: 16
+- 🔄 `sendRecording()` L646: 认知复杂度: 44
+- 🔄 `msgFlow()` L756: 认知复杂度: 46
+- 🔄 `parseControlTags()` L172: 嵌套深度: 4
+- 🔄 `selectChat()` L428: 嵌套深度: 4
+- 🔄 `sendRecording()` L646: 嵌套深度: 4
+- 🔄 `msgFlow()` L756: 嵌套深度: 4
+- 📏 `sendRecording()` L646: 105 代码量
+- 📏 `msgFlow()` L756: 131 代码量
+- 🏗️ `parseControlTags()` L172: 中等嵌套: 4
+- 🏗️ `selectChat()` L428: 中等嵌套: 4
+- 🏗️ `sendRecording()` L646: 中等嵌套: 4
+- 🏗️ `msgFlow()` L756: 中等嵌套: 4
+- 🏗️ L1: 文件过大: 1491 行
 - 🏗️ L1: 函数过多: 57
-- ❌ L146: 未处理的易出错调用
-- ❌ L208: 未处理的易出错调用
-- ❌ L395: 未处理的易出错调用
-- ❌ L398: 未处理的易出错调用
-- ❌ L427: 未处理的易出错调用
-- ❌ L451: 未处理的易出错调用
-- ❌ L470: 未处理的易出错调用
-- ❌ L487: 未处理的易出错调用
-- ❌ L498: 未处理的易出错调用
-- ❌ L509: 未处理的易出错调用
+- ❌ L152: 未处理的易出错调用
+- ❌ L214: 未处理的易出错调用
+- ❌ L401: 未处理的易出错调用
+- ❌ L404: 未处理的易出错调用
+- ❌ L433: 未处理的易出错调用
+- ❌ L457: 未处理的易出错调用
+- ❌ L476: 未处理的易出错调用
+- ❌ L493: 未处理的易出错调用
+- ❌ L504: 未处理的易出错调用
 - ❌ L515: 未处理的易出错调用
-- ❌ L516: 未处理的易出错调用
-- ❌ L562: 未处理的易出错调用
-- ❌ L563: 未处理的易出错调用
-- ❌ L571: 未处理的易出错调用
-- ❌ L573: 未处理的易出错调用
-- ❌ L580: 未处理的易出错调用
-- ❌ L582: 未处理的易出错调用
-- ❌ L665: 未处理的易出错调用
-- ❌ L739: 未处理的易出错调用
-- ❌ L778: 未处理的易出错调用
-- ❌ L876: 未处理的易出错调用
-- ❌ L902: 未处理的易出错调用
-- ❌ L1102: 未处理的易出错调用
-- ❌ L1120: 未处理的易出错调用
-- ❌ L1334: 未处理的易出错调用
-- ❌ L1335: 未处理的易出错调用
-- ❌ L1366: 未处理的易出错调用
-- ❌ L1369: 未处理的易出错调用
-- ❌ L1393: 未处理的易出错调用
-- ❌ L1395: 未处理的易出错调用
-- ❌ L1400: 未处理的易出错调用
+- ❌ L521: 未处理的易出错调用
+- ❌ L522: 未处理的易出错调用
+- ❌ L568: 未处理的易出错调用
+- ❌ L569: 未处理的易出错调用
+- ❌ L577: 未处理的易出错调用
+- ❌ L579: 未处理的易出错调用
+- ❌ L586: 未处理的易出错调用
+- ❌ L588: 未处理的易出错调用
+- ❌ L671: 未处理的易出错调用
+- ❌ L745: 未处理的易出错调用
+- ❌ L784: 未处理的易出错调用
+- ❌ L882: 未处理的易出错调用
+- ❌ L908: 未处理的易出错调用
+- ❌ L1108: 未处理的易出错调用
+- ❌ L1127: 未处理的易出错调用
+- ❌ L1138: 未处理的易出错调用
+- ❌ L1139: 未处理的易出错调用
+- ❌ L1158: 未处理的易出错调用
+- ❌ L1372: 未处理的易出错调用
+- ❌ L1373: 未处理的易出错调用
+- ❌ L1404: 未处理的易出错调用
+- ❌ L1407: 未处理的易出错调用
+- ❌ L1431: 未处理的易出错调用
+- ❌ L1433: 未处理的易出错调用
+- ❌ L1438: 未处理的易出错调用
 
 **详情**:
 - 循环复杂度: 平均: 4.4, 最大: 38
 - 认知复杂度: 平均: 6.5, 最大: 46
 - 嵌套深度: 平均: 1.0, 最大: 4
 - 函数长度: 平均: 18.3 行, 最大: 131 行
-- 文件长度: 1325 代码量 (1453 总计)
+- 文件长度: 1356 代码量 (1491 总计)
 - 参数数量: 平均: 0.6, 最大: 3
 - 代码重复: 3.5% 重复 (2/57)
 - 结构分析: 6 个结构问题
-- 错误处理: 32/56 个错误被忽略 (57.1%)
-- 注释比例: 3.1% (41/1325)
+- 错误处理: 35/59 个错误被忽略 (59.3%)
+- 注释比例: 3.3% (45/1356)
 - 命名规范: 无命名违规
 
 ### 6. tests/test_ncm_music.py

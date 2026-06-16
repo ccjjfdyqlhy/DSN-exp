@@ -924,6 +924,24 @@ def asr_recognize():
         return jsonify({"error": "ASR processing failed"}), 500
 
 
+_SENSING_PROMPT_CACHE = None
+
+def get_sensing_prompt() -> str:
+    global _SENSING_PROMPT_CACHE
+    if _SENSING_PROMPT_CACHE is not None:
+        return _SENSING_PROMPT_CACHE
+    import re as _re, os as _os
+    path = _os.path.join(_os.path.dirname(__file__), "prompt", "prompts", "capabilities", "sensing.md")
+    try:
+        text = open(path, encoding="utf-8-sig").read()
+        m = _re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, _re.DOTALL)
+        content = m.group(2).strip() if m else text.strip()
+    except Exception:
+        content = ""
+    _SENSING_PROMPT_CACHE = content
+    return content
+
+
 @app.route("/api/asr/passthrough", methods=["POST"])
 @login_required
 def asr_passthrough():
@@ -932,10 +950,11 @@ def asr_passthrough():
         return jsonify({"error": "ASR service is disabled"}), 403
 
     data = request.get_json()
-    if not data or "audio_b64" not in data:
-        return jsonify({"error": "Missing audio_b64"}), 400
+    if not data or ("audio_b64" not in data and "audio" not in data):
+        return jsonify({"error": "Missing audio_b64 / audio"}), 400
 
-    audio_b64 = data["audio_b64"]
+    is_sensing = data.get("sensing", False) is True
+    audio_b64 = data.get("audio_b64") or data.get("audio", "")
     try:
         audio_bytes = __import__("base64").b64decode(audio_b64)
     except Exception:
@@ -980,6 +999,7 @@ def asr_passthrough():
                 tts_enabled=data.get("tts_enabled", True),
                 is_asr_input=True,
                 image_data=data.get("image_data"),
+                sensing_hint=get_sensing_prompt() if is_sensing else "",
             ).__aiter__()
             while True:
                 try:
