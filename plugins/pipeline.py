@@ -229,6 +229,10 @@ class ChatPipeline:
         }
         ctx.system_prompt = self._prompt_engine.build_system_prompt(user_info)
 
+        hint = ctx.extra.get("_sensing_hint", "")
+        if hint:
+            ctx.system_prompt += "\n\n" + hint
+
     # ---- PRE_PROCESS 图片并行 ----
 
     async def _dispatch_pre_process(self, ctx: PluginContext) -> PluginContext:

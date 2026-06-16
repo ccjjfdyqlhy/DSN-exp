@@ -102,6 +102,12 @@
         quickConfirm: $('#quick-confirm'),
         btnConfirm: $('#btn-confirm'),
         confirmProgressBar: $('#confirm-progress-bar'),
+        // sensing
+        btnSensing: $('#btn-sensing'),
+        sensingMode: $('#input-sensing-mode'),
+        sensingWaveform: $('#sensing-waveform'),
+        sensingMuteToggle: $('#mute-toggle'),
+        sensingStatusText: $('#sensing-status-text'),
     };
 
     // utils
@@ -1108,6 +1114,38 @@
             })
             .catch(function () {});
     }
+
+    // ── sensing mode
+    VoiceSensing.init({
+        sendRecording: sendRecording,
+        canvas: dom.sensingWaveform,
+    });
+
+    dom.btnSensing.addEventListener('click', function () {
+        if (dom.sensingMode.classList.contains('hidden')) {
+            // 打开感知模式
+            dom.sensingMode.classList.remove('hidden');
+            dom.inputTextMode.classList.add('hidden');
+            dom.inputVoiceMode.classList.add('hidden');
+            dom.btnSensing.classList.add('active');
+            VoiceSensing.start();
+            dom.sensingMuteToggle.checked = false;
+            dom.sensingStatusText.textContent = '空闲';
+            dom.sensingStatusText.style.color = '#888';
+        } else {
+            // 关闭感知模式
+            dom.sensingMode.classList.add('hidden');
+            dom.inputTextMode.classList.remove('hidden');
+            dom.btnSensing.classList.remove('active');
+            VoiceSensing.stop();
+        }
+    });
+
+    dom.sensingMuteToggle.addEventListener('change', function () {
+        VoiceSensing.setMuted(this.checked);
+        dom.sensingStatusText.textContent = this.checked ? '已屏蔽' : '空闲';
+        dom.sensingStatusText.style.color = this.checked ? '#f44336' : '#888';
+    });
 
     // events
     dom.btnLogout.addEventListener('click', function () { if (confirm('logout?')) logout(); });
