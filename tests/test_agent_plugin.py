@@ -369,7 +369,7 @@ def test_pipeline_integration():
     class MockMemoryManager:
         def assemble_context(self, user_id, chat_id, history):
             return list(history)
-        def record_dialog_and_summary(self, **kwargs):
+        def summarize_turn(self, **kwargs):
             pass
 
     class MockDB:
@@ -377,10 +377,12 @@ def test_pipeline_integration():
             return 1
         def get_memories(self, user_id, chat_id):
             return []
+        def get_next_round_index(self, chat_id):
+            return 1
 
     pm = PluginManager()
     pm.register(AgentPlugin(skill_registry=registry, models_plugin=models))
-    pm.register(MemoryPlugin(memory_manager=MockMemoryManager(), db=MockDB()))
+    pm.register(MemoryPlugin(memory_system=MockMemoryManager(), db=MockDB()))
 
     pipeline = ChatPipeline(pm)
 

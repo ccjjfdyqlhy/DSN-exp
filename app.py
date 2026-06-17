@@ -28,7 +28,7 @@ from todo_api import todo_bp
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat
 from tts_process_model import TTSProcessModel
-from memory import MemoryManager
+from memory import MemorySystem
 from tasks import TaskManager, TaskType
 import prompt
 
@@ -481,10 +481,10 @@ if app.config.get("MEMORY_ENABLED", True):
         model_name=app.config.get("MEMORY_MODEL"),
         summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),
     )
-    memory_manager = MemoryManager(db=db, summary_model=summary_model)
+    memory_system = MemorySystem(db=db, summary_model=summary_model)
 else:
     summary_model = None
-    memory_manager = None
+    memory_system = None
 
 # 初始化 TTS 客户端
 tts_client = VocalExp(app.config["TTS_BASE_URL"])
@@ -666,7 +666,7 @@ else:
 
 engine = create_engine_with_defaults(
     db=db,
-    memory_manager=memory_manager,
+    memory_system=memory_system,
     skill_registry=skill_registry,
     skill_manager=skill_manager,
     impression_manager=_impression_manager,

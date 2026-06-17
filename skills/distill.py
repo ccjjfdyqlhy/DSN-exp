@@ -212,6 +212,21 @@ class DistillationEngine:
             logger.error("收集对话失败: %s", e)
             return []
 
+    # ── LLM 调用辅助 ──
+
+    def _call_llm(self, system_prompt: str) -> str:
+        """调用 LLM：以 system_prompt 为系统提示词，返回响应文本。"""
+        if not self.llm:
+            return ""
+        try:
+            if hasattr(self.llm, 'messages'):
+                self.llm.messages = [{"role": "system", "content": system_prompt}]
+                return self.llm.send_message("请完成上述任务")
+            else:
+                return self.llm.send_message(system_prompt)
+        except Exception:
+            raise
+
     # ── 模式挖掘 ──
 
     def _mine_patterns(self, conversations: list[dict]) -> list[dict]:
@@ -231,9 +246,7 @@ class DistillationEngine:
         )
 
         try:
-            response = self.llm.send_message([
-                {"role": "system", "content": prompt}
-            ])
+            response = self._call_llm(prompt)
             return self._parse_patterns_response(response)
         except Exception as e:
             logger.error("模式挖掘 LLM 调用失败: %s", e)
@@ -270,9 +283,7 @@ class DistillationEngine:
         )
 
         try:
-            response = self.llm.send_message([
-                {"role": "system", "content": prompt}
-            ])
+            response = self._call_llm(prompt)
             json_match = re.search(r"\{.*\}", response, re.DOTALL)
             if not json_match:
                 return None

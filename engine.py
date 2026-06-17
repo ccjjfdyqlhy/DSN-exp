@@ -18,7 +18,7 @@ from config import Config
 from chatdbmgr import ChatDBManager
 from models import LMSummaryModel
 from tts_process_model import TTSProcessModel
-from memory import MemoryManager
+from memory import MemorySystem
 from tasks import TaskManager, TaskType, ComplexityAnalyzer
 
 from plugins.base import PluginContext
@@ -107,7 +107,7 @@ class DSNEngine:
         self._engine_cfg: Optional[EngineConfig] = None
 
         self.db: Optional[ChatDBManager] = None
-        self.memory_manager: Optional[MemoryManager] = None
+        self.memory_system: Optional[MemorySystem] = None
         self.task_manager: Optional[TaskManager] = None
         self.summary_model: Optional[LMSummaryModel] = None
         self.impression_manager = None
@@ -328,7 +328,7 @@ class DSNEngine:
                 model_name=model_name,
                 summary_length=self._engine_cfg.memory_summary_length,
             )
-            self.memory_manager = MemoryManager(db=self.db, summary_model=self.summary_model)
+            self.memory_system = MemorySystem(db=self.db, summary_model=self.summary_model)
         except Exception as e:
             self._logger.warning("Memory 初始化失败: %s", e)
 
@@ -500,7 +500,7 @@ class DSNEngine:
         if self._plugin_enabled("memory"):
             from plugins.builtin.memory_plugin import MemoryPlugin
             self.plugin_manager.register(MemoryPlugin(
-                memory_manager=self.memory_manager, db=self.db,
+                memory_system=self.memory_system, db=self.db,
             ))
         if self._plugin_enabled("vision") and self._models_plugin:
             from plugins.builtin.vision_plugin import VisionPlugin
@@ -537,12 +537,11 @@ class DSNEngine:
             self.plugin_manager.register(ConfirmPlugin())
 
     def _register_execution_plugins(self):
-        if self._plugin_enabled("recall") and self.memory_manager:
+        if self._plugin_enabled("recall") and self.memory_system:
             try:
                 from plugins.builtin.recall_plugin import RecallPlugin
-                from memory_recall import MemoryRecallEngine
                 self.plugin_manager.register(RecallPlugin(
-                    recall_engine=MemoryRecallEngine(db=self.db),
+                    memory_system=self.memory_system,
                 ))
             except Exception as e:
                 self._logger.warning("RecallPlugin 加载失败: %s", e)
@@ -591,9 +590,12 @@ class DSNEngine:
             try:
                 from plugins.builtin.distill_plugin import DistillPlugin
                 from skills.distill import DistillationEngine
+                from models import DeepSeekChat
+                _skill_distill_llm = DeepSeekChat(api_key=self._engine_cfg.deepseek_api_key)
                 self.plugin_manager.register(DistillPlugin(
                     distillation_engine=DistillationEngine(
-                        db=self.db, skill_manager=self.skill_manager, llm_client=None,
+                        db=self.db, skill_manager=self.skill_manager,
+                        llm_client=_skill_distill_llm,
                     ),
                     v3_system=self.prompt_engine.personality_v3 if self.prompt_engine else None,
                     card_id=self._cfg.card_id if self._cfg else "exa",
@@ -779,7 +781,7 @@ def create_engine(subapp_path: str | None = None) -> DSNEngine:
 
 def create_engine_with_defaults(
     db: ChatDBManager = None,
-    memory_manager: MemoryManager = None,
+     memory_system: MemorySystem = None,
     skill_registry: SkillRegistry = None,
     skill_manager: SkillManager = None,
     impression_manager = None,
@@ -803,8 +805,8 @@ def create_engine_with_defaults(
     engine = DSNEngine()
     engine.db = db
 
-    if memory_manager:
-        engine.memory_manager = memory_manager
+    if memory_system:
+        engine.memory_system = memory_system
 
     if skill_registry:
         engine.skill_registry = skill_registry
@@ -876,9 +878,9 @@ def create_engine_with_defaults(
     )
     engine.plugin_manager.register(models_plugin)
 
-    if memory_manager and db:
+    if memory_system and db:
         from plugins.builtin.memory_plugin import MemoryPlugin
-        engine.plugin_manager.register(MemoryPlugin(memory_manager=memory_manager, db=db))
+        engine.plugin_manager.register(MemoryPlugin(memory_system=memory_system, db=db))
 
     from plugins.builtin.vision_plugin import VisionPlugin
     engine.plugin_manager.register(VisionPlugin(models_plugin=models_plugin))
@@ -958,12 +960,10 @@ def create_engine_with_defaults(
     except Exception as e:
         engine._logger.warning("ConfirmPlugin 加载失败: %s", e)
 
-    if memory_manager and db:
+    if memory_system and db:
         try:
             from plugins.builtin.recall_plugin import RecallPlugin
-            from memory_recall import MemoryRecallEngine
-            recall_engine = MemoryRecallEngine(db=db)
-            engine.plugin_manager.register(RecallPlugin(recall_engine=recall_engine))
+            engine.plugin_manager.register(RecallPlugin(memory_system=memory_system))
         except Exception as e:
             engine._logger.warning("RecallPlugin 加载失败: %s", e)
 
@@ -984,10 +984,12 @@ def create_engine_with_defaults(
         try:
             from plugins.builtin.distill_plugin import DistillPlugin
             from skills.distill import DistillationEngine
+            from models import DeepSeekChat
+            _skill_distill_llm = DeepSeekChat(api_key=Config.DEEPSEEK_API_KEY)
             _distill_engine = DistillationEngine(
                 db=db,
                 skill_manager=engine.skill_manager,
-                llm_client=None,
+                llm_client=_skill_distill_llm,
             )
             _v3_sys = engine.prompt_engine.personality_v3 if engine.prompt_engine else None
             engine.plugin_manager.register(DistillPlugin(
