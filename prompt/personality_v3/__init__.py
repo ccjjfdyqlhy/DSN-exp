@@ -360,6 +360,7 @@ class PersonalitySystemV3:
         uid: int,
         user_message: str,
         ai_reply: str,
+        conversation_history: str = "",
     ) -> MoodUpdateResult | None:
         if not self._enabled:
             logger.debug("V3: analyze_interaction 跳过 (enabled=False)")
@@ -376,18 +377,26 @@ class PersonalitySystemV3:
         prev_affinity = snapshot.affinity_value
         interactions = snapshot.total_interactions
 
-        character_brief = snapshot.foundation_description[:1000]
+        character_brief = snapshot.foundation_description[:1200]
 
         emotional_triggers = ""
         if snapshot.emotional_model:
             triggers = snapshot.emotional_model.get("triggers", [])
             emotional_triggers = "\n".join(
-                f"- {t.get('stimulus','')} → {t.get('response','')}" for t in triggers[:5]
+                f"- {t.get('stimulus','')} → {t.get('response','')}" for t in triggers[:8]
             )
 
         relation_dynamics = snapshot.relational_model.get("description", "") if snapshot.relational_model else ""
 
-        logger.debug("V3: 判定交互 uid=%d msg_len=%d reply_len=%d prev_affinity=%.1f",
+        rel_stage_label = self._affinity_level(prev_affinity).get("label", "")
+
+        context_header = ""
+        if rel_stage_label:
+            context_header = f"当前与用户的关系阶段: {rel_stage_label}（亲密度 {prev_affinity:.0f}/100）\n"
+        if conversation_history:
+            context_header += conversation_history
+
+        logger.debug("V3: 判定交互 uid=%d msglen=%d replylen=%d prev_affinity=%.1f",
                      uid, len(user_message), len(ai_reply), prev_affinity)
 
         result = self._judge.analyze(
@@ -399,6 +408,7 @@ class PersonalitySystemV3:
             character_brief=character_brief,
             emotional_triggers=emotional_triggers,
             relation_dynamics=relation_dynamics,
+            conversation_history=context_header,
         )
 
         self._state_manager.on_interaction(uid, result.new_mood, result.new_affinity)

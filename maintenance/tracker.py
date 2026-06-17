@@ -51,9 +51,8 @@ class ActivityTracker:
                 row = self._buffer[s]
                 for i in range(6, days_diff - 1, -1):
                     row[i] = row[i - days_diff] if i - days_diff >= 0 else 0
-                for i in range(min(days_diff - 1, 6)):
+                for i in range(min(days_diff, 7)):
                     row[i] = 0
-                row[0] = 0
         self._base_date = today
 
     def _current_slot(self) -> int:

@@ -14,6 +14,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from maintenance import config as maint_config
 from maintenance.frontend_bridge import broadcast, subscribe, unsubscribe
+from maintenance.state import ServerState
 
 logger = logging.getLogger("maintenance.api")
 
@@ -67,7 +68,7 @@ def trigger_maintenance():
     ms = _get_maint_system()
     if not ms:
         return jsonify({"error": "维护系统不可用"}), 503
-    if ms.state.state != "ready":
+    if ms.state.state != ServerState.READY:
         return jsonify({"error": f"服务器当前状态: {ms.state.state.value}"}), 409
     ms.trigger_maintenance()
     return jsonify({"success": True, "state": ms.state.state.value})
@@ -78,7 +79,7 @@ def toggle_standby():
     ms = _get_maint_system()
     if not ms:
         return jsonify({"error": "维护系统不可用"}), 503
-    if ms.state.state == "standby":
+    if ms.state.state == ServerState.STANDBY:
         ms._wake_from_standby()
     else:
         ms.trigger_standby()

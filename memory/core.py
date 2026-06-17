@@ -1,0 +1,451 @@
+# memory/core.py
+# MemorySystem — 单文件单类，第一性原理重设计
+# v3.0 — 替换旧的 MemoryManager + MemoryRecallEngine
+
+import json
+import re
+import threading
+import logging
+from datetime import datetime
+from typing import Optional
+
+from config import Config
+from chatdbmgr import ChatDBManager, _tokenize
+from models import LMSummaryModel
+
+logger = logging.getLogger("MemorySystem")
+
+_RECALL_RE = re.compile(r"<recall>\s*(.*?)\s*</recall>", re.DOTALL)
+_MEMO_RE = re.compile(r"<memo>(.*?)</memo>", re.DOTALL)
+
+MAX_DETAIL_CHARS_PER_ROUND = 4000
+MAX_TOTAL_DETAIL_CHARS = 16000
+
+
+class MemorySystem:
+    def __init__(
+        self,
+        db: ChatDBManager,
+        summary_model: Optional[LMSummaryModel] = None,
+    ):
+        self.db = db
+        self.summary_model = summary_model or LMSummaryModel()
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        conn = self.db._get_connection()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_v2 (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                chat_id    INTEGER NOT NULL,
+                type       TEXT NOT NULL CHECK(type IN ('exp', 'memo')),
+                round      INTEGER,
+                content    TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mem_v2_lookup "
+            "ON memory_v2(user_id, chat_id, type, round)"
+        )
+        conn.commit()
+
+    # ---- crypto ----
+
+    def _encrypt(self, user_id: int, text: str) -> str:
+        return self.db._cipher.encrypt(user_id, text)
+
+    def _decrypt(self, user_id: int, text: str) -> str:
+        if not text:
+            return ""
+        return self.db._cipher.decrypt(user_id, text)
+
+    # =================================================================
+    # 摘要生成 (经验记忆)
+    # =================================================================
+
+    def summarize_turn(
+        self,
+        user_id: int,
+        chat_id: int,
+        round_idx: int,
+        user_msg: str,
+        assistant_reply: str,
+        async_mode: bool = True,
+    ) -> Optional[int]:
+        """对一轮对话生成 LLM 摘要并持久化。"""
+        marked = (
+            getattr(user_msg, "skip_memory", False)
+            if isinstance(user_msg, dict)
+            else False
+        )
+        if marked:
+            return None
+
+        if async_mode and Config.MEMORY_ASYNC_ENABLED:
+            threading.Thread(
+                target=self._do_summarize,
+                args=(user_id, chat_id, round_idx, user_msg, assistant_reply),
+                daemon=True,
+            ).start()
+            return None
+        return self._do_summarize(user_id, chat_id, round_idx, user_msg, assistant_reply)
+
+    def _do_summarize(self, user_id, chat_id, round_idx, user_msg, assistant_reply):
+        try:
+            summary = self.summary_model.summarize_dialog(
+                [
+                    {"role": "user", "content": user_msg},
+                    {"role": "assistant", "content": assistant_reply},
+                ],
+                max_length=Config.MEMORY_SUMMARY_LENGTH,
+            )
+            if not summary:
+                return None
+
+            encrypted = self._encrypt(user_id, summary)
+            conn = self.db._get_connection()
+            with self._lock:
+                cursor = conn.execute(
+                    "INSERT INTO memory_v2 (user_id, chat_id, type, round, content) "
+                    "VALUES (?, ?, 'exp', ?, ?)",
+                    (user_id, chat_id, round_idx, encrypted),
+                )
+                conn.commit()
+            return cursor.lastrowid
+        except Exception:
+            logger.exception("Summarize failed uid=%d chat=%d round=%d", user_id, chat_id, round_idx)
+            return None
+
+    def _get_exp_memories(self, user_id: int, chat_id: int) -> list[dict]:
+        conn = self.db._get_connection()
+        rows = conn.execute(
+            "SELECT id, round, content, created_at FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? AND type = 'exp' ORDER BY round ASC",
+            (user_id, chat_id),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "round": r["round"],
+                "content": self._decrypt(user_id, r["content"]),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    # =================================================================
+    # 上下文组装 (被动回忆)
+    # =================================================================
+
+    def assemble_context(
+        self, user_id: int, chat_id: int, history: list[dict]
+    ) -> list[dict]:
+        memos = self._get_memos(user_id, chat_id)
+        exps = self._get_exp_memories(user_id, chat_id)
+        window = Config.MEMORY_CONTEXT_WINDOW_SIZE
+        threshold = int(window * Config.MEMORY_REPLACE_THRESHOLD_RATIO)
+
+        result = []
+        for m in memos:
+            result.append({"role": "system", "content": f"[备忘] {m['content']}"})
+
+        if len(history) <= threshold or not exps:
+            result.extend(history)
+            return result
+
+        replace_count = len(history) - threshold
+        recent = history[replace_count:]
+
+        for mem in exps:
+            header = f"[记忆 · 轮次{mem['round']}]"
+            result.append({"role": "system", "content": f"{header} {mem['content']}"})
+
+        result.extend(recent)
+        return result
+
+    # =================================================================
+    # 主动召回 (搜索)
+    # =================================================================
+
+    def search(
+        self,
+        user_id: int,
+        chat_id: int,
+        keywords: list[str],
+        limit: int = 5,
+        threshold: float = 0.3,
+    ) -> list[dict]:
+        if not keywords:
+            return []
+
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT MAX(round) FROM memory_v2 WHERE user_id = ? AND chat_id = ?",
+            (user_id, chat_id),
+        ).fetchone()
+        total_rounds = row[0] or 1
+
+        rows = conn.execute(
+            "SELECT id, type, round, content, created_at FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? ORDER BY round DESC LIMIT ?",
+            (user_id, chat_id, limit * 20),
+        ).fetchall()
+
+        search_terms = [kw.lower().strip() for kw in keywords if kw.strip()]
+        if not search_terms:
+            return []
+
+        search_tokens = set()
+        for t in search_terms:
+            search_tokens.update(_tokenize(t))
+
+        scored = []
+        for r in rows:
+            content = self._decrypt(user_id, r["content"])
+            if not content:
+                continue
+            content_lower = content.lower()
+            if not any(term in content_lower for term in search_terms):
+                continue
+
+            content_tokens = set(_tokenize(content_lower))
+            if not search_tokens or not content_tokens:
+                continue
+
+            intersection = search_tokens & content_tokens
+            if not intersection:
+                for term in search_terms:
+                    if term in content_lower:
+                        intersection.add(term)
+                if not intersection:
+                    continue
+
+            hit_score = len(intersection) / len(search_tokens)
+            if hit_score <= 0:
+                continue
+
+            rd = r["round"] or 0
+            recency_bonus = 1.0 - (rd / (total_rounds + 1)) if total_rounds > 0 else 0
+            final_score = hit_score * 0.7 + recency_bonus * 0.3
+
+            if final_score >= threshold:
+                scored.append(
+                    {
+                        "id": r["id"],
+                        "type": r["type"],
+                        "round": r["round"],
+                        "content": content,
+                        "created_at": r["created_at"],
+                        "score": round(final_score, 3),
+                    }
+                )
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:limit]
+
+    def get_detail(
+        self, user_id: int, chat_id: int, rounds: list[int]
+    ) -> dict[int, list[dict]]:
+        return self.db.get_messages_by_rounds(user_id, chat_id, rounds)
+
+    # =================================================================
+    # 标签处理 (<recall> + <memo>)
+    # =================================================================
+
+    def handle_tags(self, user_id: int, chat_id: int, text: str) -> str:
+        if not text:
+            return text
+
+        memo_matches = list(_MEMO_RE.finditer(text))
+        for match in memo_matches:
+            content = match.group(1).strip()
+            if content:
+                self.add_memo(user_id, chat_id, content)
+        text = _MEMO_RE.sub("", text)
+
+        recall_matches = list(_RECALL_RE.finditer(text))
+        results = []
+        for match in recall_matches:
+            try:
+                payload = json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            r = self._handle_recall(user_id, chat_id, payload)
+            if r:
+                results.append(r)
+
+        text = _RECALL_RE.sub("", text).strip()
+        if results:
+            text += "\n\n" + "\n\n".join(results)
+        return text
+
+    def _handle_recall(self, user_id, chat_id, payload):
+        keywords = payload.get("keywords", [])
+        detail_indices = payload.get("detail", [])
+        auto_detail = payload.get("detail") is True
+        count = payload.get("count", 5)
+
+        if isinstance(detail_indices, list) and detail_indices:
+            detail = self.get_detail(user_id, chat_id, detail_indices)
+            return self._format_detail_results(detail)
+
+        if keywords:
+            hits = self.search(user_id, chat_id, keywords, count)
+            search_text = self._format_search_results(hits, keywords)
+            if auto_detail and hits:
+                indices = [h["round"] for h in hits if h.get("round") is not None]
+                if indices:
+                    detail = self.get_detail(user_id, chat_id, indices)
+                    detail_text = self._format_detail_results(detail)
+                    return search_text + "\n\n" + detail_text
+            return search_text
+
+        return None
+
+    # =================================================================
+    # 备忘录 CRUD
+    # =================================================================
+
+    def add_memo(self, user_id: int, chat_id: int, text: str) -> int:
+        encrypted = self._encrypt(user_id, text)
+        conn = self.db._get_connection()
+        with self._lock:
+            cursor = conn.execute(
+                "INSERT INTO memory_v2 (user_id, chat_id, type, content) "
+                "VALUES (?, ?, 'memo', ?)",
+                (user_id, chat_id, encrypted),
+            )
+            conn.commit()
+        return cursor.lastrowid
+
+    def _get_memos(self, user_id: int, chat_id: int) -> list[dict]:
+        conn = self.db._get_connection()
+        rows = conn.execute(
+            "SELECT id, content, created_at FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? AND type = 'memo' ORDER BY id ASC",
+            (user_id, chat_id),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "content": self._decrypt(user_id, r["content"]),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def delete_memo(self, memo_id: int) -> bool:
+        conn = self.db._get_connection()
+        with self._lock:
+            cursor = conn.execute(
+                "DELETE FROM memory_v2 WHERE id = ? AND type = 'memo'", (memo_id,)
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
+    # =================================================================
+    # 格式化 (静态方法)
+    # =================================================================
+
+    @staticmethod
+    def _format_timedelta(ts_str):
+        if not ts_str:
+            return ""
+        try:
+            fmt = "%Y-%m-%d %H:%M:%S"
+            if len(ts_str) <= 10:
+                fmt = "%Y-%m-%d"
+            ts = datetime.strptime(
+                ts_str[:19] if len(ts_str) > 19 else ts_str, fmt
+            )
+            delta = datetime.now() - ts
+            if delta.days > 30:
+                return f"{delta.days // 30}个月前"
+            elif delta.days > 0:
+                return f"{delta.days}天前"
+            elif delta.seconds > 3600:
+                return f"{delta.seconds // 3600}小时前"
+            elif delta.seconds > 60:
+                return f"{delta.seconds // 60}分钟前"
+            else:
+                return "刚刚"
+        except Exception:
+            return ""
+
+    @classmethod
+    def _format_search_results(cls, hits, search_keywords):
+        if not hits:
+            kw_str = ", ".join(search_keywords) if search_keywords else ""
+            return f'[记忆检索结果] 未找到与 "{kw_str}" 相关的记忆。'
+
+        kw_str = ", ".join(search_keywords) if search_keywords else ""
+        lines = [f"[记忆检索结果] 找到 {len(hits)} 条相关记忆 (关键词: {kw_str}):"]
+        lines.append("─" * 56)
+
+        for hit in hits:
+            rd = hit.get("round", "?")
+            ts = hit.get("created_at", "") or ""
+            date_str = ts[:10] if isinstance(ts, str) and len(ts) > 10 else ts
+            ago = cls._format_timedelta(ts)
+            time_label = f"{date_str} ({ago})" if ago else date_str
+            score = hit.get("score", 0)
+            content = hit.get("content", "")
+            if len(content) > 200:
+                content = content[:200] + "..."
+            memo_tag = " [备忘]" if hit.get("type") == "memo" else ""
+
+            lines.append(
+                f"第{rd}轮 · {time_label} · 匹配度: {score:.2f}{memo_tag}"
+            )
+            lines.append(f"  {content}")
+            lines.append("─" * 56)
+
+        lines.append(
+            '(使用 <recall>{"detail": [轮次号, ...]}</recall> 可查看完整对话)'
+        )
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_detail_results(cls, detail):
+        if not detail:
+            return "[记忆细节还原] 未找到对应轮次的对话记录。"
+
+        lines = ["[记忆细节还原]"]
+        total_chars = 0
+        truncated = False
+
+        for round_idx in sorted(detail.keys()):
+            messages = detail[round_idx]
+            if not messages:
+                continue
+            ts = ""
+            for msg in messages:
+                if msg.get("timestamp"):
+                    ts = msg["timestamp"]
+                    if isinstance(ts, str) and len(ts) > 10:
+                        ts = ts[:10]
+                    break
+            ago = cls._format_timedelta(ts)
+            time_label = f"{ts} ({ago})" if ago else ts
+            lines.append(f"第{round_idx}轮 ({time_label}):")
+            lines.append("─" * 56)
+            for msg in messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                role_label = "User" if role == "user" else "Agent"
+                line = f"{role_label}: {content}"
+                lines.append(line)
+                total_chars += len(line)
+                if total_chars > MAX_TOTAL_DETAIL_CHARS:
+                    truncated = True
+                    break
+            if truncated:
+                lines.append("...(内容截断)")
+                break
+            lines.append("─" * 56)
+        return "\n".join(lines)

@@ -35,19 +35,20 @@ DEFAULT_MOOD = {
     "fear": 0.15, "disgust": 0.05, "surprise": 0.1, "neutral": 0.5,
 }
 
-B_EMOTIONAL_EXPRESSIVENESS_IDX = 6
-B_RESILIENCE_IDX = 8
-B6_DOMINANT_MOOD_IDX = 11
-H_PROACTIVITY_IDX = 45
-H_PATIENCE_IDX = 46
-H_RISK_TAKING_IDX = 49
+B_EMOTIONAL_EXPRESSIVENESS_ID = "B2"
+B_RESILIENCE_ID = "B3"
+B6_DOMINANT_MOOD_ID = "B6"
+H_PROACTIVITY_ID = "H1"
+H_PATIENCE_ID = "H2"
+H_RISK_TAKING_ID = "H4"
+A_NEUROTICISM_ID = "A5"
 
-D_AFFILIATION_NEED_IDX = 17
-D_SOCIAL_INITIATIVE_IDX = 19
-D_TRUST_IDX = 20
-G_INTIMACY_CAPACITY_IDX = 40
-E_VERBOSITY_IDX = 25
-E_FORMALITY_IDX = 32
+D_AFFILIATION_NEED_ID = "D1"
+D_SOCIAL_INITIATIVE_ID = "D3"
+D_TRUST_ID = "D4"
+G_INTIMACY_CAPACITY_ID = "G1"
+E_VERBOSITY_ID = "E1"
+E_FORMALITY_ID = "E8"
 
 
 class DynamicSynthesizer:
@@ -122,32 +123,25 @@ class DynamicSynthesizer:
         self, vec: dict[str, float], mood: dict[str, float], volatility: float
     ) -> dict[str, float]:
         result = dict(vec)
-        tids = TRAIT_IDS
 
         joy = mood.get("joy", 0.5)
         sadness = mood.get("sadness", 0.2)
         anger = mood.get("anger", 0.1)
 
-        b2 = tids[B_EMOTIONAL_EXPRESSIVENESS_IDX]
-        result[b2] = max(0.0, min(1.0, result[b2] + joy * 0.2 * volatility))
-
-        b3 = tids[B_RESILIENCE_IDX]
-        result[b3] = max(0.0, min(1.0, result[b3] - sadness * 0.15 * volatility))
-
-        b6 = tids[B6_DOMINANT_MOOD_IDX]
-        result[b6] = max(0.0, min(1.0, result[b6] + (joy - sadness) * 0.3 * volatility))
-
-        h1 = tids[H_PROACTIVITY_IDX]
-        result[h1] = max(0.0, min(1.0, result[h1] + joy * 0.15 * volatility))
-
-        h2 = tids[H_PATIENCE_IDX]
-        result[h2] = max(0.0, min(1.0, result[h2] - anger * 0.25 * volatility))
-
-        h4 = tids[H_RISK_TAKING_IDX]
-        result[h4] = max(0.0, min(1.0, result[h4] + joy * 0.1 * volatility))
-
-        a5 = tids[4]
-        result[a5] = max(0.0, min(1.0, result[a5] + sadness * 0.2 * volatility))
+        result[B_EMOTIONAL_EXPRESSIVENESS_ID] = max(
+            0.0, min(1.0, result.get(B_EMOTIONAL_EXPRESSIVENESS_ID, 0.5) + joy * 0.2 * volatility))
+        result[B_RESILIENCE_ID] = max(
+            0.0, min(1.0, result.get(B_RESILIENCE_ID, 0.5) - sadness * 0.15 * volatility))
+        result[B6_DOMINANT_MOOD_ID] = max(
+            0.0, min(1.0, result.get(B6_DOMINANT_MOOD_ID, 0.5) + (joy - sadness) * 0.3 * volatility))
+        result[H_PROACTIVITY_ID] = max(
+            0.0, min(1.0, result.get(H_PROACTIVITY_ID, 0.5) + joy * 0.15 * volatility))
+        result[H_PATIENCE_ID] = max(
+            0.0, min(1.0, result.get(H_PATIENCE_ID, 0.5) - anger * 0.25 * volatility))
+        result[H_RISK_TAKING_ID] = max(
+            0.0, min(1.0, result.get(H_RISK_TAKING_ID, 0.5) + joy * 0.1 * volatility))
+        result[A_NEUROTICISM_ID] = max(
+            0.0, min(1.0, result.get(A_NEUROTICISM_ID, 0.5) + sadness * 0.2 * volatility))
 
         return result
 
@@ -167,24 +161,18 @@ class DynamicSynthesizer:
     ) -> dict[str, float]:
         result = dict(vec)
         norm = affinity_value / 100.0
-        tids = TRAIT_IDS
 
-        d1 = tids[D_AFFILIATION_NEED_IDX]
-        result[d1] = max(0.0, min(1.0, result[d1] + norm * 0.3))
-
-        d3 = tids[D_SOCIAL_INITIATIVE_IDX]
-        result[d3] = max(0.0, min(1.0, result[d3] + norm * 0.25))
-
-        d4 = tids[D_TRUST_IDX]
-        result[d4] = max(0.0, min(1.0, result[d4] + norm * 0.2))
-
-        g1 = tids[G_INTIMACY_CAPACITY_IDX]
-        result[g1] = max(0.0, min(1.0, result[g1] + norm * 0.3))
-
-        e1 = tids[E_VERBOSITY_IDX]
-        result[e1] = max(0.0, min(1.0, result[e1] + norm * 0.15))
-
-        e8 = tids[E_FORMALITY_IDX]
-        result[e8] = max(0.0, min(1.0, result[e8] - norm * 0.3))
+        result[D_AFFILIATION_NEED_ID] = max(
+            0.0, min(1.0, result.get(D_AFFILIATION_NEED_ID, 0.5) + norm * 0.3))
+        result[D_SOCIAL_INITIATIVE_ID] = max(
+            0.0, min(1.0, result.get(D_SOCIAL_INITIATIVE_ID, 0.5) + norm * 0.25))
+        result[D_TRUST_ID] = max(
+            0.0, min(1.0, result.get(D_TRUST_ID, 0.5) + norm * 0.2))
+        result[G_INTIMACY_CAPACITY_ID] = max(
+            0.0, min(1.0, result.get(G_INTIMACY_CAPACITY_ID, 0.5) + norm * 0.3))
+        result[E_VERBOSITY_ID] = max(
+            0.0, min(1.0, result.get(E_VERBOSITY_ID, 0.5) + norm * 0.15))
+        result[E_FORMALITY_ID] = max(
+            0.0, min(1.0, result.get(E_FORMALITY_ID, 0.5) - norm * 0.3))
 
         return result

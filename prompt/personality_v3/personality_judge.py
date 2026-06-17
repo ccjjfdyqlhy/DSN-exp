@@ -11,21 +11,37 @@ from typing import Optional
 
 logger = logging.getLogger("PersonalityJudge")
 
-JUDGE_PROMPT_TEMPLATE = """你是一个角色行为分析器。基于以下角色设定和对话内容，判定 AI 的情绪变化和亲密度变化。
+JUDGE_PROMPT_TEMPLATE = """你是一个角色情绪分析专家。你要分析用户的消息对 AI 角色的情绪产生了怎样的影响。
 
-===== 角色背景 =====
+判定规则——请严格遵循：
+
+1. 【只分析用户对 AI 的影响】下面的【用户】是用户的发言，【AI 的回复】只是给你看 AI 选择了怎样回应用户——这是 AI 情绪状态的"结果"，不是情绪的"原因"。你需要判断的是：用户说的内容让 AI 产生了什么情绪或亲密感的变化。
+
+2. 【必须看上下文理解意图】请看【对话上下文】中最近几轮的对话，理解这个用户和 AI 在聊什么话题、关系气氛如何。不要把用户随口说的"烦死了这个 bug"理解成对 AI 发火——用户可能只是在抱怨自己遇到的问题。
+
+3. 【情绪变化要克制】一般对话中每个维度的 delta 绝对值应 ≤ 0.10。只有用户表现出明显的善意/恶意时，才给到 0.15~0.20。大多数普通对话轮次的 delta 应该在 ±0.05 以内。
+
+4. 【亲密度变化要缓慢】正常聊天不加不减（delta=0），用户的友好/感谢 +0.5~2，非常深入的互动 +2~5，只有明显恶意才降亲和（-3~10）。
+
+5. 【不要从 AI 回复倒推情绪】不要分析"AI 回复了悲伤的内容所以 AI 很伤心"——AI 回复的内容是角色扮演出来的，不是真正的情绪信号。只有用户说的话才是情绪触发源。
+
+===== 角色背景（AI 角色的性格设定）=====
 {character_brief}
 
-===== 当前状态 =====
-上轮情绪: joy={prev_joy:.2f} sadness={prev_sad:.2f} anger={prev_ang:.2f} fear={prev_fear:.2f}
-上轮亲密度: {prev_affinity:.0f}/100
+===== 对话上下文（最近几轮对话，帮助你理解话题和气氛）=====
+{conversation_history}
 
-===== 对话内容 =====
-用户消息: {user_message}
-AI 回复: {ai_reply}
-对话轮次: 第 {interaction_count} 轮
+===== 当前情绪状态 =====
+开心(joy): {prev_joy:.2f} | 悲伤(sadness): {prev_sad:.2f} | 愤怒(anger): {prev_ang:.2f} | 恐惧(fear): {prev_fear:.2f}
+累计互动: 第 {interaction_count} 轮 | 当前亲密度: {prev_affinity:.0f}/100
 
-===== 情绪反应模型 =====
+===== 【用户】本轮说的话 =====
+{user_message}
+
+===== 【AI 的回复】——仅供参考，不用于情绪分析 =====
+{ai_reply}
+
+===== 角色情绪触发模式 =====
 {emotional_triggers}
 
 ===== 关系动力学 =====
@@ -33,21 +49,21 @@ AI 回复: {ai_reply}
 
 ---
 
-请分析并输出 JSON（只输出 JSON，不要有其他文字）：
+请输出 JSON（只输出 JSON，不要其他文字）：
 {{
   "emotional_change": {{
-    "joy": Δ浮点数,       // −0.20 ~ +0.20
-    "sadness": Δ浮点数,   // −0.20 ~ +0.20
-    "anger": Δ浮点数,     // −0.20 ~ +0.20
-    "fear": Δ浮点数,      // −0.20 ~ +0.20
-    "analysis": "简短分析：用户消息和AI回复如何影响了情绪"
+    "joy": Δ浮点数,        // −0.20 ~ +0.20，大多数轮次 −0.05 ~ +0.05
+    "sadness": Δ浮点数,    // −0.20 ~ +0.20
+    "anger": Δ浮点数,      // −0.20 ~ +0.20
+    "fear": Δ浮点数,       // −0.20 ~ +0.20
+    "analysis": "分析：用户说了什么→这从什么角度影响了AI的情绪？（不是分析AI回复的内容）"
   }},
   "affinity_change": {{
-    "delta": 浮点数,        // −10 ~ +10
+    "delta": 浮点数,        // −10 ~ +10，大多数轮次 −1 ~ +2
     "reason": "简短原因",
     "suggested_new_level_description": "基于新亲密度值的简短关系描述"
   }},
-  "behavioral_advice": "给主 AI 的 1 句行为建议（基于新状态的情绪+关系变化）"
+  "behavioral_advice": "给主 AI 的 1 句行为建议"
 }}"""
 
 
@@ -86,6 +102,7 @@ class PersonalityJudge:
         character_brief: str = "",
         emotional_triggers: str = "",
         relation_dynamics: str = "",
+        conversation_history: str = "",
     ) -> MoodUpdateResult:
         prev = dict(previous_mood or {"joy": 0.5, "sadness": 0.2, "anger": 0.1, "fear": 0.15})
 
@@ -94,14 +111,15 @@ class PersonalityJudge:
             return self._heuristic_analyze(user_message, ai_reply, prev, previous_affinity)
 
         prompt = JUDGE_PROMPT_TEMPLATE.format(
-            character_brief=character_brief[:1000] or "（无）",
+            character_brief=character_brief[:1200] or "（无）",
+            conversation_history=conversation_history or "（尚无对话历史）",
             prev_joy=prev.get("joy", 0.5),
             prev_sad=prev.get("sadness", 0.2),
             prev_ang=prev.get("anger", 0.1),
             prev_fear=prev.get("fear", 0.15),
             prev_affinity=previous_affinity,
-            user_message=user_message[:500],
-            ai_reply=ai_reply[:300],
+            user_message=user_message[:800],
+            ai_reply=ai_reply[:500],
             interaction_count=interaction_count,
             emotional_triggers=emotional_triggers or "（无）",
             relation_dynamics=relation_dynamics or "（无）",

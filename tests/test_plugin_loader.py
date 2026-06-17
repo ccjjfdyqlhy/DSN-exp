@@ -50,6 +50,9 @@ class MockDB:
     def get_memories(self, user_id, chat_id):
         return []
 
+    def get_next_round_index(self, chat_id):
+        return 1
+
     def append_messages(self, user_id, chat_id, messages):
         key = (user_id, chat_id)
         if key not in self.messages:
@@ -84,11 +87,11 @@ class MockFilterModel:
 
 
 class MockMemoryManager:
-    """模拟 MemoryManager"""
+    """模拟 MemorySystem"""
     def assemble_context(self, user_id, chat_id, history):
         return list(history)
 
-    def record_dialog_and_summary(self, **kwargs):
+    def summarize_turn(self, **kwargs):
         pass
 
 
@@ -261,7 +264,7 @@ def test_all_plugins_instantiate():
     plugins = [
         TTSPlugin(tts_client=None),
         ASRFilterPlugin(filter_model=None, db=None),
-        MemoryPlugin(memory_manager=None, db=None),
+        MemoryPlugin(memory_system=None, db=None),
         TaskPlugin(task_manager=None, db=None),
         ModelsPlugin(model_type="deepseek", deepseek_api_key=None),
     ]
@@ -290,7 +293,7 @@ def test_pipeline_dry_run():
     pm = PluginManager()
     pm.register(TTSPlugin(tts_client=mock_tts))
     pm.register(ASRFilterPlugin(filter_model=mock_filter, db=mock_db))
-    pm.register(MemoryPlugin(memory_manager=mock_memory, db=mock_db))
+    pm.register(MemoryPlugin(memory_system=mock_memory, db=mock_db))
     pm.register(TaskPlugin(task_manager=mock_tasks, db=mock_db))
     # 不注入真实 API key → ModelsPlugin 将报错，但 pipeline 会捕获
     pm.register(ModelsPlugin(model_type="deepseek", deepseek_api_key=None))
@@ -330,7 +333,7 @@ def test_stream_pipeline():
     pm = PluginManager()
     pm.register(TTSPlugin(tts_client=MockTTS()))
     pm.register(ASRFilterPlugin(filter_model=None, db=None))
-    pm.register(MemoryPlugin(memory_manager=MockMemoryManager(), db=MockDB()))
+    pm.register(MemoryPlugin(memory_system=MockMemoryManager(), db=MockDB()))
     pm.register(TaskPlugin(task_manager=MockTaskManager(), db=None))
 
     pipeline = ChatPipeline(pm)

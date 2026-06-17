@@ -195,11 +195,11 @@ class DistillationEngine:
         indicator_vector = self._pass3_quantization(
             foundation, features_text, dimensions_text, manual_text, model_name, card.card_id
         )
-        indicator_vector = self._apply_manual_overrides(indicator_vector, card.manual_overrides)
 
         # Pass 4: 组装
         logger.info("[蒸馏 Pass 4/4] 校验 & 组装...")
         indicator_vector = self._validate_vector(indicator_vector)
+        indicator_vector = self._apply_manual_overrides(indicator_vector, card.manual_overrides)
 
         distilled = DistilledTraits({
             "distillation_id": f"distill_{card.card_id}_{fingerprint[:12]}",
