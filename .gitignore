@@ -28,3 +28,5 @@ note.txt
 /skills/builtin/ncm_music/music/*
 /character_cards/materials/*
 /character_cards/backups/*
+/psychoscope/logs/*
+/psychoscope/.dsn_client.json
