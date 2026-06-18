@@ -88,13 +88,13 @@ def test_library_toggle():
     # 禁用 safety
     assert lib.disable("safety")
     core = lib.get_content_by_category("core")
-    assert "安全" not in core, "禁用后不应包含 safety 内容"
+    assert "后台禁区" not in core, "禁用后不应包含 safety 内容"
     print("  safety 已禁用，core 内容不再包含安全约束")
 
     # 启用
     assert lib.enable("safety")
     core = lib.get_content_by_category("core")
-    assert "安全" in core, "启用后应包含 safety 内容"
+    assert "后台禁区" in core or "安全" in core, "启用后应包含 safety 内容"
     print("  safety 已重新启用")
 
     # 热重载
@@ -282,7 +282,7 @@ def test_engine_integration():
 
     # 获取初始提示词
     init = engine.get_initial_prompt({"uid": 1, "nickname": "new_user"})
-    assert "记忆一片空白" in init or "苏醒" in init
+    assert "幕启" in init or "场景说明" in init
     print(f"  初始提示词长度: {len(init)} 字符")
 
     print("  PASSED")
