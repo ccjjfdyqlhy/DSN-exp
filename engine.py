@@ -502,6 +502,9 @@ class DSNEngine:
             self.plugin_manager.register(MemoryPlugin(
                 memory_system=self.memory_system, db=self.db,
             ))
+        if self._plugin_enabled("notebook"):
+            from plugins.builtin.notebook import NotebookPlugin
+            self.plugin_manager.register(NotebookPlugin())
         if self._plugin_enabled("vision") and self._models_plugin:
             from plugins.builtin.vision_plugin import VisionPlugin
             self.plugin_manager.register(VisionPlugin(models_plugin=self._models_plugin))
@@ -881,6 +884,10 @@ def create_engine_with_defaults(
     if memory_system and db:
         from plugins.builtin.memory_plugin import MemoryPlugin
         engine.plugin_manager.register(MemoryPlugin(memory_system=memory_system, db=db))
+
+    # 用户观察日记
+    from plugins.builtin.notebook import NotebookPlugin
+    engine.plugin_manager.register(NotebookPlugin())
 
     from plugins.builtin.vision_plugin import VisionPlugin
     engine.plugin_manager.register(VisionPlugin(models_plugin=models_plugin))

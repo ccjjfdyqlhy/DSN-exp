@@ -78,6 +78,9 @@ class Config:
     MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.7"))
     MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
 
+    # ==================== 用户观察日记 ====================
+    NOTEBOOK_FREQUENCY = int(_env("NOTEBOOK_FREQUENCY", "10"))  # 每 N 轮对话触发一次笔记
+
     # ==================== TTS 文本预处理 ====================
     TTS_PROCESS_ENABLED = _env("TTS_PROCESS_ENABLED", "true").lower() == "true"
     TTS_PROCESS_MODEL = _env("TTS_PROCESS_MODEL", None) or _env("MEMORY_MODEL", "google/gemma-3-4b")
