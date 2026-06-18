@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-import random
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -27,7 +27,7 @@ class PairingManager:
     def generate(self) -> str:
         """生成新配对码。返回码文本。"""
         self._current_code = "".join(
-            str(random.randint(0, 9)) for _ in range(self._digits)
+            str(secrets.randbelow(10)) for _ in range(self._digits)
         )
         self._current_expires = time.time() + self._timeout
         self._failures = 0
