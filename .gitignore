@@ -29,4 +29,5 @@ note.txt
 /character_cards/materials/*
 /character_cards/backups/*
 /psychoscope/logs/*
+/psychoscope/temp/*
 /psychoscope/.dsn_client.json
