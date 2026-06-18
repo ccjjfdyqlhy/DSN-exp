@@ -98,7 +98,11 @@ class ActivityTracker:
             if not raw:
                 return False
             data = json.loads(raw)
-            self._buffer = data.get("buffer", {s: [0] * 7 for s in range(_SLOTS)})
+            raw_buffer = data.get("buffer", {})
+            if raw_buffer:
+                self._buffer = {int(k): v for k, v in raw_buffer.items()}
+            else:
+                self._buffer = {s: [0] * 7 for s in range(_SLOTS)}
             self._timestamps = deque(data.get("timestamps", []), maxlen=10000)
             self._request_count = data.get("request_count", 0)
             base_raw = data.get("base_date", "")
