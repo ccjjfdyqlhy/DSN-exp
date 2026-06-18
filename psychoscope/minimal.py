@@ -140,29 +140,35 @@ class DSNClient:
         self.uid: int = 0
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
-        self._audio_queue = queue.Queue()
+        self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._channel = pygame.mixer.Channel(0) if HAS_AUDIO else None
         if HAS_AUDIO:
-            self._audio_thread = threading.Thread(target=self._audio_worker, daemon=True)
-            self._audio_thread.start()
+            self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
+            self._tts_thread.start()
 
-    def _audio_worker(self):
+    def _tts_worker(self):
         while True:
-            b64 = self._audio_queue.get()
-            if b64 is None:
+            item = self._tts_queue.get()
+            if item is None:
+                self._tts_queue.task_done()
                 continue
+            text, b64 = item
+            if text:
+                print(f"\n  💬 {text}")
             try:
                 raw = base64.b64decode(b64)
                 sound = pygame.mixer.Sound(file=io.BytesIO(raw))
                 while self._channel.get_busy() and self._channel.get_queue() is not None:
                     time.sleep(0.005)
-
                 if not self._channel.get_busy():
                     self._channel.play(sound)
                 else:
                     self._channel.queue(sound)
+                while self._channel.get_busy():
+                    time.sleep(0.005)
             except Exception as e:
-                log.error(f"Playback error: {e}")
+                log.error(f"TTS playback error: {e}")
+            self._tts_queue.task_done()
 
     def authenticate(self, code: str = "", name: str = "") -> bool:
         cfg = load_config()
@@ -287,6 +293,9 @@ class DSNClient:
         if not self.api_key:
             return None
 
+        tts_queue_items: list[tuple[str, str]] = []
+        t0 = time.perf_counter()
+
         try:
             resp = self._http_post_stream(
                 "/api/asr/passthrough",
@@ -299,13 +308,29 @@ class DSNClient:
             if resp.status_code != 200:
                 return None
 
-            reply_text = self._handle_sse_stream(resp)
+            reply_text = self._handle_sse_stream(resp, tts_queue_items)
+            elapsed = time.perf_counter() - t0
+
+            # 推送 TTS 项到播放队列，等待全部播完
+            for item in tts_queue_items:
+                self._tts_queue.put(item)
+            self._tts_queue.join()
+
+            # 显示耗时
+            minutes = int(elapsed) // 60
+            seconds = int(elapsed) % 60
+            if minutes > 0:
+                print(f"\n  ⏱  {minutes}分{seconds}秒")
+            else:
+                print(f"\n  ⏱  {seconds}秒")
+
             return reply_text
         except Exception as e:
             log.error("Audio send failed: %s", e)
             return None
 
-    def _handle_sse_stream(self, resp: requests.Response) -> Optional[str]:
+    def _handle_sse_stream(self, resp: requests.Response,
+                           tts_out: list[tuple[str, str]]) -> Optional[str]:
         reply = ""
         got_text = False
 
@@ -331,11 +356,10 @@ class DSNClient:
                 text = data.get("text", "")
                 audio_b64 = data.get("audio_b64", "")
                 if audio_b64 and HAS_AUDIO:
-                    self._audio_queue.put(audio_b64)
-                print(f"\r  TTS [{idx}/{total}] {text[:50]}", end="", flush=True)
+                    tts_out.append((text, audio_b64))
+                print(f"\r  🎵 TTS [{idx}/{total}]", end="", flush=True)
 
             elif status == "completed":
-                print("\n  Complete")
                 break
 
         return reply if got_text else None
