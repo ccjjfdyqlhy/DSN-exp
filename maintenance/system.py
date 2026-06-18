@@ -17,7 +17,7 @@ from maintenance.clock import MaintenanceClock
 from maintenance.tracker import ActivityTracker
 from maintenance.tasks import (
     MaintenanceTask, TaskProgress,
-    MemoryCompactTask, PersonalityOptimizeTask, LogCleanupTask,
+    BackupTask, MemoryCompactTask, PersonalityOptimizeTask, LogCleanupTask,
 )
 
 logger = logging.getLogger("maintenance.system")
@@ -51,6 +51,7 @@ class MaintenanceSystem:
         self.clock = MaintenanceClock(self._on_tick)
 
     def _register_builtin_tasks(self, db, v3, engine, card_id):
+        self._task_executor.register(BackupTask())
         self._task_executor.register(MemoryCompactTask(db=db))
         self._task_executor.register(PersonalityOptimizeTask(v3=v3, card_id=card_id))
         self._task_executor.register(LogCleanupTask())
@@ -63,6 +64,7 @@ class MaintenanceSystem:
         logger.info("维护系统已启动 (strategy=%s)", config.SCHEDULE_STRATEGY)
 
     def stop(self) -> None:
+        self._backup_on_shutdown()
         self.clock.stop()
         self.tracker.save()
         logger.info("维护系统已停止")
@@ -170,10 +172,32 @@ class MaintenanceSystem:
         if not self.state.transition(ServerState.STANDBY):
             return
         logger.info("服务器进入待机模式（无请求 ≥ %d 分钟）", config.IDLE_TIMEOUT_MINUTES)
+        self._backup_on_standby()
 
     def _wake_from_standby(self) -> None:
         self.state.transition(ServerState.READY)
         logger.info("服务器从待机模式恢复")
+
+    def _backup_on_standby(self) -> None:
+        """待机时异步备份关键文件"""
+        task = BackupTask()
+        def _run():
+            try:
+                result = task.run(lambda _: None)
+                logger.info("待机备份完成: %s", result.get("stats", {}).get("dir", ""))
+            except Exception as e:
+                logger.error("待机备份失败: %s", e)
+        t = threading.Thread(target=_run, daemon=True, name="standby-backup")
+        t.start()
+
+    def _backup_on_shutdown(self) -> None:
+        """关闭时同步备份关键文件"""
+        try:
+            task = BackupTask()
+            result = task.run(lambda _: None)
+            logger.info("关闭备份完成: %s", result.get("stats", {}).get("dir", ""))
+        except Exception as e:
+            logger.error("关闭备份失败: %s", e)
 
     # ── 回调注册（供 frontend_bridge/api 使用） ──
 

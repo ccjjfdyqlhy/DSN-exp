@@ -32,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_HOST = os.environ.get("DSN_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("DSN_PORT", 5000))
 CONFIG_FILE = HERE / ".dsn_client.json"
+TTS_DIR = HERE / "temp"
 LOG_DIR = HERE / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / f"minimal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -65,12 +66,32 @@ def setup_logging():
 
 log = setup_logging()
 
+# ------ 检测 TTS 采样率并初始化 pygame mixer ------
+def _detect_tts_sample_rate() -> int:
+    """扫描 temp/ 目录，从已有 WAV 文件中检测 TTS 采样率。没有文件则返回默认 32000。"""
+    if TTS_DIR.exists():
+        for wf_path in sorted(TTS_DIR.glob("*.wav"), reverse=True):
+            try:
+                with wave.open(str(wf_path), 'rb') as wf:
+                    sr = wf.getframerate()
+                    if sr > 0:
+                        log.info("从 %s 检测到 TTS 采样率: %d Hz", wf_path.name, sr)
+                        return sr
+            except Exception:
+                pass
+    log.info("未找到已有 TTS 文件, 使用默认采样率 32000 Hz")
+    return 32000
+
+_TTS_SAMPLE_RATE = _detect_tts_sample_rate()
+
 try:
     pygame.init()
-    pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+    pygame.mixer.init(frequency=_TTS_SAMPLE_RATE, size=-16, channels=1, buffer=512)
     HAS_AUDIO = True
+    log.info("pygame mixer 就绪 (sr=%d Hz)", _TTS_SAMPLE_RATE)
 except Exception as e:
     HAS_AUDIO = False
+    log.warning("pygame mixer 初始化失败: %s", e)
 
 def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
     int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
@@ -120,8 +141,7 @@ class DSNClient:
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
         self._audio_queue = queue.Queue()
-        self._mixer_ready = False
-        self._channel = None
+        self._channel = pygame.mixer.Channel(0) if HAS_AUDIO else None
         if HAS_AUDIO:
             self._audio_thread = threading.Thread(target=self._audio_worker, daemon=True)
             self._audio_thread.start()
@@ -133,15 +153,6 @@ class DSNClient:
                 continue
             try:
                 raw = base64.b64decode(b64)
-                if not self._mixer_ready:
-                    with wave.open(io.BytesIO(raw), 'rb') as wf:
-                        sr = wf.getframerate()
-                        ch = wf.getnchannels()
-                    pygame.mixer.quit()
-                    pygame.mixer.init(frequency=sr, size=-16, channels=ch, buffer=512)
-                    self._channel = pygame.mixer.Channel(0)
-                    self._mixer_ready = True
-
                 sound = pygame.mixer.Sound(file=io.BytesIO(raw))
                 while self._channel.get_busy() and self._channel.get_queue() is not None:
                     time.sleep(0.005)
