@@ -33,7 +33,7 @@ JUDGE_PROMPT_TEMPLATE = """你是一个角色情绪分析专家。你要分析�
 
 ===== 当前情绪状态 =====
 开心(joy): {prev_joy:.2f} | 悲伤(sadness): {prev_sad:.2f} | 愤怒(anger): {prev_ang:.2f} | 恐惧(fear): {prev_fear:.2f}
-累计互动: 第 {interaction_count} 轮 | 当前亲密度: {prev_affinity:.0f}/100
+ 累计互动: 第 {interaction_count} 轮 | 当前亲密度: {prev_affinity:.0f}
 
 ===== 【用户】本轮说的话 =====
 {user_message}
@@ -145,7 +145,7 @@ class PersonalityJudge:
                 "fear": max(0.0, min(1.0, prev.get("fear", 0.15) + ec.get("fear", 0.0))),
             }
 
-            new_affinity = max(0.0, min(100.0, previous_affinity + ac.get("delta", 0.0)))
+            new_affinity = max(0.0, previous_affinity + ac.get("delta", 0.0))
 
             return MoodUpdateResult(
                 old_mood=prev,
@@ -206,7 +206,7 @@ class PersonalityJudge:
         if len(user_message) < 5:
             new_mood["joy"] = max(0.0, new_mood.get("joy", 0.5) - 0.01)
 
-        new_affinity = max(0.0, min(100.0, prev_affinity + affinity_delta))
+        new_affinity = max(0.0, prev_affinity + affinity_delta)
 
         logger.debug("PersonalityJudge: 启发式判定 affinity_delta=%+.1f new_affinity=%.1f",
                      affinity_delta, new_affinity)

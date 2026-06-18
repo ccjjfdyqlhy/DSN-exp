@@ -227,7 +227,10 @@ class ChatPipeline:
             "uid": ctx.user_id,
             "nickname": ctx.nickname,
         }
-        ctx.system_prompt = self._prompt_engine.build_system_prompt(user_info)
+        is_first = not ctx.history
+        ctx.system_prompt = self._prompt_engine.build_system_prompt(
+            user_info, is_first_interaction=is_first,
+        )
 
         hint = ctx.extra.get("_sensing_hint", "")
         if hint:

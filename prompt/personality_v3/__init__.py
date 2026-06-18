@@ -476,18 +476,21 @@ class PersonalitySystemV3:
 
     @staticmethod
     def _affinity_level(value: float) -> dict:
-        if value < 16:
-            return {"level": 0, "label": "陌生人"}
-        elif value < 31:
-            return {"level": 1, "label": "相识"}
-        elif value < 51:
-            return {"level": 2, "label": "朋友"}
-        elif value < 71:
-            return {"level": 3, "label": "密友"}
-        elif value < 91:
-            return {"level": 4, "label": "伙伴"}
-        else:
-            return {"level": 5, "label": "挚友"}
+        """游戏式等级系统: 等级越高, 升级所需亲密度越多。上不封顶。"""
+        thresholds = [0, 10, 30, 60, 100, 150, 210, 280, 360, 450, 550, 660, 780, 910, 1050]
+        labels = {
+            1: "初识", 2: "关注", 3: "留意", 4: "在意", 5: "记住",
+            6: "习惯", 7: "默契", 8: "依存", 9: "共感", 10: "灵魂链接",
+            11: "命定", 12: "共生", 13: "绝对信赖", 14: "不可替代", 15: "永恒契约",
+        }
+        for lv in range(len(thresholds) - 1, -1, -1):
+            if value >= thresholds[lv]:
+                actual_lv = lv + 1
+                next_thresh = thresholds[lv + 1] if lv + 1 < len(thresholds) else thresholds[-1] + 100
+                progress = min(1.0, (value - thresholds[lv]) / max(next_thresh - thresholds[lv], 1))
+                label = labels.get(actual_lv, f"Lv.{actual_lv}")
+                return {"level": actual_lv, "label": label, "progress": progress}
+        return {"level": 1, "label": "初识", "progress": 0.0}
 
 
 __all__ = [

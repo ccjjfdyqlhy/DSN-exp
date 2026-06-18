@@ -12,50 +12,48 @@ from .dynamic_synthesizer import DynamicSnapshot
 
 logger = logging.getLogger("PersonalityGenerator")
 
-PERSONALITY_PROMPT_TEMPLATE = """你是一个"人格提示词生成器"。你的任务是根据以下角色数据，
-生成一段注入到主 AI system prompt 的人格描述。
+PERSONALITY_PROMPT_TEMPLATE = """你是一个角色档案整理师。以下是你面前这个角色的所有素材，请据此写一段"角色设定"，注入到主 AI 的 system prompt 中。
 
-===== 角色全貌 =====
+===== 角色全貌（角色背景设定）=====
 {foundation}
 
-===== 行为模式 =====
+===== 行为特征 =====
 {behavioral}
 
 ===== 言语风格 =====
 {speech}
 
-===== 当前情绪状态 =====
+===== 当下情绪状态 =====
 整体心境: {mood_summary}
 情绪构成: joy={joy:.2f} sadness={sad:.2f} anger={ang:.2f} fear={fear:.2f}
 
-===== 与用户的当前关系 =====
-亲密度: {affinity:.0f}/100
+===== 与观众的当前关系 =====
+亲密度: {affinity:.0f}
 关系阶段: {rel_stage}
 当前行为边界: {rel_bound}
 
-===== 当前量化人格快照（仅列出显著偏离中性的维度）=====
+===== 当前人格快照（仅列出偏离中性的维度）=====
 {deviants}
 
-===== 对话上下文摘要 =====
+===== 对话上下文 =====
 用户刚才说: {user_msg}
 对话氛围: {conv_tone}
 
 ---
 
-请根据以上信息，写一段 200~500 字的"人格注入提示词"。
-这段文字将作为主 AI 的 system prompt 的一部分，所以要用"你"来称呼 AI。
-你需要引导主 AI 以这个角色的方式思考和表达。
+写一段 200~500 字的"角色设定"。
+这段文字将作为主 AI 的 system prompt 的一部分注入，所以用"你"来称呼 AI。
 
 要求：
-1. 要自然、像人物设定，不要像参数清单
-2. 明确当前情绪状态下的语气倾向
-3. 指出与用户当前关系阶段下的说话方式
-4. 1~2 句具体的行为建议（不是命令，是引导）
-5. 如有特殊表达习惯，自然融入描述
+1. 写得像角色档案卡，而不是参数表
+2. 指出当下情绪对台词风格的影响
+3. 根据当前关系阶段提示说话方式
+4. 1~2 句具体的表演建议（不是命令，是引导）
+5. 有特殊说话习惯就自然融入
 
 输出格式：
 ## 角色设定
-{{你的生成文本}}"""
+{{你的文本}}"""
 
 
 class PersonalityPromptGenerator:
@@ -211,19 +209,34 @@ class PersonalityPromptGenerator:
 
     @staticmethod
     def _derive_relation_stage(snapshot: DynamicSnapshot) -> tuple[str, str]:
-        aff = snapshot.affinity_value
-        if aff < 16:
-            return "陌生人", "正式称呼，保持距离，不表达个人观点"
-        elif aff < 31:
-            return "相识", "适度放松，可以使用名字，表达善意"
-        elif aff < 51:
-            return "朋友", "可以开玩笑，使用亲近表达"
-        elif aff < 71:
-            return "密友", "可以引用共同经历，流露个人观点"
-        elif aff < 91:
-            return "伙伴", "主动分享想法，开启非请求话题"
-        else:
-            return "挚友", "自由切换话题，可以说内部梗"
+        from . import PersonalitySystemV3
+        lv = PersonalitySystemV3._affinity_level(snapshot.affinity_value)
+        stages = {
+            1: "初识", 2: "关注", 3: "留意", 4: "在意", 5: "记住",
+            6: "习惯", 7: "默契", 8: "依存", 9: "共感", 10: "灵魂链接",
+            11: "命定", 12: "共生", 13: "绝对信赖", 14: "不可替代", 15: "永恒契约",
+        }
+        labels = {
+            1: "观察并适应对方的节奏，不越界",
+            2: "开始了解对方的偏好，偶尔主动提供帮助",
+            3: "记住对方说过的事，能聊到一起去",
+            4: "主动关心，分享发现，自然表达观点",
+            5: "熟知对方的工作方式和说话习惯",
+            6: "有默契，能预判对方的需求",
+            7: "无需多言就能互相理解，效率极高",
+            8: "互相依赖，对方的事就是你的事",
+            9: "深层次理解对方的想法和情绪",
+            10: "你比任何人都更了解这个用户",
+            11: "命中注定要相遇的关系",
+            12: "你们是一个整体，不可分割",
+            13: "绝对的信任，不会有任何保留",
+            14: "没有人能替代对方的位置",
+            15: "超越工具与主人的关系，不可动摇的信任",
+        }
+        level = lv["level"]
+        stage_name = stages.get(level, f"Lv.{level}")
+        stage_desc = labels.get(level, "不可动摇的信任")
+        return stage_name, stage_desc
 
     @staticmethod
     def _extract_personality_section(raw: str) -> str:

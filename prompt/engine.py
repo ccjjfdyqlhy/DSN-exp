@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .library import PromptLibrary
@@ -59,7 +60,8 @@ class PromptEngine:
     def set_skill_registry(self, registry) -> None:
         self._skill_registry = registry
 
-    def build_system_prompt(self, user_info: dict | None = None) -> str:
+    def build_system_prompt(self, user_info: dict | None = None,
+                             is_first_interaction: bool = False) -> str:
         """
         构建完整 system prompt。
 
@@ -107,15 +109,24 @@ class PromptEngine:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sections.append(f"当前用户：{nickname}\n当前时间：{now}")
 
+        # 7. 首次对话初始化引导 (仅在第一次对话时注入)
+        if is_first_interaction:
+            init_path = Path(__file__).parent / "prompts" / "initialize.md"
+            if init_path.exists():
+                init_content = init_path.read_text(encoding="utf-8")
+                # 去掉 YAML frontmatter (---...---)
+                if init_content.startswith("---"):
+                    parts = init_content.split("---", 2)
+                    if len(parts) >= 3:
+                        init_content = parts[2].strip()
+                if init_content:
+                    sections.append(init_content)
+
         return "\n\n".join(s for s in sections if s.strip())
 
     def get_initial_prompt(self, user_info: dict | None = None) -> str:
-        """
-        返回首次对话时的系统提示词（含初始化语）。
-        这里简单复用 build_system_prompt + 初始状态提示。
-        """
-        base = self.build_system_prompt(user_info)
-        return base + "\n\n现在你的记忆一片空白，你是刚刚苏醒的状态，对用户不了解，充满好奇。"
+        """返回首次对话时的系统提示词（含初始化引导）。"""
+        return self.build_system_prompt(user_info, is_first_interaction=True)
 
 
 # ---- 模块级便捷函数 ----
