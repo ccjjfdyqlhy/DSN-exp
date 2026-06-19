@@ -93,6 +93,24 @@ except Exception as e:
     HAS_AUDIO = False
     log.warning("pygame mixer 初始化失败: %s", e)
 
+
+def _play_beep(client: DSNClient, freq: int = 600):
+    """通过 pygame 播放短促反馈音。"""
+    if not HAS_AUDIO or not client._channel:
+        return
+    sr = 44100
+    dur = 0.06
+    t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+    wave = np.sin(2 * np.pi * freq * t) * 0.3
+    samples = np.clip(wave * 32767, -32768, 32767).astype(np.int16)
+    try:
+        snd = pygame.mixer.Sound(buffer=samples.tobytes())
+        snd.set_volume(1.0)
+        client._channel.play(snd)
+    except Exception:
+        pass
+
+
 def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
     int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
     buf = io.BytesIO()
@@ -142,6 +160,9 @@ class DSNClient:
         self.display_name: str = ""
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._channel = pygame.mixer.Channel(0) if HAS_AUDIO else None
+        self._volume = 0.5
+        if self._channel:
+            self._channel.set_volume(self._volume)
         if HAS_AUDIO:
             self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
             self._tts_thread.start()
@@ -520,7 +541,7 @@ class KeyboardHandler:
                 while self._running:
                     time.sleep(0.1)
 
-def print_header(cfg: dict):
+def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     os.system("cls" if os.name == "nt" else "clear")
     print("===========================================")
     print("        DSN-exp  Minimal Client            ")
@@ -530,8 +551,15 @@ def print_header(cfg: dict):
     host = cfg.get("host", f"{DEFAULT_HOST}:{DEFAULT_PORT}")
     print(f"  Backend : {host}")
     print(f"  User    : uid={uid} ({name})")
+    vol = int(client._volume * 100) if client else 50
+    print(f"  Volume  : {vol}%")
+    if locked:
+        print("  🔒 Panel locked")
     print("===========================================")
     print("  [Enter]  Start / Stop speaking           ")
+    print("  [Knob←]  Volume down (-10%)               ")
+    print("  [Knob→]  Volume up (+10%)                  ")
+    print("  [a x2]   Lock / Unlock panel              ")
     print("  [p]      Show personality status         ")
     print("  [s]      Toggle standby / wakeup         ")
     print("  [h]      Show help                       ")
@@ -623,7 +651,7 @@ def main():
         cfg["chat_id"] = client.chat_id
     save_config(cfg)
 
-    print_header(cfg)
+    print_header(cfg, client)
     print("  Ready! Press Enter to speak...\n")
 
     recorder = VoiceRecorder(client)
@@ -641,6 +669,9 @@ def main():
     signal.signal(signal.SIGINT, on_sigint)
 
     buffer = ""
+    locked = False
+    _last_a_ts = 0.0
+    _DOUBLE_CLICK_WINDOW = 0.5
     try:
         while True:
             ch = keyboard.get(timeout=0.15)
@@ -649,6 +680,26 @@ def main():
                     print()
                     recorder.stop_and_send()
                     print()
+                continue
+
+            # ── 双击 'a' 锁定/解锁 ──
+            if ch.lower() == "a":
+                now = time.time()
+                if now - _last_a_ts < _DOUBLE_CLICK_WINDOW:
+                    locked = not locked
+                    if locked:
+                        if recorder.is_recording:
+                            recorder.stop_and_send()
+                        print("\n  🔒 Panel locked")
+                    else:
+                        print("\n  🔓 Panel unlocked")
+                    _last_a_ts = 0.0
+                    continue
+                _last_a_ts = now
+                continue
+
+            # ── 锁定时忽略除 'a' 外所有输入 ──
+            if locked:
                 continue
 
             if ch in ("\r", "\n"):
@@ -672,7 +723,7 @@ def main():
                 toggle_standby(client)
 
             elif ch.lower() == "h":
-                print_header(cfg)
+                print_header(cfg, client, locked)
 
             elif ch.lower() == "t":
                 text = input("  Text Input: ").strip()
@@ -689,6 +740,24 @@ def main():
                             print(f"\n  {reply}")
                     except Exception as e:
                         pass
+
+            elif ch.lower() == "n":
+                client._volume = max(0.0, client._volume - 0.1)
+                if client._channel:
+                    client._channel.set_volume(client._volume)
+                _play_beep(client, 400)
+                print(f"\n  Volume: {client._volume:.0%}")
+
+            elif ch.lower() == "m":
+                client._volume = min(1.0, client._volume + 0.1)
+                if client._channel:
+                    client._channel.set_volume(client._volume)
+                _play_beep(client, 800)
+                print(f"\n  Volume: {client._volume:.0%}")
+
+            elif ch.lower() in ("b", "c", "d", "e", "f"):
+                pass
+
             else:
                 buffer += ch
 

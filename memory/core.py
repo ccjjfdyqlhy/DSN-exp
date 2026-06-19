@@ -3,15 +3,18 @@
 # v3.0 — 替换旧的 MemoryManager + MemoryRecallEngine
 
 import json
+import math
 import re
+import struct
 import threading
+import time
 import logging
 from datetime import datetime
 from typing import Optional
 
 from config import Config
 from chatdbmgr import ChatDBManager, _tokenize
-from models import LMSummaryModel
+from models import LMSummaryModel, EmbeddingClient
 
 logger = logging.getLogger("MemorySystem")
 
@@ -27,9 +30,14 @@ class MemorySystem:
         self,
         db: ChatDBManager,
         summary_model: Optional[LMSummaryModel] = None,
+        embedding_client: Optional[EmbeddingClient] = None,
     ):
         self.db = db
         self.summary_model = summary_model or LMSummaryModel()
+        self._ec = embedding_client
+        self._embedding_enabled = (
+            embedding_client is not None and Config.MEMORY_EMBEDDING_ENABLED
+        )
         self._lock = threading.Lock()
         self._init_table()
 
@@ -50,6 +58,11 @@ class MemorySystem:
             "CREATE INDEX IF NOT EXISTS idx_mem_v2_lookup "
             "ON memory_v2(user_id, chat_id, type, round)"
         )
+        # 迁移: 为旧表补充 embedding 列
+        try:
+            conn.execute("ALTER TABLE memory_v2 ADD COLUMN embedding BLOB DEFAULT NULL")
+        except Exception:
+            pass
         conn.commit()
 
     # ---- crypto ----
@@ -113,8 +126,13 @@ class MemorySystem:
                     "VALUES (?, ?, 'exp', ?, ?)",
                     (user_id, chat_id, round_idx, encrypted),
                 )
+                memory_id = cursor.lastrowid
                 conn.commit()
-            return cursor.lastrowid
+
+            if memory_id is not None and self._embedding_enabled:
+                self._embed_and_store(user_id, summary, memory_id)
+
+            return memory_id
         except Exception:
             logger.exception("Summarize failed uid=%d chat=%d round=%d", user_id, chat_id, round_idx)
             return None
@@ -135,6 +153,46 @@ class MemorySystem:
             }
             for r in rows
         ]
+
+    # =================================================================
+    # 向量嵌入
+    # =================================================================
+
+    def _embed_and_store(self, user_id: int, text: str, memory_id: int) -> None:
+        """对文本生成 embedding 并写入 memory_v2.embedding。"""
+        try:
+            vec = self._ec.embed(text)
+            if vec is None:
+                return
+            blob = self._pack_embedding(vec)
+            conn = self.db._get_connection()
+            with self._lock:
+                conn.execute(
+                    "UPDATE memory_v2 SET embedding = ? WHERE id = ?",
+                    (blob, memory_id),
+                )
+                conn.commit()
+        except Exception:
+            logger.exception("embed-and-store failed mid=%d", memory_id)
+
+    @staticmethod
+    def _pack_embedding(vec: list[float]) -> bytes:
+        return struct.pack(f"{len(vec)}f", *vec)
+
+    @staticmethod
+    def _unpack_embedding(blob: bytes) -> list[float]:
+        return list(struct.unpack(f"{len(blob) // 4}f", blob))
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        if na == 0 or nb == 0:
+            return 0.0
+        return dot / (na * nb)
 
     # =================================================================
     # 上下文组装 (被动回忆)
@@ -177,9 +235,21 @@ class MemorySystem:
         keywords: list[str],
         limit: int = 5,
         threshold: float = 0.3,
+        embedding_query: Optional[str | list[float]] = None,
+        embedding_weight: Optional[float] = None,
     ) -> list[dict]:
-        if not keywords:
-            return []
+        """
+        混合搜索: keyword + vector (若 embedding 启用且提供 query)。
+
+        embedding_query 可为:
+        - str: 自动调用 embedding_client 嵌入
+        - list[float]: 直接作为向量相似度查询
+        - None: 仅做 keyword 搜索 (原有行为)
+        """
+        use_vector = (
+            self._embedding_enabled
+            and embedding_query is not None
+        )
 
         conn = self.db._get_connection()
         row = conn.execute(
@@ -189,59 +259,97 @@ class MemorySystem:
         total_rounds = row[0] or 1
 
         rows = conn.execute(
-            "SELECT id, type, round, content, created_at FROM memory_v2 "
+            "SELECT id, type, round, content, created_at, embedding FROM memory_v2 "
             "WHERE user_id = ? AND chat_id = ? ORDER BY round DESC LIMIT ?",
             (user_id, chat_id, limit * 20),
         ).fetchall()
 
-        search_terms = [kw.lower().strip() for kw in keywords if kw.strip()]
-        if not search_terms:
+        # ---- 向量搜索（若启用） ----
+        query_vec = None
+        if use_vector:
+            if isinstance(embedding_query, str):
+                query_vec = self._ec.embed(embedding_query)
+            elif isinstance(embedding_query, list):
+                query_vec = embedding_query
+            if query_vec is not None and len(query_vec) < 2:
+                query_vec = None  # 无效向量
+
+        vec_norm = Config.MEMORY_EMBEDDING_WEIGHT if embedding_weight is None else embedding_weight
+
+        # ---- 搜素 ----
+        search_terms = [kw.lower().strip() for kw in keywords if kw.strip()] if keywords else []
+        use_keyword = bool(search_terms)
+
+        if not use_keyword and query_vec is None:
             return []
 
         search_tokens = set()
-        for t in search_terms:
-            search_tokens.update(_tokenize(t))
+        if use_keyword:
+            for t in search_terms:
+                search_tokens.update(_tokenize(t))
 
         scored = []
         for r in rows:
             content = self._decrypt(user_id, r["content"])
             if not content:
                 continue
-            content_lower = content.lower()
-            if not any(term in content_lower for term in search_terms):
-                continue
+            content_lower = content.lower() if use_keyword else ""
 
-            content_tokens = set(_tokenize(content_lower))
-            if not search_tokens or not content_tokens:
-                continue
+            # keyword 得分
+            kw_score = 0.0
+            if use_keyword:
+                if not any(term in content_lower for term in search_terms):
+                    if query_vec is None:
+                        continue  # 纯 keyword 模式，不匹配直接跳过
+                    kw_score = 0.0  # 混合模式，keyword 为 0 但仍可能靠 vector 进入
+                else:
+                    content_tokens = set(_tokenize(content_lower))
+                    if search_tokens and content_tokens:
+                        intersection = search_tokens & content_tokens
+                        if not intersection:
+                            for term in search_terms:
+                                if term in content_lower:
+                                    intersection.add(term)
+                        hit_score = len(intersection) / len(search_tokens) if search_tokens else 0
+                        rd = r["round"] or 0
+                        recency = 1.0 - (rd / (total_rounds + 1)) if total_rounds > 0 else 0
+                        kw_score = hit_score * 0.7 + recency * 0.3
 
-            intersection = search_tokens & content_tokens
-            if not intersection:
-                for term in search_terms:
-                    if term in content_lower:
-                        intersection.add(term)
-                if not intersection:
+            # vector 得分
+            vec_score = 0.0
+            if query_vec is not None:
+                blob = r["embedding"]
+                if blob and len(blob) >= 8:
+                    try:
+                        mem_vec = self._unpack_embedding(blob)
+                        vec_score = self._cosine_similarity(query_vec, mem_vec)
+                    except Exception:
+                        vec_score = 0.0
+
+            # 融合
+            if use_keyword and query_vec is not None:
+                final_score = kw_score * (1 - vec_norm) + vec_score * vec_norm
+            elif query_vec is not None:
+                final_score = vec_score
+            else:
+                final_score = kw_score
+
+            if final_score < threshold:
+                if query_vec is None:
+                    continue
+                if final_score < threshold * 0.5:  # vector-only: 更低阈值
                     continue
 
-            hit_score = len(intersection) / len(search_tokens)
-            if hit_score <= 0:
-                continue
-
-            rd = r["round"] or 0
-            recency_bonus = 1.0 - (rd / (total_rounds + 1)) if total_rounds > 0 else 0
-            final_score = hit_score * 0.7 + recency_bonus * 0.3
-
-            if final_score >= threshold:
-                scored.append(
-                    {
-                        "id": r["id"],
-                        "type": r["type"],
-                        "round": r["round"],
-                        "content": content,
-                        "created_at": r["created_at"],
-                        "score": round(final_score, 3),
-                    }
-                )
+            scored.append(
+                {
+                    "id": r["id"],
+                    "type": r["type"],
+                    "round": r["round"],
+                    "content": content,
+                    "created_at": r["created_at"],
+                    "score": round(final_score, 3),
+                }
+            )
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
@@ -250,6 +358,194 @@ class MemorySystem:
         self, user_id: int, chat_id: int, rounds: list[int]
     ) -> dict[int, list[dict]]:
         return self.db.get_messages_by_rounds(user_id, chat_id, rounds)
+
+    # =================================================================
+    # 批量索引 (旧记忆后填 embedding)
+    # =================================================================
+
+    def reindex_embeddings(
+        self,
+        user_id: Optional[int] = None,
+        chat_id: Optional[int] = None,
+        batch_size: int = 10,
+    ):
+        """
+        生成器: 遍历所有缺失 embedding 的 exp 记忆，
+        从 memory_v2.content 取摘要文本构建 embedding 并持久化。
+
+        参数:
+            user_id:  若指定则仅索引该用户
+            chat_id:  若指定则仅索引该聊天 (需同时指定 user_id)
+            batch_size: 每批提交次数
+
+        产出:
+            (processed: int, total: int, current_text: str, skipped: int)
+            每次调用后更新
+        """
+        if not self._embedding_enabled or self._ec is None:
+            logger.warning("embedding 未启用，跳过批量索引")
+            return
+
+        conn = self.db._get_connection()
+        where = "WHERE v.type = 'exp'"
+        params: list = []
+        if user_id is not None:
+            where += " AND v.user_id = ?"
+            params.append(user_id)
+            if chat_id is not None:
+                where += " AND v.chat_id = ?"
+                params.append(chat_id)
+
+        rows = conn.execute(
+            f"SELECT v.id, v.user_id, v.content "
+            f"FROM memory_v2 v {where} ORDER BY v.id ASC",
+            params,
+        ).fetchall()
+
+        total = len(rows)
+        if total == 0:
+            logger.info("没有需要索引的旧记忆")
+            return
+
+        processed = 0
+        skipped = 0
+        for r in rows:
+            mid = r["id"]
+            uid = r["user_id"]
+            try:
+                text = self._decrypt(uid, r["content"])
+                if not text:
+                    skipped += 1
+                    processed += 1
+                    yield (processed, total, "[跳过] 空摘要", skipped)
+                    continue
+
+                vec = self._ec.embed(text)
+                if vec is None:
+                    skipped += 1
+                    processed += 1
+                    yield (processed, total, "[失败] embedding 返回空", skipped)
+                    continue
+
+                blob = self._pack_embedding(vec)
+                with self._lock:
+                    conn.execute(
+                        "UPDATE memory_v2 SET embedding = ? WHERE id = ?",
+                        (blob, mid),
+                    )
+                    conn.commit()
+                processed += 1
+                preview = text[:60].replace("\n", " ")
+                yield (processed, total, preview, skipped)
+            except Exception as e:
+                logger.exception("reindex memory_id=%d 失败", mid)
+                skipped += 1
+                processed += 1
+                yield (processed, total, f"[错误] {e}", skipped)
+
+    # =================================================================
+    # 摘要重建
+    # =================================================================
+
+    def rebuild_summaries(
+        self,
+        entries: list[tuple[int, int, int, int]],
+    ):
+        """
+        生成器: 重建指定条目的摘要并清除对应的旧 embedding。
+
+        注意: 词嵌入不在此处重建，摘要覆盖后需通过 /memory index 命令
+        单独重建 embedding。
+
+        参数:
+            entries: [(user_id, chat_id, round, memory_id), ...]
+
+        产出:
+            (processed: int, total: int, current_preview: str, error: str)
+        """
+        total = len(entries)
+        if total == 0:
+            return
+
+        # 预热摘要模型，确保整个批次只加载一次
+        try:
+            self.summary_model.summarize_text("预热", max_length=10)
+        except Exception:
+            logger.warning("摘要模型预热失败，将继续尝试逐条重建")
+
+        processed = 0
+        for uid, cid, round_, mid in entries:
+            try:
+                msgs = self._build_round_messages(uid, cid, round_)
+                if not msgs:
+                    yield (processed, total, "[跳过] 无原始消息", "")
+                    processed += 1
+                    continue
+
+                summary = self.summary_model.summarize_dialog(
+                    msgs,
+                    max_length=Config.MEMORY_SUMMARY_LENGTH,
+                )
+                if not summary:
+                    yield (processed, total, "[跳过] 摘要返回空", "")
+                    processed += 1
+                    continue
+
+                encrypted = self._encrypt(uid, summary)
+                conn = self.db._get_connection()
+                with self._lock:
+                    # 覆盖摘要并清空旧 embedding (后续用 /memory index 重建)
+                    conn.execute(
+                        "UPDATE memory_v2 SET content = ?, embedding = NULL WHERE id = ?",
+                        (encrypted, mid),
+                    )
+                    conn.commit()
+
+                processed += 1
+                preview = summary[:50].replace("\n", " ")
+                yield (processed, total, preview, "")
+                time.sleep(0.2)
+            except Exception as e:
+                logger.exception("rebuild memory_id=%d 失败", mid)
+                processed += 1
+                yield (processed, total, f"[错误]", str(e))
+
+    def _build_round_text(self, user_id: int, chat_id: int, round_: int) -> str:
+        """从 messages 表读取指定轮次的原始对话，拼接为文本。"""
+        msgs = self._build_round_messages(user_id, chat_id, round_)
+        if not msgs:
+            return ""
+        parts = []
+        for m in msgs:
+            if m["role"] == "user":
+                role = "[用户]"
+            elif m["role"] == "assistant":
+                role = "[助手]"
+            else:
+                role = m["role"]
+            parts.append(f"{role}: {m['content']}")
+        return "\n".join(parts)
+
+    def _build_round_messages(self, user_id: int, chat_id: int, round_: int) -> list[dict]:
+        """从 messages 表读取指定轮次的消息，返回 [{role, content}, ...]。
+        memory_v2.round 与 messages.round_index 对齐。"""
+        if round_ < 1:
+            return []
+        conn = self.db._get_connection()
+        rows = conn.execute(
+            "SELECT role, content FROM messages "
+            "WHERE chat_id = ? AND round_index = ? "
+            "ORDER BY message_id ASC",
+            (chat_id, round_),
+        ).fetchall()
+        result = []
+        for m in rows:
+            try:
+                text = self._decrypt(user_id, m["content"])
+            except Exception:
+                text = m["content"] or ""
+            result.append({"role": m["role"], "content": text})
+        return result
 
     # =================================================================
     # 标签处理 (<recall> + <memo>)
@@ -295,7 +591,11 @@ class MemorySystem:
             return self._format_detail_results(detail)
 
         if keywords:
-            hits = self.search(user_id, chat_id, keywords, count)
+            embedding_query = " ".join(keywords) if isinstance(keywords, list) else keywords
+            hits = self.search(
+                user_id, chat_id, keywords, count,
+                embedding_query=embedding_query if self._embedding_enabled else None,
+            )
             search_text = self._format_search_results(hits, keywords)
             if auto_detail and hits:
                 indices = [h["round"] for h in hits if h.get("round") is not None]

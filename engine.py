@@ -16,7 +16,7 @@ import yaml
 from subapp_loader import SubAppConfig
 from config import Config
 from chatdbmgr import ChatDBManager
-from models import LMSummaryModel
+from models import LMSummaryModel, EmbeddingClient
 from tts_process_model import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType, ComplexityAnalyzer
@@ -328,7 +328,19 @@ class DSNEngine:
                 model_name=model_name,
                 summary_length=self._engine_cfg.memory_summary_length,
             )
-            self.memory_system = MemorySystem(db=self.db, summary_model=self.summary_model)
+            embedding_client = None
+            if Config.MEMORY_EMBEDDING_ENABLED:
+                try:
+                    embedding_client = EmbeddingClient(
+                        base_url=self._engine_cfg.lmstudio_base_url,
+                    )
+                except Exception as e:
+                    self._logger.warning("EmbeddingClient 初始化失败: %s", e)
+            self.memory_system = MemorySystem(
+                db=self.db,
+                summary_model=self.summary_model,
+                embedding_client=embedding_client,
+            )
         except Exception as e:
             self._logger.warning("Memory 初始化失败: %s", e)
 

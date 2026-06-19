@@ -145,22 +145,7 @@ class ChatDBManager:
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS memories (
-                        memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL,
-                        chat_id INTEGER NOT NULL,
-                        round_index INTEGER NOT NULL,
-                        summary TEXT NOT NULL,
-                        keywords TEXT DEFAULT '',
-                        message_start_id INTEGER DEFAULT NULL,
-                        message_end_id INTEGER DEFAULT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
-                    )
-                """)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_chat_id ON memories(chat_id)")
-                
+
                 # 任务通知表
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS task_notifications (
@@ -176,10 +161,7 @@ class ChatDBManager:
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id ON task_notifications(task_id)")
                 
-                # 迁移: 为旧数据库补充新列 (v4 memory recall)
-                self._migrate_add_column(conn, "memories", "keywords", "TEXT DEFAULT ''")
-                self._migrate_add_column(conn, "memories", "message_start_id", "INTEGER DEFAULT NULL")
-                self._migrate_add_column(conn, "memories", "message_end_id", "INTEGER DEFAULT NULL")
+                # 迁移: messages 表 round_index 列
                 self._migrate_add_column(conn, "messages", "round_index", "INTEGER DEFAULT NULL")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_round ON messages(chat_id, round_index)")
                 
@@ -406,120 +388,44 @@ class ChatDBManager:
 
     def save_memory(self, user_id: int, chat_id: int, round_index: int, summary: str,
                     keywords: str = "", message_start_id: int = None, message_end_id: int = None) -> int:
-        """保存某轮对话的摘要记忆（含关键词索引和消息范围链接）"""
+        """保存摘要记忆到 memory_v2（兼容旧接口）"""
         conn = self._get_connection()
         try:
-            encrypted_summary = self._cipher.encrypt(user_id, summary)
-            encrypted_keywords = self._cipher.encrypt(user_id, keywords) if keywords else ""
+            encrypted = self._cipher.encrypt(user_id, summary)
             cursor = conn.execute(
-                "INSERT INTO memories (user_id, chat_id, round_index, summary, keywords, message_start_id, message_end_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (user_id, chat_id, round_index, encrypted_summary, encrypted_keywords, message_start_id, message_end_id),
+                "INSERT INTO memory_v2 (user_id, chat_id, type, round, content) "
+                "VALUES (?, ?, 'exp', ?, ?)",
+                (user_id, chat_id, round_index, encrypted),
             )
             conn.commit()
-            self.logger.info("保存记忆: chat_id=%d round=%d keywords=%s", chat_id, round_index, keywords[:50] if keywords else "")
+            self.logger.info("保存记忆(v2): chat_id=%d round=%d", chat_id, round_index)
             return cursor.lastrowid
         except sqlite3.Error as e:
             self.logger.error("保存记忆失败: %s", e)
             conn.rollback()
             raise
 
-    def get_memories(self, user_id: int, chat_id: int):
-        """获取会话的记忆条目，按轮次升序"""
+    def get_memories(self, user_id: int, chat_id: int) -> list[dict]:
+        """获取会话的记忆条目（基于 memory_v2），按轮次升序"""
         conn = self._get_connection()
         try:
             rows = conn.execute(
-                "SELECT round_index, summary, keywords, message_start_id, message_end_id, created_at FROM memories "
-                "WHERE user_id = ? AND chat_id = ? ORDER BY round_index ASC",
+                "SELECT id, round, content, created_at FROM memory_v2 "
+                "WHERE user_id = ? AND chat_id = ? AND type = 'exp' ORDER BY round ASC, id ASC",
                 (user_id, chat_id),
             ).fetchall()
             return [{
-                "round_index": r["round_index"],
-                "summary": self._cipher.decrypt(user_id, r["summary"]),
-                "keywords": self._cipher.decrypt(user_id, r["keywords"] or ""),
-                "message_start_id": r["message_start_id"],
-                "message_end_id": r["message_end_id"],
+                "memory_id": r["id"],
+                "round_index": r["round"],
+                "summary": self._cipher.decrypt(user_id, r["content"]),
+                "keywords": "",
+                "message_start_id": None,
+                "message_end_id": None,
                 "created_at": r["created_at"],
             } for r in rows]
         except sqlite3.Error as e:
             self.logger.error("获取记忆条目失败: %s", e)
             raise
-
-    def search_memories(self, user_id: int, chat_id: int, keywords: list[str],
-                        count: int = 5, threshold: float = 0.3) -> list[dict]:
-        conn = self._get_connection()
-        try:
-            count_row = conn.execute(
-                "SELECT COUNT(*) AS cnt, MAX(round_index) AS max_round FROM memories WHERE user_id = ? AND chat_id = ?",
-                (user_id, chat_id),
-            ).fetchone()
-            if not count_row or count_row["cnt"] == 0:
-                return []
-            total_rounds = count_row["max_round"] or 1
-
-            rows = conn.execute(
-                "SELECT memory_id, round_index, summary, keywords, message_start_id, message_end_id, created_at "
-                "FROM memories WHERE user_id = ? AND chat_id = ? ORDER BY round_index DESC LIMIT ?",
-                (user_id, chat_id, count * 20),
-            ).fetchall()
-            if not rows:
-                return []
-
-            search_terms = [kw.lower().strip() for kw in keywords if kw.strip()]
-            if not search_terms:
-                return []
-            search_tokens = set()
-            for t in search_terms:
-                search_tokens.update(_tokenize(t))
-
-            scored = []
-            for r in rows:
-                self._score_memory_row(r, user_id, search_terms, search_tokens, total_rounds, threshold, scored)
-
-            scored.sort(key=lambda x: x["score"], reverse=True)
-            return scored[:count]
-        except sqlite3.Error as e:
-            self.logger.error("搜索记忆失败: %s", e)
-            raise
-
-    def _score_memory_row(self, r, user_id, search_terms, search_tokens, total_rounds, threshold, scored):
-        kw_decrypted = self._cipher.decrypt(user_id, r["keywords"] or "")
-        kw_lower = kw_decrypted.lower()
-        if not any(term in kw_lower for term in search_terms):
-            summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
-            summary_lower = summary_decrypted.lower()
-            if not any(term in summary_lower for term in search_terms):
-                return
-        else:
-            summary_decrypted = self._cipher.decrypt(user_id, r["summary"] or "")
-            summary_lower = summary_decrypted.lower()
-
-        summary_tokens = set(_tokenize(summary_lower))
-        if not search_tokens or not summary_tokens:
-            return
-        intersection = search_tokens & summary_tokens
-        if not intersection:
-            for term in search_terms:
-                if term in summary_lower:
-                    intersection.add(term)
-            if not intersection:
-                return
-        hit_score = len(intersection) / len(search_tokens)
-        if hit_score <= 0:
-            return
-        recency_bonus = 1.0 - (r["round_index"] / (total_rounds + 1))
-        final_score = hit_score * 0.7 + recency_bonus * 0.3
-        if final_score >= threshold:
-            scored.append({
-                "memory_id": r["memory_id"],
-                "round_index": r["round_index"],
-                "summary": summary_decrypted,
-                "keywords": kw_decrypted,
-                "message_start_id": r["message_start_id"],
-                "message_end_id": r["message_end_id"],
-                "created_at": r["created_at"],
-                "score": round(final_score, 3),
-            })
 
     def get_messages_by_rounds(self, user_id: int, chat_id: int,
                                round_indices: list[int]) -> dict[int, list[dict]]:
@@ -574,19 +480,6 @@ class ChatDBManager:
             self.logger.error("获取最后消息ID失败: %s", e)
             raise
 
-    def get_memory_count(self, user_id: int, chat_id: int) -> int:
-        """统计会话记忆条数"""
-        conn = self._get_connection()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ? AND chat_id = ?",
-                (user_id, chat_id),
-            ).fetchone()
-            return row["cnt"] if row else 0
-        except sqlite3.Error as e:
-            self.logger.error("统计记忆条目失败: %s", e)
-            raise
-
     def get_next_round_index(self, chat_id: int) -> int:
         """获取下一个可用的 round_index（基于消息表中最大 round_index 计算）"""
         conn = self._get_connection()
@@ -599,23 +492,6 @@ class ChatDBManager:
             return max_ri + 1
         except sqlite3.Error as e:
             self.logger.error("获取下一个 round_index 失败: %s", e)
-            raise
-
-    def delete_oldest_memory(self, user_id: int, chat_id: int, n: int = 1) -> int:
-        """删除最旧n条记忆"""
-        conn = self._get_connection()
-        try:
-            conn.execute(
-                '''DELETE FROM memories WHERE memory_id IN (
-                    SELECT memory_id FROM memories WHERE user_id = ? AND chat_id = ? ORDER BY round_index ASC LIMIT ?
-                )''',
-                (user_id, chat_id, n),
-            )
-            conn.commit()
-            return conn.total_changes
-        except sqlite3.Error as e:
-            self.logger.error("删除旧记忆失败: %s", e)
-            conn.rollback()
             raise
 
     def create_chat(self, user_id: int, chat_name: str) -> int:

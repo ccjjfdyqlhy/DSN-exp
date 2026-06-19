@@ -40,6 +40,7 @@ class FakeDB:
                 message_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 round INTEGER,
+                round_index INTEGER,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 timestamp TEXT DEFAULT (datetime('now'))
@@ -60,7 +61,7 @@ class FakeDB:
         placeholder = ",".join("?" for _ in rounds)
         rows = self.conn.execute(
             f"SELECT round, role, content, timestamp FROM messages "
-            f"WHERE chat_id = ? AND round IN ({placeholder}) "
+            f"WHERE chat_id = ? AND round_index IN ({placeholder}) "
             f"ORDER BY round ASC, message_id ASC",
             [chat_id] + list(rounds),
         ).fetchall()
@@ -224,6 +225,129 @@ class TestMemorySystem(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["type"], "memo")
         self.assertIn("重构", hits[0]["content"])
+
+    # ---- 3b. 向量嵌入 ----
+
+    def test_cosine_similarity_identical(self):
+        v = [0.1, 0.2, 0.3]
+        sim = MemorySystem._cosine_similarity(v, v)
+        self.assertAlmostEqual(sim, 1.0)
+
+    def test_cosine_similarity_orthogonal(self):
+        sim = MemorySystem._cosine_similarity([1.0, 0.0], [0.0, 1.0])
+        self.assertAlmostEqual(sim, 0.0)
+
+    def test_cosine_similarity_opposite(self):
+        sim = MemorySystem._cosine_similarity([1.0, 0.0], [-1.0, 0.0])
+        self.assertAlmostEqual(sim, -1.0)
+
+    def test_cosine_similarity_empty(self):
+        sim = MemorySystem._cosine_similarity([], [1.0])
+        self.assertEqual(sim, 0.0)
+
+    def test_pack_unpack_roundtrip(self):
+        vec = [0.5, -0.25, 0.0, 1.0, 3.14159]
+        blob = MemorySystem._pack_embedding(vec)
+        self.assertEqual(len(blob), 4 * len(vec))  # 4 bytes per float
+        unpacked = MemorySystem._unpack_embedding(blob)
+        for a, b in zip(vec, unpacked):
+            self.assertAlmostEqual(a, b, places=5)
+
+    def test_search_vector_only(self):
+        """embedding_query 为 list[float] 时走纯向量搜索"""
+        from config import Config
+        old_enabled = Config.MEMORY_EMBEDDING_ENABLED
+        Config.MEMORY_EMBEDDING_ENABLED = True
+
+        try:
+            ec = _FakeEmbeddingClient()
+            ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
+            self._seed_exp(1, 1, 1, "用户喜欢Python编程")
+            self._seed_exp(1, 1, 2, "讨论过Rust语言特性")
+            # 手动写入 embedding
+            blob1 = MemorySystem._pack_embedding([0.9, 0.1, 0.0, 0.0])
+            blob2 = MemorySystem._pack_embedding([0.1, 0.0, 0.9, 0.0])
+            conn = self.db._get_connection()
+            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 1 AND type = 'exp'", (blob1,))
+            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 2 AND type = 'exp'", (blob2,))
+            conn.commit()
+
+            query_vec = [0.95, 0.05, 0.0, 0.0]
+            hits = ms.search(1, 1, [], embedding_query=query_vec, threshold=0.5)
+            self.assertEqual(len(hits), 1)
+            self.assertIn("Python", hits[0]["content"])
+            self.assertGreater(hits[0]["score"], 0.8)
+        finally:
+            Config.MEMORY_EMBEDDING_ENABLED = old_enabled
+
+    def test_search_hybrid_keyword_and_vector(self):
+        """关键词 + 向量混合搜索"""
+        from config import Config
+        old_enabled = Config.MEMORY_EMBEDDING_ENABLED
+        Config.MEMORY_EMBEDDING_ENABLED = True
+        try:
+            ec = _FakeEmbeddingClient()
+            ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
+            self._seed_exp(1, 1, 1, "Python和FastAPI后端开发")
+            self._seed_exp(1, 1, 2, "Rust并发与系统编程")
+            blob1 = MemorySystem._pack_embedding([1.0, 0.0, 0.0])
+            blob2 = MemorySystem._pack_embedding([0.0, 1.0, 0.0])
+            conn = self.db._get_connection()
+            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 1 AND type = 'exp'", (blob1,))
+            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 2 AND type = 'exp'", (blob2,))
+            conn.commit()
+
+            # query 向量与 round2 强匹配(cos≈1), 与 round1 正交(cos=0)
+            hits = ms.search(1, 1, ["Rust", "并发"], embedding_query=[0.0, 1.0, 0.0], threshold=0.3)
+            self.assertEqual(len(hits), 1)
+            self.assertIn("Rust", hits[0]["content"])
+        finally:
+            Config.MEMORY_EMBEDDING_ENABLED = old_enabled
+
+    def test_search_fallback_when_no_embedding(self):
+        """有 embedding_query 但 memory 无 blob 时应跳过 vector 部分"""
+        from config import Config
+        old_enabled = Config.MEMORY_EMBEDDING_ENABLED
+        Config.MEMORY_EMBEDDING_ENABLED = True
+        try:
+            ec = _FakeEmbeddingClient()
+            ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
+            self._seed_exp(1, 1, 1, "用户喜欢Python编程")
+            # 不设 embedding BLOB → vec_score = 0，但 keyword 仍匹配
+            hits = ms.search(1, 1, ["Python"], embedding_query=[0.9, 0.1], threshold=0.3)
+            self.assertEqual(len(hits), 1)
+            self.assertIn("Python", hits[0]["content"])
+        finally:
+            Config.MEMORY_EMBEDDING_ENABLED = old_enabled
+
+    def test_embed_and_store(self):
+        """验证 _embed_and_store 正确写入 BLOB"""
+        from config import Config
+        old_enabled = Config.MEMORY_EMBEDDING_ENABLED
+        Config.MEMORY_EMBEDDING_ENABLED = True
+        try:
+            ec = _FakeEmbeddingClient()
+            ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
+            mid = ms.summarize_turn(1, 1, 99, "测试文本", "回复内容", async_mode=False)
+            self.assertIsNotNone(mid)
+
+            conn = self.db._get_connection()
+            row = conn.execute("SELECT embedding FROM memory_v2 WHERE id = ?", (mid,)).fetchone()
+            self.assertIsNotNone(row["embedding"])
+            unpacked = MemorySystem._unpack_embedding(row["embedding"])
+            self.assertEqual(len(unpacked), 5)
+            self.assertAlmostEqual(unpacked[0], 0.5)
+        finally:
+            Config.MEMORY_EMBEDDING_ENABLED = old_enabled
+
+
+class _FakeEmbeddingClient:
+    """mock EmbeddingClient，返回固定的 5 维向量"""
+    def embed(self, text: str) -> list[float]:
+        return [0.5, 0.3, 0.1, 0.05, 0.02]
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed(t) for t in texts]
+
 
     # ---- 4. 标签处理 ----
 

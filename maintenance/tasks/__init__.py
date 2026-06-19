@@ -3,11 +3,10 @@
 
 from .base import MaintenanceTask, TaskProgress
 from .backup import BackupTask
-from .memory_compact import MemoryCompactTask
 from .personality_optimize import PersonalityOptimizeTask
 from .log_cleanup import LogCleanupTask
 
 __all__ = [
     "MaintenanceTask", "TaskProgress",
-    "BackupTask", "MemoryCompactTask", "PersonalityOptimizeTask", "LogCleanupTask",
+    "BackupTask", "PersonalityOptimizeTask", "LogCleanupTask",
 ]

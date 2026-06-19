@@ -128,7 +128,7 @@ class StewardModel:
                 conn = db._get_connection()
                 chat_count = conn.execute("SELECT COUNT(*) FROM chats WHERE chat_name != '__steward__'").fetchone()[0]
                 msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                mem_count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+                mem_count = conn.execute("SELECT COUNT(*) FROM memory_v2 WHERE type = 'exp'").fetchone()[0]
                 lines.append(f"总聊天数: {chat_count}  总消息数: {msg_count}  记忆条数: {mem_count}")
         except Exception:
             pass
