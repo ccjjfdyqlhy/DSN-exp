@@ -497,7 +497,7 @@ class LMSummaryModel:
         "2. 再写你(助手)是如何回应的\n"
         "3. 禁止编造对话中不存在的事实\n"
         "4. 使用具体动词，避免笼统的'承认/确认'\n"
-        "5. 1-2 句话，总字数 ≤ 50 字\n"
+        "5. 1-2 句话，总字数 ≤ 100 字\n"
         "6. 仅输出概括，无任何引导语\n\n"
         "对话内容：\n"
     )
@@ -543,7 +543,7 @@ class LMSummaryModel:
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_length,
-            "temperature": 0.3,
+            "temperature": 0.1,
             "stream": False,
         }
 

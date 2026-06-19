@@ -253,6 +253,18 @@ class TestMemorySystem(unittest.TestCase):
         for a, b in zip(vec, unpacked):
             self.assertAlmostEqual(a, b, places=5)
 
+    def _seed_embed(self, uid=1, cid=1, round_=1, vec=None):
+        """向 memory_embeds 表写入原始消息 embedding"""
+        if vec is None:
+            vec = [0.0] * 4
+        blob = MemorySystem._pack_embedding(vec)
+        conn = self.db._get_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_embeds (user_id, chat_id, round, embedding) "
+            "VALUES (?, ?, ?, ?)", (uid, cid, round_, blob),
+        )
+        conn.commit()
+
     def test_search_vector_only(self):
         """embedding_query 为 list[float] 时走纯向量搜索"""
         from config import Config
@@ -264,13 +276,8 @@ class TestMemorySystem(unittest.TestCase):
             ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
             self._seed_exp(1, 1, 1, "用户喜欢Python编程")
             self._seed_exp(1, 1, 2, "讨论过Rust语言特性")
-            # 手动写入 embedding
-            blob1 = MemorySystem._pack_embedding([0.9, 0.1, 0.0, 0.0])
-            blob2 = MemorySystem._pack_embedding([0.1, 0.0, 0.9, 0.0])
-            conn = self.db._get_connection()
-            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 1 AND type = 'exp'", (blob1,))
-            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 2 AND type = 'exp'", (blob2,))
-            conn.commit()
+            self._seed_embed(1, 1, 1, [0.9, 0.1, 0.0, 0.0])
+            self._seed_embed(1, 1, 2, [0.1, 0.0, 0.9, 0.0])
 
             query_vec = [0.95, 0.05, 0.0, 0.0]
             hits = ms.search(1, 1, [], embedding_query=query_vec, threshold=0.5)
@@ -290,12 +297,8 @@ class TestMemorySystem(unittest.TestCase):
             ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
             self._seed_exp(1, 1, 1, "Python和FastAPI后端开发")
             self._seed_exp(1, 1, 2, "Rust并发与系统编程")
-            blob1 = MemorySystem._pack_embedding([1.0, 0.0, 0.0])
-            blob2 = MemorySystem._pack_embedding([0.0, 1.0, 0.0])
-            conn = self.db._get_connection()
-            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 1 AND type = 'exp'", (blob1,))
-            conn.execute("UPDATE memory_v2 SET embedding = ? WHERE round = 2 AND type = 'exp'", (blob2,))
-            conn.commit()
+            self._seed_embed(1, 1, 1, [1.0, 0.0, 0.0])
+            self._seed_embed(1, 1, 2, [0.0, 1.0, 0.0])
 
             # query 向量与 round2 强匹配(cos≈1), 与 round1 正交(cos=0)
             hits = ms.search(1, 1, ["Rust", "并发"], embedding_query=[0.0, 1.0, 0.0], threshold=0.3)
@@ -320,8 +323,8 @@ class TestMemorySystem(unittest.TestCase):
         finally:
             Config.MEMORY_EMBEDDING_ENABLED = old_enabled
 
-    def test_embed_and_store(self):
-        """验证 _embed_and_store 正确写入 BLOB"""
+    def test_embed_raw_round(self):
+        """验证 summarize_turn 将原始对话 embedding 写入 memory_embeds"""
         from config import Config
         old_enabled = Config.MEMORY_EMBEDDING_ENABLED
         Config.MEMORY_EMBEDDING_ENABLED = True
@@ -332,8 +335,11 @@ class TestMemorySystem(unittest.TestCase):
             self.assertIsNotNone(mid)
 
             conn = self.db._get_connection()
-            row = conn.execute("SELECT embedding FROM memory_v2 WHERE id = ?", (mid,)).fetchone()
-            self.assertIsNotNone(row["embedding"])
+            row = conn.execute(
+                "SELECT embedding FROM memory_embeds "
+                "WHERE user_id = 1 AND chat_id = 1 AND round = 99",
+            ).fetchone()
+            self.assertIsNotNone(row)
             unpacked = MemorySystem._unpack_embedding(row["embedding"])
             self.assertEqual(len(unpacked), 5)
             self.assertAlmostEqual(unpacked[0], 0.5)

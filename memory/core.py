@@ -58,11 +58,21 @@ class MemorySystem:
             "CREATE INDEX IF NOT EXISTS idx_mem_v2_lookup "
             "ON memory_v2(user_id, chat_id, type, round)"
         )
-        # 迁移: 为旧表补充 embedding 列
-        try:
-            conn.execute("ALTER TABLE memory_v2 ADD COLUMN embedding BLOB DEFAULT NULL")
-        except Exception:
-            pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_embeds (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                chat_id    INTEGER NOT NULL,
+                round      INTEGER NOT NULL,
+                embedding  BLOB NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, chat_id, round)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mem_embeds_lookup "
+            "ON memory_embeds(user_id, chat_id, round)"
+        )
         conn.commit()
 
     # ---- crypto ----
@@ -129,8 +139,8 @@ class MemorySystem:
                 memory_id = cursor.lastrowid
                 conn.commit()
 
-            if memory_id is not None and self._embedding_enabled:
-                self._embed_and_store(user_id, summary, memory_id)
+            if self._embedding_enabled:
+                self._embed_raw_round(user_id, chat_id, round_idx, user_msg, assistant_reply)
 
             return memory_id
         except Exception:
@@ -158,9 +168,11 @@ class MemorySystem:
     # 向量嵌入
     # =================================================================
 
-    def _embed_and_store(self, user_id: int, text: str, memory_id: int) -> None:
-        """对文本生成 embedding 并写入 memory_v2.embedding。"""
+    def _embed_raw_round(self, user_id: int, chat_id: int, round_idx: int,
+                         user_msg: str, assistant_reply: str) -> None:
+        """对原始对话文本生成 embedding，写入 memory_embeds 表。"""
         try:
+            text = f"[用户] {user_msg}\n[助手] {assistant_reply}"
             vec = self._ec.embed(text)
             if vec is None:
                 return
@@ -168,12 +180,14 @@ class MemorySystem:
             conn = self.db._get_connection()
             with self._lock:
                 conn.execute(
-                    "UPDATE memory_v2 SET embedding = ? WHERE id = ?",
-                    (blob, memory_id),
+                    "INSERT OR REPLACE INTO memory_embeds "
+                    "(user_id, chat_id, round, embedding) VALUES (?, ?, ?, ?)",
+                    (user_id, chat_id, round_idx, blob),
                 )
                 conn.commit()
         except Exception:
-            logger.exception("embed-and-store failed mid=%d", memory_id)
+            logger.exception("embed-raw-round failed uid=%d chat=%d round=%d",
+                             user_id, chat_id, round_idx)
 
     @staticmethod
     def _pack_embedding(vec: list[float]) -> bytes:
@@ -234,7 +248,7 @@ class MemorySystem:
         chat_id: int,
         keywords: list[str],
         limit: int = 5,
-        threshold: float = 0.3,
+        threshold: float = 0.5,
         embedding_query: Optional[str | list[float]] = None,
         embedding_weight: Optional[float] = None,
     ) -> list[dict]:
@@ -259,8 +273,12 @@ class MemorySystem:
         total_rounds = row[0] or 1
 
         rows = conn.execute(
-            "SELECT id, type, round, content, created_at, embedding FROM memory_v2 "
-            "WHERE user_id = ? AND chat_id = ? ORDER BY round DESC LIMIT ?",
+            "SELECT v.id, v.type, v.round, v.content, v.created_at, e.embedding "
+            "FROM memory_v2 v "
+            "LEFT JOIN memory_embeds e "
+            "ON v.user_id = e.user_id AND v.chat_id = e.chat_id AND v.round = e.round "
+            "WHERE v.user_id = ? AND v.chat_id = ? "
+            "ORDER BY v.round DESC LIMIT ?",
             (user_id, chat_id, limit * 20),
         ).fetchall()
 
@@ -335,8 +353,8 @@ class MemorySystem:
                 final_score = kw_score
 
             if final_score < threshold:
-                if query_vec is None:
-                    continue
+                if use_keyword:
+                    continue  # keyword / hybrid: 严格阈值
                 if final_score < threshold * 0.5:  # vector-only: 更低阈值
                     continue
 
@@ -367,57 +385,57 @@ class MemorySystem:
         self,
         user_id: Optional[int] = None,
         chat_id: Optional[int] = None,
-        batch_size: int = 10,
     ):
         """
-        生成器: 遍历所有缺失 embedding 的 exp 记忆，
-        从 memory_v2.content 取摘要文本构建 embedding 并持久化。
+        生成器: 遍历消息表中的原始对话，构建文本并生成 embedding，
+        写入 memory_embeds 表 (覆盖旧索引)。
 
         参数:
             user_id:  若指定则仅索引该用户
-            chat_id:  若指定则仅索引该聊天 (需同时指定 user_id)
-            batch_size: 每批提交次数
+            chat_id:  若指定则仅索引该聊天
 
         产出:
             (processed: int, total: int, current_text: str, skipped: int)
-            每次调用后更新
         """
         if not self._embedding_enabled or self._ec is None:
             logger.warning("embedding 未启用，跳过批量索引")
             return
 
         conn = self.db._get_connection()
-        where = "WHERE v.type = 'exp'"
+        where = "WHERE 1=1"
         params: list = []
         if user_id is not None:
-            where += " AND v.user_id = ?"
+            where += " AND c.user_id = ?"
             params.append(user_id)
-            if chat_id is not None:
-                where += " AND v.chat_id = ?"
-                params.append(chat_id)
+        if chat_id is not None:
+            where += " AND m.chat_id = ?"
+            params.append(chat_id)
 
         rows = conn.execute(
-            f"SELECT v.id, v.user_id, v.content "
-            f"FROM memory_v2 v {where} ORDER BY v.id ASC",
+            f"SELECT DISTINCT c.user_id, m.chat_id, m.round_index "
+            f"FROM messages m "
+            f"JOIN chats c ON m.chat_id = c.chat_id "
+            f"{where} ORDER BY m.chat_id, m.round_index",
             params,
         ).fetchall()
 
         total = len(rows)
         if total == 0:
-            logger.info("没有需要索引的旧记忆")
+            logger.info("没有需要索引的原始消息")
             return
 
         processed = 0
         skipped = 0
         for r in rows:
-            mid = r["id"]
             uid = r["user_id"]
+            cid = r["chat_id"]
+            round_ = r["round_index"]
             try:
-                text = self._decrypt(uid, r["content"])
+                text = self._build_round_text(uid, cid, round_)
                 if not text:
                     skipped += 1
                     processed += 1
-                    yield (processed, total, "[跳过] 空摘要", skipped)
+                    yield (processed, total, "[跳过] 无消息文本", skipped)
                     continue
 
                 vec = self._ec.embed(text)
@@ -430,15 +448,16 @@ class MemorySystem:
                 blob = self._pack_embedding(vec)
                 with self._lock:
                     conn.execute(
-                        "UPDATE memory_v2 SET embedding = ? WHERE id = ?",
-                        (blob, mid),
+                        "INSERT OR REPLACE INTO memory_embeds "
+                        "(user_id, chat_id, round, embedding) VALUES (?, ?, ?, ?)",
+                        (uid, cid, round_, blob),
                     )
                     conn.commit()
                 processed += 1
                 preview = text[:60].replace("\n", " ")
                 yield (processed, total, preview, skipped)
             except Exception as e:
-                logger.exception("reindex memory_id=%d 失败", mid)
+                logger.exception("reindex round %d 失败", round_)
                 skipped += 1
                 processed += 1
                 yield (processed, total, f"[错误] {e}", skipped)
@@ -494,9 +513,8 @@ class MemorySystem:
                 encrypted = self._encrypt(uid, summary)
                 conn = self.db._get_connection()
                 with self._lock:
-                    # 覆盖摘要并清空旧 embedding (后续用 /memory index 重建)
                     conn.execute(
-                        "UPDATE memory_v2 SET content = ?, embedding = NULL WHERE id = ?",
+                        "UPDATE memory_v2 SET content = ? WHERE id = ?",
                         (encrypted, mid),
                     )
                     conn.commit()
