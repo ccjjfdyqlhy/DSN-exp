@@ -17,7 +17,7 @@ from maintenance.clock import MaintenanceClock
 from maintenance.tracker import ActivityTracker
 from maintenance.tasks import (
     MaintenanceTask, TaskProgress,
-    BackupTask, MemoryCompactTask, PersonalityOptimizeTask, LogCleanupTask,
+    BackupTask, PersonalityOptimizeTask, LogCleanupTask,
 )
 
 logger = logging.getLogger("maintenance.system")
@@ -52,7 +52,6 @@ class MaintenanceSystem:
 
     def _register_builtin_tasks(self, db, v3, engine, card_id):
         self._task_executor.register(BackupTask())
-        self._task_executor.register(MemoryCompactTask(db=db))
         self._task_executor.register(PersonalityOptimizeTask(v3=v3, card_id=card_id))
         self._task_executor.register(LogCleanupTask())
 

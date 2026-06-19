@@ -38,6 +38,7 @@ LOG_LOCK = threading.Lock()
 _LOG_HANDLER_INSTALLED = False
 
 _server_start_time = None
+_engine = None  # DSNEngine 实例，供 memory/index 等命令使用
 
 _ENV_PATH = Path(__file__).parent / ".env"
 _MAX_ENV_BACKUPS = 3
@@ -420,6 +421,181 @@ def _cmd_listconfig(config_cls):
     _cmd_config_listall(config_cls)
 
 
+def _cmd_export(db, args: str):
+    """导出聊天记录/记忆摘要到 JSON 文件"""
+    parts = args.split()
+    if len(parts) < 4:
+        print("""
+  用法:
+    /export chats <用户ID> <聊天ID> <输出路径>      导出聊天记录
+    /export memories <用户ID> <聊天ID> <输出路径>    导出记忆摘要
+    /export messages <用户ID> <聊天ID> <输出路径>    同 /export chats
+""")
+        return
+
+    sub = parts[0].lower()
+    try:
+        uid = int(parts[1])
+        cid = int(parts[2])
+    except ValueError:
+        print("  无效的用户 ID 或聊天 ID")
+        return
+    out_path = parts[3]
+
+    import json, os
+    from crypto_utils import MessageCipher
+    cipher = db._cipher
+
+    conn = db._get_connection()
+
+    if sub in ("chats", "messages"):
+        rows = conn.execute(
+            "SELECT message_id, role, content, round_index, timestamp FROM messages "
+            "WHERE chat_id = ? ORDER BY message_id ASC",
+            (cid,),
+        ).fetchall()
+        if not rows:
+            print("  未找到聊天记录")
+            return
+        data = []
+        for r in rows:
+            data.append({
+                "message_id": r["message_id"],
+                "role": r["role"],
+                "content": cipher.decrypt(uid, r["content"] or ""),
+                "round_index": r["round_index"],
+                "timestamp": r["timestamp"],
+            })
+        export = {
+            "type": "chat_messages",
+            "user_id": uid,
+            "chat_id": cid,
+            "exported_at": datetime.now().isoformat(),
+            "count": len(data),
+            "messages": data,
+        }
+    elif sub == "memories":
+        rows = conn.execute(
+            "SELECT id, round, content, created_at, type, embedding FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? ORDER BY id ASC",
+            (uid, cid),
+        ).fetchall()
+        if not rows:
+            print("  未找到记忆摘要")
+            return
+        data = []
+        for r in rows:
+            entry = {
+                "id": r["id"],
+                "round": r["round"],
+                "type": r["type"],
+                "content": cipher.decrypt(uid, r["content"] or ""),
+                "created_at": r["created_at"],
+            }
+            if r["embedding"]:
+                import base64
+                entry["embedding_b64"] = base64.b64encode(r["embedding"]).decode()
+            data.append(entry)
+        export = {
+            "type": "memory_summaries",
+            "user_id": uid,
+            "chat_id": cid,
+            "exported_at": datetime.now().isoformat(),
+            "count": len(data),
+            "memories": data,
+        }
+    else:
+        print(f"  未知导出类型: {sub}")
+        return
+
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(export, f, ensure_ascii=False, indent=2)
+        print(f"  ✓ 已导出 {len(data)} 条到 {out_path}")
+    except Exception as e:
+        print(f"  ❌ 写入失败: {e}")
+
+
+def _cmd_import(db, args: str):
+    """从 JSON 文件导入聊天记录/记忆摘要"""
+    parts = args.split()
+    if len(parts) < 4:
+        print("""
+  用法:
+    /import memories <用户ID> <聊天ID> <输入路径>    导入记忆摘要
+    /import messages <用户ID> <聊天ID> <输入路径>     导入聊天记录
+""")
+        return
+
+    sub = parts[0].lower()
+    try:
+        uid = int(parts[1])
+        cid = int(parts[2])
+    except ValueError:
+        print("  无效的用户 ID 或聊天 ID")
+        return
+    in_path = parts[3]
+
+    import json
+    try:
+        with open(in_path, "r", encoding="utf-8") as f:
+            export = json.load(f)
+    except Exception as e:
+        print(f"  ❌ 读取失败: {e}")
+        return
+
+    conn = db._get_connection()
+    cipher = db._cipher
+
+    if sub == "memories":
+        items = export.get("memories", [])
+        if not items:
+            print("  文件中无记忆数据")
+            return
+        count = 0
+        for item in items:
+            encrypted = cipher.encrypt(uid, item.get("content", ""))
+            round_ = item.get("round")
+            typ = item.get("type", "exp")
+            created = item.get("created_at")
+            conn.execute(
+                "INSERT INTO memory_v2 (user_id, chat_id, type, round, content, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (uid, cid, typ, round_, encrypted, created),
+            )
+            mid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            embedding_b64 = item.get("embedding_b64")
+            if embedding_b64:
+                import base64
+                blob = base64.b64decode(embedding_b64)
+                conn.execute("UPDATE memory_v2 SET embedding = ? WHERE id = ?", (blob, mid))
+            count += 1
+        conn.commit()
+        print(f"  ✓ 已导入 {count} 条记忆摘要")
+
+    elif sub in ("chats", "messages"):
+        items = export.get("messages", [])
+        if not items:
+            print("  文件中无聊天记录")
+            return
+        count = 0
+        for item in items:
+            encrypted = cipher.encrypt(uid, item.get("content", ""))
+            role = item.get("role", "user")
+            ri = item.get("round_index")
+            ts = item.get("timestamp")
+            conn.execute(
+                "INSERT INTO messages (chat_id, role, content, round_index, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (cid, role, encrypted, ri, ts),
+            )
+            count += 1
+        conn.commit()
+        print(f"  ✓ 已导入 {count} 条聊天记录")
+    else:
+        print(f"  未知导入类型: {sub}")
+
+
 def _cmd_help():
     """显示帮助信息"""
     print("""
@@ -432,6 +608,11 @@ def _cmd_help():
     /memory users    列出用户及记忆统计
     /memory chats <用户ID>  列出用户的聊天
     /memory list <用户ID> <聊天ID> [轮次]  列出/查看记忆
+    /memory reindex start [用户ID] [聊天ID]   对记忆建立向量索引(覆盖旧索引)
+    /memory query <用户ID> <聊天ID> <关键词...> [--after 日期] [--before 日期] [--date 日期]  搜索记忆
+    /memory rebuild latest <N>    重建最近 N 轮摘要
+    /memory rebuild latest <用户ID> <聊天ID> <N>    指定聊天的最近 N 轮
+    /memory rebuild span <用户ID> <聊天ID> <起始> <结束>  指定轮次范围重建
     /prompt [用户ID]   查看当前合成后的系统提示词
     /config listall   列出所有配置项 (敏感信息隐藏)
     /config set <键> <值>  动态修改配置并写入 .env
@@ -445,6 +626,10 @@ def _cmd_help():
     /hibernate check             查看待机策略+活跃度分布
     /hibernate archive <时间>    设定下次整理时间
     /hibernate sleep             立刻进入待机
+    /export chats <用户ID> <聊天ID> <路径>   导出聊天记录为 JSON
+    /export memories <用户ID> <聊天ID> <路径> 导出记忆摘要为 JSON
+    /import memories <用户ID> <聊天ID> <路径> 从 JSON 导入记忆摘要
+    /import messages <用户ID> <聊天ID> <路径> 从 JSON 导入聊天记录
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -528,11 +713,335 @@ def _cmd_memory(auth_manager, db, args: str):
         if len(parts) < 3:
             print("  用法: /memory list <用户ID> <聊天ID> [轮次索引]")
             return
-        uid_str, cid_str = parts[1], parts[2]
+        uid_str = parts[1]
+        cid_str = parts[2]
         round_str = parts[3] if len(parts) > 3 else None
         _cmd_memory_list(db, uid_str, cid_str, round_str)
+    elif sub == "reindex":
+        _cmd_memory_reindex(parts)
+    elif sub == "query":
+        _cmd_memory_query(db, parts)
+    elif sub == "rebuild":
+        _cmd_memory_rebuild(db, parts)
     else:
         _cmd_memory_help()
+
+
+def _cmd_memory_reindex(parts: list[str]):
+    """重建所有词嵌入 (覆盖旧索引)"""
+    subsub = parts[1].lower() if len(parts) > 1 else ""
+
+    if subsub != "start":
+        print("""
+  用法:
+    /memory reindex start                    — 重建所有记忆的词嵌入 (覆盖旧索引)
+    /memory reindex start <用户ID>           — 重建指定用户的词嵌入
+    /memory reindex start <用户ID> <聊天ID>  — 重建指定聊天的词嵌入
+""")
+        return
+
+    global _engine
+    if _engine is None or _engine.memory_system is None:
+        print("  错误: MemorySystem 未初始化")
+        return
+
+    ms = _engine.memory_system
+    if not ms._embedding_enabled:
+        print("  错误: embedding 未启用 (MEMORY_EMBEDDING_ENABLED=false)")
+        print("  请设置环境变量 MEMORY_EMBEDDING_ENABLED=true 后重启")
+        return
+
+    uid = int(parts[2]) if len(parts) > 2 else None
+    cid = int(parts[3]) if len(parts) > 3 else None
+
+    def _run_index():
+        print("  开始索引旧记忆...")
+        try:
+            for processed, total, preview, skipped in ms.reindex_embeddings(
+                user_id=uid, chat_id=cid
+            ):
+                print(f"\r  进度: [{processed}/{total}] {preview[:40]:40s}", end="")
+            print(f"\n  完成! 共处理 {total - skipped if 'total' in dir() else 0} 条, 跳过 {skipped if 'skipped' in dir() else 0} 条")
+        except Exception as e:
+            print(f"\n  索引异常: {e}")
+
+    t = threading.Thread(target=_run_index, daemon=True)
+    t.start()
+    print("  索引线程已启动 (后台运行)...")
+
+
+def _cmd_memory_query(db, parts: list[str]):
+    """查询记忆: 按关键词 或 --date / --after / --before 时间范围"""
+    if len(parts) < 4:
+        print("""
+  用法:
+    /memory query <用户ID> <聊天ID> <关键词>
+    /memory query <用户ID> <聊天ID> --after 2026-01-01
+    /memory query <用户ID> <聊天ID> 关键词 --before 2026-06-01
+    /memory query <用户ID> <聊天ID> --date 2026-06-18
+""")
+        return
+
+    try:
+        uid = int(parts[1])
+        cid = int(parts[2])
+    except ValueError:
+        print("  无效的用户 ID 或聊天 ID")
+        return
+
+    # 解析过滤参数
+    # 解析过滤参数
+    from datetime import datetime as dt, timedelta
+
+    tokens = parts[3:]
+    keywords: list[str] = []
+    date_after: str | None = None
+    date_before: str | None = None
+
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t == "--after" and i + 1 < len(tokens):
+            date_after = tokens[i + 1]
+            i += 2
+        elif t == "--before" and i + 1 < len(tokens):
+            date_before = tokens[i + 1]
+            i += 2
+        elif t == "--date" and i + 1 < len(tokens):
+            date_after = tokens[i + 1]
+            try:
+                d = dt.strptime(tokens[i + 1], "%Y-%m-%d")
+                date_before = (d + timedelta(days=1)).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+            i += 2
+        else:
+            keywords.append(t)
+            i += 1
+
+    # ---- 向量检索分支 ----
+    global _engine
+    ms = _engine.memory_system if _engine else None
+    use_vector = ms is not None and ms._embedding_enabled and keywords
+
+    if use_vector:
+        embedding_query = " ".join(keywords)
+        limit = 20
+        hits = ms.search(uid, cid, keywords, limit=limit, embedding_query=embedding_query)
+        if not hits:
+            print("  未找到匹配的记忆")
+            return
+
+        from rich.table import Table
+        from rich.console import Console
+        console = Console()
+
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("轮次", justify="right")
+        table.add_column("匹配度")
+        table.add_column("摘要", style="bold", max_width=60)
+        table.add_column("时间", style="dim")
+
+        for m in hits:
+            rd = m.get("round") or "-"
+            score = f"{m['score']:.2f}"
+            summary = m["content"][:80].replace("\n", " ")
+            ts = (m["created_at"] or "")[:19]
+            table.add_row(str(rd), score, summary, ts)
+
+        console.print(table)
+        return
+
+    # ---- 纯 SQL 回退 (无向量或无关键词) ----
+    conn = db._get_connection()
+    sql = (
+        "SELECT id, round, content, created_at FROM memory_v2 "
+        "WHERE user_id = ? AND chat_id = ?"
+    )
+    params: list = [uid, cid]
+
+    if date_after:
+        sql += " AND created_at >= ?"
+        params.append(date_after)
+    if date_before:
+        sql += " AND created_at < ?"
+        params.append(date_before)
+
+    sql += " ORDER BY id DESC LIMIT 50"
+
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        print("  未找到匹配的记忆")
+        return
+
+    from crypto_utils import MessageCipher
+    cipher = db._cipher
+
+    results = []
+    for r in rows:
+        content = cipher.decrypt(uid, r["content"] or "")
+        if not content:
+            continue
+        if keywords and not any(kw.lower() in content.lower() for kw in keywords):
+            continue
+        results.append({
+            "id": r["id"],
+            "round": r["round"],
+            "content": content,
+            "created_at": r["created_at"],
+        })
+
+    if not results:
+        print("  未找到匹配的记忆")
+        return
+
+    from rich.table import Table
+    from rich.console import Console
+    console = Console()
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("ID", style="dim", justify="right")
+    table.add_column("轮次", justify="right")
+    table.add_column("摘要", style="bold", max_width=60)
+    table.add_column("时间", style="dim")
+
+    for m in results:
+        summary = m["content"][:80].replace("\n", " ")
+        ts = (m["created_at"] or "")[:19]
+        table.add_row(str(m["id"]), str(m["round"] or "-"), summary, ts)
+
+    console.print(table)
+
+
+def _cmd_memory_rebuild(db, parts: list[str]):
+    """重建摘要: /memory rebuild latest <N> 或 /memory rebuild span <起始轮次> <结束轮次>"""
+    if len(parts) < 4:
+        print("""
+  用法:
+    /memory rebuild latest <N>                         — 重建最近 N 轮摘要
+    /memory rebuild latest <用户ID> <聊天ID> <N>       — 重建指定聊天的最近 N 轮
+    /memory rebuild span <用户ID> <聊天ID> <起始> <结束> — 重建指定轮次范围的摘要
+""")
+        return
+
+    global _engine
+    ms = _engine.memory_system if _engine else None
+    if ms is None:
+        print("  错误: MemorySystem 未初始化")
+        return
+
+    mode = parts[1].lower()
+
+    if mode not in ("latest", "span"):
+        print("  用法: /memory rebuild latest <N> | /memory rebuild span <起始> <结束>")
+        return
+
+    # 解析参数
+    try:
+        if mode == "latest":
+            if len(parts) == 5:
+                uid = int(parts[2])
+                cid = int(parts[3])
+                n = int(parts[4])
+            elif len(parts) == 3:
+                uid = None
+                cid = None
+                n = int(parts[2])
+            else:
+                print("  参数错误")
+                return
+        else:  # span
+            uid = int(parts[2])
+            cid = int(parts[3])
+            start_round = int(parts[4])
+            end_round = int(parts[5]) if len(parts) > 5 else start_round
+    except ValueError:
+        print("  无效的参数，用户ID/聊天ID/轮次必须为整数")
+        return
+
+    if n < 1 if mode == "latest" else start_round < 1 or end_round < start_round:
+        print("  参数范围无效")
+        return
+
+    # 查询匹配的 memory_v2 条目
+    conn = db._get_connection()
+    from crypto_utils import MessageCipher
+    cipher = db._cipher
+
+    if mode == "latest":
+        if uid is not None:
+            rows = conn.execute(
+                "SELECT id, user_id, chat_id, round, content, created_at FROM memory_v2 "
+                "WHERE user_id = ? AND chat_id = ? AND type = 'exp' "
+                "ORDER BY round DESC LIMIT ?",
+                (uid, cid, n),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, user_id, chat_id, round, content, created_at FROM memory_v2 "
+                "WHERE type = 'exp' ORDER BY round DESC LIMIT ?",
+                (n,),
+            ).fetchall()
+    else:  # span
+        rows = conn.execute(
+            "SELECT id, user_id, chat_id, round, content, created_at FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? AND type = 'exp' "
+            "AND round BETWEEN ? AND ? ORDER BY round ASC",
+            (uid, cid, start_round, end_round),
+        ).fetchall()
+
+    if not rows:
+        print("  未找到匹配的记忆")
+        return
+
+    # 显示端点摘要
+    entries = []
+    for r in rows:
+        content = cipher.decrypt(r["user_id"], r["content"] or "")
+        entries.append({
+            "id": r["id"], "user_id": r["user_id"], "chat_id": r["chat_id"],
+            "round": r["round"], "content": content, "created_at": r["created_at"],
+        })
+
+    from rich.table import Table
+    from rich.console import Console
+    console = Console()
+
+    start = entries[0]
+    end = entries[-1]
+    print(f"\n  范围: {mode} ({len(entries)} 条)")
+    print(f"  ─── 端点当前摘要 ───")
+    print(f"  起始 (轮次 {start['round']}): {start['content'][:100]}")
+    if len(entries) > 1:
+        print(f"  结束 (轮次 {end['round']}): {end['content'][:100]}")
+    else:
+        print(f"  单条轮次 {start['round']}: {start['content'][:100]}")
+
+    # 确认
+    try:
+        confirm = input("\n  确认覆盖这些摘要？(y/N): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        confirm = "n"
+    if confirm != "y":
+        print("  已取消")
+        return
+
+    # 执行重建
+    rebuild_list = [(e["user_id"], e["chat_id"], e["round"], e["id"]) for e in entries]
+
+    def _run():
+        try:
+            for processed, total, preview, err in ms.rebuild_summaries(rebuild_list):
+                tag = f"[{err}]" if err else ""
+                print(f"\r  进度: [{processed}/{total}] {preview[:40]:40s} {tag}", end="")
+            print(f"\n  完成! 已重建 {total} 条摘要")
+        except Exception as e:
+            print(f"\n  重建异常: {e}")
+
+    import threading
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    print("  重建线程已启动 (后台运行)...")
 
 
 def _cmd_memory_users(auth_manager, db):
@@ -559,7 +1068,7 @@ def _cmd_memory_users(auth_manager, db):
             (uid,),
         ).fetchone()
         mem_row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ?",
+            "SELECT COUNT(*) AS cnt FROM memory_v2 WHERE user_id = ? AND type = 'exp'",
             (uid,),
         ).fetchone()
         table.add_row(
@@ -594,7 +1103,7 @@ def _cmd_memory_chats(db, uid_str: str):
     for c in chats:
         cid = c["chat_id"]
         mem_row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM memories WHERE user_id = ? AND chat_id = ?",
+            "SELECT COUNT(*) AS cnt FROM memory_v2 WHERE user_id = ? AND chat_id = ? AND type = 'exp'",
             (uid, cid),
         ).fetchone()
         mem_count = f" ({mem_row['cnt']} 记忆)" if mem_row and mem_row["cnt"] > 0 else ""
@@ -608,7 +1117,7 @@ def _cmd_memory_chats(db, uid_str: str):
 
 
 def _cmd_memory_list(db, uid_str: str, cid_str: str, round_str: str | None):
-    """列出指定聊天的记忆条目"""
+    """列出指定聊天的记忆条目 (基于 memory_v2)"""
     try:
         uid = int(uid_str)
         cid = int(cid_str)
@@ -626,59 +1135,69 @@ def _cmd_memory_list(db, uid_str: str, cid_str: str, round_str: str | None):
         print(f"  用户 {uid} 无权访问聊天 {cid}")
         return
 
-    memories = db.get_memories(uid, cid)
-    if not memories:
-        print(f"  聊天 {cid} 暂无记忆条目")
-        return
+    from crypto_utils import MessageCipher
+    cipher = db._cipher
 
-    # 如果指定了 round_index，只显示该条
     if round_str is not None:
         try:
             target_round = int(round_str)
         except ValueError:
             print(f"  无效的轮次索引: {round_str}")
             return
-        memories = [m for m in memories if m["round_index"] == target_round]
-        if not memories:
-            print(f"  聊天 {cid} 中未找到轮次 {target_round} 的记忆")
-            return
+        rows = conn.execute(
+            "SELECT id, round, content, created_at, type FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? AND type = 'exp' AND round = ? "
+            "ORDER BY id ASC",
+            (uid, cid, target_round),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, round, content, created_at, type FROM memory_v2 "
+            "WHERE user_id = ? AND chat_id = ? AND type = 'exp' "
+            "ORDER BY round ASC, id ASC",
+            (uid, cid),
+        ).fetchall()
+
+    if not rows:
+        print(f"  聊天 {cid} 暂无记忆条目")
+        return
+
+    entries = []
+    for r in rows:
+        content = cipher.decrypt(uid, r["content"] or "")
+        entries.append({
+            "id": r["id"],
+            "round": r["round"],
+            "content": content or "",
+            "created_at": r["created_at"],
+            "type": r["type"],
+        })
 
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
     table.add_column("轮次", style="dim", justify="right")
     table.add_column("摘要", style="bold", max_width=60)
-    table.add_column("关键词", max_width=30)
-    table.add_column("消息区间")
     table.add_column("创建时间", style="dim")
 
-    for m in memories:
-        msg_range = f"{m['message_start_id']}-{m['message_end_id']}" if m.get("message_start_id") else "-"
-        kw_str = m.get("keywords", "") or ""
-        if len(kw_str) > 28:
-            kw_str = kw_str[:26] + "..."
-        summary_str = m.get("summary", "") or ""
-        if len(summary_str) > 58:
-            summary_str = summary_str[:56] + "..."
-
+    for m in entries:
+        summary = m["content"]
+        if len(summary) > 58:
+            summary = summary[:56] + "..."
         table.add_row(
-            str(m["round_index"]),
-            summary_str,
-            kw_str,
-            msg_range,
-            m.get("created_at", "-"),
+            str(m["round"] or "-"),
+            summary,
+            (m["created_at"] or "")[:19],
         )
 
-    if round_str is not None:
-        # 单条详情
-        m = memories[0]
+    if round_str is not None and entries:
+        m = entries[0]
         details = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
         details.add_column("字段", style="dim")
         details.add_column("值", style="bold")
-        details.add_row("轮次", str(m["round_index"]))
-        details.add_row("摘要", m.get("summary", ""))
-        details.add_row("关键词", m.get("keywords", ""))
-        details.add_row("消息起始ID", str(m.get("message_start_id", "-")))
-        details.add_row("消息结束ID", str(m.get("message_end_id", "-")))
-        details.add_row("创建时间", m.get("created_at", "-"))
+        details.add_row("ID", str(m["id"]))
+        details.add_row("轮次", str(m["round"] or "-"))
+        details.add_row("摘要", m["content"])
+        details.add_row("类型", m["type"])
+        details.add_row("创建时间", m.get("created_at", "")[:19] if m.get("created_at") else "-")
         console.print(details)
     else:
         console.print(table)
@@ -721,6 +1240,13 @@ def _cmd_memory_help():
     /memory chats <用户ID>           列出指定用户的所有聊天
     /memory list <用户ID> <聊天ID>   列出指定聊天的所有记忆
     /memory list <用户ID> <聊天ID> <轮次>  查看指定轮次的记忆详情
+    /memory reindex start [用户ID] [聊天ID]   对记忆建立向量索引(覆盖旧索引)
+    /memory query <用户ID> <聊天ID> <关键词...>  按关键词搜索记忆
+    /memory query <用户ID> <聊天ID> --date 2026-06-18   按日期筛选
+    /memory query <用户ID> <聊天ID> --after 2026-01-01 --before 2026-07-01
+    /memory rebuild latest <N>                      重建最近 N 轮摘要 (全部用户)
+    /memory rebuild latest <用户ID> <聊天ID> <N>    重建指定聊天的最近 N 轮
+    /memory rebuild span <用户ID> <聊天ID> <起始> <结束>  重建指定轮次范围
 """)
 
 
@@ -777,6 +1303,14 @@ def _h_help(am, db, pm, pe, cc, pv, arg):
     _cmd_help()
 
 
+def _h_export(am, db, pm, pe, cc, pv, arg):
+    _cmd_export(db, arg)
+
+
+def _h_import(am, db, pm, pe, cc, pv, arg):
+    _cmd_import(db, arg)
+
+
 _CMD_TABLE = {
     "/newbind": _h_newbind,
     "/users": _h_users,
@@ -787,6 +1321,8 @@ _CMD_TABLE = {
     "/config": _h_config,
     "/listconfig": _h_listconfig,
     "/persona": _h_persona,
+    "/export": _h_export,
+    "/import": _h_import,
     "/help": _h_help,
 }
 
@@ -1167,6 +1703,8 @@ def main():
     auth_manager = flask_app.config.get("AUTH_MANAGER")
     db = app_module.db
     engine = getattr(app_module, 'engine', None)
+    global _engine
+    _engine = engine
     personality_v3 = getattr(app_module, 'personality_v3', None)
     maint_system = getattr(app_module, 'maint_system', None)
     plugin_manager = engine.plugin_manager if engine else None

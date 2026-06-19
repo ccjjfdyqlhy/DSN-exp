@@ -78,6 +78,12 @@ class Config:
     MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.7"))
     MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
 
+    # ==================== 向量嵌入检索 ====================
+    MEMORY_EMBEDDING_ENABLED = _env("MEMORY_EMBEDDING_ENABLED", "false").lower() == "true"
+    MEMORY_EMBEDDING_MODEL = _env("MEMORY_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5@f16")
+    MEMORY_EMBEDDING_DIMS = int(_env("MEMORY_EMBEDDING_DIMS", "768"))
+    MEMORY_EMBEDDING_WEIGHT = float(_env("MEMORY_EMBEDDING_WEIGHT", "0.6"))
+
     # ==================== 用户观察日记 ====================
     NOTEBOOK_FREQUENCY = int(_env("NOTEBOOK_FREQUENCY", "10"))  # 每 N 轮对话触发一次笔记
 

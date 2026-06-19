@@ -26,7 +26,7 @@ except ImportError:
 from usermgr import init_usermgr, auth_bp
 from todo_api import todo_bp
 from chatdbmgr import ChatDBManager
-from models import DeepSeekChat, LMSummaryModel, LMStudioChat
+from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from tts_process_model import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType
@@ -482,6 +482,16 @@ if app.config.get("MEMORY_ENABLED", True):
         summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),
     )
     memory_system = MemorySystem(db=db, summary_model=summary_model)
+    if Config.MEMORY_EMBEDDING_ENABLED:
+        try:
+            embedding_client = EmbeddingClient(base_url=Config.LMSTUDIO_BASE_URL)
+            memory_system = MemorySystem(
+                db=db,
+                summary_model=summary_model,
+                embedding_client=embedding_client,
+            )
+        except Exception as e:
+            app.logger.warning("EmbeddingClient 初始化失败: %s", e)
 else:
     summary_model = None
     memory_system = None

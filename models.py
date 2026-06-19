@@ -6,6 +6,8 @@ import requests
 import json
 import os
 import logging
+import threading
+from collections import deque
 from typing import List, Dict, Optional, Union
 
 
@@ -376,12 +378,127 @@ class LMStudioChat:
         return f"<LMStudioChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
 
 
+class EmbeddingClient:
+    """
+    文本嵌入客户端 — 调用本地 LMStudio /v1/embeddings。
+
+    用法:
+        ec = EmbeddingClient()
+        vec = ec.embed("三角函数诱导公式")  # → list[float] (768维)
+    """
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        model_name: Optional[str] = None,
+        dims: int = 768,
+        timeout: int = 60,
+        logger: Optional[logging.Logger] = None,
+    ):
+        from config import Config
+
+        self.base_url = (base_url or Config.LMSTUDIO_BASE_URL).rstrip("/")
+        self.model_name = model_name or Config.MEMORY_EMBEDDING_MODEL
+        self.dims = dims
+        self.timeout = timeout
+        self.logger = logger or logging.getLogger(self.__class__.__name__)
+        self._http_session = requests.Session()
+
+        # 并发加载门控: 多线程共享同一个模型时只加载一次
+        self._load_lock = threading.Lock()
+        self._model_ready = threading.Event()
+        self._model_load_failed = False
+
+    def embed(self, text: str) -> Optional[list[float]]:
+        """对单段文本生成嵌入向量。失败时返回 None。"""
+        if not text or not isinstance(text, str):
+            return None
+        result = self._call_embed_api([text])
+        if result:
+            return result[0]
+        return None
+
+    def embed_batch(self, texts: list[str]) -> Optional[list[list[float]]]:
+        """批量生成嵌入向量。失败时返回 None。"""
+        if not texts:
+            return None
+        return self._call_embed_api(texts)
+
+    def _call_embed_api(self, texts: list[str]) -> Optional[list[list[float]]]:
+        """统一调用 /v1/embeddings (并发安全的模型加载)。"""
+        url = f"{self.base_url}/v1/embeddings"
+        headers = {"Content-Type": "application/json"}
+
+        def _do_request():
+            payload = {"model": self.model_name, "input": texts}
+            self.logger.debug("embedding 请求 → %s (%d 段)", self.model_name, len(texts))
+            response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            result = response.json()
+            if "data" not in result:
+                self.logger.error("embedding 响应缺少 data 字段")
+                return None
+            data = sorted(result["data"], key=lambda x: x["index"])
+            vectors = [item["embedding"] for item in data]
+            self.logger.debug("embedding 返回 %d 条, 维度 %d", len(vectors), len(vectors[0]) if vectors else 0)
+            return vectors
+
+        # 快速路径
+        if self._model_ready.is_set():
+            try:
+                return _do_request()
+            except requests.exceptions.HTTPError as e:
+                if _is_no_model_error(e.response):
+                    self.logger.info("embedding 模型被卸载，标记为未就绪")
+                    self._model_ready.clear()
+                else:
+                    self.logger.error("embedding 请求失败: %s", str(e))
+                    return None
+
+        # 门控加载: 先试请求，模型已就绪则不触发 load
+        if not self._model_load_failed:
+            with self._load_lock:
+                if self._model_ready.is_set() or self._model_load_failed:
+                    return _do_request()
+                try:
+                    result = _do_request()
+                    self._model_ready.set()
+                    return result
+                except requests.exceptions.HTTPError as e:
+                    if _is_no_model_error(e.response):
+                        self.logger.info("embedding 模型未加载，正在加载 %s ...", self.model_name)
+                        if self._ensure_model_loaded():
+                            self._model_ready.set()
+                            self.logger.info("embedding 模型加载完成")
+                        else:
+                            self.logger.error("embedding 模型加载失败，本批次不再重试")
+                            self._model_load_failed = True
+                    else:
+                        self.logger.error("embedding 请求失败: %s", str(e))
+                        return None
+
+        return _do_request()
+
+    def _ensure_model_loaded(self) -> bool:
+        return _load_lmstudio_model(self.base_url, self.model_name, "Embedding 模型")
+
+    def __repr__(self):
+        return f"<EmbeddingClient base_url={self.base_url} model={self.model_name}>"
+
+
 class LMSummaryModel:
     """摘要模型 — 支持 DeepSeek API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
 
     SUMMARY_PROMPT = (
-        "用至多两句话（不超过50字）概括下方对话的核心事实与结论，"
-        "以AI视角描述。仅输出概括语句，不要引导词，不要标签，不要关键词。\n\n"
+        "你是下方对话中标记为[助手/AI]的一方。\n"
+        "现在用第一人称(我=助手)概括这段对话：\n\n"
+        "规则：\n"
+        "1. 先描述用户说了什么/做了什么\n"
+        "2. 再写你(助手)是如何回应的\n"
+        "3. 禁止编造对话中不存在的事实\n"
+        "4. 使用具体动词，避免笼统的'承认/确认'\n"
+        "5. 1-2 句话，总字数 ≤ 50 字\n"
+        "6. 仅输出概括，无任何引导语\n\n"
         "对话内容：\n"
     )
 
@@ -404,6 +521,14 @@ class LMSummaryModel:
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self._http_session = requests.Session()
 
+        # 并发加载门控: 多线程共享同一个模型时只加载一次
+        self._load_lock = threading.Lock()
+        self._model_ready = threading.Event()
+        self._model_load_failed = False
+
+        # 摘要上下文: 保持最近 10 次摘要的对话+结果
+        self._summary_context = deque(maxlen=10)
+
         if self.backend == "deepseek":
             self.api_key = api_key or Config.DEEPSEEK_API_KEY
             self.base_url = "https://api.deepseek.com/v1"
@@ -413,7 +538,7 @@ class LMSummaryModel:
 
     def _call_llm(self, prompt: str, max_length: int, backend_name: str,
                    url: str, headers: dict, is_lmstudio: bool = False) -> str:
-        """统一的 LLM 调用后端。"""
+        """统一的 LLM 调用后端 (并发安全的模型加载)。"""
         payload = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
@@ -422,38 +547,53 @@ class LMSummaryModel:
             "stream": False,
         }
 
-        for attempt in range(2 if is_lmstudio else 1):
-            try:
-                self.logger.debug("%s summary request → %s", backend_name, self.model_name)
-                response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
-                response.raise_for_status()
-                result = response.json()
+        def _do_request():
+            self.logger.debug("%s summary request → %s", backend_name, self.model_name)
+            response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+            result = response.json()
+            if "choices" in result and result["choices"]:
+                summary = result["choices"][0]["message"]["content"].strip()
+                if len(summary) > max_length * 2:
+                    summary = summary[:max_length * 2].rstrip() + "..."
+                self.logger.info("%s 摘要: %s", backend_name,
+                                 summary[:80] + ("..." if len(summary) > 80 else ""))
+                return summary
+            raise ValueError(f"{backend_name} 响应格式异常")
 
-                if "choices" in result and result["choices"]:
-                    summary = result["choices"][0]["message"]["content"].strip()
-                    if len(summary) > max_length * 2:
-                        summary = summary[:max_length * 2].rstrip() + "..."
-                    self.logger.info("%s 摘要: %s", backend_name,
-                                     summary[:80] + ("..." if len(summary) > 80 else ""))
-                    return summary
-                else:
-                    raise ValueError(f"{backend_name} 响应格式异常")
-            except requests.exceptions.Timeout:
-                self.logger.error("%s 摘要请求超时 (%d秒)", backend_name, self.timeout)
-                raise
-            except requests.exceptions.ConnectionError:
-                self.logger.error("无法连接到 %s: %s", backend_name, self.base_url)
-                raise
+        # 快速路径: 模型已就绪，直接请求
+        if is_lmstudio and self._model_ready.is_set():
+            try:
+                return _do_request()
             except requests.exceptions.HTTPError as e:
-                if is_lmstudio and attempt == 0 and self._is_no_model_error(e.response):
-                    self.logger.info("摘要模型未加载，自动加载后重试……")
-                    if self._auto_load_model():
-                        continue
-                self.logger.error("%s 摘要请求失败: %s", backend_name, str(e))
-                raise
-            except (KeyError, ValueError) as e:
-                self.logger.error("%s 摘要响应解析失败: %s", backend_name, str(e))
-                raise
+                if self._is_no_model_error(e.response):
+                    self.logger.info("摘要模型被卸载，标记为未就绪")
+                    self._model_ready.clear()
+                else:
+                    raise
+
+        # 门控加载: 先试请求，模型已就绪则不触发 load
+        if is_lmstudio and not self._model_load_failed:
+            with self._load_lock:
+                if self._model_ready.is_set() or self._model_load_failed:
+                    return _do_request()
+                try:
+                    result = _do_request()
+                    self._model_ready.set()
+                    return result
+                except requests.exceptions.HTTPError as e:
+                    if self._is_no_model_error(e.response):
+                        self.logger.info("摘要模型未加载，正在加载 %s ...", self.model_name)
+                        if self._auto_load_model():
+                            self._model_ready.set()
+                            self.logger.info("摘要模型加载完成")
+                        else:
+                            self.logger.error("摘要模型加载失败，本批次不再重试")
+                            self._model_load_failed = True
+                    else:
+                        raise
+
+        return _do_request()
 
     def summarize_text(self, text: str, max_length: Optional[int] = None) -> str:
         """生成摘要。根据 backend 自动选择 DeepSeek 或 LMStudio。"""
@@ -482,15 +622,36 @@ class LMSummaryModel:
         return _load_lmstudio_model(self.base_url, self.model_name, "摘要模型")
 
     def summarize_dialog(self, messages: List[Dict[str, str]], max_length: Optional[int] = None) -> str:
-        """根据消息列表生成一条整体摘要。"""
+        """根据消息列表生成一条整体摘要（带最近 10 次上下文）。"""
         combined = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
             if not isinstance(content, str):
                 continue
-            prefix = "用户" if role == "user" else "助手" if role == "assistant" else role
+            if role == "user":
+                prefix = "[用户]"
+            elif role == "assistant":
+                prefix = "[助手]"
+            else:
+                prefix = role
             combined.append(f"{prefix}:{content}")
 
-        text = "\n".join(combined)
-        return self.summarize_text(text, max_length=max_length)
+        current_text = "\n".join(combined)
+
+        # 拼接上下文（仅含历史对话原文+摘要结果，不含历史上下文本身）
+        if self._summary_context:
+            ctx_parts = ["\n先前已完成的摘要："]
+            for i, (orig_text, ctx_result) in enumerate(self._summary_context, 1):
+                ctx_parts.append(f"\n--- 先前摘要 {i} ---\n{orig_text}\n→ 结果为：{ctx_result}")
+            ctx_parts.append("\n\n请继续对下方对话生成摘要。\n")
+            full_text = "".join(ctx_parts) + current_text
+        else:
+            full_text = current_text
+
+        result = self.summarize_text(full_text, max_length=max_length)
+
+        # 存储仅当前对话文本（不含历史上下文）到历史
+        self._summary_context.append((current_text, result))
+
+        return result

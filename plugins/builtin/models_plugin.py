@@ -84,6 +84,7 @@ class ModelsPlugin(Plugin):
         if self._db is not None and ctx.chat_id:
             try:
                 round_index = self._db.get_next_round_index(ctx.chat_id)
+                ctx.extra["round_index"] = round_index
                 self._db.append_messages(
                     ctx.user_id, ctx.chat_id, chat.messages[-2:],
                     round_index=round_index,

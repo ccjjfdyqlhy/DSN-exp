@@ -49,7 +49,7 @@ class MemoryPlugin(Plugin):
             return ctx
 
         try:
-            round_index = self._db.get_next_round_index(ctx.chat_id)
+            round_index = ctx.extra.get("round_index") or self._db.get_next_round_index(ctx.chat_id)
             self._ms.summarize_turn(
                 user_id=ctx.user_id,
                 chat_id=ctx.chat_id,

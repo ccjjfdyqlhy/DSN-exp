@@ -134,7 +134,7 @@ def test_tracker_save_load():
 
 # ── 任务系统 ──
 
-from maintenance.tasks import MaintenanceTask, TaskProgress, MemoryCompactTask, PersonalityOptimizeTask, LogCleanupTask
+from maintenance.tasks import MaintenanceTask, TaskProgress, PersonalityOptimizeTask, LogCleanupTask
 from maintenance.system import TaskExecutor
 
 
@@ -233,13 +233,6 @@ def test_system_standby_no_double_transition():
 
 
 # ── 预置任务 ──
-
-def test_memory_compact_task_no_db():
-    """无 DB 时返回错误"""
-    task = MemoryCompactTask(db=None)
-    result = task.run(lambda p: None)
-    assert result.get("success") is False
-    assert "数据库不可用" in result.get("error", "")
 
 
 def test_log_cleanup_task_empty_dir(tmp_path):
