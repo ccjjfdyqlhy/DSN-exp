@@ -592,6 +592,9 @@ class DSNEngine:
                 complexity_analyzer=self.complexity_analyzer,
                 skill_registry=self.skill_registry, db=self.db,
             ))
+        if self._plugin_enabled("plan"):
+            from plugins.builtin.plan_plugin import PlanPlugin
+            self.plugin_manager.register(PlanPlugin(db=self.db))
 
     def _register_output_plugins(self):
         if self._plugin_enabled("tts") and self._tts_client:

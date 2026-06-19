@@ -23,10 +23,12 @@ from models import DeepSeekChat
 
 class TaskType(Enum):
     """任务类型枚举"""
-    REMINDER = "reminder"  # 提醒任务
-    REASONER = "reasoner"  # 推理任务
-    ANALYSIS = "analysis"  # 分析任务
-    ACTION = "action"      # 动作执行任务（系统指令、Python代码、文件操作等）
+    REMINDER = "reminder"    # 一次性提醒
+    HABIT = "habit"          # 周期性提醒 (每N分钟/小时/天)
+    COUNTDOWN = "countdown"  # 倒计时到指定时刻
+    REASONER = "reasoner"    # 推理任务
+    ANALYSIS = "analysis"    # 分析任务
+    ACTION = "action"        # 动作执行任务
 
 
 class TaskStatus(Enum):
@@ -36,6 +38,8 @@ class TaskStatus(Enum):
     COMPLETED = "completed"  # 已完成
     FAILED = "failed"        # 失败
     CANCELLED = "cancelled"  # 已取消
+    MISSED = "missed"        # 过期未执行
+    SKIPPED = "skipped"      # 用户主动跳过该次触发
 
 
 class TaskPriority(Enum):
@@ -57,7 +61,8 @@ class Task:
         chat_id: int,
         params: Dict[str, Any],
         priority: TaskPriority = TaskPriority.NORMAL,
-        scheduled_time: Optional[datetime] = None
+        scheduled_time: Optional[datetime] = None,
+        interval_seconds: int = 0,
     ):
         self.task_id = task_id
         self.task_type = task_type
@@ -66,6 +71,8 @@ class Task:
         self.params = params
         self.priority = priority
         self.scheduled_time = scheduled_time
+        self.interval_seconds = interval_seconds
+        self.skip_count = 0
         self.status = TaskStatus.PENDING
         self.created_at = datetime.now()
         self.started_at: Optional[datetime] = None
@@ -83,6 +90,8 @@ class Task:
             "params": self.params,
             "priority": self.priority.value,
             "scheduled_time": self.scheduled_time.isoformat() if self.scheduled_time else None,
+            "interval_seconds": self.interval_seconds,
+            "skip_count": self.skip_count,
             "status": self.status.value,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -108,10 +117,12 @@ class Task:
             chat_id=data["chat_id"],
             params=data["params"],
             priority=priority,
-            scheduled_time=datetime.fromisoformat(data["scheduled_time"]) if data.get("scheduled_time") else None
+            scheduled_time=datetime.fromisoformat(data["scheduled_time"]) if data.get("scheduled_time") else None,
+            interval_seconds=data.get("interval_seconds", 0),
         )
         task.status = TaskStatus(data["status"])
         task.created_at = datetime.fromisoformat(data["created_at"])
+        task.skip_count = data.get("skip_count", 0)
         if data.get("started_at"):
             task.started_at = datetime.fromisoformat(data["started_at"])
         if data.get("completed_at"):
@@ -155,6 +166,13 @@ class TaskManager:
         "edit_file": "_action_edit_file",
     }
 
+    @staticmethod
+    def _migrate_add_column(conn, table: str, column: str, col_def: str):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+        except Exception:
+            pass
+
     def _init_db(self):
         """初始化任务相关的数据库表"""
         conn = self.db._get_connection()
@@ -169,6 +187,8 @@ class TaskManager:
                     params TEXT NOT NULL,
                     priority INTEGER DEFAULT 1,
                     scheduled_time TEXT,
+                    interval_seconds INTEGER DEFAULT 0,
+                    skip_count INTEGER DEFAULT 0,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     started_at TEXT,
@@ -205,6 +225,12 @@ class TaskManager:
             """)
             
             conn.commit()
+            # 迁移：为旧表补充新列
+            self._migrate_add_column(conn, "tasks", "interval_seconds", "INTEGER DEFAULT 0")
+            self._migrate_add_column(conn, "tasks", "skip_count", "INTEGER DEFAULT 0")
+            # task_notifications 补充 deliver 状态列
+            self._migrate_add_column(conn, "task_notifications", "delivered", "INTEGER DEFAULT 0")
+            self._migrate_add_column(conn, "task_notifications", "dismissed", "INTEGER DEFAULT 0")
             self.logger.info("任务数据库表初始化完成")
         except Exception as e:
             self.logger.error("初始化任务数据库表失败: %s", e)
@@ -212,7 +238,7 @@ class TaskManager:
             raise
     
     def _load_persistent_tasks(self):
-        """从数据库加载持久化的任务"""
+        """从数据库加载持久化的任务（重启恢复）"""
         try:
             conn = self.db._get_connection()
             rows = conn.execute(
@@ -220,6 +246,7 @@ class TaskManager:
                 (TaskStatus.PENDING.value, TaskStatus.RUNNING.value)
             ).fetchall()
             
+            now = datetime.now()
             for row in rows:
                 try:
                     params = json.loads(row["params"])
@@ -231,6 +258,7 @@ class TaskManager:
                         "params": params,
                         "priority": row["priority"],
                         "scheduled_time": row["scheduled_time"],
+                        "interval_seconds": row.get("interval_seconds", 0),
                         "status": row["status"],
                         "created_at": row["created_at"],
                         "started_at": row["started_at"],
@@ -239,23 +267,37 @@ class TaskManager:
                         "error": row["error"]
                     }
                     task = Task.from_dict(task_data)
+                    task.skip_count = row.get("skip_count", 0)
                     self.tasks[task.task_id] = task
-                    
-                    # 如果是定时任务且状态为PENDING，重新调度
-                    if task.task_type == TaskType.REMINDER and task.status == TaskStatus.PENDING and task.scheduled_time:
-                        self._schedule_reminder_task(task)
 
-                    # 服务器重启时的 RUNNING 任务无法恢复，标记为失败
+                    task_type = task.task_type
+
+                    # 重启时 RUNNING 无法恢复
                     if task.status == TaskStatus.RUNNING:
                         task.status = TaskStatus.FAILED
                         task.error = "Server restarted during task execution"
-                        task.completed_at = datetime.now()
+                        task.completed_at = now
                         self._save_task(task)
-                        self.logger.warning("已将重启后残留的 RUNNING 任务标记为 FAILED: %s", task.task_id)
-                        
+                        continue
+
+                    # PENDING 且 scheduled_time 已过期超 5 分钟 → MISSED
+                    if task.status == TaskStatus.PENDING and task.scheduled_time:
+                        if task.scheduled_time < now - timedelta(minutes=5):
+                            task.status = TaskStatus.MISSED
+                            task.completed_at = now
+                            self._save_task(task)
+                            self.logger.warning("过期任务标记为 MISSED: %s (scheduled: %s)",
+                                               task.task_id, task.scheduled_time)
+                            continue
+
+                    # 重新调度 PENDING 任务
+                    if task.status == TaskStatus.PENDING and task.scheduled_time:
+                        if task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN):
+                            self._schedule_reminder_task(task)
+
                 except Exception as e:
                     self.logger.error("加载任务失败 (task_id=%s): %s", row["task_id"], e)
-            
+
             self.logger.info("从数据库加载了 %d 个任务", len(rows))
         except Exception as e:
             self.logger.error("加载持久化任务失败: %s", e)
@@ -274,9 +316,10 @@ class TaskManager:
             
             conn.execute("""
                 INSERT OR REPLACE INTO tasks 
-                (task_id, task_type, user_id, chat_id, params, priority, scheduled_time, 
+                (task_id, task_type, user_id, chat_id, params, priority, scheduled_time,
+                 interval_seconds, skip_count,
                  status, created_at, started_at, completed_at, result, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.task_id,
                 task.task_type.value,
@@ -285,6 +328,8 @@ class TaskManager:
                 json.dumps(task.params, ensure_ascii=False),
                 priority_value,
                 task.scheduled_time.isoformat() if task.scheduled_time else None,
+                task.interval_seconds,
+                task.skip_count,
                 task.status.value,
                 task.created_at.isoformat(),
                 task.started_at.isoformat() if task.started_at else None,
@@ -307,7 +352,8 @@ class TaskManager:
                 
                 if status == TaskStatus.RUNNING:
                     task.started_at = datetime.now()
-                elif status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+                elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED,
+                                TaskStatus.CANCELLED, TaskStatus.MISSED, TaskStatus.SKIPPED):
                     task.completed_at = datetime.now()
                 
                 if result is not None:
@@ -318,30 +364,44 @@ class TaskManager:
                 self._save_task(task)
     
     def _schedule_reminder_task(self, task: Task):
-        """调度提醒任务"""
+        """调度提醒任务 (一次性/周期性)"""
         if not task.scheduled_time:
             return
-        
-        # 计算延迟时间（秒）
+
         now = datetime.now()
         delay_seconds = max(0, (task.scheduled_time - now).total_seconds())
-        
-        if delay_seconds > 0:
-            # 使用schedule库调度一次性任务
-            def reminder_job():
-                self.logger.info("执行提醒任务: %s", task.task_id)
-                self.execute_task(task.task_id)
-                # 任务执行后从调度器中移除
-                return schedule.CancelJob
-            
-            # 使用schedule.every()创建一次性任务
+
+        def reminder_job():
+            self.logger.info("触发提醒/习惯任务: %s", task.task_id)
+            self.execute_task(task.task_id)
+
+            # 周期性任务: 执行后自动排下一个
+            if (task.task_type == TaskType.HABIT and
+                    task.interval_seconds > 0 and
+                    task.status == TaskStatus.COMPLETED):
+                next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
+                task.scheduled_time = next_time
+                task.status = TaskStatus.PENDING
+                task.result = None
+                task.error = None
+                self._save_task(task)
+                self._schedule_reminder_task(task)
+
+            return schedule.CancelJob
+
+        if delay_seconds > 3600 * 24:
+            # > 24h 的延迟不用 schedule.every().seconds (精度问题)
+            # 改用 5 分钟轮询检查
+            def _long_delay_check():
+                if datetime.now() >= task.scheduled_time:
+                    self.logger.info("长延迟提醒到期: %s", task.task_id)
+                    reminder_job()
+                    return schedule.CancelJob
+            self.scheduler.every(300).seconds.do(_long_delay_check).tag(task.task_id)
+        elif delay_seconds > 0:
             job = self.scheduler.every(delay_seconds).seconds.do(reminder_job)
-            job.tag(task.task_id)  # 给任务添加标签以便后续管理
-            
-            self.logger.info("已调度提醒任务 %s 在 %s 执行 (延迟: %d秒)", 
-                           task.task_id, task.scheduled_time, delay_seconds)
+            job.tag(task.task_id)
         else:
-            # 如果时间已过，立即执行
             self.logger.info("提醒任务 %s 时间已过，立即执行", task.task_id)
             self.execute_task(task.task_id)
     
@@ -354,7 +414,8 @@ class TaskManager:
     
     def create_task(self, task_type: TaskType, user_id: int, chat_id: int, 
                    params: Dict[str, Any], priority: TaskPriority = TaskPriority.NORMAL,
-                   scheduled_time: Optional[datetime] = None) -> str:
+                   scheduled_time: Optional[datetime] = None,
+                   interval_seconds: int = 0) -> str:
         """创建新任务"""
         task_id = str(uuid.uuid4())
         
@@ -365,7 +426,8 @@ class TaskManager:
             chat_id=chat_id,
             params=params,
             priority=priority,
-            scheduled_time=scheduled_time
+            scheduled_time=scheduled_time,
+            interval_seconds=interval_seconds,
         )
         
         with self.lock:
@@ -373,12 +435,12 @@ class TaskManager:
             self._user_task_index.setdefault(user_id, set()).add(task_id)
             self._save_task(task)
         
-        # 如果是提醒任务，进行调度
-        if task_type == TaskType.REMINDER and scheduled_time:
+        # 定时任务进行调度
+        if task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN) and scheduled_time:
             self._schedule_reminder_task(task)
         
         self.logger.info("创建任务: %s (类型: %s, 用户: %d)", task_id,
-                         task_type.value if hasattr(task_type, 'value') else task_type, user_id)
+                         task_type.value, user_id)
         return task_id
     
     def execute_task(self, task_id: str) -> Future:

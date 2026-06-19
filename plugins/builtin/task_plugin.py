@@ -120,6 +120,10 @@ class TaskPlugin(Plugin):
         try:
             if task_type == "reminder":
                 return self._create_reminder(params, ctx)
+            elif task_type == "habit":
+                return self._create_habit(params, ctx)
+            elif task_type == "countdown":
+                return self._create_countdown(params, ctx)
             elif task_type == "reasoner":
                 return self._create_reasoner(params, ctx)
             elif task_type == "action":
@@ -143,6 +147,62 @@ class TaskPlugin(Plugin):
         )
         logger.info("已创建提醒任务: %s, 时间: %s", task_id, scheduled_time)
         return task_id
+
+    def _create_habit(self, params: dict, ctx: PluginContext) -> str | None:
+        time_str = params.get("time")
+        interval_str = params.get("interval", "")
+        if not time_str:
+            return None
+        scheduled_time = datetime.fromisoformat(time_str)
+        interval_seconds = self._parse_interval(interval_str)
+        task_id = self._task_mgr.create_task(
+            task_type=TaskType.HABIT,
+            user_id=ctx.user_id,
+            chat_id=ctx.chat_id,
+            params=params,
+            priority=1,
+            scheduled_time=scheduled_time,
+            interval_seconds=interval_seconds,
+        )
+        logger.info("已创建习惯任务: %s, 间隔=%ds, 起始=%s", task_id, interval_seconds, scheduled_time)
+        return task_id
+
+    def _create_countdown(self, params: dict, ctx: PluginContext) -> str | None:
+        target_str = params.get("target")
+        if not target_str:
+            return None
+        scheduled_time = datetime.fromisoformat(target_str)
+        task_id = self._task_mgr.create_task(
+            task_type=TaskType.COUNTDOWN,
+            user_id=ctx.user_id,
+            chat_id=ctx.chat_id,
+            params=params,
+            priority=1,
+            scheduled_time=scheduled_time,
+        )
+        logger.info("已创建倒计时: %s, 目标: %s", task_id, scheduled_time)
+        return task_id
+
+    @staticmethod
+    def _parse_interval(interval_str: str) -> int:
+        """解析时间间隔字符串为秒: 30m/2h/1d 等"""
+        import re
+        if not interval_str or not isinstance(interval_str, str):
+            return 0
+        m = re.match(r"(\d+)\s*(min|m|h|d|s)", interval_str.strip().lower())
+        if not m:
+            return 0
+        value = int(m.group(1))
+        unit = m.group(2)
+        if unit in ("s",):
+            return value
+        elif unit in ("min", "m"):
+            return value * 60
+        elif unit in ("h",):
+            return value * 3600
+        elif unit in ("d",):
+            return value * 86400
+        return 0
 
     def _create_reasoner(self, params: dict, ctx: PluginContext) -> str:
         task_id = self._task_mgr.create_task(
