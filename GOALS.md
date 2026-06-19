@@ -5,14 +5,14 @@
 
 所以，我最近在干嘛？
 
-**本次更新：概念6及其对应后端（记忆系统重写）、前端适配硬件**
+**本次更新：记忆系统重构 + 规划引擎 + 提醒增强 + 代码拆分**
 
 ## 下一步往哪儿走
 
 **用户了解体系重构**：做到私人知识库那种级别。先走Concepts/记忆系统路线。  
 **纸制品交互**：通过打印机/扫描仪完成基于纸制品的交互界面。  
 **环境感知**：摄像头主动抓帧，感知用户状态、环境光线、作息习惯。  
-**规划引擎**：大目标拆解、日计划自动生成、执行追踪、日终反馈。  
+**规划引擎**：大目标拆解、日计划自动生成、执行追踪、日终反馈。  ~~搞定！~~  
 ~~**交互大改**：实现一个真正没webui、靠硬件驱动的交互策略。做完辣！~~  
 
 
@@ -28,7 +28,7 @@ Concepts
 - [x] 更大更强的记忆系统！（转后端）
 - [x] Minimal Psychoscope CLI实现，完全无UI也能交互！
 - [ ] 图书馆——接入Obsidian笔记系统。
-- [ ] 规划引擎：目标拆解、三层任务(Goal/Phase/DailyTask)模型、沉浸式闹钟
+- [x] 规划引擎：目标拆解、三层任务(Goal/Phase/DailyTask)模型、沉浸式闹钟
 - [ ] 视觉感知协议正式落地：CameraWatcher后台抓帧 + 环境状态描述注入管线
 
 后端
@@ -73,11 +73,11 @@ Concepts
 - [x] 全新亲密度系统！
 - [ ] 根据DeepSeek官方文档，提供更可控的主模型生成。
 - [x] 角色卡蒸馏系统BUG大修、彻底独立于数据库，性格提取修复
-- [ ] 修复Tasks系统不持久化、服务器重启就失效的问题
+- [x] 修复Tasks系统不持久化、服务器重启就失效的问题
 - [ ] 制作打印机/扫描仪控制模块和技能。
-- [ ] 提醒事项系统增强：重启恢复、DAILY_PLAN/COUNTDOWN/HABIT任务类型、standby也推送
+- [x] 提醒事项系统增强：重启恢复、DAILY_PLAN/COUNTDOWN/HABIT任务类型、standby也推送
 - [ ] 视觉感知系统：CameraWatcher线程、运动/人脸检测、环境状态注入system_prompt、主动发话
-- [ ] 计划系统引擎：PlanEngine(create_goal/breakdown_phase/generate_daily_plan/check_off)、PlanPlugin、日终报告、资金成就
+- [x] 计划系统引擎：PlanEngine(create_goal/breakdown_phase/generate_daily_plan/check_off)、PlanPlugin、日终报告、资金成就
 
 前端
 ---

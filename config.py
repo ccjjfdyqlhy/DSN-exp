@@ -97,6 +97,7 @@ class Config:
     # ==================== ASR 配置 ====================
     ASR_ENABLED = _env("ASR_ENABLED", "false").lower() == "true"
     ASR_DEVICE = _env("ASR_DEVICE", "cuda")
+    ASR_GPU_ID = _env("ASR_GPU_ID", "")  # 指定 GPU 编号，如 "0"、"1"，留空则用 ASR_DEVICE
     DEBUG_ASR = _env("DEBUG_ASR", "false").lower() == "true"
 
     # ==================== ASR 过滤 ====================

@@ -33,6 +33,7 @@ DEFAULT_HOST = os.environ.get("DSN_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("DSN_PORT", 5000))
 CONFIG_FILE = HERE / ".dsn_client.json"
 TTS_DIR = HERE / "temp"
+REMINDER_FILE = TTS_DIR / "reminders.json"
 LOG_DIR = HERE / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / f"minimal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -382,8 +383,130 @@ class DSNClient:
 
             elif status == "completed":
                 break
-
         return reply if got_text else None
+
+
+class ReminderWatcher:
+    """后台线程: 每 60s 检查 reminders.json，到期则通知后端并弹回提醒。"""
+
+    def __init__(self, client: DSNClient):
+        self._client = client
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._sync()  # 启动时立即同步
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+    def _sync(self):
+        """从后端拉取 PENDING 提醒到本地 JSON"""
+        try:
+            resp = requests.get(
+                f"{self._client.base}/api/reminder/list",
+                headers=self._client._headers(),
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            remote = data.get("reminders", [])
+            # 合并: 保留本地已标记 trigger_done 的，仅追加新的
+            local = self._load_local()
+            local_ids = {r["task_id"] for r in local}
+            for rem in remote:
+                if rem["task_id"] not in local_ids:
+                    local.append({
+                        "task_id": rem["task_id"],
+                        "text": rem["text"],
+                        "scheduled_time": rem["scheduled_time"],
+                        "task_type": rem["task_type"],
+                        "interval_seconds": rem.get("interval_seconds", 0),
+                    })
+            self._save_local(local)
+        except Exception:
+            pass
+
+    def _load_local(self) -> list[dict]:
+        if REMINDER_FILE.exists():
+            try:
+                return json.loads(REMINDER_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        return []
+
+    def _save_local(self, reminders: list[dict]):
+        TTS_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            REMINDER_FILE.write_text(
+                json.dumps(reminders, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _loop(self):
+        while self._running:
+            try:
+                reminders = self._load_local()
+                now = datetime.now()
+                changed = False
+                for r in reminders:
+                    try:
+                        st = datetime.fromisoformat(r["scheduled_time"])
+                    except Exception:
+                        continue
+                    if st <= now:
+                        self._trigger(r)
+                        changed = True
+
+                if changed:
+                    # 移除已触发的
+                    remaining = []
+                    for r in reminders:
+                        try:
+                            st = datetime.fromisoformat(r["scheduled_time"])
+                        except Exception:
+                            remaining.append(r)
+                            continue
+                        if st > now:
+                            remaining.append(r)
+                    self._save_local(remaining)
+            except Exception:
+                pass
+            time.sleep(60)
+
+    def _trigger(self, reminder: dict):
+        """向后端发送 done 请求，并通知用户"""
+        task_id = reminder["task_id"]
+        text = reminder.get("text", "") or "提醒时间到了"
+        try:
+            resp = requests.post(
+                f"{self._client.base}/api/reminder/done",
+                json={"task_id": task_id},
+                headers=self._client._headers(),
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get("success"):
+                    print(f"\n  ⏰ [提醒] {text}")
+                    _play_beep(self._client, 880)
+
+                    # 如果是 HABIT，后端已创建下一个，需要同步
+                    if result.get("next_task_id"):
+                        pass  # 下一个 loop 中 _sync 会拉取
+                else:
+                    print(f"\n  ⚠️ 提醒失败: {result.get('error', '')}")
+        except Exception:
+            pass
+
 
 class VoiceRecorder:
     def __init__(self, client: DSNClient):
@@ -657,10 +780,13 @@ def main():
     recorder = VoiceRecorder(client)
     keyboard = KeyboardHandler()
     keyboard.start()
+    reminder = ReminderWatcher(client)
+    reminder.start()
 
     def on_sigint(sig, frame):
         if recorder.is_recording:
             recorder.stop_and_send()
+        reminder.stop()
         keyboard.stop()
         save_config(cfg)
         print("\n  Goodbye")
@@ -764,6 +890,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        reminder.stop()
         if recorder.is_recording:
             recorder.stop_and_send()
         keyboard.stop()

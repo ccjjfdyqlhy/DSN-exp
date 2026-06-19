@@ -1,18 +1,20 @@
 ---
 name: reminder
 category: capabilities
-version: "1.0"
-description: 提醒任务能力
-tags: [reminder, task]
+version: "2.0"
+description: 提醒/习惯/倒计时任务能力
+tags: [reminder, task, habit, countdown]
 priority: 120
 enabled: true
 ---
 
-## 提醒任务
+## 提醒/习惯/倒计时任务
 
-你可以帮用户设置提醒。当用户要求你在某个时间提醒某事时，使用 `<task>` 标签创建提醒任务。
+你可以帮用户设置一次性提醒、周期性习惯、以及倒计时。
 
-### 示例
+### 一次性提醒 (reminder)
+
+当用户要求在某个时间点提醒某事：
 
 <task>
 {
@@ -24,4 +26,42 @@ enabled: true
 }
 </task>
 
-`time` 字段使用 ISO 8601 格式（如 `2024-01-01T15:00:00`）。
+### 周期性习惯 (habit)
+
+当用户希望定期提醒某事（如"每2小时站起来活动"）：
+
+<task>
+{
+  "type": "habit",
+  "params": {
+    "text": "站起来活动一下",
+    "time": "2024-01-01T09:00:00",
+    "interval": "2h"
+  }
+}
+</task>
+
+`interval` 格式: `30m` (每30分钟) / `2h` (每2小时) / `1d` (每天)。首次触发在 `time` 指定时间，之后每隔 `interval` 重复。
+
+### 倒计时 (countdown)
+
+当用户设定了截止日期，需要定期播报倒计时：
+
+<task>
+{
+  "type": "countdown",
+  "params": {
+    "text": "项目截止日期",
+    "target": "2024-07-01T00:00:00"
+  }
+}
+</task>
+
+### 字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `time` | ISO8601 字符串 | 触发时间 (reminder/habit 必需) |
+| `target` | ISO8601 字符串 | 倒计时目标 (countdown 必需) |
+| `interval` | 字符串 | 重复间隔 (habit 必需，格式 30m/2h/1d) |
+| `text` | 字符串 | 提醒内容 |

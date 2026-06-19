@@ -596,6 +596,202 @@ def _cmd_import(db, args: str):
         print(f"  未知导入类型: {sub}")
 
 
+def _cmd_reminder(db, args: str):
+    """提醒任务管理 CLI"""
+    parts = args.split()
+    sub = parts[0].lower() if parts else ""
+
+    global _engine
+    tm = _engine.task_manager if _engine else None
+
+    if sub in ("list", "ls"):
+        uid = int(parts[1]) if len(parts) > 1 else None
+        cid = int(parts[2]) if len(parts) > 2 else None
+
+        if tm is None:
+            print("  错误: TaskManager 未初始化")
+            return
+
+        conn = db._get_connection()
+        where = []
+        params: list = []
+        if uid is not None:
+            where.append("user_id = ?")
+            params.append(uid)
+        if cid is not None:
+            where.append("chat_id = ?")
+            params.append(cid)
+        w = "WHERE " + " AND ".join(where) if where else ""
+        rows = conn.execute(
+            f"SELECT task_id, task_type, user_id, chat_id, priority, scheduled_time, "
+            f"status, interval_seconds, skip_count, created_at FROM tasks {w} "
+            f"ORDER BY priority DESC, scheduled_time ASC LIMIT 50",
+            params,
+        ).fetchall()
+
+        if not rows:
+            print("  无匹配的提醒任务")
+            return
+
+        from rich.table import Table
+        from rich.console import Console
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("ID", style="dim", max_width=10)
+        table.add_column("类型")
+        table.add_column("时间", style="dim")
+        table.add_column("间隔")
+        table.add_column("状态")
+        table.add_column("跳过")
+
+        for r in rows:
+            tid = r["task_id"][:8]
+            typ = r["task_type"]
+            ts = (r["scheduled_time"] or "")[:19]
+            iv = ""
+            if r["interval_seconds"]:
+                s = r["interval_seconds"]
+                if s >= 86400: iv = f"{s//86400}d"
+                elif s >= 3600: iv = f"{s//3600}h"
+                elif s >= 60: iv = f"{s//60}m"
+                else: iv = f"{s}s"
+            status = r["status"]
+            skip = str(r["skip_count"]) if r["skip_count"] else ""
+            table.add_row(tid, typ, ts, iv, status, skip)
+
+        Console().print(table)
+        print(f"\n  命令: /reminder cancel <id> | /reminder skip <id>")
+
+    elif sub == "cancel":
+        if len(parts) < 2:
+            print("  用法: /reminder cancel <task_id>")
+            return
+        tid = parts[1]
+        if tm:
+            if tid in tm.tasks:
+                task = tm.tasks[tid]
+                task.status = TaskStatus.CANCELLED
+                task.completed_at = datetime.now()
+                tm._save_task(task)
+                print(f"  已取消: {tid[:8]}")
+            else:
+                # partial ID match
+                matched = [k for k in tm.tasks if k.startswith(tid)]
+                if len(matched) == 1:
+                    task = tm.tasks[matched[0]]
+                    task.status = TaskStatus.CANCELLED
+                    task.completed_at = datetime.now()
+                    tm._save_task(task)
+                    print(f"  已取消: {matched[0][:8]}")
+                elif matched:
+                    print("  多个匹配, 请使用完整 ID")
+                else:
+                    print("  任务不存在")
+        else:
+            print("  TaskManager 不可用")
+
+    elif sub == "skip":
+        if len(parts) < 2:
+            print("  用法: /reminder skip <task_id>")
+            return
+        tid = parts[1]
+        if tm and tid in tm.tasks:
+            task = tm.tasks[tid]
+            if task.task_type == TaskType.HABIT:
+                # 跳过本次，调度下一个
+                task.skip_count += 1
+                task.status = TaskStatus.SKIPPED
+                task.completed_at = datetime.now()
+                tm._save_task(task)
+                # 立即排下一个
+                task.scheduled_time = datetime.now() + timedelta(seconds=task.interval_seconds)
+                task.status = TaskStatus.PENDING
+                task.result = None
+                task.error = None
+                tm._save_task(task)
+                tm._schedule_reminder_task(task)
+                print(f"  已跳过本次: {tid[:8]}, 下次: {(task.scheduled_time or '').strftime('%H:%M:%S') if task.scheduled_time else '?'}")
+            else:
+                task.status = TaskStatus.SKIPPED
+                task.completed_at = datetime.now()
+                tm._save_task(task)
+                print(f"  已跳过: {tid[:8]}")
+        else:
+            print("  任务不存在")
+
+    else:
+        print("""
+  /reminder 命令用法:
+    /reminder list [用户ID] [聊天ID]      列出提醒任务
+    /reminder cancel <task_id>            取消指定提醒
+    /reminder skip <task_id>              跳过本次触发 (仅 HABIT 类型可重新排入)
+""")
+
+
+def _cmd_plan(db, args: str):
+    """计划系统 CLI: list / create / today / check"""
+    from plan_engine import PlanEngine
+    from plan_store import PlanStore
+
+    if not db:
+        print("  错误: 数据库不可用")
+        return
+
+    store = PlanStore(db)
+    engine = PlanEngine(store)
+    parts = args.split()
+    sub = parts[0].lower() if parts else ""
+
+    if sub == "list":
+        global _engine
+        uid = int(parts[1]) if len(parts) > 1 else 0
+        if uid == 0 and _engine:
+            uid = int(input("  用户ID: ").strip())
+        goals = store.list_goals(uid)
+        if not goals:
+            print("  无目标")
+            return
+        for g in goals:
+            phases = " ".join(f"{p.title}({p.status})" for p in g.phases) if g.phases else "(无阶段)"
+            print(f"  [{g.status}] {g.title} ({g.progress:.0%})")
+            print(f"    phases: {phases}")
+
+    elif sub == "create":
+        uid = int(parts[1]) if len(parts) > 1 else int(input("  用户ID: ").strip())
+        title = input("  目标标题: ").strip()
+        desc = input("  描述 (可选): ").strip()
+        deadline = input("  截止日期 (可选 YYYY-MM-DD): ").strip()
+        goal = engine.create_goal(uid, title, desc, deadline)
+        print(f"  ✓ 已创建: {goal.goal_id[:8]} {title}")
+
+    elif sub == "today":
+        uid = int(parts[1]) if len(parts) > 1 else 0
+        if uid == 0 and _engine:
+            uid = int(input("  用户ID: ").strip())
+        from datetime import date
+        today = date.today().isoformat()
+        summary = engine.daily_summary(uid, today)
+        print(f"  今日计划 ({today})")
+        print(f"  完成: {summary['done']}/{summary['total']} ({summary['progress']:.0%})")
+        for t in summary["tasks"]:
+            icon = "☑" if t["status"] == "done" else "⏭" if t["status"] == "skipped" else "☐"
+            print(f"    {icon} {t['title']}")
+
+    elif sub == "check":
+        tid = parts[1] if len(parts) > 1 else input("  task_id: ").strip()
+        note = input("  备注 (可选): ").strip()
+        engine.check_off(tid, note)
+        print(f"  ✓ 已标记完成")
+
+    else:
+        print("""
+  /plan 命令用法:
+    /plan list <用户ID>          列出目标
+    /plan create <用户ID>        创建目标 (交互式)
+    /plan today [用户ID]         查看今日计划
+    /plan check <task_id>        标记任务完成
+""")
+
+
 def _cmd_help():
     """显示帮助信息"""
     print("""
@@ -630,6 +826,9 @@ def _cmd_help():
     /export memories <用户ID> <聊天ID> <路径> 导出记忆摘要为 JSON
     /import memories <用户ID> <聊天ID> <路径> 从 JSON 导入记忆摘要
     /import messages <用户ID> <聊天ID> <路径> 从 JSON 导入聊天记录
+    /reminder list [用户ID] [聊天ID]    列出提醒任务
+    /reminder cancel <task_id>          取消提醒
+    /reminder skip <task_id>            跳过本次触发
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -1311,6 +1510,14 @@ def _h_import(am, db, pm, pe, cc, pv, arg):
     _cmd_import(db, arg)
 
 
+def _h_reminder(am, db, pm, pe, cc, pv, arg):
+    _cmd_reminder(db, arg)
+
+
+def _h_plan(am, db, pm, pe, cc, pv, arg):
+    _cmd_plan(db, arg)
+
+
 _CMD_TABLE = {
     "/newbind": _h_newbind,
     "/users": _h_users,
@@ -1323,6 +1530,8 @@ _CMD_TABLE = {
     "/persona": _h_persona,
     "/export": _h_export,
     "/import": _h_import,
+    "/reminder": _h_reminder,
+    "/plan": _h_plan,
     "/help": _h_help,
 }
 
