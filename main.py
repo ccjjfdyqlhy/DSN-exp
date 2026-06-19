@@ -476,7 +476,7 @@ def _cmd_export(db, args: str):
         }
     elif sub == "memories":
         rows = conn.execute(
-            "SELECT id, round, content, created_at, type, embedding FROM memory_v2 "
+            "SELECT id, round, content, created_at, type FROM memory_v2 "
             "WHERE user_id = ? AND chat_id = ? ORDER BY id ASC",
             (uid, cid),
         ).fetchall()
@@ -492,9 +492,6 @@ def _cmd_export(db, args: str):
                 "content": cipher.decrypt(uid, r["content"] or ""),
                 "created_at": r["created_at"],
             }
-            if r["embedding"]:
-                import base64
-                entry["embedding_b64"] = base64.b64encode(r["embedding"]).decode()
             data.append(entry)
         export = {
             "type": "memory_summaries",
@@ -563,12 +560,6 @@ def _cmd_import(db, args: str):
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (uid, cid, typ, round_, encrypted, created),
             )
-            mid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            embedding_b64 = item.get("embedding_b64")
-            if embedding_b64:
-                import base64
-                blob = base64.b64decode(embedding_b64)
-                conn.execute("UPDATE memory_v2 SET embedding = ? WHERE id = ?", (blob, mid))
             count += 1
         conn.commit()
         print(f"  ✓ 已导入 {count} 条记忆摘要")
