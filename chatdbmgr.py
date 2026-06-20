@@ -45,6 +45,7 @@ class ChatDBManager:
         self.db_path = db_path
         self._local = threading.local()
         self._cipher = MessageCipher()  # 主密钥从 /.dsn/ 自动加载或创建
+        self._init_lock = threading.Lock()
 
         # 日志
         if logger:
@@ -110,7 +111,7 @@ class ChatDBManager:
 
     def _init_db(self):
         """初始化表结构（线程安全，使用锁）"""
-        with threading.Lock():
+        with self._init_lock:
             conn = self._get_connection()
             try:
                 conn.execute("""
@@ -301,8 +302,8 @@ class ChatDBManager:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False
-        updates["updated_at"] = "datetime('now')"
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        set_parts = [f"{k} = ?" for k in updates] + ["updated_at = datetime('now')"]
+        set_clause = ", ".join(set_parts)
         values = list(updates.values()) + [impression_id]
         try:
             conn.execute(

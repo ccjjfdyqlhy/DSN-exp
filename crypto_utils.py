@@ -7,6 +7,7 @@ import stat
 import hashlib
 import base64
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -64,11 +65,25 @@ class MessageCipher:
             logger.info("已从 %s 加载主密钥", self._dsn_dir)
             return master_key
         except (PermissionError, OSError) as e:
-            logger.warning("无法读取主密钥文件 (%s)，将创建新密钥", e)
+            logger.warning("无法读取主密钥文件 (%s)，旧密钥文件已备份", e)
+            self._backup_corrupted_keys(keystore_path, secret_path)
+            logger.warning("已将损坏/不可访问的密钥文件移至 .bak，将创建新密钥。旧加密数据将无法解密！")
             return self._create_master_key(keystore_path, secret_path)
         except Exception as e:
-            logger.error("加载主密钥失败: %s，将创建新密钥", e)
+            logger.error("加载主密钥失败: %s", e)
+            self._backup_corrupted_keys(keystore_path, secret_path)
+            logger.error("已将损坏的密钥文件移至 .bak，将创建新密钥。旧加密数据将无法解密！")
             return self._create_master_key(keystore_path, secret_path)
+
+    @staticmethod
+    def _backup_corrupted_keys(keystore_path: Path, secret_path: Path) -> None:
+        import shutil
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        for f in [keystore_path, secret_path]:
+            if f.exists():
+                bak = f.with_suffix(f.suffix + f".corrupted_{ts}.bak")
+                shutil.copy2(str(f), str(bak))
+                logger.warning("已备份损坏密钥文件: %s → %s", f, bak)
 
     def _create_master_key(self, keystore_path: Path, secret_path: Path) -> bytes:
         keystore = os.urandom(32)

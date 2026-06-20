@@ -279,8 +279,18 @@ class DSNEngine:
                 {"uid": task.user_id, "nickname": f"用户{task.user_id}"}
             ) if self.prompt_engine else ""
 
-            from models import DeepSeekChat
-            chat = DeepSeekChat(api_key=self._engine_cfg.deepseek_api_key)
+            if self._engine_cfg.model_type == "lmstudio":
+                from models import LMStudioChat
+                chat = LMStudioChat(
+                    base_url=self._engine_cfg.lmstudio_base_url,
+                    model_name=self._engine_cfg.model_name,
+                    temperature=self._engine_cfg.lmstudio_temperature,
+                    max_tokens=self._engine_cfg.lmstudio_max_tokens,
+                    timeout=self._engine_cfg.lmstudio_timeout,
+                )
+            else:
+                from models import DeepSeekChat
+                chat = DeepSeekChat(api_key=self._engine_cfg.deepseek_api_key)
             chat.messages = [{"role": "system", "content": system_prompt}]
             recent = history[-5:] if len(history) > 5 else history
             for msg in recent:
@@ -754,20 +764,31 @@ class DSNEngine:
             except Exception as e:
                 self._logger.error("定时任务失败: %s", e)
 
-        # 支持简单的 cron 解析
-        parts = cron_expr.strip().split()
-        if len(parts) == 5:
-            minute, hour, day, month, weekday = parts
-            if weekday != "*":
-                schedule.every().day.at(f"{hour.zfill(2)}:{minute.zfill(2)}").do(job)
-            if day != "*":
-                pass  # 简化：仅支持每日
+        try:
+            import croniter
+            def cron_loop():
+                now = datetime.now()
+                cron = croniter.croniter(cron_expr, now)
+                next_run = cron.get_next(datetime)
+                delay = max(0, (next_run - now).total_seconds())
+                if delay <= 60:
+                    job()
+                else:
+                    self._logger.info("下次定时任务: %s", next_run)
+                return schedule.CancelJob
+            schedule.every(60).seconds.do(cron_loop)
+            self._logger.info("定时调度已启动(croniter): %s → %s", cron_expr, prompt[:50])
+        except ImportError:
+            self._logger.warning("croniter 未安装，回退到简易 cron 解析(每日同一时间)")
+            parts = cron_expr.strip().split()
+            if len(parts) == 5:
+                time_str = f"{parts[1].zfill(2)}:{parts[0].zfill(2)}"
+                schedule.every().day.at(time_str).do(job)
+                self._logger.info("定时调度已启动(简易): %s → %s @ %s", cron_expr, prompt[:50], time_str)
             else:
-                schedule.every().day.at(f"{hour.zfill(2)}:{minute.zfill(2)}").do(job)
-        else:
-            schedule.every().day.at("09:00").do(job)
+                self._logger.warning("无法解析 cron 表达式: %s", cron_expr)
+                return
 
-        self._logger.info("定时调度已启动: %s → %s", cron_expr, prompt[:50])
         _stop_event = threading.Event()
         while not _stop_event.is_set():
             schedule.run_pending()
