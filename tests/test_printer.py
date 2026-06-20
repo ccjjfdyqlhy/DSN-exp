@@ -50,17 +50,53 @@ def scan_to_file(device_name, output_file='scan.png', resolution=300, mode='Colo
     except subprocess.CalledProcessError as e:
         print(f"❌ 扫描失败: {e}")
 
-# ===== 使用示例 =====
-if __name__ == "__main__":
+def main():
+    """主函数：测试打印功能 — 打印 test_docs/1.pdf 的第一页"""
+    import os
+
+    doc_path = os.path.join(os.path.dirname(__file__), "test_memory.py")
+    if not os.path.exists(doc_path):
+        print(f"❌ 文档不存在: {doc_path}")
+        return
+
+    printers = conn.getPrinters()
+    if not printers:
+        print("❌ 未发现任何打印机")
+        return
+
+    printer_name = list(printers.keys())[1]
+    print(f"使用打印机: {printer_name}")
+    print(f"打印文档: {doc_path}")
+
+    options = {"page-ranges": "1"}
+    job_id = print_file(doc_path, printer_name=printer_name, options=options)
+    if job_id:
+        print(f"✅ 打印任务 {job_id} 已提交（仅第 1 页）")
+    else:
+        print("❌ 打印失败")
+
+
+def print_file(file_path, printer_name='G3010_series', copies=1, options=None):
+    """
+    使用 CUPS 打印文件
+    :param file_path: 要打印的文件路径（支持 PDF、JPG、PNG、TXT 等）
+    :param printer_name: 打印机名称（默认使用 Canon_G3010_series）
+    :param copies: 打印份数
+    :param options: 其他打印选项字典，例如 {'media': 'A4', 'ColorModel': 'RGB'}
+    """
+    if options is None:
+        options = {}
+    # 如果指定了份数，添加到 options
+    if copies > 1:
+        options['copies'] = str(copies)
     try:
-        # 1. 自动获取扫描仪
-        scanner = get_scanner_device()
-        print(f"📠 使用扫描仪: {scanner}")
-
-        # 2. 以 600 DPI 扫描（这是 G3010 的光学极限）
-        scan_to_file(scanner, '/home/darkstar/Desktop/scan.png')
-
-        # 也可以尝试 300 DPI（更快的速度、更小的文件）
-        # scan_to_file(scanner, 'scan_300dpi.png', resolution=300)
+        job_id = conn.printFile(printer_name, file_path, "Python 打印任务", options)
+        print(f"✅ 打印任务已提交！任务ID: {job_id}")
+        return job_id
     except Exception as e:
-        print(f"❌ 发生错误: {e}")
+        print(f"❌ 打印失败: {e}")
+        return None
+
+
+if __name__ == "__main__":
+    main()
