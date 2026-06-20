@@ -55,14 +55,14 @@ class PlanEngine:
         if not date_str:
             date_str = date.today().isoformat()
 
-        # 检查是否已有当日计划
         existing = self._store.get_tasks_by_date(user_id, date_str)
         if existing:
             return existing
 
-        # 从 active goal 中推算今日任务
         goals = self._store.list_goals(user_id)
         tasks: list[DailyTask] = []
+        today_date = date.fromisoformat(date_str)
+
         for goal in goals:
             if goal.status != "active":
                 continue
@@ -72,20 +72,28 @@ class PlanEngine:
                 if phase.start_date and phase.end_date:
                     if not (phase.start_date <= date_str <= phase.end_date):
                         continue
-                # 生成一条今日任务摘要
+                day_index = 1
+                if phase.start_date:
+                    try:
+                        start = date.fromisoformat(phase.start_date)
+                        day_index = max(1, (today_date - start).days + 1)
+                    except Exception:
+                        pass
+
                 task = DailyTask(
                     task_id=str(uuid.uuid4()),
                     user_id=user_id,
                     date=date_str,
-                    title=f"{goal.title} — {phase.title}",
+                    title=f"{goal.title} — {phase.title} (Day {day_index})",
                     subject=goal.title,
                     duration_min=30,
                     priority=3,
+                    goal_id=goal.goal_id,
+                    phase_id=phase.phase_id,
                 )
                 tasks.append(task)
 
         if not tasks:
-            # 没有任何活跃 phase 时，基于 Goal 生成顶层任务
             for goal in goals:
                 if goal.status == "active":
                     task = DailyTask(
@@ -96,6 +104,7 @@ class PlanEngine:
                         subject=goal.title,
                         duration_min=30,
                         priority=3,
+                        goal_id=goal.goal_id,
                     )
                     tasks.append(task)
 
@@ -107,9 +116,54 @@ class PlanEngine:
 
     def check_off(self, task_id: str, note: str = ""):
         self._store.update_task_status(task_id, "done", note)
+        self._recalc_progress(task_id)
 
     def skip_task(self, task_id: str):
         self._store.update_task_status(task_id, "skipped")
+        self._recalc_progress(task_id)
+
+    # ── 进度传播 ──
+
+    def _recalc_progress(self, task_id: str):
+        """根据 daily_tasks 重新计算 phase 和 goal 的进度"""
+        conn = self._store.db._get_connection()
+        row = conn.execute(
+            "SELECT phase_id, goal_id FROM daily_tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return
+        phase_id = row["phase_id"] or ""
+        goal_id = row["goal_id"] or ""
+        if phase_id:
+            self._update_phase_progress(phase_id)
+        if goal_id:
+            self._update_goal_progress(goal_id)
+
+    def _update_phase_progress(self, phase_id: str):
+        conn = self._store.db._get_connection()
+        rows = conn.execute(
+            "SELECT status FROM daily_tasks WHERE phase_id = ?", (phase_id,)
+        ).fetchall()
+        if not rows:
+            return
+        done = sum(1 for r in rows if r["status"] == "done")
+        progress = round(done / len(rows), 2)
+        conn.execute("UPDATE phases SET progress = ? WHERE phase_id = ?",
+                     (progress, phase_id))
+        conn.commit()
+
+    def _update_goal_progress(self, goal_id: str):
+        conn = self._store.db._get_connection()
+        rows = conn.execute(
+            "SELECT progress FROM phases WHERE goal_id = ? AND status IN ('pending','active')",
+            (goal_id,)
+        ).fetchall()
+        if not rows:
+            return
+        avg = round(sum(r["progress"] for r in rows) / len(rows), 2)
+        conn.execute("UPDATE goals SET progress = ? WHERE goal_id = ?",
+                     (avg, goal_id))
+        conn.commit()
 
     # ── 进度统计 ──
 

@@ -1,0 +1,156 @@
+name: plan
+display_name: "计划管理"
+description: "创建/管理目标、阶段和每日任务。支持目标拆解、日计划生成、任务追踪。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 70
+
+tools:
+  - name: create_goal
+    display_name: "创建目标"
+    description: "创建一个长期目标"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: create_goal
+        description: "创建新目标"
+        parameters:
+          title:
+            type: string
+            description: "目标标题"
+            required: true
+          description:
+            type: string
+            description: "目标描述"
+            required: false
+          deadline:
+            type: string
+            description: "截止日期 (YYYY-MM-DD)"
+            required: false
+          user_id:
+            type: integer
+            description: "用户ID"
+            required: false
+
+  - name: add_phase
+    display_name: "添加阶段"
+    description: "为目标添加一个阶段/里程碑"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: add_phase
+        description: "添加阶段"
+        parameters:
+          goal_id:
+            type: string
+            description: "目标ID"
+            required: true
+          title:
+            type: string
+            description: "阶段标题"
+            required: true
+          description:
+            type: string
+            description: "阶段描述"
+            required: false
+          start_date:
+            type: string
+            description: "开始日期 (YYYY-MM-DD)"
+            required: false
+          end_date:
+            type: string
+            description: "结束日期 (YYYY-MM-DD)"
+            required: false
+
+  - name: list_goals
+    display_name: "列出目标"
+    description: "列出所有目标和阶段"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: list_goals
+        description: "列出用户的所有目标"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID"
+            required: false
+
+  - name: generate_daily_plan
+    display_name: "生成日计划"
+    description: "根据活跃目标生成今日任务清单"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: generate_daily_plan
+        description: "生成或获取今日任务"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID"
+            required: false
+          date_str:
+            type: string
+            description: "日期 (YYYY-MM-DD)，默认今天"
+            required: false
+
+  - name: check_off
+    display_name: "完成任务"
+    description: "标记日常任务为已完成"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: check_off
+        description: "标记任务完成"
+        parameters:
+          task_id:
+            type: string
+            description: "任务ID"
+            required: true
+          note:
+            type: string
+            description: "完成备注"
+            required: false
+
+  - name: skip_task
+    display_name: "跳过任务"
+    description: "跳过今日任务"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: skip_task
+        description: "跳过任务"
+        parameters:
+          task_id:
+            type: string
+            description: "任务ID"
+            required: true
+
+  - name: daily_summary
+    display_name: "日终摘要"
+    description: "获取今日任务统计"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: daily_summary
+        description: "获取今日统计数据"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID"
+            required: false
+          date_str:
+            type: string
+            description: "日期 (YYYY-MM-DD)"
+            required: false
+
+activation:
+  keywords: ["计划", "目标", "任务", "阶段", "每日", "打卡", "进度"]
+  auto_activate: false
+
+dependencies: []
+tags: [planning, tasks, goals]

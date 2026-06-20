@@ -5,7 +5,7 @@
 
 所以，我最近在干嘛？
 
-**本次更新：工作区系统 + Document 子系统（文档录入/OCR/HMD 管线）**
+**本次更新：工作区系统 + Document 子系统 + 计划技能 + 提醒增强补全**
 
 ## 下一步往哪儿走
 
@@ -82,6 +82,12 @@ Concepts
 - [x] ScannerTool/PrinterTool 技能
 - [x] OCRModel（deepseek-ocr，用完即释放）
 - [x] .hmd 格式与DocProcessor
+- [x] plan 技能（7 tools）：create_goal/add_phase/generate_daily_plan/check_off/skip_task/daily_summary
+- [x] PlanEngine 增强：progress 自动传播（DailyTask→Phase→Goal）、delete_goal 修复、plan_check 标签
+- [x] 提醒 DAILY_PLAN 每日计划：schedule.every().day.at() 调度 + PlanEngine 联动
+- [x] 提醒 PERIODIC 通用 cron：croniter 解析 + 执行后自动重排
+- [x] POST /api/reminder/skip 跳过提醒端点
+- [x] minimal.py：跳过提醒/系统信息/手动同步键位 (#k #i #r)
 
 前端
 ---

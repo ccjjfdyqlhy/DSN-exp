@@ -13,7 +13,7 @@
 
 | 指标摘要 | 评分 |
 |------|-------|
-| **糟糕指数** | **80.91/100** |
+| **糟糕指数** | **80.67/100** |
 | 屎山等级 | 😐 微臭青年 |
 
 > 清新宜人，初闻像早晨的露珠
@@ -22,42 +22,42 @@
 
 | 指标 | 数值 |
 |--------|-------|
-| 总文件数 | 161 |
-| 已跳过 | 372 |
-| 耗时 | 894ms |
+| 总文件数 | 162 |
+| 已跳过 | 399 |
+| 耗时 | 877ms |
 
 ### 📋 项目概览
 
 | 指标 | 数值 |
 |--------|-------|
-| 总代码行数 | 26670 |
-| 总注释行数 | 1331 |
-| 整体注释比例 | 5.0% |
-| 平均文件大小 | 207 行 |
+| 总代码行数 | 27113 |
+| 总注释行数 | 1325 |
+| 整体注释比例 | 4.9% |
+| 平均文件大小 | 209 行 |
 | 最大文件 | `main.py` (2017) |
 
 #### 语言分布
 
 | 语言 | 文件数 |
 |:-----|------:|
-| Python | 158 |
+| Python | 159 |
 | JavaScript | 3 |
 
 ## 评分指标详情 {#metrics-details}
 
 | 指标摘要 | 评分 | Min | Max | Median | 状态 |
 |:-----|------:|------:|------:|------:|:------:|
-| 循环复杂度 | 9.09% | 0.0% | 80.0% | 4.0% | ✓✓ |
-| 认知复杂度 | 12.61% | 0.0% | 67.0% | 8.0% | ✓✓ |
-| 嵌套深度 | 3.15% | 0.0% | 55.0% | 0.0% | ✓✓ |
-| 函数长度 | 5.90% | 0.0% | 50.5% | 0.0% | ✓✓ |
-| 文件长度 | 2.66% | 0.0% | 89.3% | 0.0% | ✓✓ |
-| 参数数量 | 13.11% | 0.0% | 98.5% | 0.0% | ✓✓ |
-| 代码重复 | 3.76% | 0.0% | 65.0% | 0.0% | ✓✓ |
-| 结构分析 | 4.53% | 0.0% | 74.5% | 0.0% | ✓✓ |
-| 错误处理 | 33.84% | 0.0% | 98.8% | 5.4% | ✓ |
-| 注释比例 | 35.87% | 0.0% | 100.0% | 30.7% | ○ |
-| 命名规范 | 26.56% | 0.0% | 94.7% | 21.1% | ✓ |
+| 循环复杂度 | 9.12% | 0.0% | 80.0% | 4.0% | ✓✓ |
+| 认知复杂度 | 12.67% | 0.0% | 67.0% | 8.0% | ✓✓ |
+| 嵌套深度 | 3.19% | 0.0% | 55.0% | 0.0% | ✓✓ |
+| 函数长度 | 5.93% | 0.0% | 50.6% | 0.0% | ✓✓ |
+| 文件长度 | 2.72% | 0.0% | 89.3% | 0.0% | ✓✓ |
+| 参数数量 | 13.23% | 0.0% | 98.5% | 0.0% | ✓✓ |
+| 代码重复 | 4.60% | 0.0% | 65.0% | 0.0% | ✓✓ |
+| 结构分析 | 4.63% | 0.0% | 82.5% | 0.0% | ✓✓ |
+| 错误处理 | 33.88% | 0.0% | 98.8% | 6.1% | ✓ |
+| 注释比例 | 36.77% | 0.0% | 100.0% | 31.7% | ○ |
+| 命名规范 | 26.73% | 0.0% | 94.7% | 21.3% | ✓ |
 
 ## 最屎代码排行榜 {#problem-files}
 
@@ -458,7 +458,144 @@
 - 注释比例: 2.1% (19/894)
 - 命名规范: 发现 27 个违规
 
-### 4. plugins/pipeline.py
+### 4. psychoscope/minimal.py
+
+**糟糕指数: 41.01**
+
+> 行数: 1006 总计, 868 代码, 8 注释 | 函数: 44 | 类: 4
+
+**问题**: 🔄 复杂度问题: 21, ⚠️ 其他问题: 3, 📋 重复问题: 2, 🏗️ 结构问题: 14, ❌ 错误处理问题: 15, 📝 注释问题: 1, 🏷️ 命名问题: 10
+
+#### 函数详情
+
+| 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
+|:-----|------:|------:|------:|------:|------:|:------:|
+| `main` | L804-1003 | 192 | 44 | 6 | 0 | ✗ |
+| `authenticate` | L195-276 | 82 | 14 | 2 | 3 | ✗ |
+| `_handle_sse_stream` | L354-386 | 33 | 11 | 3 | 3 | ✗ |
+| `_loop` | L479-508 | 30 | 10 | 5 | 1 | ✗ |
+| `stop_and_send` | L583-615 | 33 | 10 | 2 | 1 | ✗ |
+| `print_system_info` | L766-802 | 37 | 10 | 4 | 1 | ✓ |
+| `_tts_worker` | L171-193 | 23 | 9 | 3 | 1 | ✗ |
+| `_capture_loop` | L617-647 | 31 | 9 | 3 | 1 | ✗ |
+| `_loop` | L673-699 | 27 | 9 | 5 | 1 | ✗ |
+| `iter_sse_lines` | L125-142 | 18 | 8 | 3 | 1 | ✗ |
+| `_detect_tts_sample_rate` | L71-84 | 14 | 6 | 5 | 0 | ✓ |
+| `send_audio` | L314-352 | 39 | 6 | 2 | 2 | ✗ |
+| `_trigger` | L510-534 | 25 | 6 | 4 | 2 | ✓ |
+| `_verify_api_key` | L278-295 | 18 | 5 | 3 | 1 | ✗ |
+| `skip_latest` | L413-431 | 19 | 5 | 2 | 1 | ✓ |
+| `_sync` | L433-459 | 27 | 5 | 3 | 1 | ✓ |
+| `_play_beep` | L98-112 | 15 | 4 | 1 | 2 | ✓ |
+| `__init__` | L156-169 | 14 | 4 | 1 | 3 | ✗ |
+| `start` | L561-581 | 21 | 4 | 1 | 1 | ✗ |
+| `print_header` | L701-728 | 28 | 4 | 1 | 3 | ✗ |
+| `load_config` | L144-150 | 7 | 3 | 2 | 0 | ✗ |
+| `_load_local` | L461-467 | 7 | 3 | 2 | 1 | ✗ |
+| `print_personality` | L730-755 | 26 | 3 | 2 | 1 | ✗ |
+| `setup_logging` | L46-66 | 21 | 2 | 1 | 0 | ✗ |
+| `raw_pcm_to_wav_b64` | L115-123 | 9 | 2 | 1 | 2 | ✗ |
+| `_headers` | L297-300 | 4 | 2 | 1 | 1 | ✗ |
+| `start` | L398-404 | 7 | 2 | 1 | 1 | ✗ |
+| `_save_local` | L469-477 | 9 | 2 | 1 | 2 | ✗ |
+| `start` | L655-660 | 6 | 2 | 1 | 1 | ✗ |
+| `stop` | L662-665 | 4 | 2 | 1 | 1 | ✗ |
+| `get` | L667-671 | 5 | 2 | 1 | 2 | ✗ |
+| `toggle_standby` | L757-763 | 7 | 2 | 1 | 1 | ✗ |
+| `on_sigint` | L862-869 | 8 | 2 | 1 | 2 | ✗ |
+| `save_config` | L152-153 | 2 | 1 | 0 | 1 | ✗ |
+| `_http_get` | L302-304 | 3 | 1 | 0 | 2 | ✗ |
+| `_http_post` | L306-308 | 3 | 1 | 0 | 2 | ✗ |
+| `_http_post_stream` | L310-312 | 3 | 1 | 0 | 2 | ✗ |
+| `__init__` | L392-396 | 5 | 1 | 0 | 2 | ✗ |
+| `stop` | L406-407 | 2 | 1 | 0 | 1 | ✗ |
+| `sync_now` | L409-411 | 3 | 1 | 0 | 1 | ✓ |
+| `_type_label` | L537-542 | 6 | 1 | 0 | 1 | ✗ |
+| `__init__` | L546-555 | 10 | 1 | 0 | 2 | ✗ |
+| `is_recording` | L558-559 | 2 | 1 | 0 | 1 | ✗ |
+| `__init__` | L650-653 | 4 | 1 | 0 | 1 | ✗ |
+
+**全部问题 (64)**
+
+- 🔄 `authenticate()` L195: 复杂度: 14
+- 🔄 `_handle_sse_stream()` L354: 复杂度: 11
+- 🔄 `main()` L804: 复杂度: 44
+- 🔄 `_detect_tts_sample_rate()` L71: 认知复杂度: 16
+- 🔄 `iter_sse_lines()` L125: 认知复杂度: 14
+- 🔄 `_tts_worker()` L171: 认知复杂度: 15
+- 🔄 `authenticate()` L195: 认知复杂度: 18
+- 🔄 `_handle_sse_stream()` L354: 认知复杂度: 17
+- 🔄 `_loop()` L479: 认知复杂度: 20
+- 🔄 `_trigger()` L510: 认知复杂度: 14
+- 🔄 `stop_and_send()` L583: 认知复杂度: 14
+- 🔄 `_capture_loop()` L617: 认知复杂度: 15
+- 🔄 `_loop()` L673: 认知复杂度: 19
+- 🔄 `print_system_info()` L766: 认知复杂度: 18
+- 🔄 `main()` L804: 认知复杂度: 56
+- 🔄 `_detect_tts_sample_rate()` L71: 嵌套深度: 5
+- 🔄 `_loop()` L479: 嵌套深度: 5
+- 🔄 `_trigger()` L510: 嵌套深度: 4
+- 🔄 `_loop()` L673: 嵌套深度: 5
+- 🔄 `print_system_info()` L766: 嵌套深度: 4
+- 🔄 `main()` L804: 嵌套深度: 6
+- 📏 `authenticate()` L195: 82 代码量
+- 📏 `main()` L804: 192 代码量
+- 📋 `__init__()` L156: 重复模式: __init__, _trigger, __init__
+- 📋 `_tts_worker()` L171: 重复模式: _tts_worker, __init__, _loop
+- 🏗️ `_detect_tts_sample_rate()` L71: 嵌套过深: 5
+- 🏗️ `iter_sse_lines()` L125: 中等嵌套: 3
+- 🏗️ `_tts_worker()` L171: 中等嵌套: 3
+- 🏗️ `_verify_api_key()` L278: 中等嵌套: 3
+- 🏗️ `_handle_sse_stream()` L354: 中等嵌套: 3
+- 🏗️ `_sync()` L433: 中等嵌套: 3
+- 🏗️ `_loop()` L479: 嵌套过深: 5
+- 🏗️ `_trigger()` L510: 中等嵌套: 4
+- 🏗️ `_capture_loop()` L617: 中等嵌套: 3
+- 🏗️ `_loop()` L673: 嵌套过深: 5
+- 🏗️ `print_system_info()` L766: 中等嵌套: 4
+- 🏗️ `main()` L804: 嵌套过深: 6
+- 🏗️ L1: 文件过大: 1006 行
+- 🏗️ L1: 导入过多: 25
+- ❌ L76: 未处理的易出错调用
+- ❌ L118: 未处理的易出错调用
+- ❌ L338: 未处理的易出错调用
+- ❌ L427: 未处理的易出错调用
+- ❌ L455: 未处理的易出错调用
+- ❌ L524: 未处理的易出错调用
+- ❌ L529: 未处理的易出错调用
+- ❌ L532: 未处理的易出错调用
+- ❌ L601: 未处理的易出错调用
+- ❌ L686: 未处理的易出错调用
+- ❌ L695: 未处理的易出错调用
+- ❌ L751: 未处理的易出错调用
+- ❌ L773: 未处理的易出错调用
+- ❌ L798: 未处理的易出错调用
+- ❌ L953: 未处理的易出错调用
+- 🏷️ `_detect_tts_sample_rate()` L71: "_detect_tts_sample_rate" - snake_case
+- 🏷️ `_play_beep()` L98: "_play_beep" - snake_case
+- 🏷️ `__init__()` L156: "__init__" - snake_case
+- 🏷️ `_tts_worker()` L171: "_tts_worker" - snake_case
+- 🏷️ `_verify_api_key()` L278: "_verify_api_key" - snake_case
+- 🏷️ `_headers()` L297: "_headers" - snake_case
+- 🏷️ `_http_get()` L302: "_http_get" - snake_case
+- 🏷️ `_http_post()` L306: "_http_post" - snake_case
+- 🏷️ `_http_post_stream()` L310: "_http_post_stream" - snake_case
+- 🏷️ `_handle_sse_stream()` L354: "_handle_sse_stream" - snake_case
+
+**详情**:
+- 循环复杂度: 平均: 5.1, 最大: 44
+- 认知复杂度: 平均: 8.5, 最大: 56
+- 嵌套深度: 平均: 1.7, 最大: 6
+- 函数长度: 平均: 20.2 行, 最大: 192 行
+- 文件长度: 868 代码量 (1006 总计)
+- 参数数量: 平均: 1.4, 最大: 3
+- 代码重复: 9.1% 重复 (4/44)
+- 结构分析: 14 个结构问题
+- 错误处理: 15/88 个错误被忽略 (17.0%)
+- 注释比例: 0.9% (8/868)
+- 命名规范: 发现 21 个违规
+
+### 5. plugins/pipeline.py
 
 **糟糕指数: 38.30**
 
@@ -543,129 +680,6 @@
 - 错误处理: 12/33 个错误被忽略 (36.4%)
 - 注释比例: 5.0% (25/502)
 - 命名规范: 发现 13 个违规
-
-### 5. psychoscope/minimal.py
-
-**糟糕指数: 37.66**
-
-> 行数: 902 总计, 773 代码, 10 注释 | 函数: 40 | 类: 4
-
-**问题**: 🔄 复杂度问题: 19, ⚠️ 其他问题: 3, 🏗️ 结构问题: 12, ❌ 错误处理问题: 11, 📝 注释问题: 1, 🏷️ 命名问题: 10
-
-#### 函数详情
-
-| 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
-|:-----|------:|------:|------:|------:|------:|:------:|
-| `main` | L728-899 | 164 | 36 | 6 | 0 | ✗ |
-| `authenticate` | L195-276 | 82 | 14 | 2 | 3 | ✗ |
-| `_handle_sse_stream` | L354-386 | 33 | 11 | 3 | 3 | ✗ |
-| `_loop` | L454-483 | 30 | 10 | 5 | 1 | ✗ |
-| `stop_and_send` | L549-581 | 33 | 10 | 2 | 1 | ✗ |
-| `_tts_worker` | L171-193 | 23 | 9 | 3 | 1 | ✗ |
-| `_capture_loop` | L583-613 | 31 | 9 | 3 | 1 | ✗ |
-| `_loop` | L639-665 | 27 | 9 | 5 | 1 | ✗ |
-| `iter_sse_lines` | L125-142 | 18 | 8 | 3 | 1 | ✗ |
-| `_detect_tts_sample_rate` | L71-84 | 14 | 6 | 5 | 0 | ✓ |
-| `send_audio` | L314-352 | 39 | 6 | 2 | 2 | ✗ |
-| `_trigger` | L485-508 | 24 | 6 | 4 | 2 | ✓ |
-| `_verify_api_key` | L278-295 | 18 | 5 | 3 | 1 | ✗ |
-| `_sync` | L408-434 | 27 | 5 | 3 | 1 | ✓ |
-| `_play_beep` | L98-112 | 15 | 4 | 1 | 2 | ✓ |
-| `__init__` | L156-169 | 14 | 4 | 1 | 3 | ✗ |
-| `start` | L527-547 | 21 | 4 | 1 | 1 | ✗ |
-| `print_header` | L667-691 | 25 | 4 | 1 | 3 | ✗ |
-| `load_config` | L144-150 | 7 | 3 | 2 | 0 | ✗ |
-| `_load_local` | L436-442 | 7 | 3 | 2 | 1 | ✗ |
-| `print_personality` | L693-718 | 26 | 3 | 2 | 1 | ✗ |
-| `setup_logging` | L46-66 | 21 | 2 | 1 | 0 | ✗ |
-| `raw_pcm_to_wav_b64` | L115-123 | 9 | 2 | 1 | 2 | ✗ |
-| `_headers` | L297-300 | 4 | 2 | 1 | 1 | ✗ |
-| `start` | L397-403 | 7 | 2 | 1 | 1 | ✗ |
-| `_save_local` | L444-452 | 9 | 2 | 1 | 2 | ✗ |
-| `start` | L621-626 | 6 | 2 | 1 | 1 | ✗ |
-| `stop` | L628-631 | 4 | 2 | 1 | 1 | ✗ |
-| `get` | L633-637 | 5 | 2 | 1 | 2 | ✗ |
-| `toggle_standby` | L720-726 | 7 | 2 | 1 | 1 | ✗ |
-| `on_sigint` | L786-793 | 8 | 2 | 1 | 2 | ✗ |
-| `save_config` | L152-153 | 2 | 1 | 0 | 1 | ✗ |
-| `_http_get` | L302-304 | 3 | 1 | 0 | 2 | ✗ |
-| `_http_post` | L306-308 | 3 | 1 | 0 | 2 | ✗ |
-| `_http_post_stream` | L310-312 | 3 | 1 | 0 | 2 | ✗ |
-| `__init__` | L392-395 | 4 | 1 | 0 | 2 | ✗ |
-| `stop` | L405-406 | 2 | 1 | 0 | 1 | ✗ |
-| `__init__` | L512-521 | 10 | 1 | 0 | 2 | ✗ |
-| `is_recording` | L524-525 | 2 | 1 | 0 | 1 | ✗ |
-| `__init__` | L616-619 | 4 | 1 | 0 | 1 | ✗ |
-
-**全部问题 (54)**
-
-- 🔄 `authenticate()` L195: 复杂度: 14
-- 🔄 `_handle_sse_stream()` L354: 复杂度: 11
-- 🔄 `main()` L728: 复杂度: 36
-- 🔄 `_detect_tts_sample_rate()` L71: 认知复杂度: 16
-- 🔄 `iter_sse_lines()` L125: 认知复杂度: 14
-- 🔄 `_tts_worker()` L171: 认知复杂度: 15
-- 🔄 `authenticate()` L195: 认知复杂度: 18
-- 🔄 `_handle_sse_stream()` L354: 认知复杂度: 17
-- 🔄 `_loop()` L454: 认知复杂度: 20
-- 🔄 `_trigger()` L485: 认知复杂度: 14
-- 🔄 `stop_and_send()` L549: 认知复杂度: 14
-- 🔄 `_capture_loop()` L583: 认知复杂度: 15
-- 🔄 `_loop()` L639: 认知复杂度: 19
-- 🔄 `main()` L728: 认知复杂度: 48
-- 🔄 `_detect_tts_sample_rate()` L71: 嵌套深度: 5
-- 🔄 `_loop()` L454: 嵌套深度: 5
-- 🔄 `_trigger()` L485: 嵌套深度: 4
-- 🔄 `_loop()` L639: 嵌套深度: 5
-- 🔄 `main()` L728: 嵌套深度: 6
-- 📏 `authenticate()` L195: 82 代码量
-- 📏 `main()` L728: 164 代码量
-- 🏗️ `_detect_tts_sample_rate()` L71: 嵌套过深: 5
-- 🏗️ `iter_sse_lines()` L125: 中等嵌套: 3
-- 🏗️ `_tts_worker()` L171: 中等嵌套: 3
-- 🏗️ `_verify_api_key()` L278: 中等嵌套: 3
-- 🏗️ `_handle_sse_stream()` L354: 中等嵌套: 3
-- 🏗️ `_sync()` L408: 中等嵌套: 3
-- 🏗️ `_loop()` L454: 嵌套过深: 5
-- 🏗️ `_trigger()` L485: 中等嵌套: 4
-- 🏗️ `_capture_loop()` L583: 中等嵌套: 3
-- 🏗️ `_loop()` L639: 嵌套过深: 5
-- 🏗️ `main()` L728: 嵌套过深: 6
-- 🏗️ L1: 导入过多: 25
-- ❌ L76: 未处理的易出错调用
-- ❌ L118: 未处理的易出错调用
-- ❌ L338: 未处理的易出错调用
-- ❌ L430: 未处理的易出错调用
-- ❌ L498: 未处理的易出错调用
-- ❌ L503: 未处理的易出错调用
-- ❌ L506: 未处理的易出错调用
-- ❌ L567: 未处理的易出错调用
-- ❌ L652: 未处理的易出错调用
-- ❌ L661: 未处理的易出错调用
-- ❌ L714: 未处理的易出错调用
-- 🏷️ `_detect_tts_sample_rate()` L71: "_detect_tts_sample_rate" - snake_case
-- 🏷️ `_play_beep()` L98: "_play_beep" - snake_case
-- 🏷️ `__init__()` L156: "__init__" - snake_case
-- 🏷️ `_tts_worker()` L171: "_tts_worker" - snake_case
-- 🏷️ `_verify_api_key()` L278: "_verify_api_key" - snake_case
-- 🏷️ `_headers()` L297: "_headers" - snake_case
-- 🏷️ `_http_get()` L302: "_http_get" - snake_case
-- 🏷️ `_http_post()` L306: "_http_post" - snake_case
-- 🏷️ `_http_post_stream()` L310: "_http_post_stream" - snake_case
-- 🏷️ `_handle_sse_stream()` L354: "_handle_sse_stream" - snake_case
-
-**详情**:
-- 循环复杂度: 平均: 5.0, 最大: 36
-- 认知复杂度: 平均: 8.4, 最大: 48
-- 嵌套深度: 平均: 1.7, 最大: 6
-- 函数长度: 平均: 19.8 行, 最大: 164 行
-- 文件长度: 773 代码量 (902 总计)
-- 参数数量: 平均: 1.4, 最大: 3
-- 代码重复: 5.0% 重复 (2/40)
-- 结构分析: 12 个结构问题
-- 错误处理: 11/70 个错误被忽略 (15.7%)
-- 注释比例: 1.3% (10/773)
-- 命名规范: 发现 20 个违规
 
 ### 6. psychoscope/static/js/app.js
 
@@ -852,9 +866,9 @@
 
 ### 8. boot.py
 
-**糟糕指数: 30.16**
+**糟糕指数: 30.19**
 
-> 行数: 508 总计, 433 代码, 22 注释 | 函数: 12 | 类: 0
+> 行数: 511 总计, 436 代码, 22 注释 | 函数: 12 | 类: 0
 
 **问题**: 🔄 复杂度问题: 5, ⚠️ 其他问题: 2, 📋 重复问题: 1, 🏗️ 结构问题: 3, ❌ 错误处理问题: 7, 📝 注释问题: 1, 🏷️ 命名问题: 8
 
@@ -862,58 +876,58 @@
 
 | 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
 |:-----|------:|------:|------:|------:|------:|:------:|
-| `create_application` | L265-507 | 243 | 31 | 4 | 0 | ✓ |
-| `_synthesize_tts_lines` | L124-146 | 23 | 10 | 2 | 1 | ✗ |
-| `process_task_completion` | L173-190 | 18 | 8 | 3 | 0 | ✗ |
-| `_handle_action_completion` | L214-239 | 26 | 8 | 2 | 3 | ✗ |
-| `_convert_audio_to_wav` | L105-121 | 17 | 5 | 2 | 1 | ✗ |
-| `_process_image_input` | L77-92 | 16 | 4 | 1 | 2 | ✗ |
-| `create_chat_client` | L63-74 | 12 | 3 | 1 | 1 | ✗ |
-| `_handle_reasoner_completion` | L204-211 | 8 | 3 | 1 | 2 | ✗ |
-| `_save_debug_audio` | L95-102 | 8 | 2 | 1 | 1 | ✗ |
-| `setup_logging` | L149-170 | 22 | 2 | 1 | 1 | ✗ |
-| `_handle_reminder_completion` | L193-201 | 9 | 2 | 1 | 2 | ✗ |
-| `_t` | L249-260 | 12 | 2 | 1 | 1 | ✗ |
+| `create_application` | L267-510 | 244 | 31 | 4 | 0 | ✓ |
+| `_synthesize_tts_lines` | L125-147 | 23 | 10 | 2 | 1 | ✗ |
+| `process_task_completion` | L174-192 | 19 | 8 | 3 | 0 | ✗ |
+| `_handle_action_completion` | L216-241 | 26 | 8 | 2 | 3 | ✗ |
+| `_convert_audio_to_wav` | L106-122 | 17 | 5 | 2 | 1 | ✗ |
+| `_process_image_input` | L78-93 | 16 | 4 | 1 | 2 | ✗ |
+| `create_chat_client` | L64-75 | 12 | 3 | 1 | 1 | ✗ |
+| `_handle_reasoner_completion` | L206-213 | 8 | 3 | 1 | 2 | ✗ |
+| `_save_debug_audio` | L96-103 | 8 | 2 | 1 | 1 | ✗ |
+| `setup_logging` | L150-171 | 22 | 2 | 1 | 1 | ✗ |
+| `_handle_reminder_completion` | L195-203 | 9 | 2 | 1 | 2 | ✗ |
+| `_t` | L251-262 | 12 | 2 | 1 | 1 | ✗ |
 
 **全部问题 (25)**
 
-- 🔄 `create_application()` L265: 复杂度: 31
-- 🔄 `_synthesize_tts_lines()` L124: 认知复杂度: 14
-- 🔄 `process_task_completion()` L173: 认知复杂度: 14
-- 🔄 `create_application()` L265: 认知复杂度: 39
-- 🔄 `create_application()` L265: 嵌套深度: 4
-- 📏 `create_application()` L265: 243 代码量
-- 📋 `_save_debug_audio()` L95: 重复模式: _save_debug_audio, _handle_reminder_completion
-- 🏗️ `process_task_completion()` L173: 中等嵌套: 3
-- 🏗️ `create_application()` L265: 中等嵌套: 4
-- 🏗️ L1: 导入过多: 42
-- ❌ L100: 未处理的易出错调用
+- 🔄 `create_application()` L267: 复杂度: 31
+- 🔄 `_synthesize_tts_lines()` L125: 认知复杂度: 14
+- 🔄 `process_task_completion()` L174: 认知复杂度: 14
+- 🔄 `create_application()` L267: 认知复杂度: 39
+- 🔄 `create_application()` L267: 嵌套深度: 4
+- 📏 `create_application()` L267: 244 代码量
+- 📋 `_save_debug_audio()` L96: 重复模式: _save_debug_audio, _handle_reminder_completion
+- 🏗️ `process_task_completion()` L174: 中等嵌套: 3
+- 🏗️ `create_application()` L267: 中等嵌套: 4
+- 🏗️ L1: 导入过多: 43
 - ❌ L101: 未处理的易出错调用
-- ❌ L142: 未处理的易出错调用
-- ❌ L308: 未处理的易出错调用
-- ❌ L320: 未处理的易出错调用
-- ❌ L351: 未处理的易出错调用
-- ❌ L485: 未处理的易出错调用
-- 🏷️ `_process_image_input()` L77: "_process_image_input" - snake_case
-- 🏷️ `_save_debug_audio()` L95: "_save_debug_audio" - snake_case
-- 🏷️ `_convert_audio_to_wav()` L105: "_convert_audio_to_wav" - snake_case
-- 🏷️ `_synthesize_tts_lines()` L124: "_synthesize_tts_lines" - snake_case
-- 🏷️ `_handle_reminder_completion()` L193: "_handle_reminder_completion" - snake_case
-- 🏷️ `_handle_reasoner_completion()` L204: "_handle_reasoner_completion" - snake_case
-- 🏷️ `_handle_action_completion()` L214: "_handle_action_completion" - snake_case
-- 🏷️ `_t()` L249: "_t" - snake_case
+- ❌ L102: 未处理的易出错调用
+- ❌ L143: 未处理的易出错调用
+- ❌ L311: 未处理的易出错调用
+- ❌ L323: 未处理的易出错调用
+- ❌ L354: 未处理的易出错调用
+- ❌ L488: 未处理的易出错调用
+- 🏷️ `_process_image_input()` L78: "_process_image_input" - snake_case
+- 🏷️ `_save_debug_audio()` L96: "_save_debug_audio" - snake_case
+- 🏷️ `_convert_audio_to_wav()` L106: "_convert_audio_to_wav" - snake_case
+- 🏷️ `_synthesize_tts_lines()` L125: "_synthesize_tts_lines" - snake_case
+- 🏷️ `_handle_reminder_completion()` L195: "_handle_reminder_completion" - snake_case
+- 🏷️ `_handle_reasoner_completion()` L206: "_handle_reasoner_completion" - snake_case
+- 🏷️ `_handle_action_completion()` L216: "_handle_action_completion" - snake_case
+- 🏷️ `_t()` L251: "_t" - snake_case
 
 **详情**:
 - 循环复杂度: 平均: 6.7, 最大: 31
 - 认知复杂度: 平均: 10.0, 最大: 39
 - 嵌套深度: 平均: 1.7, 最大: 4
-- 函数长度: 平均: 34.5 行, 最大: 243 行
-- 文件长度: 433 代码量 (508 总计)
+- 函数长度: 平均: 34.7 行, 最大: 244 行
+- 文件长度: 436 代码量 (511 总计)
 - 参数数量: 平均: 1.3, 最大: 3
 - 代码重复: 8.3% 重复 (1/12)
 - 结构分析: 3 个结构问题
 - 错误处理: 7/32 个错误被忽略 (21.9%)
-- 注释比例: 5.1% (22/433)
+- 注释比例: 5.0% (22/436)
 - 命名规范: 发现 8 个违规
 
 ### 9. chatdbmgr.py
@@ -1134,15 +1148,15 @@
 
 | 函数 | 文件 | 复杂度 | 嵌套 | 行数 |
 |:-----|:-----|------:|------:|------:|
+| `main` | psychoscope/minimal.py | 44 | 6 | 192 |
 | `create_engine_with_defaults` | engine.py | 43 | 2 | 237 |
 | `process_stream` | plugins/pipeline.py | 40 | 5 | 203 |
 | `search` | memory/core.py | 38 | 7 | 129 |
 | `msgFlow` | psychoscope/static/js/app.js | 38 | 4 | 131 |
-| `main` | psychoscope/minimal.py | 36 | 6 | 164 |
 | `sendRecording` | psychoscope/static/js/app.js | 36 | 4 | 105 |
 | `_cmd_reminder` | main.py | 31 | 4 | 129 |
 | `_cmd_memory_query` | main.py | 31 | 3 | 141 |
-| `create_application` | boot.py | 31 | 4 | 243 |
+| `create_application` | boot.py | 31 | 4 | 244 |
 | `_cmd_plan` | main.py | 21 | 2 | 63 |
 
 ## 诊断结论 {#conclusion}

@@ -43,10 +43,11 @@ def list_reminders():
     rows = conn.execute(
         "SELECT task_id, task_type, params, priority, scheduled_time, "
         "interval_seconds, skip_count, created_at FROM tasks "
-        "WHERE user_id = ? AND task_type IN (?, ?, ?) AND status = ? "
+        "WHERE user_id = ? AND task_type IN (?, ?, ?, ?, ?) AND status = ? "
         "ORDER BY scheduled_time ASC LIMIT 50",
         (uid, TaskType.REMINDER.value, TaskType.HABIT.value,
-         TaskType.COUNTDOWN.value, TaskStatus.PENDING.value),
+         TaskType.COUNTDOWN.value, TaskType.DAILY_PLAN.value,
+         TaskType.PERIODIC.value, TaskStatus.PENDING.value),
     ).fetchall()
 
     reminders = []
@@ -146,3 +147,55 @@ def cancel_reminder():
     _task_manager._save_task(task)
 
     return jsonify({"success": True, "action": "cancelled", "text": task.params.get("text", "")})
+
+
+@reminder_bp.route("/api/reminder/skip", methods=["POST"])
+def skip_reminder():
+    """跳过一条提醒（标记为 SKIPPED，递增 skip_count）"""
+    uid = g.user.get("uid", 0) if g.user else 0
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("task_id", "")
+
+    if not task_id:
+        return jsonify({"success": False, "error": "缺少 task_id"}), 400
+
+    if _task_manager is None:
+        return jsonify({"success": False, "error": "TaskManager 不可用"}), 500
+
+    if task_id not in _task_manager.tasks:
+        return jsonify({"success": False, "error": "任务不存在"}), 404
+
+    task = _task_manager.tasks[task_id]
+    if task.user_id != uid:
+        return jsonify({"success": False, "error": "无权操作"}), 403
+
+    task.status = TaskStatus.SKIPPED
+    task.skip_count += 1
+    task.completed_at = datetime.now()
+    _task_manager._save_task(task)
+
+    text = task.params.get("text", "")
+    next_task_id = None
+    next_time = None
+
+    if task.task_type == TaskType.HABIT and task.interval_seconds > 0:
+        next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
+        next_task_id = _task_manager.create_task(
+            task_type=TaskType.HABIT,
+            user_id=uid,
+            chat_id=task.chat_id,
+            params={"text": text},
+            priority=task.priority,
+            scheduled_time=next_time,
+            interval_seconds=task.interval_seconds,
+        )
+
+    return jsonify({
+        "success": True,
+        "action": "skipped",
+        "text": text,
+        "task_type": task.task_type.value,
+        "skip_count": task.skip_count,
+        "next_scheduled": next_time.isoformat() if next_time else None,
+        "next_task_id": next_task_id,
+    })

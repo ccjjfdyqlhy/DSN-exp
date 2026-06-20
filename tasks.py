@@ -26,6 +26,8 @@ class TaskType(Enum):
     REMINDER = "reminder"    # 一次性提醒
     HABIT = "habit"          # 周期性提醒 (每N分钟/小时/天)
     COUNTDOWN = "countdown"  # 倒计时到指定时刻
+    DAILY_PLAN = "daily_plan"  # 每日计划提醒 (07:30 触发)
+    PERIODIC = "periodic"    # 通用 cron 表达式
     REASONER = "reasoner"    # 推理任务
     ANALYSIS = "analysis"    # 分析任务
     ACTION = "action"        # 动作执行任务
@@ -292,7 +294,8 @@ class TaskManager:
 
                     # 重新调度 PENDING 任务
                     if task.status == TaskStatus.PENDING and task.scheduled_time:
-                        if task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN):
+                        if task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN,
+                                         TaskType.DAILY_PLAN, TaskType.PERIODIC):
                             self._schedule_reminder_task(task)
 
                 except Exception as e:
@@ -364,7 +367,7 @@ class TaskManager:
                 self._save_task(task)
     
     def _schedule_reminder_task(self, task: Task):
-        """调度提醒任务 (一次性/周期性)"""
+        """调度提醒任务 (一次性/周期性/每日计划/cron)"""
         if not task.scheduled_time:
             return
 
@@ -372,10 +375,9 @@ class TaskManager:
         delay_seconds = max(0, (task.scheduled_time - now).total_seconds())
 
         def reminder_job():
-            self.logger.info("触发提醒/习惯任务: %s", task.task_id)
+            self.logger.info("触发提醒任务: %s", task.task_id)
             self.execute_task(task.task_id)
 
-            # 周期性任务: 执行后自动排下一个
             if (task.task_type == TaskType.HABIT and
                     task.interval_seconds > 0 and
                     task.status == TaskStatus.COMPLETED):
@@ -387,7 +389,32 @@ class TaskManager:
                 self._save_task(task)
                 self._schedule_reminder_task(task)
 
+            if task.task_type in (TaskType.DAILY_PLAN, TaskType.PERIODIC):
+                return
             return schedule.CancelJob
+
+        # DAILY_PLAN: schedule.every().day.at("07:30")
+        if task.task_type == TaskType.DAILY_PLAN:
+            trigger_time = task.params.get("trigger_time", "07:30")
+            self.scheduler.every().day.at(trigger_time).do(reminder_job).tag(task.task_id)
+            return
+
+        # PERIODIC: croniter 计算下一次
+        if task.task_type == TaskType.PERIODIC:
+            cron_expr = task.params.get("cron", "")
+            if cron_expr:
+                try:
+                    import croniter
+                    cron = croniter.croniter(cron_expr, now)
+                    next_time = cron.get_next(datetime)
+                    task.scheduled_time = next_time
+                    self._save_task(task)
+                    delay = max(0, (next_time - now).total_seconds())
+                    self.scheduler.every(delay).seconds.do(reminder_job).tag(task.task_id)
+                    return
+                except Exception as e:
+                    self.logger.error("cron 解析失败: %s → %s", cron_expr, e)
+                    return
 
         if delay_seconds > 3600 * 24:
             # > 24h 的延迟不用 schedule.every().seconds (精度问题)
@@ -436,7 +463,8 @@ class TaskManager:
             self._save_task(task)
         
         # 定时任务进行调度
-        if task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN) and scheduled_time:
+        if task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN,
+                         TaskType.DAILY_PLAN, TaskType.PERIODIC) and scheduled_time:
             self._schedule_reminder_task(task)
         
         self.logger.info("创建任务: %s (类型: %s, 用户: %d)", task_id,
@@ -484,7 +512,8 @@ class TaskManager:
         try:
             if task.task_type == TaskType.REASONER:
                 return self._execute_reasoner_task(task)
-            elif task.task_type == TaskType.REMINDER:
+            elif task.task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN,
+                                     TaskType.DAILY_PLAN, TaskType.PERIODIC):
                 return self._execute_reminder_task(task)
             elif task.task_type == TaskType.ANALYSIS:
                 return self._execute_analysis_task(task)
@@ -543,28 +572,55 @@ class TaskManager:
     
     def _execute_reminder_task(self, task: Task) -> Dict[str, Any]:
         """执行提醒任务"""
-        self.logger.info("执行提醒任务: %s", task.task_id)
-        
-        # 获取提醒内容
+        self.logger.info("执行提醒任务: %s (type=%s)", task.task_id, task.task_type.value)
+
         reminder_text = task.params.get("text", "提醒时间到了！")
-        
-        # 不再生成AI提醒消息，改为发送原始提醒内容给AI处理
-        # AI将在app.py中生成自然的提醒消息
-        
+
+        # COUNTDOWN: 附加剩余时间
+        if task.task_type == TaskType.COUNTDOWN and task.scheduled_time:
+            remaining = task.scheduled_time - datetime.now()
+            if remaining.total_seconds() > 0:
+                days = remaining.days
+                hours = remaining.seconds // 3600
+                mins = (remaining.seconds % 3600) // 60
+                parts = []
+                if days > 0:
+                    parts.append(f"{days} 天")
+                if hours > 0:
+                    parts.append(f"{hours} 小时")
+                if mins > 0:
+                    parts.append(f"{mins} 分钟")
+                time_str = " ".join(parts) if parts else "不到 1 分钟"
+                reminder_text = f"{reminder_text}\n（距离目标还有 {time_str}）"
+
+        # DAILY_PLAN: 触发 PlanEngine 生成今日计划
+        if task.task_type == TaskType.DAILY_PLAN:
+            try:
+                from plan_engine import PlanEngine
+                from plan_store import PlanStore
+                from datetime import date
+                store = PlanStore(self.db)
+                engine = PlanEngine(store)
+                today = date.today().isoformat()
+                tasks = engine.generate_daily_plan(task.user_id, today)
+                if tasks:
+                    plan_lines = [f"  ☐ {t.title} ({t.duration_min}min)" for t in tasks]
+                    reminder_text = f"{reminder_text}\n\n今日计划:\n" + "\n".join(plan_lines)
+            except Exception as e:
+                self.logger.error("DAILY_PLAN 计划生成失败: %s", e)
+
         result = {
             "reminder_text": reminder_text,
             "user_id": task.user_id,
             "chat_id": task.chat_id,
             "timestamp": datetime.now().isoformat(),
-            "task_type": "reminder",
-            "requires_ai_notification": True,  # 标记需要AI通知
-            "skip_memory": True  # 标记跳过记忆化
+            "task_type": task.task_type.value,
+            "requires_ai_notification": True,
+            "skip_memory": True
         }
-        
-        # 不再保存AI提醒消息到任务结果
-        # 只保存基本信息供后续处理
+
         self._save_task_result(task.task_id, f"提醒任务已触发: {reminder_text}")
-        
+
         return result
     
     def _execute_analysis_task(self, task: Task) -> Dict[str, Any]:
@@ -728,8 +784,26 @@ class TaskManager:
             result = future.result()
             self._update_task_status(task_id, TaskStatus.COMPLETED, result=result)
             self.logger.info("任务完成: %s", task_id)
-            
-            # 触发任务完成通知
+
+            # PERIODIC: 执行后根据 cron 表达式重新计算下一次触发
+            task = self.tasks.get(task_id)
+            if task and task.task_type == TaskType.PERIODIC:
+                cron_expr = task.params.get("cron", "")
+                if cron_expr:
+                    try:
+                        import croniter
+                        cron = croniter.croniter(cron_expr, datetime.now())
+                        next_time = cron.get_next(datetime)
+                        task.scheduled_time = next_time
+                        task.status = TaskStatus.PENDING
+                        task.result = None
+                        task.error = None
+                        self._save_task(task)
+                        self._schedule_reminder_task(task)
+                        self.logger.info("PERIODIC 任务 %s 下一次: %s", task_id, next_time)
+                    except Exception as e:
+                        self.logger.error("PERIODIC 重排失败: %s", e)
+
             self._notify_task_completion(task_id, result)
             
         except Exception as e:
