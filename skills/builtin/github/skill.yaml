@@ -30,7 +30,7 @@ tools:
             required: false
           target_path:
             type: string
-            description: "自定义克隆目标路径。未指定则默认克隆到 ~/dsn_workspace。支持 ~ 展开"
+            description: "自定义克隆目标路径。未指定则默认克隆到工作区 repos/。支持 ~ 展开"
             required: false
 
   - name: pull

@@ -24,6 +24,7 @@ from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from tts_process_model import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType
+from workspace import init_workspace_manager
 import prompt
 
 import sys
@@ -298,6 +299,10 @@ def create_application():
     _auth_manager.db = db
     if _auth_manager._user_count() == 0:
         print("  首次启动提示: 在服务器控制台输入 /newbind 生成配对码")
+
+    # ── 工作区 ──
+    init_workspace_manager(db=db, workspace_dir=Config.WORKSPACE_DIR)
+    _t("工作区")
 
     # ── 任务管理器 ──
     if app.config.get("TASK_MANAGER_ENABLED", True):

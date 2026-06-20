@@ -146,6 +146,9 @@ class Config:
     DISTILLATION_MODEL = _env("DISTILLATION_MODEL", "deepseek")  # "deepseek" | "lmstudio"
     PERSONALITY_V3_DEFAULT_CARD = _env("PERSONALITY_V3_DEFAULT_CARD", "")
 
+    # ==================== 工作区系统 ====================
+    WORKSPACE_DIR = _env("WORKSPACE_DIR", ".dsn/workspace")
+
     # ==================== Token 消耗定价 (USD / 1M tokens) ====================
     # DeepSeek v4-flash (cache miss)
     DEEPSEEK_FLASH_INPUT_PRICE = 0.14

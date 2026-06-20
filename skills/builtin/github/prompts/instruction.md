@@ -35,7 +35,7 @@ priority: 55
 ```json
 {"skill": "github", "tool": "clone", "params": {"repo_url": "https://github.com/user/repo.git"}}
 ```
-未指定 `target_path` 时默认克隆到 `~/dsn_workspace/<repo_name>`。
+未指定 `target_path` 时默认克隆到工作区 `repos/<repo_name>`。
 
 **克隆仓库（指定位置）：**
 ```json
@@ -45,12 +45,12 @@ priority: 55
 ### 克隆路径规则
 
 - 用户**明确指定**了克隆位置时，使用 `target_path` 参数传入该路径
-- 用户**未指定**克隆位置时，不传 `target_path`，自动使用默认目录 `~/dsn_workspace`
+- 用户**未指定**克隆位置时，不传 `target_path`，自动使用工作区默认目录
 - `target_path` 支持 `~` 展开和相对路径
 
 **查看状态：**
 ```json
-{"skill": "github", "tool": "status", "params": {"repo_path": "/home/user/dsn_workspace/repo"}}
+{"skill": "github", "tool": "status", "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo"}}
 ```
 
 **创建分支并提交 PR：**
@@ -72,12 +72,12 @@ priority: 55
 
 **拉取最新代码：**
 ```json
-{"skill": "github", "tool": "pull", "params": {"repo_path": "/home/user/dsn_workspace/repo"}}
+{"skill": "github", "tool": "pull", "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo"}}
 ```
 
 **查看提交历史：**
 ```json
-{"skill": "github", "tool": "log", "params": {"repo_path": "/home/user/dsn_workspace/repo", "count": 5}}
+{"skill": "github", "tool": "log", "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo", "count": 5}}
 ```
 
 ### 注意事项
@@ -85,6 +85,6 @@ priority: 55
 - 首次操作需先 `clone` 仓库
 - `repo_path` 首次 clone 后会返回路径，后续操作传入该路径
 - 用户指定克隆位置时用 `target_path`，否则使用默认 `~/dsn_workspace`
-- 默认工作目录可通过环境变量 `GIT_WORK_DIR` 覆盖
+- 默认工作目录在 `.dsn/workspace/repos/`，可通过 `WORKSPACE_DIR` 配置
 - `push` 和 `create_pr` 需要已配置 `gh auth login` 认证
 - 文件路径必须使用相对路径，不能使用绝对路径或路径穿越

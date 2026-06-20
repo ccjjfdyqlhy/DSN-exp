@@ -7,20 +7,29 @@ from typing import Any
 
 logger = logging.getLogger("skill.file_manager")
 
-# 工作目录 — 执行文件操作时的根目录
-_BASE_DIR = Path(__file__).parent.parent.parent.parent.parent  # DSN-exp 根目录
-
 
 class FileOpsTool:
     """文件操作工具"""
 
     def __init__(self, config: dict[str, Any] = None):
         self.config = config or {}
-        self.base_dir = Path(self.config.get("base_dir", str(_BASE_DIR)))
+        # 默认 base_dir 指向工作区根目录
+        default = self._default_base_dir()
+        self.base_dir = Path(self.config.get("base_dir", str(default)))
+
+    @staticmethod
+    def _default_base_dir() -> Path:
+        try:
+            from workspace import get_workspace_manager
+            return get_workspace_manager().root
+        except Exception:
+            return Path(__file__).parent.parent.parent.parent.parent
 
     def _safe_path(self, path: str) -> Path:
-        p = (self.base_dir / path).resolve()
-        return p
+        p = Path(path)
+        if p.is_absolute():
+            return p
+        return (self.base_dir / path).resolve()
 
     def read_file(self, path: str) -> dict[str, Any]:
         try:

@@ -11,19 +11,18 @@ from pathlib import Path
 
 logger = logging.getLogger("NotebookStore")
 
-NOTEBOOK_ROOT = Path(__file__).parent.parent.parent.parent / "notebook"
-
-
 class NotebookStore:
-    """用户观察日记存储。每个用户的笔记保存在 notebook/<uid>.json。"""
+    """用户观察日记存储。每个用户的笔记保存在工作区 <user>/notebook/ 下。"""
 
     def __init__(self):
-        NOTEBOOK_ROOT.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._uid_last_counts: dict[int, int] = {}
 
     def _path_for(self, uid: int) -> Path:
-        return NOTEBOOK_ROOT / f"{uid}.json"
+        from workspace import get_workspace_manager
+        wm = get_workspace_manager()
+        wm.register_subdir("notebook")
+        return wm.user_subdir(uid, "notebook") / f"{uid}.json"
 
     def add_note(self, uid: int, content: str, chat_id: int = 0) -> dict:
         """追加一条笔记，返回完整的 note_entry"""
