@@ -393,6 +393,7 @@ class ReminderWatcher:
         self._client = client
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._last_triggered: dict[str, dict] = {}
 
     def start(self):
         if self._running:
@@ -404,6 +405,30 @@ class ReminderWatcher:
 
     def stop(self):
         self._running = False
+
+    def sync_now(self):
+        """手动触发同步"""
+        self._sync()
+
+    def skip_latest(self) -> bool:
+        """跳过最近一条触发的提醒"""
+        if not self._last_triggered:
+            return False
+        task_id = list(self._last_triggered.keys())[-1]
+        info = self._last_triggered.get(task_id, {})
+        try:
+            resp = requests.post(
+                f"{self._client.base}/api/reminder/skip",
+                json={"task_id": task_id},
+                headers=self._client._headers(),
+                timeout=10,
+            )
+            if resp.status_code == 200 and resp.json().get("success"):
+                print(f"\n  ⏭ 已跳过: {info.get('text', task_id[:8])}")
+                return True
+        except Exception:
+            pass
+        return False
 
     def _sync(self):
         """从后端拉取 PENDING 提醒到本地 JSON"""
@@ -486,6 +511,7 @@ class ReminderWatcher:
         """向后端发送 done 请求，并通知用户"""
         task_id = reminder["task_id"]
         text = reminder.get("text", "") or "提醒时间到了"
+        tlabel = self._type_label(reminder.get("task_type", ""))
         try:
             resp = requests.post(
                 f"{self._client.base}/api/reminder/done",
@@ -496,16 +522,24 @@ class ReminderWatcher:
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get("success"):
-                    print(f"\n  ⏰ [提醒] {text}")
+                    print(f"\n  ⏰ [{tlabel}] {text}")
                     _play_beep(self._client, 880)
+                    self._last_triggered[task_id] = {"text": text, "type": tlabel}
 
-                    # 如果是 HABIT，后端已创建下一个，需要同步
                     if result.get("next_task_id"):
-                        pass  # 下一个 loop 中 _sync 会拉取
+                        pass
                 else:
                     print(f"\n  ⚠️ 提醒失败: {result.get('error', '')}")
         except Exception:
             pass
+
+    @staticmethod
+    def _type_label(task_type: str) -> str:
+        labels = {
+            "reminder": "提醒", "habit": "习惯", "countdown": "倒计时",
+            "daily_plan": "每日计划", "periodic": "周期",
+        }
+        return labels.get(task_type, task_type)
 
 
 class VoiceRecorder:
@@ -685,6 +719,9 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [a x2]   Lock / Unlock panel              ")
     print("  [p]      Show personality status         ")
     print("  [s]      Toggle standby / wakeup         ")
+    print("  [i]      System info (server + plan)      ")
+    print("  [k]      Skip latest reminder             ")
+    print("  [r]      Refresh reminders sync           ")
     print("  [h]      Show help                       ")
     print("  [q/Ctrl+C] Quit                          ")
     print("===========================================")
@@ -724,6 +761,45 @@ def toggle_standby(client: DSNClient):
         print(f"  Server State: {state}")
     except Exception as e:
         print(f"  Error: {e}")
+
+
+def print_system_info(client: DSNClient):
+    """显示系统状态 + 服务器维护态 + 计划摘要"""
+    print(f"\n  --- System Info ---")
+    try:
+        resp = client._http_get("/api/maintenance/status")
+        if resp.status_code == 200:
+            st = resp.json()
+            print(f"  Server   : {st.get('state', '?')}")
+            idle = st.get("idle_minutes", 0)
+            if idle:
+                print(f"  Idle     : {idle} min")
+    except Exception:
+        pass
+
+    try:
+        resp = client._http_get("/api/todo/list")
+        if resp.status_code == 200:
+            todos = resp.json().get("todos", [])
+            active = [t for t in todos if t.get("status") == "pending"]
+            print(f"  Todos    : {len(active)} pending / {len(todos)} total")
+    except Exception:
+        pass
+
+    try:
+        resp = client._http_get("/api/reminder/list")
+        if resp.status_code == 200:
+            reminders = resp.json().get("reminders", [])
+            if reminders:
+                print(f"  Reminders: {len(reminders)} pending")
+                for r in reminders[:5]:
+                    tlabel = ReminderWatcher._type_label(r.get("task_type", ""))
+                    st = r.get("scheduled_time", "")[:16].replace("T", " ")
+                    print(f"    [{tlabel}] {st}  {r.get('text', '')[:40]}")
+    except Exception:
+        pass
+
+    print(f"  ---------------------\n")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -847,6 +923,34 @@ def main():
 
             elif ch.lower() == "s":
                 toggle_standby(client)
+
+            elif ch.lower() == "i":
+                print_system_info(client)
+
+            elif ch.lower() == "k":
+                if not reminder.skip_latest():
+                    print("\n  No recent reminder to skip")
+                else:
+                    reminder._sync()
+
+            elif ch.lower() == "r":
+                reminder.sync_now()
+                reminders = reminder._load_local()
+                now = datetime.now()
+                upcoming = []
+                for r in reminders:
+                    try:
+                        st = datetime.fromisoformat(r["scheduled_time"])
+                        if st > now:
+                            upcoming.append(r)
+                    except Exception:
+                        continue
+                upcoming.sort(key=lambda r: r.get("scheduled_time", ""))
+                print(f"\n  Reminders: {len(reminders)} total, {len(upcoming)} upcoming")
+                for r in upcoming[:5]:
+                    tlabel = reminder._type_label(r.get("task_type", ""))
+                    st = r.get("scheduled_time", "")[:16].replace("T", " ")
+                    print(f"    [{tlabel}] {st}  {r.get('text', '')[:50]}")
 
             elif ch.lower() == "h":
                 print_header(cfg, client, locked)

@@ -124,6 +124,10 @@ class TaskPlugin(Plugin):
                 return self._create_habit(params, ctx)
             elif task_type == "countdown":
                 return self._create_countdown(params, ctx)
+            elif task_type == "daily_plan":
+                return self._create_daily_plan(params, ctx)
+            elif task_type == "periodic":
+                return self._create_periodic(params, ctx)
             elif task_type == "reasoner":
                 return self._create_reasoner(params, ctx)
             elif task_type == "action":
@@ -181,6 +185,49 @@ class TaskPlugin(Plugin):
             scheduled_time=scheduled_time,
         )
         logger.info("已创建倒计时: %s, 目标: %s", task_id, scheduled_time)
+        return task_id
+
+    def _create_daily_plan(self, params: dict, ctx: PluginContext) -> str | None:
+        trigger_time = params.get("trigger_time", "07:30")
+        try:
+            hour, minute = map(int, trigger_time.split(":"))
+        except ValueError:
+            return None
+        now = datetime.now()
+        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if scheduled <= now:
+            from datetime import timedelta
+            scheduled += timedelta(days=1)
+        task_id = self._task_mgr.create_task(
+            task_type=TaskType.DAILY_PLAN,
+            user_id=ctx.user_id,
+            chat_id=ctx.chat_id,
+            params=params,
+            priority=1,
+            scheduled_time=scheduled,
+        )
+        logger.info("已创建每日计划提醒: %s, 时间=%s", task_id, trigger_time)
+        return task_id
+
+    def _create_periodic(self, params: dict, ctx: PluginContext) -> str | None:
+        cron_expr = params.get("cron", "")
+        if not cron_expr:
+            return None
+        try:
+            import croniter
+            cron = croniter.croniter(cron_expr, datetime.now())
+            next_time = cron.get_next(datetime)
+        except Exception:
+            return None
+        task_id = self._task_mgr.create_task(
+            task_type=TaskType.PERIODIC,
+            user_id=ctx.user_id,
+            chat_id=ctx.chat_id,
+            params=params,
+            priority=1,
+            scheduled_time=next_time,
+        )
+        logger.info("已创建周期性任务: %s, cron=%s, 下次=%s", task_id, cron_expr, next_time)
         return task_id
 
     @staticmethod

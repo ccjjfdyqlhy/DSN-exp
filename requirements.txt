@@ -11,6 +11,7 @@ Requests==2.34.2
 cryptography==48.0.1
 rich==15.0.0
 schedule==1.2.2
+croniter>=1.4.1
 Werkzeug==3.1.8
 # 分层认证系统（可选）
 # webauthn>=2.0       # L2 WebAuthn 通行密钥

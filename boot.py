@@ -19,6 +19,7 @@ from usermgr import init_usermgr
 from todo_api import todo_bp
 from reminder_api import reminder_bp, init_reminder_api
 from plan_api import plan_bp, init_plan_api
+from plan_store import set_plan_db
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from tts_process_model import TTSProcessModel
@@ -180,7 +181,8 @@ def process_task_completion():
             task = task_manager.get_task(task_id)
             if not task:
                 continue
-            if task.task_type == TaskType.REMINDER:
+            if task.task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN,
+                                  TaskType.DAILY_PLAN, TaskType.PERIODIC):
                 _handle_reminder_completion(task, result)
             elif task.task_type == TaskType.REASONER:
                 _handle_reasoner_completion(task, result)
@@ -296,6 +298,7 @@ def create_application():
 
     # ── 数据库 ──
     db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
+    set_plan_db(db)
     _auth_manager.db = db
     if _auth_manager._user_count() == 0:
         print("  首次启动提示: 在服务器控制台输入 /newbind 生成配对码")

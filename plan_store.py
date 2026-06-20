@@ -10,6 +10,17 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_global_db = None
+
+
+def set_plan_db(db):
+    global _global_db
+    _global_db = db
+
+
+def get_plan_db():
+    return _global_db
+
 
 @dataclass
 class DailyTask:
@@ -22,6 +33,8 @@ class DailyTask:
     priority: int = 3              # 1-5
     status: str = "pending"        # pending / done / skipped
     note: str = ""
+    goal_id: str = ""
+    phase_id: str = ""
 
 
 @dataclass
@@ -93,6 +106,8 @@ class PlanStore:
                 priority    INTEGER DEFAULT 3,
                 status      TEXT DEFAULT 'pending',
                 note        TEXT DEFAULT '',
+                goal_id     TEXT DEFAULT '',
+                phase_id    TEXT DEFAULT '',
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -100,6 +115,16 @@ class PlanStore:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_phases_goal ON phases(goal_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_date ON daily_tasks(date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON daily_tasks(user_id, date)")
+        conn.commit()
+        # 迁移: 为旧 daily_tasks 补充 goal_id/phase_id 列
+        try:
+            conn.execute("ALTER TABLE daily_tasks ADD COLUMN goal_id TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE daily_tasks ADD COLUMN phase_id TEXT DEFAULT ''")
+        except Exception:
+            pass
         conn.commit()
 
     # ── Goal CRUD ──
@@ -148,7 +173,7 @@ class PlanStore:
     def delete_goal(self, goal_id: str):
         conn = self.db._get_connection()
         conn.execute("DELETE FROM phases WHERE goal_id = ?", (goal_id,))
-        conn.execute("DELETE FROM daily_tasks WHERE goal_id = ?", (goal_id,))
+        conn.execute("DELETE FROM daily_tasks WHERE phase_id IN (SELECT phase_id FROM phases WHERE goal_id = ?)", (goal_id,))
         conn.execute("DELETE FROM goals WHERE goal_id = ?", (goal_id,))
         conn.commit()
 
@@ -181,10 +206,11 @@ class PlanStore:
         conn = self.db._get_connection()
         conn.execute(
             "INSERT OR REPLACE INTO daily_tasks "
-            "(task_id, user_id, date, title, subject, duration_min, priority, status, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(task_id, user_id, date, title, subject, duration_min, priority, status, note, goal_id, phase_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task.task_id, task.user_id, task.date, task.title,
-             task.subject, task.duration_min, task.priority, task.status, task.note),
+             task.subject, task.duration_min, task.priority, task.status, task.note,
+             task.goal_id, task.phase_id),
         )
         conn.commit()
 
@@ -196,7 +222,8 @@ class PlanStore:
         ).fetchall()
         return [DailyTask(task_id=r["task_id"], user_id=r["user_id"], date=r["date"], title=r["title"],
                           subject=r["subject"] or "", duration_min=r["duration_min"],
-                          priority=r["priority"], status=r["status"], note=r["note"] or "")
+                          priority=r["priority"], status=r["status"], note=r["note"] or "",
+                          goal_id=r["goal_id"] or "", phase_id=r["phase_id"] or "")
                 for r in rows]
 
     def update_task_status(self, task_id: str, status: str, note: str = ""):
