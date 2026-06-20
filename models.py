@@ -43,6 +43,30 @@ def _load_lmstudio_model(base_url: str, model_name: str, label: str, timeout: in
         logging.getLogger("models").error("自动加载 %s 失败 (%s): %s", label, model_name, e)
         return False
 
+
+def _unload_lmstudio_model(base_url: str, model_name: str) -> bool:
+    """卸载 LMStudio 模型。POST /api/v1/models/unload，body: {"instance_id": model_name}"""
+    if not model_name:
+        return False
+    try:
+        logger = logging.getLogger("models")
+        logger.info("正在卸载模型: %s", model_name)
+        resp = requests.post(
+            f"{base_url}/api/v1/models/unload",
+            json={"instance_id": model_name},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("instance_id") == model_name or data.get("model") == model_name:
+            logger.info("模型已卸载: %s", model_name)
+            return True
+        logger.info("模型卸载完成: %s", model_name)
+        return True
+    except Exception as e:
+        logging.getLogger("models").error("卸载模型失败 (%s): %s", model_name, e)
+        return False
+
 class DeepSeekChat:
     """
     DeepSeek API 聊天客户端类，支持多轮对话历史管理。
@@ -374,6 +398,102 @@ class LMStudioChat:
         else:
             raise ValueError("图片描述响应格式异常")
 
+    def describe_images(self, images: list[dict], prompt: str = None,
+                        max_tokens: int = 1024, temperature: float = 0.1) -> str:
+        """
+        一次传入多张图片，返回合并描述表。
+
+        :param images: [{"filename": "page1.png", "data_url": "data:image/png;base64,..."}, ...]
+        :param prompt: 描述提示词，默认自动生成（含文件名信息）
+        :param max_tokens: 最大输出 token
+        :return: 格式化表格文本，包含原始文件名和描述
+        """
+        if not images:
+            return ""
+
+        if prompt is None:
+            filenames = ", ".join([img.get("filename", f"图{i+1}") for i, img in enumerate(images)])
+            prompt = (
+                f"以下是 {len(images)} 张图片，文件名依次为: {filenames}。\n"
+                f"请按顺序逐张描述每张图片的内容。\n"
+                f"输出格式：为每张图片输出一行，格式为 '文件名: 描述内容'"
+            )
+
+        content_parts = [{"type": "text", "text": prompt}]
+        for img in images:
+            data_url = img.get("data_url", "")
+            if data_url:
+                content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+
+        messages = [{"role": "user", "content": content_parts}]
+
+        payload = {
+            "model": self.model_name or "default",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+        }
+
+        self.logger.debug("describe_images 请求 (%d 张图)", len(images))
+        result = self._call_chat_api(payload)
+
+        if "choices" in result and result["choices"]:
+            descriptions = result["choices"][0]["message"]["content"].strip()
+            self.logger.info("多图描述: %s", descriptions[:120] + ("..." if len(descriptions) > 120 else ""))
+            return descriptions
+        else:
+            raise ValueError("多图描述响应格式异常")
+
+    def classify_image(self, data_url: str, max_tokens: int = 50,
+                       temperature: float = 0.0) -> str:
+        """
+        判断图片类型。
+
+        :param data_url: 图片 base64 data URL
+        :return: "document" / "photo" / "mixed"
+        """
+        if not data_url:
+            return "photo"
+
+        prompt = (
+            "请判断这张图片的类型，只回答一个单词：\n"
+            "- 如果图片内容是印刷文档、手写文字、试卷、书籍、论文等 → 回答 document\n"
+            "- 如果图片是风景照、人物照、实物照片、截图等非文档内容 → 回答 photo\n"
+            "- 如果图片同时包含文档和嵌入的图片/照片 → 回答 mixed\n"
+            "只回答 document、photo 或 mixed，不要其他内容。"
+        )
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }]
+
+        payload = {
+            "model": self.model_name or "default",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+        }
+
+        self.logger.debug("classify_image 请求")
+        result = self._call_chat_api(payload)
+
+        if "choices" in result and result["choices"]:
+            answer = result["choices"][0]["message"]["content"].strip().lower()
+            if "document" in answer:
+                return "document"
+            elif "mixed" in answer:
+                return "mixed"
+            elif "photo" in answer:
+                return "photo"
+            return "document"
+        return "document"
+
     def __repr__(self):
         return f"<LMStudioChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
 
@@ -655,3 +775,129 @@ class LMSummaryModel:
         self._summary_context.append((current_text, result))
 
         return result
+
+
+class OCRModel:
+    """
+    deepseek-ocr 客户端。纯视觉→markdown 模型，无文本提示。
+
+    用法:
+        ocr = OCRModel()
+        md = ocr.ocr(data_url)         # 单张 → markdown
+        results = ocr.ocr_batch([...]) # 批量 → [{filename, markdown}]
+        ocr.unload()                   # 手动卸载
+
+    配置:
+        OCR_MODEL: 模型名 (默认 "deepseek-ocr")
+        OCR_BASE_URL: LMStudio 地址 (默认 "http://localhost:4502")
+        OCR_UNLOAD_AFTER_USE: 用完自动卸载
+    """
+
+    def __init__(self, base_url: str = None, model_name: str = None,
+                 auto_load: bool = True):
+        from config import Config
+
+        self.base_url = (base_url or Config.OCR_BASE_URL).rstrip("/")
+        self.model_name = model_name or Config.OCR_MODEL
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._http_session = requests.Session()
+        self._load_lock = threading.Lock()
+        self._model_ready = threading.Event()
+
+        if auto_load and self.model_name:
+            self._ensure_loaded()
+
+    def ocr(self, data_url: str, max_tokens: int = 4096) -> str:
+        """对单张图片执行 OCR，返回 markdown 文本。"""
+        results = self.ocr_batch([{"filename": "image", "data_url": data_url}], max_tokens)
+        return results[0]["markdown"] if results else ""
+
+    def ocr_batch(self, images: list[dict], max_tokens: int = 4096) -> list[dict]:
+        """
+        批量 OCR。
+
+        :param images: [{filename, data_url}, ...]
+        :return: [{filename, markdown}, ...]
+
+        若 OCR_UNLOAD_AFTER_USE=true，完成所有处理后自动卸载。
+        """
+        from config import Config
+        results = []
+        for img in images:
+            filename = img.get("filename", "unknown")
+            text = self._ocr_single(img.get("data_url", ""), max_tokens)
+            results.append({"filename": filename, "markdown": text})
+        self.logger.info("OCR 完成: %d 张 → %d 条结果", len(images), len(results))
+        if Config.OCR_UNLOAD_AFTER_USE:
+            self.logger.info("OCR_UNLOAD_AFTER_USE=true，卸载模型")
+            self.unload()
+        return results
+
+    def _ocr_single(self, data_url: str, max_tokens: int = 4096) -> str:
+        if not data_url:
+            return ""
+
+        messages = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": data_url}}],
+        }]
+
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "stream": False,
+        }
+
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+
+        def _do_request():
+            resp = self._http_session.post(url, headers=headers, json=payload, timeout=300)
+            resp.raise_for_status()
+            result = resp.json()
+            if "choices" in result and result["choices"]:
+                return result["choices"][0]["message"]["content"].strip()
+            return ""
+
+        if self._model_ready.is_set():
+            try:
+                return _do_request()
+            except requests.exceptions.HTTPError as e:
+                if _is_no_model_error(e.response):
+                    self._model_ready.clear()
+                else:
+                    self.logger.error("OCR 请求失败: %s", e)
+                    return ""
+
+        with self._load_lock:
+            if self._model_ready.is_set():
+                return _do_request()
+            try:
+                result = _do_request()
+                self._model_ready.set()
+                return result
+            except requests.exceptions.HTTPError as e:
+                if _is_no_model_error(e.response):
+                    if self._ensure_loaded():
+                        self._model_ready.set()
+                        try:
+                            return _do_request()
+                        except Exception:
+                            return ""
+                else:
+                    self.logger.error("OCR 请求失败: %s", e)
+                    return ""
+
+        return ""
+
+    def _ensure_loaded(self) -> bool:
+        return _load_lmstudio_model(self.base_url, self.model_name, "OCR 模型", timeout=300)
+
+    def unload(self) -> bool:
+        self._model_ready.clear()
+        return _unload_lmstudio_model(self.base_url, self.model_name)
+
+    def __repr__(self):
+        return f"<OCRModel base_url={self.base_url} model={self.model_name}>"

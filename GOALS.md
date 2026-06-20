@@ -5,7 +5,7 @@
 
 所以，我最近在干嘛？
 
-**本次更新：工作区**
+**本次更新：工作区系统 + Document 子系统（文档录入/OCR/HMD 管线）**
 
 ## 下一步往哪儿走
 
@@ -65,7 +65,7 @@ Concepts
 - [ ] 动态视觉：环境感知协议Part1（挖，那是诱人的
 - [ ] 话题系统和记忆系统的整合。
 - [ ] 设备管理器核心：和环境感知协议整合——旨在让系统控制多台计算机。
-- [ ] 增强视觉：自动区分、处理、格式化文档
+- [x] 增强视觉：自动区分、处理、格式化文档
 - [ ] 图书馆：存放个人UGC，闲置的时候读一读，加深了解。
 - [x] 检查并修复记忆系统的提示词丢失问题。
 - [ ] （转前端10）
@@ -74,11 +74,14 @@ Concepts
 - [ ] 根据DeepSeek官方文档，提供更可控的主模型生成。
 - [x] 角色卡蒸馏系统BUG大修、彻底独立于数据库，性格提取修复
 - [x] 修复Tasks系统不持久化、服务器重启就失效的问题
-- [ ] 制作打印机/扫描仪控制模块和技能。
+- [x] 制作打印机/扫描仪控制模块和技能。
 - [x] 提醒事项系统增强：重启恢复、DAILY_PLAN/COUNTDOWN/HABIT任务类型、standby也推送
 - [ ] 视觉感知系统：CameraWatcher线程、运动/人脸检测、环境状态注入system_prompt、主动发话
 - [x] 计划系统引擎：PlanEngine(create_goal/breakdown_phase/generate_daily_plan/check_off)、PlanPlugin、日终报告、资金成就
 - [x] 工作区系统：WorkspaceManager 全局单例、用户隔离目录、WORKSPACE_DIR 配置、笔记/扫描/仓库默认路径
+- [x] ScannerTool/PrinterTool 技能
+- [x] OCRModel（deepseek-ocr，用完即释放）
+- [x] .hmd 格式与DocProcessor
 
 前端
 ---

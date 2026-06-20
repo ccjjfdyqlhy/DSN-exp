@@ -138,6 +138,14 @@ class Config:
     VISION_ENABLED = _env("VISION_ENABLED", "true").lower() == "true"
     VISION_PROMPT = _env("VISION_PROMPT", "请详细描述这张图片的内容")
 
+    # ==================== OCR 文档处理 ====================
+    OCR_MODEL = _env("OCR_MODEL", "deepseek-ocr")
+    OCR_BASE_URL = _env("OCR_BASE_URL", "http://localhost:4502")
+    OCR_UNLOAD_AFTER_USE = _env("OCR_UNLOAD_AFTER_USE", "true").lower() == "true"
+
+    # ==================== 2md 文档解析 API ====================
+    TWO_MD_API = _env("TWO_MD_API", "http://localhost:8000")
+
     # ==================== 人格系统 v3 ====================
     PERSONALITY_V3_ENABLED = _env("PERSONALITY_V3_ENABLED", "true").lower() == "true"
     PERSONALITY_V3_OVERRIDE_V2 = _env("PERSONALITY_V3_OVERRIDE_V2", "true").lower() == "true"
