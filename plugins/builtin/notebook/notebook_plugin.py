@@ -80,6 +80,7 @@ class NotebookPlugin(Plugin):
                 logger.info("Notebook: uid=%d 保存笔记 (%d chars)", uid, len(content))
 
         ctx.reply = _NOTEBOOK_RE.sub("", ctx.reply).strip()
+        ctx.original_reply = _NOTEBOOK_RE.sub("", ctx.original_reply).strip()
         if not ctx.reply:
             ctx.reply = "..."
 

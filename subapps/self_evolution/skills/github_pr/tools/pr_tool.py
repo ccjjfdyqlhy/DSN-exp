@@ -13,7 +13,13 @@ class GitHubPRTool:
     """提供 git 和 gh 命令行操作的工具类"""
 
     def __init__(self, work_dir: str = None):
-        self._work_dir = work_dir or os.path.join(os.path.expanduser("~"), "dsn_workspace")
+        if work_dir:
+            self._work_dir = work_dir
+        else:
+            from workspace import get_workspace_manager
+            wm = get_workspace_manager()
+            wm.register_subdir("repos")
+            self._work_dir = str(wm.root_subdir("repos"))
         os.makedirs(self._work_dir, exist_ok=True)
 
     def _run(self, cmd: list[str], cwd: str = None, timeout: int = 120) -> dict:

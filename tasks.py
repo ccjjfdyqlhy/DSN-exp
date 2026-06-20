@@ -617,12 +617,14 @@ class TaskManager:
 
     def _action_shell(self, task, content, result):
         import subprocess
+        from workspace import get_workspace_manager
         encoding = locale.getpreferredencoding(False)
         self.logger.info("执行shell命令: %s", content[:100] if len(content) <= 100 else content[:100] + "...")
+        cwd = str(get_workspace_manager().user_dir(uid=getattr(task, 'user_id', 0)))
         process = subprocess.run(
             content, shell=True, capture_output=True,
             encoding=encoding, errors='replace', timeout=300,
-            cwd=os.path.expanduser("~"),
+            cwd=cwd,
         )
         output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
         result.update({
@@ -634,15 +636,17 @@ class TaskManager:
 
     def _action_python(self, task, content, result):
         import subprocess, tempfile
+        from workspace import get_workspace_manager
         encoding = locale.getpreferredencoding(False)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8-sig') as f:
             f.write(content)
             temp_file = f.name
         try:
+            cwd = str(get_workspace_manager().user_dir(uid=getattr(task, 'user_id', 0)))
             process = subprocess.run(
                 ["python", temp_file], capture_output=True,
                 encoding=encoding, errors='replace', timeout=300,
-                cwd=os.path.dirname(temp_file),
+                cwd=cwd,
             )
             output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
             result.update({
@@ -658,12 +662,14 @@ class TaskManager:
                 pass
 
     def _action_write_file(self, task, content, result):
+        from workspace import get_workspace_manager
         file_path = task.params.get("file_path", "")
         overwrite = task.params.get("overwrite", True)
         if not file_path:
             raise ValueError("文件路径不能为空")
         if not os.path.isabs(file_path):
-            file_path = os.path.join(os.path.expanduser("~"), file_path)
+            wm = get_workspace_manager()
+            file_path = str(wm.resolve(file_path, uid=getattr(task, 'user_id', 0)))
         self.logger.info("写入文件: %s (长度: %d 字符)", file_path, len(content))
         if os.path.exists(file_path) and not overwrite:
             raise FileExistsError(f"文件已存在: {file_path}")
@@ -676,13 +682,15 @@ class TaskManager:
         })
 
     def _action_edit_file(self, task, content, result):
+        from workspace import get_workspace_manager
         file_path = task.params.get("file_path", "")
         pattern = task.params.get("pattern", "")
         replacement = task.params.get("replacement", "")
         if not file_path:
             raise ValueError("文件路径不能为空")
         if not os.path.isabs(file_path):
-            file_path = os.path.join(os.path.expanduser("~"), file_path)
+            wm = get_workspace_manager()
+            file_path = str(wm.resolve(file_path, uid=getattr(task, 'user_id', 0)))
         self.logger.info("编辑文件: %s", file_path)
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")
