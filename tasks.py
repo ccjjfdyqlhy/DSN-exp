@@ -1,6 +1,6 @@
 
 # DSN-exp/tasks.py
-# UPD v3_260328
+# UPD v3_260620
 
 import os
 import json
@@ -528,16 +528,28 @@ class TaskManager:
     def _execute_reasoner_task(self, task: Task) -> Dict[str, Any]:
         """执行推理任务"""
         self.logger.info("开始执行推理任务: %s", task.task_id)
-        
+
         # 获取任务参数
         question = task.params.get("question", "")
         context = task.params.get("context", "")
-        
-        # 创建DeepSeek Reasoner客户端
+
+        # 根据配置选择推理模型
         from config import Config
-        chat = DeepSeekChat(api_key=Config.DEEPSEEK_API_KEY)
-        chat.set_model("deepseek-v4-pro")  # 切换到reasoner模型
-        
+        model_type = task.params.get("model_type", "") or Config.MAIN_MODEL_TYPE
+        if model_type == "lmstudio":
+            from models import LMStudioChat
+            chat = LMStudioChat(
+                base_url=Config.LMSTUDIO_BASE_URL,
+                model_name=task.params.get("model_name") or Config.MAIN_MODEL_NAME,
+                temperature=0.3,
+                max_tokens=Config.LMSTUDIO_MAX_TOKENS,
+                timeout=Config.REASONER_TIMEOUT,
+            )
+        else:
+            chat = DeepSeekChat(api_key=Config.DEEPSEEK_API_KEY)
+            model = task.params.get("model_name") or Config.REASONER_MODEL
+            chat.set_model(model)
+
         # 构建提示词
         system_prompt = """你是一个专业的推理AI，需要深入分析复杂问题，给出详细的思考过程和最终结论。
 请按照以下格式输出：
@@ -547,26 +559,26 @@ class TaskManager:
 
 问题：{question}
 上下文：{context}""".format(question=question, context=context)
-        
+
         # 执行推理
         chat.messages = [{"role": "system", "content": system_prompt}]
         reasoning_result = chat.send_message("请分析这个问题并给出详细推理过程")
-        
+
         # 提取思考过程以外的回答（最终结论）
         # 这里简单实现：取最后一段作为结论
         lines = reasoning_result.strip().split('\n')
         conclusion = lines[-1] if lines else reasoning_result
-        
+
         result = {
             "reasoning": reasoning_result,
             "conclusion": conclusion,
-            "model": "deepseek-v4-pro",
+            "model": getattr(chat, 'model', getattr(chat, 'model_name', 'unknown')),
             "timestamp": datetime.now().isoformat()
         }
-        
+
         # 保存结果到数据库
         self._save_task_result(task.task_id, reasoning_result)
-        
+
         self.logger.info("推理任务完成: %s", task.task_id)
         return result
     

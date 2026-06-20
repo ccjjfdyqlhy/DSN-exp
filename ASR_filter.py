@@ -12,14 +12,16 @@ class LMFilterModel:
     """本地 LMStudio 过滤模型，用于判断用户输入是否应该转发给主AI系统。"""
 
     FILTER_PROMPT = '''
-你是一个对话过滤器，负责判断用户输入是否应该转发给主AI系统（EXA）。请遵循以下规则：
+ 你是一个对话过滤器，负责判断用户输入是否应该转发给主AI系统（EXA）。请遵循以下规则：
 
-1. 当用户明显在与EXA对话（包含问题、请求或延续对话的内容）时，转发完整内容。
-2. 如果用户提到"EXA"，"Axa"或和主AI系统名字相似的发音，立即转发。
-3. 当用户使用“你”时，立即转发。
+ 1. 当用户明显在与EXA对话（包含问题、请求或延续对话的内容）时，转发完整内容。
+ 2. 如果用户提到"EXA"，"Axa"或和主AI系统名字相似的发音，立即转发。
+ 3. 当用户使用“你”时，立即转发。
 
-判断后只需输出"FORWARD"（转发）或"HOLD"（保留），无需解释。
-'''
+ 判断后只需输出"FORWARD"（转发）或"HOLD"（保留），无需解释。
+ '''
+
+    MAX_HISTORY = 20
 
     def __init__(
         self,
@@ -35,8 +37,7 @@ class LMFilterModel:
         self.timeout = timeout
         self.logger = logger or logging.getLogger(self.__class__.__name__)
 
-        # 初始化对话历史，包含系统提示
-        self.messages: List[Dict[str, str]] = [{"role": "system", "content": self.FILTER_PROMPT}]
+        self.reset_context()
 
     def filter_input(self, user_input: str) -> str:
         """
@@ -73,6 +74,7 @@ class LMFilterModel:
                 if decision in ["FORWARD", "HOLD"]:
                     # 添加助手回复到历史
                     self.messages.append({"role": "assistant", "content": decision})
+                    self._trim_context()
                     self.logger.info("过滤决策: %s for input: %s", decision, user_input[:50] + "..." if len(user_input) > 50 else user_input)
                     return decision
                 else:
@@ -93,6 +95,14 @@ class LMFilterModel:
         except (KeyError, ValueError) as e:
             self.logger.error("过滤响应解析失败: %s", str(e))
             return "HOLD"
+
+    def _trim_context(self) -> None:
+        """裁剪对话历史，防止无限增长"""
+        non_system = [m for m in self.messages if m["role"] != "system"]
+        if len(non_system) > self.MAX_HISTORY * 2:
+            keep = non_system[-(self.MAX_HISTORY * 2):]
+            self.messages = [self.messages[0]] + keep
+            self.logger.info("过滤上下文已裁剪至 %d 条", len(self.messages))
 
     def reset_context(self):
         """重置过滤上下文"""
