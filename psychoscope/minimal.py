@@ -175,8 +175,6 @@ class DSNClient:
                 self._tts_queue.task_done()
                 continue
             text, b64 = item
-            if text:
-                print(f"\n  💬 {text}")
             try:
                 raw = base64.b64decode(b64)
                 sound = pygame.mixer.Sound(file=io.BytesIO(raw))
@@ -315,7 +313,6 @@ class DSNClient:
         if not self.api_key:
             return None
 
-        tts_queue_items: list[tuple[str, str]] = []
         t0 = time.perf_counter()
 
         try:
@@ -330,15 +327,16 @@ class DSNClient:
             if resp.status_code != 200:
                 return None
 
-            reply_text = self._handle_sse_stream(resp, tts_queue_items)
+            # TTS 直接推入播放队列，不等 SSE 结束
+            reply_text, t_first_audio = self._handle_sse_stream(resp, self._tts_queue, t0)
             elapsed = time.perf_counter() - t0
 
-            # 推送 TTS 项到播放队列，等待全部播完
-            for item in tts_queue_items:
-                self._tts_queue.put(item)
-            self._tts_queue.join()
+            # 显示首条音频耗时
+            if t_first_audio is not None:
+                first_audio_ms = (t_first_audio - t0) * 1000
+                print(f"\n  🔊 首条音频: {first_audio_ms:.0f}ms")
 
-            # 显示耗时
+            # 显示总耗时
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
             if minutes > 0:
@@ -352,9 +350,11 @@ class DSNClient:
             return None
 
     def _handle_sse_stream(self, resp: requests.Response,
-                           tts_out: list[tuple[str, str]]) -> Optional[str]:
+                           tts_queue: queue.Queue | None = None,
+                           t_start: float = None) -> tuple[Optional[str], float]:
         reply = ""
         got_text = False
+        t_first_audio = None
 
         for _evt_type, data in iter_sse_lines(resp):
             status = data.get("status", "")
@@ -363,6 +363,8 @@ class DSNClient:
                 reply = data.get("reply", "")
                 got_text = True
                 self.chat_id = data.get("chat_id", self.chat_id)
+                if reply:
+                    print(f"\n  💬 {reply}")
 
             elif status == "narrative_update":
                 text = data.get("text", "")
@@ -377,13 +379,15 @@ class DSNClient:
                 total = data.get("total", 1)
                 text = data.get("text", "")
                 audio_b64 = data.get("audio_b64", "")
-                if audio_b64 and HAS_AUDIO:
-                    tts_out.append((text, audio_b64))
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    if t_first_audio is None:
+                        t_first_audio = time.perf_counter()
+                    tts_queue.put((text, audio_b64))
                 print(f"\r  🎵 TTS [{idx}/{total}]", end="", flush=True)
 
             elif status == "completed":
                 break
-        return reply if got_text else None
+        return reply if got_text else None, t_first_audio
 
 
 class ReminderWatcher:

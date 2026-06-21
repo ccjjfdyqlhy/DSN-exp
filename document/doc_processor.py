@@ -26,21 +26,17 @@ class DocProcessor:
       Step 5: 生成 AI 可读的反馈文本
     """
 
-    def __init__(self, vision_chat=None, ocr_model=None, hmd_client=None):
-        self._vision = vision_chat
-        self._ocr = ocr_model  # OCRModel 实例，为 None 时惰性初始化
+    def __init__(self, ocr_model=None, hmd_client=None):
+        self._ocr = ocr_model
         self._hmd = hmd_client
 
-    def _get_vision(self):
-        if self._vision is None:
-            from models import LMStudioChat
-            self._vision = LMStudioChat(
-                base_url=Config.LMSTUDIO_BASE_URL,
-                model_name=Config.MEMORY_MODEL,
-                timeout=300,
-            )
-            logger.info("Vision 模型已初始化: %s @ %s", Config.MEMORY_MODEL, Config.LMSTUDIO_BASE_URL)
-        return self._vision
+    def _classify_image(self, data_url: str) -> str:
+        """用 deepseek-ocr 判断图片是否为文档：OCR 输出有实质内容就是 document"""
+        if not data_url:
+            return "document"
+        ocr = self._get_ocr()
+        text = ocr.ocr(data_url, max_tokens=256)
+        return "document" if len(text.strip()) > 30 else "photo"
 
     def _get_ocr(self):
         if self._ocr is None:
@@ -66,7 +62,6 @@ class DocProcessor:
         """
         logger.info("process_scan 开始: user_id=%d, images=%d", user_id, len(scanned_images))
 
-        vision = self._get_vision()
         ocr = self._get_ocr()
         hmd_c = self._get_hmd()
 
@@ -84,7 +79,7 @@ class DocProcessor:
                 mime = "png" if ext == "png" else "jpeg" if ext in ("jpg", "jpeg") else ext
                 data_url = f"data:image/{mime};base64,{base64.b64encode(raw).decode()}"
 
-            category = vision.classify_image(data_url) if data_url else "document"
+            category = self._classify_image(data_url)
             logger.info("分类 %s → %s (user_id=%d)", filename, category, user_id)
 
             entry = {"filename": filename, "filepath": filepath, "data_url": data_url, "category": category}
@@ -102,17 +97,6 @@ class DocProcessor:
             logger.info("OCR 处理 %d 张文档图片 (user_id=%d)", len(doc_images), user_id)
             ocr_input = [{"filename": d["filename"], "data_url": d["data_url"]} for d in doc_images]
             mdA_list = ocr.ocr_batch(ocr_input)
-
-        photo_descriptions = ""
-        if photo_images:
-            logger.info("Vision 描述 %d 张图片 (user_id=%d)", len(photo_images), user_id)
-            try:
-                photo_descriptions = vision.describe_images(
-                    [{"filename": p["filename"], "data_url": p["data_url"]} for p in photo_images]
-                )
-            except Exception as e:
-                logger.error("多图描述失败: %s", e)
-                photo_descriptions = ""
 
         api_results = []
         for img in scanned_images:
@@ -136,7 +120,7 @@ class DocProcessor:
                 logger.error("保存 .hmd 失败: %s", e)
 
         feedback = self._build_feedback(
-            mdA_list, photo_descriptions, api_results, hmd_path, doc_images, photo_images
+            mdA_list, api_results, hmd_path, doc_images, photo_images
         )
 
         logger.info("process_scan 完成: user_id=%d docs=%d photos=%d hmd=%s",
@@ -178,17 +162,21 @@ class DocProcessor:
         return str(d)
 
     @staticmethod
-    def _build_feedback(mdA_list: list[dict], photo_descs: str,
-                        api_results: list[dict], hmd_path: str,
-                        doc_images: list[dict], photo_images: list[dict]) -> str:
+    def _build_feedback(mdA_list: list[dict], api_results: list[dict],
+                        hmd_path: str, doc_images: list[dict],
+                        photo_images: list[dict]) -> str:
         parts = []
 
         if doc_images:
-            parts.append(f"## 文档处理结果 ({len(doc_images)} 页)")
+            parts.append(f"## OCR 结果 ({len(doc_images)} 页)")
             for m in mdA_list:
                 fname = m.get("filename", "")
                 md_text = m.get("markdown", "")
-                parts.append(f"### {fname}\n{md_text}")
+                if md_text:
+                    parts.append(f"### {fname}\n{md_text[:300]}")
+
+        if photo_images:
+            parts.append(f"\n## 非文档图片 ({len(photo_images)} 张) — 已跳过 OCR")
 
         if api_results:
             parts.append("\n## 文档布局 (2md)")
@@ -197,10 +185,6 @@ class DocProcessor:
             else:
                 for i, r in enumerate(api_results):
                     parts.append(f"### 第 {i+1} 页\n{r.get('markdown', '')}")
-
-        if photo_images:
-            parts.append(f"\n## 图片描述 ({len(photo_images)} 张)")
-            parts.append(photo_descs)
 
         if hmd_path:
             parts.append(f"\n---\n.hmd 已保存: {hmd_path}")

@@ -19,67 +19,30 @@ from world.action_narrator import ActionNarrativeCollector
 logger = logging.getLogger("ChatPipeline")
 
 
-async def _task_completion_llm_reply(ctx, progress_q, output: str, error: str, success: bool):
-    """任务完成后调用 LLM 生成自然语言回复，推送 text_ready，保存到 DB"""
+async def _call_llm_with_msgs(ctx, msgs: list[dict]) -> str | None:
+    """调用主模型，返回原始回复"""
     import asyncio as _asyncio
     loop = _asyncio.get_event_loop()
 
+    pm = ctx.extra.get("_plugin_manager")
+    if not pm:
+        return None
+    models_plugin = None
+    for p in pm.get_hooks_for(HookPoint.MODEL_INVOKE):
+        if p.__class__.__name__ == 'ModelsPlugin':
+            models_plugin = p
+            break
+    if not models_plugin:
+        return None
+
     def _invoke():
-        pm = ctx.extra.get("_plugin_manager")
-        if not pm:
-            return None
-        models_plugin = None
-        for p in pm.get_hooks_for(HookPoint.MODEL_INVOKE):
-            if p.__class__.__name__ == 'ModelsPlugin':
-                models_plugin = p
-                break
-        if not models_plugin:
-            return None
-
-        from datetime import datetime
-        msgs = [{"role": "system", "content": ctx.system_prompt}]
-        msgs.extend(ctx.full_history)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
-        msgs.append({"role": "assistant", "content": ctx.original_reply})
-        msg = f"[异步任务结果]\n"
-        if success:
-            msg += f"任务执行成功。\n输出:\n{output}"
-        else:
-            msg += f"任务执行失败。\n错误: {error}"
-        msgs.append({"role": "user", "content": msg})
-
         try:
             return models_plugin.invoke(msgs, ctx)
         except Exception as e:
-            logger.error("任务完成 LLM 调用失败: %s", e)
+            logger.error("LLM 调用失败: %s", e)
             return None
 
-    reply = await loop.run_in_executor(None, _invoke)
-    if not reply:
-        return
-
-    import re as _re
-    clean = _re.sub(r"<[^>]+>", "", reply)
-    clean = _re.sub(r"[^\S\n]+", " ", clean)
-    clean = _re.sub(r"\n{2,}", "\n", clean).strip()
-    if not clean:
-        return
-
-    ctx.reply = clean
-    logger.info("[text_ready:task_llm] reply=%s", clean[:60])
-    db = ctx.extra.get("_db")
-    if db and ctx.chat_id:
-        try:
-            db.replace_last_assistant(ctx.user_id, ctx.chat_id, clean)
-        except Exception:
-            logger.exception("保存任务 LLM 回复到 DB 失败")
-
-    await progress_q.put({
-        "status": "text_ready",
-        "reply": clean,
-        "chat_id": ctx.chat_id,
-    })
+    return await loop.run_in_executor(None, _invoke)
 
 
 def _extract_narrations(raw: str) -> list[str]:
@@ -280,16 +243,32 @@ class ChatPipeline:
     # ---- 按行 TTS 合成 ----
 
     async def _synthesize_lines(self, text: str) -> list[dict]:
-        """在 executor 中同步合成各行 TTS 音频"""
+        """返回完整列表（兼容同步 process() 用）。"""
         from utils.text_clean import clean_tts_text
-
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._synthesize_lines_sync, clean_tts_text(text)
+            None, self._synthesize_lines_sync, clean_tts_text(text), None, None
         )
 
-    def _synthesize_lines_sync(self, text: str) -> list[dict]:
-        """同步按行合成 TTS（在 executor 线程中运行）"""
+    async def _synthesize_lines_stream(
+        self, text: str, tts_q: asyncio.Queue
+    ) -> list[dict]:
+        """每合完一行推入 asyncio.Queue，返回完整列表。"""
+        from utils.text_clean import clean_tts_text
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._synthesize_lines_sync, clean_tts_text(text), tts_q, loop
+        )
+
+    def _synthesize_lines_sync(
+        self, text: str,
+        tts_q: asyncio.Queue | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> list[dict]:
+        """同步按行合成 TTS（在 executor 线程中运行）。
+
+        若 tts_q 非 None，每行合完后推入 asyncio.Queue 供流式消费。
+        """
         import base64
 
         if not text or not self._tts_client:
@@ -306,9 +285,12 @@ class ChatPipeline:
             lines.append(stripped)
 
         if not lines:
+            if tts_q is not None and loop is not None:
+                asyncio.run_coroutine_threadsafe(tts_q.put(None), loop)
             return []
 
         results = []
+        total = len(lines)
         for i, line in enumerate(lines):
             try:
                 processed_line = line
@@ -321,26 +303,35 @@ class ChatPipeline:
                 }
                 audio_bytes = self._tts_client.tts(**params)
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-                results.append({
+                result = {
                     "index": i,
-                    "total": len(lines),
+                    "total": total,
                     "text": line,
                     "audio_b64": audio_b64,
                     "audio_bytes": audio_bytes,
-                })
-                logger.debug("TTS 行 %d/%d 合成完成 (len=%d)", i + 1, len(lines), len(audio_b64))
+                }
+                results.append(result)
+                logger.debug("TTS 行 %d/%d 合成完成 (len=%d)", i + 1, total, len(audio_b64))
             except Exception as e:
                 logger.warning("TTS 行 %d 合成失败: %s", i + 1, e)
-                results.append({
+                result = {
                     "index": i,
-                    "total": len(lines),
+                    "total": total,
                     "text": line,
                     "audio_b64": None,
                     "audio_bytes": None,
-                })
+                }
+                results.append(result)
 
-        logger.info("按行 TTS 合成完成: %d/%d 行成功", 
-                     sum(1 for r in results if r["audio_b64"]), len(results))
+            # 流式推送：每行合完立即入队
+            if tts_q is not None and loop is not None:
+                asyncio.run_coroutine_threadsafe(tts_q.put(result), loop)
+
+        if tts_q is not None and loop is not None:
+            asyncio.run_coroutine_threadsafe(tts_q.put(None), loop)
+
+        logger.info("按行 TTS 合成完成: %d/%d 行成功",
+                     sum(1 for r in results if r.get("audio_b64")), len(results))
         return results
 
     @staticmethod
@@ -375,35 +366,128 @@ class ChatPipeline:
         await progress_q.put(None)
 
     async def _poll_pending_tasks(self, ctx, remaining, progress_q):
-        from tasks import TaskStatus
-        deadline = time.time() + 120
-        await progress_q.put({
-            "status": "thinking",
-            "text": f"等待 {len(remaining)} 个异步任务完成...",
-        })
-        while remaining and time.time() < deadline:
-            for tid in list(remaining):
-                task_mgr = ctx.extra.get("_task_manager")
-                task = task_mgr.get_task(tid) if task_mgr else None
-                if task and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    remaining.discard(tid)
-                    result = task.result or {}
-                    success = result.get("success", False) if isinstance(result, dict) else False
-                    output = result.get("output", "") if isinstance(result, dict) else ""
-                    error = task.error or result.get("error", "") if isinstance(result, dict) else ""
-                    evt = {"status": "task_result", "task_id": tid[:8], "success": success}
-                    if output:
-                        out = str(output).strip()
-                        if len(out) > 2000:
-                            out = out[:2000] + "\n...(输出截断)"
-                        evt["output"] = out
-                    if error:
-                        evt["error"] = str(error)[:500]
-                    await progress_q.put(evt)
-                    if output and success:
-                        await _task_completion_llm_reply(ctx, progress_q, output, error, success)
-            if remaining:
-                await asyncio.sleep(0.3)
+        """Agent 任务循环：轮询任务完成 → 喂回主模型 → 解析新任务 → 重复，最多 N 步"""
+        from tasks import TaskStatus, TaskType
+        max_steps = ctx.extra.get("agent_max_steps", 5)
+        task_mgr = ctx.extra.get("_task_manager")
+        # 收集本轮所有任务结果
+        all_results: dict[str, dict] = {}
+
+        # 获取 TaskPlugin 实例用于创建新任务
+        task_plugin = None
+        pm = ctx.extra.get("_plugin_manager")
+        if pm:
+            for p in pm.get_hooks_for(HookPoint.POST_PROCESS):
+                if p.__class__.__name__ == 'TaskPlugin':
+                    task_plugin = p
+                    break
+
+        # 构造基础消息（对话上下文）
+        from datetime import datetime
+        msgs = [{"role": "system", "content": ctx.system_prompt}]
+        msgs.extend(ctx.full_history)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+        msgs.append({"role": "assistant", "content": ctx.original_reply})
+
+        step = 0
+        for step in range(max_steps):
+            if not remaining:
+                break
+
+            # ── 等待本轮所有任务完成 ──
+            deadline = time.time() + 120
+            await progress_q.put({
+                "status": "thinking",
+                "text": f"等待 {len(remaining)} 个任务完成... (第{step+1}/{max_steps}步)",
+            })
+            while remaining and time.time() < deadline:
+                for tid in list(remaining):
+                    task = task_mgr.get_task(tid) if task_mgr else None
+                    if task and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                        remaining.discard(tid)
+                        task.handled_by_pipeline = True
+                        result = task.result or {}
+                        success = result.get("success", False) if isinstance(result, dict) else False
+                        output = result.get("output", "") if isinstance(result, dict) else ""
+                        error = task.error or result.get("error", "") if isinstance(result, dict) else ""
+                        # 保存结果供后续 LLM 调用
+                        all_results[tid] = {"success": success, "output": output, "error": error}
+                        # 发送 task_result SSE 事件
+                        evt = {"status": "task_result", "task_id": tid[:8], "success": success}
+                        if output:
+                            out = str(output).strip()
+                            if len(out) > 2000:
+                                out = out[:2000] + "\n...(输出截断)"
+                            evt["output"] = out
+                        if error:
+                            evt["error"] = str(error)[:500]
+                        await progress_q.put(evt)
+                if remaining:
+                    await asyncio.sleep(0.3)
+
+            if not all_results:
+                break
+
+            # ── 本轮所有任务已完成，构造结果摘要 ──
+            results_lines = []
+            for tid, r in all_results.items():
+                tag = "成功" if r["success"] else "失败"
+                out = (r["output"] or "")[:500]
+                err = (r["error"] or "")[:500]
+                results_lines.append(f"任务 {tid[:8]} [{tag}]\n输出: {out}\n错误: {err}")
+            results_text = "\n---\n".join(results_lines)
+
+            # ── 把结果摘要加到消息列表，调用主模型 ──
+            msgs.append({"role": "user", "content": f"[异步任务结果]\n{results_text}"})
+            reply = await _call_llm_with_msgs(ctx, msgs)
+            if not reply:
+                break
+
+            # ── 解析回复中是否有新任务 ──
+            from plugins.builtin.task_plugin import TaskPlugin
+            new_task_datas = TaskPlugin._parse_tasks(reply)
+
+            if not new_task_datas:
+                # AI 决定直接回复用户 → 清理标签后设为最终 ctx.reply
+                import re as _re
+                clean = _re.sub(r"<[^>]+>", "", reply).strip()
+                ctx.reply = clean if clean else "…"
+                ctx.extra["_agent_reply_dirty"] = True
+                logger.info("[Agent任务循环] 第%d步: 无新任务,回复用户", step + 1)
+                return
+
+            # ── AI 生成了新任务（修复重试 / 连锁操作）→ 把本轮回复记入历史，创建任务 ──
+            msgs.append({"role": "assistant", "content": reply})
+            await progress_q.put({
+                "status": "thinking",
+                "text": f"第{step+1}步完成, 开始执行 {len(new_task_datas)} 个新任务...",
+            })
+            for td in new_task_datas:
+                tid = None
+                if task_plugin:
+                    tid = task_plugin._handle_task(td, ctx)
+                elif task_mgr:
+                    task_type = td.get("type")
+                    params = td.get("params", {})
+                    if task_type == "action":
+                        if "action_type" not in params:
+                            params["action_type"] = "shell"
+                        tid = task_mgr.create_task(
+                            task_type=TaskType.ACTION,
+                            user_id=ctx.user_id, chat_id=ctx.chat_id,
+                            params=params, priority=1,
+                        )
+                        task_mgr.execute_task(tid)
+                if tid:
+                    remaining.add(tid)
+
+        # ── 达到最大步数或意外退出 ──
+        if not ctx.reply:
+            ctx.reply = "……"
+        ctx.extra["_agent_reply_dirty"] = True
+        if step >= max_steps - 1:
+            logger.warning("Agent 任务循环达到最大步数 %d", max_steps)
 
     # ---- 流式管道（SSE） ----
 
@@ -487,10 +571,16 @@ class ChatPipeline:
                 ctx.extra["_narrative_collector"] = collector
 
                 tts_task = None
-                if ctx.tts_enabled and ctx.original_reply and self._tts_client:
+                tts_collected: list[dict] = []
+                tts_q: asyncio.Queue | None = None
+                tts_streamed = False  # 标记是否已逐行 yield 过
+
+                if ctx.tts_enabled and ctx.reply and self._tts_client:
+                    tts_q = asyncio.Queue()
                     tts_task = asyncio.create_task(
-                        self._synthesize_lines(ctx.original_reply)
+                        self._synthesize_lines_stream(ctx.reply, tts_q)
                     )
+                    tts_streamed = True
 
                 plugins = self.pm.get_hooks_for(HookPoint.POST_PROCESS)
                 enabled = [p for p in plugins if self.pm.is_enabled(p.name)]
@@ -504,24 +594,51 @@ class ChatPipeline:
                 runner = asyncio.create_task(self._run_all_plugins(enabled, hook, ctx, progress_q))
 
                 import asyncio as _asyncio
+                plugins_done = False
+                tts_done = tts_q is None  # TTS 未启用则直接标记完成
                 while True:
+                    # 消费进度事件
                     try:
-                        evt = await _asyncio.wait_for(progress_q.get(), timeout=3.0)
+                        evt = await _asyncio.wait_for(progress_q.get(), timeout=0.1)
                         if evt is None:
-                            break
-                        yield f"data: {json.dumps(evt)}\n\n"
+                            plugins_done = True
+                        else:
+                            yield f"data: {json.dumps(evt)}\n\n"
                     except _asyncio.TimeoutError:
                         yield f"data: {json.dumps({
                             'status': 'thinking',
                             'text': '正在处理...',
                         })}\n\n"
 
+                    # 消费 TTS 流式队列：每行合完立即 yield
+                    if tts_q is not None:
+                        try:
+                            while True:
+                                line = tts_q.get_nowait()
+                                if line is None:
+                                    tts_done = True
+                                else:
+                                    tts_collected.append(line)
+                                    yield f"data: {json.dumps({
+                                        'status': 'line',
+                                        'index': line['index'],
+                                        'total': line['total'],
+                                        'text': line['text'],
+                                        'audio_b64': line['audio_b64'],
+                                    })}\n\n"
+                        except _asyncio.QueueEmpty:
+                            pass
+
+                    if plugins_done and tts_done:
+                        break
+
                 await runner
                 await runner
                 await bridge_task
 
+                tts_lines = tts_collected if tts_collected else None
                 if tts_task:
-                    tts_lines = await tts_task
+                    await tts_task
 
                 narrative = ctx.extra.get("narrative", "")
                 if narrative:
@@ -561,19 +678,22 @@ class ChatPipeline:
                     logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
                     if ctx.tts_enabled and self._tts_client and ctx.reply != ctx.original_reply:
                         tts_lines = await self._synthesize_lines(ctx.reply)
+                        tts_streamed = False
                     ctx.extra["_agent_reply_dirty"] = False
 
             elif hook == HookPoint.POST_TTS:
                 if tts_lines is not None:
-                    # 逐行发送 TTS 音频事件
-                    for line in tts_lines:
-                        yield f"data: {json.dumps({
-                            'status': 'line',
-                            'index': line['index'],
-                            'total': line['total'],
-                            'text': line['text'],
-                            'audio_b64': line['audio_b64'],
-                        })}\n\n"
+                    if not tts_streamed:
+                        # 非流式模式（agent_dirty 重合成）：逐行 yield
+                        for line in tts_lines:
+                            yield f"data: {json.dumps({
+                                'status': 'line',
+                                'index': line['index'],
+                                'total': line['total'],
+                                'text': line['text'],
+                                'audio_b64': line['audio_b64'],
+                            })}\n\n"
+                    # 组装完整的 ctx.audio
                     if tts_lines:
                         all_audio = b"".join(
                             l["audio_bytes"] for l in tts_lines if l.get("audio_bytes")

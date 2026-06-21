@@ -820,6 +820,8 @@ def _cmd_help():
     /reminder list [用户ID] [聊天ID]    列出提醒任务
     /reminder cancel <task_id>          取消提醒
     /reminder skip <task_id>            跳过本次触发
+    /detail chats    切换聊天详细模式 (显示完整模型请求/响应)
+    /detail actions  切换动作详细模式 (显示动作执行详情)
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -1440,6 +1442,38 @@ def _cmd_memory_help():
 """)
 
 
+def _cmd_detail(arg: str = ""):
+    """切换详细模式，显示完整的模型请求和响应内容"""
+    from models import DETAIL_CHATS, DETAIL_ACTIONS, toggle_detail_chats, toggle_detail_actions
+    
+    arg = arg.strip().lower()
+    
+    if arg == "chats":
+        new_state = toggle_detail_chats()
+        state_text = "开启" if new_state else "关闭"
+        print(f"  聊天详细模式已{state_text}")
+        if new_state:
+            print("  现在将显示所有模型请求的完整发送内容和生成内容")
+        else:
+            print("  已恢复默认的精简输出模式")
+    elif arg == "actions":
+        new_state = toggle_detail_actions()
+        state_text = "开启" if new_state else "关闭"
+        print(f"  动作详细模式已{state_text}")
+        if new_state:
+            print("  现在将显示 AI 执行动作的原始输入和系统反馈")
+        else:
+            print("  已恢复默认的精简输出模式")
+    else:
+        print("  /detail 用法:")
+        print("    /detail chats    切换聊天详细模式 (显示完整模型请求/响应)")
+        print("    /detail actions  切换动作详细模式 (显示动作执行详情)")
+        print()
+        print(f"  当前状态:")
+        print(f"    聊天详细模式: {'开启' if DETAIL_CHATS else '关闭'}")
+        print(f"    动作详细模式: {'开启' if DETAIL_ACTIONS else '关闭'}")
+
+
 def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None, personality_v3=None, maint_system=None):
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -1509,6 +1543,10 @@ def _h_plan(am, db, pm, pe, cc, pv, arg):
     _cmd_plan(db, arg)
 
 
+def _h_detail(am, db, pm, pe, cc, pv, arg):
+    _cmd_detail(arg)
+
+
 _CMD_TABLE = {
     "/newbind": _h_newbind,
     "/users": _h_users,
@@ -1523,6 +1561,7 @@ _CMD_TABLE = {
     "/import": _h_import,
     "/reminder": _h_reminder,
     "/plan": _h_plan,
+    "/detail": _h_detail,
     "/help": _h_help,
 }
 

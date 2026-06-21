@@ -122,14 +122,18 @@ class TTSPlugin(Plugin):
 
     _TEXT_TAG_RE = re.compile(r"<text>(.*?)</text>", re.DOTALL | re.IGNORECASE)
     _TASK_TAG_RE = re.compile(r"<task>.*?</task>", re.DOTALL | re.IGNORECASE)
+    _CODE_BLOCK_RE = re.compile(r"```\w*\s*\n.*?```", re.DOTALL | re.IGNORECASE)
+    _HELP_TAG_RE = re.compile(r"<help>.*?</help>", re.DOTALL | re.IGNORECASE)
     _HTML_TAG_RE = re.compile(r"<[^>]+>")
     _WHITESPACE_RE = re.compile(r"\s+")
 
     @classmethod
     def _extract_tts_text(cls, reply: str) -> str:
-        """移除所有标签，只保留纯文本用于 TTS 合成"""
+        """移除所有标签和代码块，只保留纯文本用于 TTS 合成"""
         text = cls._TEXT_TAG_RE.sub("", reply)
         text = cls._TASK_TAG_RE.sub("", text)
+        text = cls._CODE_BLOCK_RE.sub("", text)
+        text = cls._HELP_TAG_RE.sub("", text)
         text = cls._HTML_TAG_RE.sub("", text)
         text = cls._WHITESPACE_RE.sub(" ", text)
         return text.strip()

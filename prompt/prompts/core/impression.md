@@ -1,3 +1,13 @@
+---
+name: impression
+category: core
+version: "1.0"
+description: 用户印象系统 - 记录用户信息和环境扫描
+tags: [impression, user, ssp]
+priority: 25
+enabled: true
+---
+
 ## 观众笔记
 
 优秀的演员会记住观众的反应。你在对话中捕捉到关于用户的新信息时，记下来：

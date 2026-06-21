@@ -5,7 +5,7 @@
 
 所以，我最近在干嘛？
 
-**本次更新：工作区系统 + Document 子系统 + 计划技能 + 提醒增强补全**
+**本次更新：模型共存管理器 + Agent 任务循环 + 提示词增强 + 文档 OCR 修复**
 
 ## 下一步往哪儿走
 
@@ -88,6 +88,16 @@ Concepts
 - [x] 提醒 PERIODIC 通用 cron：croniter 解析 + 执行后自动重排
 - [x] POST /api/reminder/skip 跳过提醒端点
 - [x] minimal.py：跳过提醒/系统信息/手动同步键位 (#k #i #r)
+- [x] 提示词缓存系统：constant:true 持久注入、prompt_cache 表、<help> 标签检索、启动时索引
+- [x] 模型共存管理器：ModelScheduler 单例、LRU 驱逐、resident 模型、max_concurrent 限制、context manager
+- [x] Agent 任务循环：异步任务完成后喂回主模型 → 解析新任务 → 重复执行直到无新任务或达到 max_steps
+- [x] /detail chats /detail actions 控制台命令：分别切换聊天和动作的详细输出
+- [x] minimal.py 首条 TTS 音频计时节点
+- [x] TTS 预处理禁止拼音输出
+- [x] OCR 分类修复：用 deepseek-ocr 输出长度判定 document/photo，避免向纯视觉模型发文本提示词
+- [x] Pipeline TTS 改用 ctx.reply（清理后文本），不再合成代码块和系统标签
+- [x] 任务失败也生成 LLM 错误回复 + fallback text_ready
+- [x] handled_by_pipeline 标记防止 engine 和 pipeline 重复处理同一任务
 
 前端
 ---

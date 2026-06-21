@@ -157,6 +157,11 @@ class Config:
     # ==================== 工作区系统 ====================
     WORKSPACE_DIR = _env("WORKSPACE_DIR", ".dsn/workspace")
 
+    # ==================== 模型共存管理 ====================
+    MAX_CONCURRENT_LM_MODELS = int(_env("MAX_CONCURRENT_LM_MODELS", "1"))
+    MODEL_LOAD_TIMEOUT = int(_env("MODEL_LOAD_TIMEOUT", "180"))
+    MODEL_REQUEST_TIMEOUT = int(_env("MODEL_REQUEST_TIMEOUT", "300"))
+
     # ==================== Token 消耗定价 (USD / 1M tokens) ====================
     # DeepSeek v4-flash (cache miss)
     DEEPSEEK_FLASH_INPUT_PRICE = 0.14
