@@ -25,6 +25,7 @@ class PromptEntry:
     tags: list = field(default_factory=list)
     priority: int = 50
     enabled: bool = True
+    constant: bool = False  # constant:true 的提示词每轮注入
     content: str = ""
     source_file: str = ""
 
@@ -95,6 +96,7 @@ class PromptLibrary:
             tags=meta.get("tags", []),
             priority=int(meta.get("priority", 50)),
             enabled=meta.get("enabled", has_fm),
+            constant=meta.get("constant", False),
             content=content,
             source_file=str(path),
         )
@@ -117,6 +119,14 @@ class PromptLibrary:
         """获取某个 category 下全部启用条目，按 priority 排序拼接"""
         entries = sorted(
             (e for e in self._entries.values() if e.category == category and e.enabled),
+            key=lambda e: e.priority,
+        )
+        return "\n\n".join(e.content for e in entries if e.content.strip())
+
+    def get_constant_prompts(self) -> str:
+        """获取所有 constant:true 的启用条目，按 priority 排序拼接"""
+        entries = sorted(
+            (e for e in self._entries.values() if e.constant and e.enabled),
             key=lambda e: e.priority,
         )
         return "\n\n".join(e.content for e in entries if e.content.strip())

@@ -22,6 +22,7 @@ from plan_api import plan_bp, init_plan_api
 from plan_store import set_plan_db
 from chatdbmgr import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
+from models import _load_lmstudio_model, _unload_lmstudio_model
 from tts_process_model import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType
@@ -241,6 +242,89 @@ def _handle_action_completion(task, result, retry_depth=0):
         pass
 
 
+# ── 模型预加载 ──
+
+def _preload_models(app):
+    """
+    启动时检查 LMStudio 已加载的模型，缺失的立即加载。
+    嵌入模型仅加载不注册（使用独立 /v1/embeddings 端点）。
+    OCR 模型不在启动时加载（始终由 Scheduler 按需加载）。
+    """
+    logger = logging.getLogger("boot")
+    from model_scheduler import ModelScheduler, _get_loaded_models
+    scheduler = ModelScheduler.get_instance()
+
+    base_url = Config.LMSTUDIO_BASE_URL
+    model_load_timeout = Config.MODEL_LOAD_TIMEOUT
+
+    # 查询当前已加载的模型
+    loaded = _get_loaded_models(base_url)
+    logger.info("模型预加载: LMStudio 当前已加载=%s", loaded)
+
+    # ── 1) 必须驻留的小模型（先加载，让大模型最后加载时不被挤掉）──
+    small_models = []
+
+    # 词向量嵌入模型（小，约 500MB）
+    emb_model = Config.MEMORY_EMBEDDING_MODEL
+    if emb_model and Config.MEMORY_EMBEDDING_ENABLED:
+        small_models.append(("embedding", emb_model, base_url))
+
+    # ── 2) 需要注册到 scheduler 的大模型（最后加载，VRAM 紧张时挤掉小模型）──
+    scheduler_models = []
+
+    # TTS 预处理模型
+    tts_model = Config.TTS_PROCESS_MODEL
+    if tts_model and Config.TTS_PROCESS_ENABLED:
+        scheduler_models.append(("TTS处理", tts_model, base_url))
+
+    # 主对话模型（仅在 MAIN_MODEL_TYPE == "lmstudio" 时）
+    if Config.MAIN_MODEL_TYPE == "lmstudio":
+        main_model = Config.MAIN_MODEL_NAME
+        if main_model:
+            scheduler_models.append(("主对话", main_model, base_url))
+
+    # 人格 / judge 模型
+    persona_model = Config.PERSONALITY_MODEL_NAME
+    persona_url = Config.PERSONALITY_MODEL_URL
+    if persona_model and Config.PERSONALITY_V3_ENABLED:
+        scheduler_models.append(("人格", persona_model, persona_url))
+
+    # ── 先加载小模型 ──
+    for label, model_name, url in small_models:
+        if model_name in loaded:
+            logger.info("模型预加载: %s (%s) 已加载", label, model_name)
+        else:
+            logger.info("模型预加载: 正在加载 %s (%s) ...", label, model_name)
+            _load_lmstudio_model(url, model_name, label, timeout=model_load_timeout)
+        scheduler.mark_preloaded(model_name)
+
+    # 小模型加载后重新查询（可能被 LMStudio 的 VRAM 管理卸载了主模型）
+    loaded = _get_loaded_models(base_url)
+
+    # ── 再加载/注册大模型（最后加载的优先级最高）──
+    for label, model_name, url in scheduler_models:
+        scheduler.register(
+            model_name=model_name,
+            base_url=url,
+            load_fn=lambda mn=model_name, bu=url:
+                _load_lmstudio_model(bu, mn, label, timeout=model_load_timeout),
+            unload_fn=lambda mn=model_name, bu=url:
+                _unload_lmstudio_model(bu, mn),
+        )
+
+        if model_name in loaded:
+            logger.info("模型预加载: %s (%s) 已加载", label, model_name)
+            scheduler.mark_preloaded(model_name)
+        else:
+            logger.info("模型预加载: 正在加载 %s (%s) ...", label, model_name)
+            ok = _load_lmstudio_model(url, model_name, label, timeout=model_load_timeout)
+            if ok:
+                scheduler.mark_preloaded(model_name)
+            else:
+                logger.warning("模型预加载: %s (%s) 加载失败，将在首次请求时重试",
+                               label, model_name)
+
+
 # ── 启动计时器 ──
 
 _t_start_total = 0.0
@@ -318,6 +402,10 @@ def create_application():
         except Exception:
             task_manager = None
     _t("任务管理器")
+
+    # ── 模型预加载（在记忆系统之前，避免 EmbeddingClient 加载时挤掉主模型）──
+    _preload_models(app)
+    _t("模型预加载")
 
     # ── 记忆与摘要 ──
     if app.config.get("MEMORY_ENABLED", True):
@@ -460,6 +548,39 @@ def create_application():
         task_manager=task_manager, personality_v3=personality_v3,
     )
     _t("DSNEngine")
+
+    # ── 提示词缓存索引 ──
+    try:
+        from prompt.prompt_cache import PromptCache
+        from models import EmbeddingClient
+        
+        embedding_client = None
+        if Config.MEMORY_EMBEDDING_ENABLED:
+            embedding_client = EmbeddingClient()
+            app.logger.info("提示词缓存: 向量嵌入已启用")
+        else:
+            app.logger.info("提示词缓存: 向量嵌入未启用，仅使用关键词搜索")
+        
+        prompt_cache = PromptCache(db=db, embedding_client=embedding_client)
+        engine.prompt_cache = prompt_cache
+        
+        # 为所有已有聊天索引提示词
+        conn = db._get_connection()
+        chats = conn.execute(
+            "SELECT DISTINCT user_id, chat_id FROM chats"
+        ).fetchall()
+        
+        indexed_count = 0
+        for row in chats:
+            uid = row["user_id"]
+            cid = row["chat_id"]
+            count = engine.index_prompts_for_chat(uid, cid)
+            indexed_count += count
+        
+        app.logger.info("提示词缓存索引完成: %d 条提示词, %d 个聊天", indexed_count, len(chats))
+    except Exception as e:
+        app.logger.warning("提示词缓存索引失败: %s", e)
+    _t("提示词缓存")
 
     # V3 注入到 personality_materials 技能
     try:

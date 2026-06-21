@@ -81,6 +81,7 @@ class Task:
         self.completed_at: Optional[datetime] = None
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
+        self.handled_by_pipeline: bool = False
         
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
@@ -653,9 +654,25 @@ class TaskManager:
         return result
     
     def _execute_action_task(self, task: Task) -> Dict[str, Any]:
+        from models import DETAIL_ACTIONS
         self.logger.info("开始执行动作任务: %s", task.task_id)
         action_type = task.params.get("action_type", "")
         content = task.params.get("content", "")
+
+        # 详细模式：显示 AI 动作的原始输入
+        if DETAIL_ACTIONS:
+            print("\n" + "=" * 60)
+            print("🔧 [动作执行] 原始输入:")
+            print("=" * 60)
+            print(f"动作类型: {action_type}")
+            print(f"任务ID: {task.task_id}")
+            print(f"用户ID: {task.user_id}")
+            print(f"聊天ID: {task.chat_id}")
+            print(f"\n代码内容:")
+            print("-" * 40)
+            print(content)
+            print("-" * 40)
+            print("=" * 60)
 
         result = {
             "action_type": action_type,
@@ -676,6 +693,23 @@ class TaskManager:
         except Exception as e:
             self.logger.error("动作任务执行失败 (task_id=%s): %s", task.task_id, e)
             result.update({"success": False, "error": str(e)})
+
+        # 详细模式：显示系统给予的原始反馈
+        if DETAIL_ACTIONS:
+            print("\n" + "=" * 60)
+            print("📋 [动作执行] 系统反馈:")
+            print("=" * 60)
+            print(f"成功: {result.get('success', '未知')}")
+            if result.get("exit_code") is not None:
+                print(f"退出码: {result['exit_code']}")
+            if result.get("error"):
+                print(f"错误: {result['error']}")
+            if result.get("output"):
+                print(f"输出:")
+                print("-" * 40)
+                print(result["output"])
+                print("-" * 40)
+            print("=" * 60)
 
         return self._finalize_action(task, result)
 

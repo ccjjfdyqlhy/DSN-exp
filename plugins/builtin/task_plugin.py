@@ -33,7 +33,9 @@ class TaskPlugin(Plugin):
     priority = 40
 
     _ACTION_RE = re.compile(r"```action\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+    _CODE_BLOCK_RE = re.compile(r"```\w*\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
     _TASK_RE = re.compile(r"<task>(.*?)</task>", re.DOTALL | re.IGNORECASE)
+    _HELP_RE = re.compile(r"<help>(.*?)</help>", re.DOTALL | re.IGNORECASE)
 
     def __init__(self, task_manager=None, db=None, skill_registry=None):
         self._task_mgr = task_manager
@@ -61,9 +63,11 @@ class TaskPlugin(Plugin):
             if tid:
                 pending.add(tid)
 
-        # 从 ctx.reply 中移除已处理的 <task> 和 ```action``` 标签
+        # 从 ctx.reply 中移除已处理的 <task>、代码块和 <help> 标签
         ctx.reply = self._ACTION_RE.sub("", ctx.reply).strip()
+        ctx.reply = self._CODE_BLOCK_RE.sub("", ctx.reply).strip()
         ctx.reply = self._TASK_RE.sub("", ctx.reply).strip()
+        ctx.reply = self._HELP_RE.sub("", ctx.reply).strip()
         if not ctx.reply:
             ctx.reply = "…"
 
@@ -75,13 +79,16 @@ class TaskPlugin(Plugin):
     def _parse_tasks(cls, text: str) -> list[dict]:
         tasks: list[dict] = []
         action_matches = list(cls._ACTION_RE.finditer(text))
+        code_block_matches = list(cls._CODE_BLOCK_RE.finditer(text))
         task_matches = list(cls._TASK_RE.finditer(text))
         if not task_matches:
             return tasks
 
         action_matches.sort(key=lambda m: m.start())
+        code_block_matches.sort(key=lambda m: m.start())
         task_matches.sort(key=lambda m: m.start())
         used_actions: list[bool] = [False] * len(action_matches)
+        used_code_blocks: list[bool] = [False] * len(code_block_matches)
 
         for tm in task_matches:
             try:
@@ -94,6 +101,7 @@ class TaskPlugin(Plugin):
                 tasks.append(task_data)
                 continue
 
+            # 优先匹配 ```action 代码块
             nearest_idx = -1
             nearest_dist = float("inf")
             for i, am in enumerate(action_matches):
@@ -108,6 +116,24 @@ class TaskPlugin(Plugin):
                 used_actions[nearest_idx] = True
                 task_data.setdefault("params", {})
                 task_data["params"]["content"] = action_matches[nearest_idx].group(1).strip()
+                tasks.append(task_data)
+                continue
+
+            # 回退：匹配普通 ``` 代码块
+            nearest_idx = -1
+            nearest_dist = float("inf")
+            for i, cm in enumerate(code_block_matches):
+                if used_code_blocks[i]:
+                    continue
+                dist = abs(cm.start() - tm.start())
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_idx = i
+
+            if nearest_idx >= 0:
+                used_code_blocks[nearest_idx] = True
+                task_data.setdefault("params", {})
+                task_data["params"]["content"] = code_block_matches[nearest_idx].group(1).strip()
                 tasks.append(task_data)
 
         return tasks

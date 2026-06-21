@@ -11,6 +11,25 @@ from collections import deque
 from typing import List, Dict, Optional, Union
 
 
+# 全局详细模式标志，由 /detail 命令切换
+DETAIL_CHATS = False
+DETAIL_ACTIONS = False
+
+
+def toggle_detail_chats() -> bool:
+    """切换聊天详细模式，返回切换后的状态"""
+    global DETAIL_CHATS
+    DETAIL_CHATS = not DETAIL_CHATS
+    return DETAIL_CHATS
+
+
+def toggle_detail_actions() -> bool:
+    """切换动作详细模式，返回切换后的状态"""
+    global DETAIL_ACTIONS
+    DETAIL_ACTIONS = not DETAIL_ACTIONS
+    return DETAIL_ACTIONS
+
+
 def _is_no_model_error(response) -> bool:
     """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
     if response is None or response.status_code != 400:
@@ -150,6 +169,18 @@ class DeepSeekChat:
         """核心调用逻辑：发送 self.messages → 获取回复 → 追加到 history → 返回"""
         self.logger.info("发送请求，消息数: %d", len(self.messages))
 
+        # 详细模式：显示完整发送内容
+        if DETAIL_CHATS:
+            print("\n" + "=" * 60)
+            print("📤 [DeepSeek] 发送内容:")
+            print("=" * 60)
+            for i, msg in enumerate(self.messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                print(f"\n[{i}] {role}:")
+                print(content)
+            print("=" * 60)
+
         # 上下文窗口裁剪：保留最多 max_history 条消息
         if self.max_history > 0 and len(self.messages) > self.max_history:
             system_msgs = [m for m in self.messages if m.get("role") == "system"]
@@ -189,6 +220,13 @@ class DeepSeekChat:
             assistant_message = result["choices"][0]["message"]["content"]
             self.messages.append({"role": "assistant", "content": assistant_message})
             self.logger.info("收到助手回复: %s", assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
+
+            # 详细模式：显示完整生成内容
+            if DETAIL_CHATS:
+                print("\n📥 [DeepSeek] 生成内容:")
+                print("-" * 60)
+                print(assistant_message)
+                print("-" * 60)
 
             return assistant_message
 
@@ -250,6 +288,7 @@ class LMStudioChat:
         logger: Optional[logging.Logger] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        managed: bool = True,
     ):
         """
         初始化 LMStudio 聊天客户端。
@@ -260,6 +299,7 @@ class LMStudioChat:
         :param logger: 日志记录器实例
         :param temperature: 生成温度
         :param max_tokens: 最大生成token数
+        :param managed: 是否由 ModelScheduler 管理模型加载/卸载
         """
         self.base_url = base_url.rstrip('/')
         self.model_name = model_name
@@ -277,6 +317,18 @@ class LMStudioChat:
             self.logger = logging.getLogger(self.__class__.__name__)
             self.logger.setLevel(logging.INFO)
 
+        # 注册到 ModelScheduler
+        self._scheduler = None
+        if managed and self.model_name:
+            from model_scheduler import ModelScheduler
+            self._scheduler = ModelScheduler.get_instance()
+            self._scheduler.register(
+                model_name=self.model_name,
+                base_url=self.base_url,
+                load_fn=lambda m=self.model_name, b=self.base_url: _load_lmstudio_model(b, m, "LMStudio 模型"),
+                unload_fn=lambda m=self.model_name, b=self.base_url: _unload_lmstudio_model(b, m),
+            )
+
         self.logger.info("LMStudioChat客户端初始化完成，地址：%s，模型：%s", self.base_url, self.model_name or "默认")
 
     def _ensure_model_loaded(self) -> bool:
@@ -285,7 +337,14 @@ class LMStudioChat:
     # ---- 底层 API 调用（含自动加载重试） ----
 
     def _call_chat_api(self, payload: dict) -> dict:
-        """调用 /v1/chat/completions，若模型未加载则自动加载后重试一次"""
+        """调用 /v1/chat/completions。由 ModelScheduler 管理模型加载。"""
+        if self._scheduler:
+            with self._scheduler.use(self.model_name):
+                return self._do_call_chat_api(payload)
+        return self._do_call_chat_api(payload)
+
+    def _do_call_chat_api(self, payload: dict) -> dict:
+        """原始 HTTP 调用，含自动加载重试（managed=False 时的回退路径）"""
         url = f"{self.base_url}/v1/chat/completions"
         headers = {"Content-Type": "application/json"}
 
@@ -318,6 +377,18 @@ class LMStudioChat:
         return self._call_and_append()
 
     def _call_and_append(self) -> str:
+        # 详细模式：显示完整发送内容
+        if DETAIL_CHATS:
+            print("\n" + "=" * 60)
+            print("📤 [LMStudio] 发送内容:")
+            print("=" * 60)
+            for i, msg in enumerate(self.messages):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                print(f"\n[{i}] {role}:")
+                print(content)
+            print("=" * 60)
+
         payload = {
             "messages": self.messages,
             "temperature": self.temperature,
@@ -334,6 +405,13 @@ class LMStudioChat:
         assistant_message = result["choices"][0]["message"]["content"]
         self.messages.append({"role": "assistant", "content": assistant_message})
         self.logger.info("收到助手回复: %s", assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
+
+        # 详细模式：显示完整生成内容
+        if DETAIL_CHATS:
+            print("\n📥 [LMStudio] 生成内容:")
+            print("-" * 60)
+            print(assistant_message)
+            print("-" * 60)
 
         return assistant_message
 
@@ -790,11 +868,11 @@ class OCRModel:
     配置:
         OCR_MODEL: 模型名 (默认 "deepseek-ocr")
         OCR_BASE_URL: LMStudio 地址 (默认 "http://localhost:4502")
-        OCR_UNLOAD_AFTER_USE: 用完自动卸载
+        OCR_UNLOAD_AFTER_USE: 用完自动卸载（managed=True 时由 Scheduler 接管）
     """
 
     def __init__(self, base_url: str = None, model_name: str = None,
-                 auto_load: bool = True):
+                 auto_load: bool = True, managed: bool = True):
         from config import Config
 
         self.base_url = (base_url or Config.OCR_BASE_URL).rstrip("/")
@@ -804,7 +882,21 @@ class OCRModel:
         self._load_lock = threading.Lock()
         self._model_ready = threading.Event()
 
-        if auto_load and self.model_name:
+        # 注册到 ModelScheduler（按需加载，不占常驻名额）
+        self._scheduler = None
+        if managed and self.model_name:
+            from model_scheduler import ModelScheduler
+            self._scheduler = ModelScheduler.get_instance()
+            self._scheduler.register(
+                model_name=self.model_name,
+                base_url=self.base_url,
+                load_fn=lambda m=self.model_name, b=self.base_url:
+                    _load_lmstudio_model(b, m, "OCR 模型", timeout=300),
+                unload_fn=lambda m=self.model_name, b=self.base_url:
+                    _unload_lmstudio_model(b, m),
+            )
+
+        if not managed and auto_load and self.model_name:
             self._ensure_loaded()
 
     def ocr(self, data_url: str, max_tokens: int = 4096) -> str:
@@ -819,7 +911,8 @@ class OCRModel:
         :param images: [{filename, data_url}, ...]
         :return: [{filename, markdown}, ...]
 
-        若 OCR_UNLOAD_AFTER_USE=true，完成所有处理后自动卸载。
+        若 OCR_UNLOAD_AFTER_USE=true 且 managed=False，完成所有处理后自动卸载。
+        managed=True 时由 ModelScheduler 按需换入换出。
         """
         from config import Config
         results = []
@@ -828,7 +921,7 @@ class OCRModel:
             text = self._ocr_single(img.get("data_url", ""), max_tokens)
             results.append({"filename": filename, "markdown": text})
         self.logger.info("OCR 完成: %d 张 → %d 条结果", len(images), len(results))
-        if Config.OCR_UNLOAD_AFTER_USE:
+        if not self._scheduler and Config.OCR_UNLOAD_AFTER_USE:
             self.logger.info("OCR_UNLOAD_AFTER_USE=true，卸载模型")
             self.unload()
         return results
@@ -861,6 +954,12 @@ class OCRModel:
                 return result["choices"][0]["message"]["content"].strip()
             return ""
 
+        # managed 路径：由 Scheduler 确保模型已加载
+        if self._scheduler:
+            with self._scheduler.use(self.model_name):
+                return _do_request()
+
+        # 传统路径：手动管理加载/卸载
         if self._model_ready.is_set():
             try:
                 return _do_request()

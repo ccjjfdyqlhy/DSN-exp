@@ -107,7 +107,24 @@ class PromptEngine:
         # 6. 用户上下文
         nickname = user_info.get("nickname", "用户")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sections.append(f"当前用户：{nickname}\n当前时间：{now}")
+        user_context = f"当前用户：{nickname}\n当前时间：{now}"
+
+        # 6.1 工作区路径
+        try:
+            from workspace import get_workspace_manager
+            wm = get_workspace_manager()
+            uid = user_info.get("uid", 0)
+            if uid:
+                user_root = str(wm.user_dir(uid=uid))
+                uploads_dir = str(wm.user_uploads_dir(uid=uid))
+                documents_dir = str(wm.user_documents_dir(uid=uid))
+                user_context += f"\n你的工作区目录：{user_root}"
+                user_context += f"\n扫描文件存放目录：{uploads_dir}"
+                user_context += f"\n文档输出目录：{documents_dir}"
+        except Exception:
+            pass
+
+        sections.append(user_context)
 
         # 7. 首次对话初始化引导 (仅在第一次对话时注入)
         if is_first_interaction:
@@ -121,6 +138,11 @@ class PromptEngine:
                         init_content = parts[2].strip()
                 if init_content:
                     sections.append(init_content)
+
+        # 8. constant:true 提示词 (每轮注入，作为持久指令)
+        constant_prompts = self.library.get_constant_prompts()
+        if constant_prompts:
+            sections.append(constant_prompts)
 
         return "\n\n".join(s for s in sections if s.strip())
 

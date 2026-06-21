@@ -117,9 +117,11 @@ class ModelsPlugin(Plugin):
         import re
         cleaned = re.sub(r"<text>(.*?)</text>", r"\1", reply, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"```action\s*\n.*?```", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"```\w*\s*\n.*?```", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"<task>.*?</task>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"<recall>.*?</recall>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"<tool>.*?</tool>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<help>.*?</help>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"<continue\s*/>", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"<[^>]+>", "", cleaned)
         cleaned = re.sub(r"[^\S\n]+", " ", cleaned)

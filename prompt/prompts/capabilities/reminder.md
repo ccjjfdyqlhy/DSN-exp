@@ -1,7 +1,7 @@
 ---
 name: reminder
 category: capabilities
-version: "2.0"
+version: "3.0"
 description: 提醒/习惯/倒计时任务能力
 tags: [reminder, task, habit, countdown]
 priority: 120
@@ -41,7 +41,13 @@ enabled: true
 }
 </task>
 
-`interval` 格式: `30m` (每30分钟) / `2h` (每2小时) / `1d` (每天)。首次触发在 `time` 指定时间，之后每隔 `interval` 重复。
+`interval` 格式: `<数字><单位>`，支持的单位：
+- `s` — 秒（如 `30s`）
+- `m` 或 `min` — 分钟（如 `30m`、`45min`）
+- `h` — 小时（如 `2h`、`1.5h`）
+- `d` — 天（如 `1d`、`3d`）
+
+首次触发在 `time` 指定时间，之后每隔 `interval` 重复。
 
 ### 倒计时 (countdown)
 
@@ -57,11 +63,17 @@ enabled: true
 }
 </task>
 
+### 取消提醒
+
+当用户要求取消提醒时，可以告诉用户：
+- 输入 `k` 跳过最近触发的提醒
+- 或者提醒会自动过期
+
 ### 字段说明
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `time` | ISO8601 字符串 | 触发时间 (reminder/habit 必需) |
 | `target` | ISO8601 字符串 | 倒计时目标 (countdown 必需) |
-| `interval` | 字符串 | 重复间隔 (habit 必需，格式 30m/2h/1d) |
+| `interval` | 字符串 | 重复间隔 (habit 必需，格式: 数字+单位) |
 | `text` | 字符串 | 提醒内容 |

@@ -119,6 +119,7 @@ class DSNEngine:
         self.skill_registry = SkillRegistry()
         self.skill_manager: Optional[SkillManager] = None
         self.prompt_engine: Optional[PromptEngine] = None
+        self.prompt_cache = None  # PromptCache 实例
         self.pipeline: Optional[ChatPipeline] = None
 
         self._models_plugin = None
@@ -213,6 +214,10 @@ class DSNEngine:
 
     def _handle_engine_action_completion(self, task, result, retry_depth: int = 0):
         if not result.get("requires_ai_notification", True):
+            return
+        # pipeline 已在 SSE 流中处理过，避免重复
+        if getattr(task, "handled_by_pipeline", False):
+            self._logger.debug("任务 %s 已被 pipeline 处理，跳过引擎处理", task.task_id[:8])
             return
         try:
             ai_message = self._generate_result_message(task, result)
@@ -473,6 +478,13 @@ class DSNEngine:
         self.prompt_engine = PromptEngine(library=lib, personality_v2=peers)
         self.prompt_engine.set_skill_registry(self.skill_registry)
 
+        # 初始化提示词缓存
+        from prompt.prompt_cache import PromptCache
+        embedding_client = None
+        if Config.MEMORY_EMBEDDING_ENABLED:
+            embedding_client = EmbeddingClient()
+        self.prompt_cache = PromptCache(db=self.db, embedding_client=embedding_client)
+
     def _init_plugins(self):
         ec = self._engine_cfg
         self._enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
@@ -605,6 +617,9 @@ class DSNEngine:
         if self._plugin_enabled("plan"):
             from plugins.builtin.plan_plugin import PlanPlugin
             self.plugin_manager.register(PlanPlugin(db=self.db))
+        if self._plugin_enabled("help") and self.prompt_cache:
+            from plugins.builtin.help_plugin import HelpPlugin
+            self.plugin_manager.register(HelpPlugin(prompt_cache=self.prompt_cache))
 
     def _register_output_plugins(self):
         if self._plugin_enabled("tts") and self._tts_client:
@@ -741,6 +756,28 @@ class DSNEngine:
 
     def get_history(self, user_id: int, chat_id: int) -> list:
         return self.db.get_chat_history(user_id, chat_id) if self.db else []
+
+    def index_prompts_for_chat(self, user_id: int, chat_id: int) -> int:
+        """
+        为指定聊天索引提示词到 prompt_cache 表。
+        
+        在用户首次对话或同步时调用，将所有提示词按文件分组存储。
+        """
+        if not self.prompt_cache or not self.prompt_engine:
+            return 0
+
+        lib = self.prompt_engine.library
+        prompts = []
+        
+        for entry in lib.entries:
+            if entry.enabled and entry.content.strip():
+                prompts.append({
+                    "category": entry.category,
+                    "source_file": entry.source_file,
+                    "content": entry.content,
+                })
+        
+        return self.prompt_cache.index_prompts(user_id, chat_id, prompts)
 
     # ── 定时调度 ──
 

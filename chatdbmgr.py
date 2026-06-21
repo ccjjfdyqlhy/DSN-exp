@@ -268,6 +268,27 @@ class ChatDBManager:
                     )
                 """)
                 
+                # 提示词缓存表 (用于 <help> 检索)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS prompt_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        uid INTEGER NOT NULL,
+                        chat_id INTEGER NOT NULL,
+                        category TEXT NOT NULL,
+                        source_file TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        embedding BLOB,
+                        created_at TEXT DEFAULT (datetime('now')),
+                        updated_at TEXT DEFAULT (datetime('now')),
+                        FOREIGN KEY (uid) REFERENCES users(uid) ON DELETE CASCADE,
+                        UNIQUE(uid, chat_id, source_file)
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_prompt_cache_lookup "
+                    "ON prompt_cache(uid, chat_id, category)"
+                )
+                
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
             except sqlite3.Error as e:
