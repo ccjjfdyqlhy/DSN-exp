@@ -359,11 +359,9 @@ priority: 65
 
 使用 `<tool>` 标签调用，`command` 字段填 {bin_name} 的参数（不含二进制名）。
 
-```
 <tool>
 {{"skill": "{fm.get('name', 'skill')}", "tool": "exec", "params": {{"command": "你的参数..."}}}}
 </tool>
-```
 
 ---
 """

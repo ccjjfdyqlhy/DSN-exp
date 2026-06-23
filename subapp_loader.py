@@ -55,6 +55,7 @@ class SubAppConfig:
     database_path: str = ""
 
     # Agent
+    agent_active: bool = True
     agent_max_steps: int = 5
     agent_token_budget: int = 1000000
     agent_timeout: float = 120.0
@@ -132,6 +133,7 @@ def _build_config(data: dict, subapp_dir: str) -> SubAppConfig:
         schedule_cron=schedule.get("cron", ""),
         schedule_prompt=schedule.get("prompt", ""),
         database_path=data.get("database_path", ""),
+        agent_active=agent.get("active", True),
         agent_max_steps=agent.get("max_steps", 5),
             agent_token_budget=agent.get("token_budget", 1000000),
         agent_timeout=agent.get("timeout", 120.0),

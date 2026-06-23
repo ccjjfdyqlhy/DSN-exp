@@ -73,11 +73,19 @@ class NotebookPlugin(Plugin):
         uid = ctx.user_id
         reply = ctx.original_reply or ctx.reply or ""
 
+        note_count = 0
         for match in _NOTEBOOK_RE.finditer(reply):
             content = match.group(1).strip()
             if content:
                 self._store.add_note(uid, content, ctx.chat_id or 0)
+                note_count += 1
                 logger.info("Notebook: uid=%d 保存笔记 (%d chars)", uid, len(content))
+
+        if note_count:
+            ctx.extra.setdefault("_tag_results", []).append({
+                "tag": "<notebook>", "success": True,
+                "summary": f"已保存 {note_count} 条观察笔记",
+            })
 
         ctx.reply = _NOTEBOOK_RE.sub("", ctx.reply).strip()
         ctx.original_reply = _NOTEBOOK_RE.sub("", ctx.original_reply).strip()

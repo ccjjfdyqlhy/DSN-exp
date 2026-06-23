@@ -40,70 +40,57 @@ class HelpPlugin(Plugin):
             logger.warning("prompt_cache 未注入，HelpPlugin 将跳过 <help> 检索")
 
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
-        if self._prompt_cache is None:
+        if self._prompt_cache is None or hook != HookPoint.POST_PROCESS:
             return ctx
 
-        # 检测 <help> 标签
-        text = ctx.reply if ctx.reply else ctx.original_reply
-        match = _HELP_RE.search(text)
-        if not match:
+        text = ctx.original_reply
+        if not text:
             return ctx
 
-        query = match.group(1).strip()
-        if not query:
-            logger.info("<help> 标签为空，跳过检索")
-            return ctx
+        results: list[dict] = []
 
-        logger.info("检测到 <help> 标签，查询: %s", query[:50])
+        for match in _HELP_RE.finditer(text):
+            query = match.group(1).strip()
+            if not query:
+                continue
 
-        # 从 prompt_cache 检索
-        results = self._prompt_cache.search(
-            uid=ctx.user_id,
-            chat_id=ctx.chat_id,
-            query=query,
-            limit=3,
-        )
+            logger.info("检测到 <help> 标签，查询: %s", query[:50])
 
-        if not results:
-            logger.info("未找到相关提示词")
-            # 移除 <help> 标签
-            ctx.reply = _HELP_RE.sub("", text).strip()
-            if not ctx.reply:
-                ctx.reply = "…"
-            return ctx
+            search_results = self._prompt_cache.search(
+                uid=ctx.user_id,
+                chat_id=ctx.chat_id,
+                query=query,
+                limit=3,
+            )
 
-        # 格式化检索结果
-        help_content = self._format_results(results)
-        logger.info("检索到 %d 条相关提示词", len(results))
+            if search_results:
+                summary = self._format_summary(search_results)
+                results.append({
+                    "tag": "<help>", "success": True,
+                    "summary": f"检索「{query[:30]}」→ {summary}",
+                    "data": search_results,
+                    "query": query,
+                })
+                logger.info("检索到 %d 条相关提示词", len(search_results))
+            else:
+                results.append({
+                    "tag": "<help>", "success": True,
+                    "summary": f"检索「{query[:30]}」→ 无结果",
+                    "data": [],
+                    "query": query,
+                })
 
-        # 将检索结果注入到回复中
-        # 移除 <help> 标签，并在回复前添加检索结果
-        clean_reply = _HELP_RE.sub("", text).strip()
-        if not clean_reply:
-            clean_reply = "…"
+        ctx.reply = _HELP_RE.sub("", ctx.reply).strip()
 
-        ctx.reply = f"{help_content}\n\n{clean_reply}"
-        
-        # 标记需要重新处理
-        ctx.extra["_help_retrieved"] = True
-        ctx.extra["_help_content"] = help_content
+        if results:
+            ctx.extra.setdefault("_tag_results", []).extend(results)
 
         return ctx
 
-    def _format_results(self, results: list[dict]) -> str:
-        """格式化检索结果"""
-        lines = ["【相关提示词】"]
-        for i, r in enumerate(results, 1):
-            category = r.get("category", "unknown")
-            source = r.get("source_file", "").split("/")[-1]  # 只取文件名
-            content = r.get("content", "")
-            similarity = r.get("similarity", 0)
-            
-            # 截断过长的内容
-            if len(content) > 500:
-                content = content[:500] + "..."
-            
-            lines.append(f"\n[{i}] 类别: {category} | 来源: {source} | 相似度: {similarity:.2f}")
-            lines.append(content)
-        
-        return "\n".join(lines)
+    def _format_summary(self, results: list[dict]) -> str:
+        items = []
+        for r in results:
+            source = r.get("source_file", "").split("/")[-1]
+            content = r.get("content", "")[:100]
+            items.append(f"{source}: {content}")
+        return "; ".join(items[:3])

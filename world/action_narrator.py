@@ -25,7 +25,7 @@ class ActionNarrator:
         self._narrator = narrative_model
         self._engine = world_engine
 
-    # ── 异步入口（AgentPlugin 调用）──
+    # ── 异步入口（ToolPlugin / agent 循环调用）──
 
     def fire_action_narrative(
         self,

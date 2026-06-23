@@ -72,7 +72,7 @@ class PlanPlugin(Plugin):
 
     def _handle_plan_check(self, ctx: PluginContext) -> None:
         reply = ctx.original_reply or ctx.reply or ""
-        errors = []
+        results: list[dict] = []
         for match in _PLAN_CHECK_RE.finditer(reply):
             try:
                 import json
@@ -84,15 +84,28 @@ class PlanPlugin(Plugin):
                         self._engine.skip_task(task_id)
                     else:
                         self._engine.check_off(task_id)
+                    results.append({
+                        "tag": "<plan_check>", "success": True,
+                        "summary": f"任务 {task_id[:8]} → {action}",
+                    })
                     logger.info("plan_check: %s → %s", task_id[:8], action)
+                else:
+                    results.append({
+                        "tag": "<plan_check>", "success": False,
+                        "summary": "缺少 task_id",
+                    })
             except (json.JSONDecodeError, Exception) as e:
                 logger.error("plan_check 解析失败: %s", e)
-                errors.append(str(e))
-        if errors:
-            logger.warning("plan_check 存在错误: %s", "; ".join(errors))
+                results.append({
+                    "tag": "<plan_check>", "success": False,
+                    "summary": f"解析失败: {e}",
+                    "error": str(e),
+                })
+
         ctx.reply = _PLAN_CHECK_RE.sub("", ctx.reply).strip()
-        if not ctx.reply:
-            ctx.reply = "…"
+
+        if results:
+            ctx.extra.setdefault("_tag_results", []).extend(results)
 
     def _handle_daily_report(self, ctx: PluginContext) -> None:
         now = datetime.now()

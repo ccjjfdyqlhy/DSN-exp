@@ -46,7 +46,7 @@ class PluginContext:
     usage: Optional[dict] = None           # API 返回的 usage 字段
     model_name: Optional[str] = None       # 实际调用的模型名
 
-    # ---- Agent 循环状态 (AgentPlugin 使用) ----
+    # ---- Agent 循环状态 (引擎层使用) ----
     agent_active: bool = False            # 是否启用了 agent 循环
     agent_step_count: int = 0             # 当前步数
     agent_max_steps: int = 5             # 最大步数

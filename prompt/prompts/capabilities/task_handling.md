@@ -84,7 +84,7 @@ echo "Hello"
 | `<recall>` | 检索记忆 | `<recall>{"query": "用户兴趣", "mode": "keyword"}</recall>` |
 | `<memo>` | 保存事实记忆 | `<memo>用户喜欢深夜工作</memo>` |
 | `<notebook>` | 保存观察笔记 | `<notebook>用户最近在学习Python</notebook>` |
-| `<tool>` | 调用技能工具 | `<tool skill="plan">{"action": "create_goal", ...}</tool>` |
+| `<tool>` | 调用技能工具 | `<tool>{"skill": "plan", "tool": "create_goal", "params": {...}}</tool>` |
 | `<text>` | 包裹代码/特殊格式 | `<text>代码内容</text>` |
 | `<plan_check>` | 标记计划任务完成 | `<plan_check>{"task_id": "xxx", "action": "done"}</plan_check>` |
 | `<help>` | 检索提示词指导 | `<help>用户需求描述</help>` |

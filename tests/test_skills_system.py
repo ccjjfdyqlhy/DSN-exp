@@ -1,5 +1,5 @@
 # tests/test_skills_system.py
-# 技能系统完整测试 — SkillLoader + SkillRegistry + SkillManager + SkillsPlugin + Distillation
+# 技能系统完整测试 — SkillLoader + SkillRegistry + SkillManager + ToolPlugin + Distillation
 
 """
 用法:
@@ -9,8 +9,8 @@
     1. SkillLoader — 加载内置技能
     2. SkillRegistry — 注册/工具调用/提示词聚合
     3. SkillManager — 扫描/启用/禁用/卸载
-    4. SkillsPlugin — <tool> 标签解析与执行
-    5. SkillsPlugin + PromptEngine 集成
+    4. ToolPlugin — <tool> 标签解析与执行
+    5. ToolPlugin + PromptEngine 集成
     6. DistillPlugin — 蒸馏触发
     7. DistillationEngine — 对话收集 + 草案管理
 """
@@ -162,14 +162,14 @@ def test_manager():
     print("  PASSED")
 
 
-def test_skills_plugin():
-    """4. SkillsPlugin <tool> 标签解析与执行"""
+def test_tool_plugin():
+    """4. ToolPlugin <tool> 标签解析与执行"""
     print("\n" + "=" * 60)
-    print("Test 4: SkillsPlugin <tool> 标签解析与执行")
+    print("Test 4: ToolPlugin <tool> 标签解析与执行")
     print("=" * 60)
 
     from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.skills_plugin import SkillsPlugin
+    from plugins.builtin.tool_plugin import ToolPlugin
     from skills.loader import SkillLoader
     from skills.registry import SkillRegistry
 
@@ -182,7 +182,7 @@ def test_skills_plugin():
     fm = loader.load("skills/builtin/file_manager")
     registry.register_skill(fm)
 
-    plugin = SkillsPlugin(skill_registry=registry)
+    plugin = ToolPlugin(skill_registry=registry)
 
     # 测试搜索 <tool>
     ctx = PluginContext(user_id=1, message="搜索测试", chat_id=1)
@@ -239,18 +239,18 @@ def test_skills_plugin():
     print("  PASSED")
 
 
-def test_skills_plugin_empty():
-    """5. SkillsPlugin 无工具标签时保持原样"""
+def test_tool_plugin_empty():
+    """5. ToolPlugin 无工具标签时保持原样"""
     print("\n" + "=" * 60)
-    print("Test 5: SkillsPlugin 无工具标签时保持原样")
+    print("Test 5: ToolPlugin 无工具标签时保持原样")
     print("=" * 60)
 
     from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.skills_plugin import SkillsPlugin
+    from plugins.builtin.tool_plugin import ToolPlugin
     from skills.registry import SkillRegistry
 
     registry = SkillRegistry()
-    plugin = SkillsPlugin(skill_registry=registry)
+    plugin = ToolPlugin(skill_registry=registry)
 
     ctx = PluginContext(user_id=1, message="hello", chat_id=1)
     ctx.original_reply = "这是普通回复，没有工具标签"
@@ -261,7 +261,7 @@ def test_skills_plugin_empty():
     print("  无标签回复保持不变")
 
     # 无 registry 时
-    plugin2 = SkillsPlugin(skill_registry=None)
+    plugin2 = ToolPlugin(skill_registry=None)
     ctx2 = PluginContext(user_id=1, message="test", chat_id=1)
     ctx2.original_reply = '<tool>\n{"skill": "x", "tool": "y", "params": {}}\n</tool>'
     ctx2.reply = ctx2.original_reply
@@ -432,8 +432,8 @@ def main():
         ("SkillLoader 加载内置技能", test_loader_load_skills),
         ("SkillRegistry 注册+工具调用+提示词聚合", test_registry),
         ("SkillManager 扫描+生命周期", test_manager),
-        ("SkillsPlugin tool标签解析与执行", test_skills_plugin),
-        ("SkillsPlugin 无工具标签时保持原样", test_skills_plugin_empty),
+        ("ToolPlugin tool标签解析与执行", test_tool_plugin),
+        ("ToolPlugin 无工具标签时保持原样", test_tool_plugin_empty),
         ("PromptEngine + SkillRegistry 集成", test_prompt_engine_with_skills),
         ("DistillPlugin 触发逻辑", test_distill_plugin),
         ("DistillationEngine 核心方法", test_distillation_engine),
