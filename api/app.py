@@ -219,7 +219,7 @@ def get_sensing_prompt() -> str:
     if _SENSING_PROMPT_CACHE is not None:
         return _SENSING_PROMPT_CACHE
     import re, os
-    path = os.path.join(os.path.dirname(__file__), "prompt", "prompts", "capabilities", "sensing.md")
+    path = os.path.join(os.path.dirname(__file__), "..", "prompt", "prompts", "capabilities", "sensing.md")
     try:
         text = open(path, encoding="utf-8-sig").read()
         m = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.DOTALL)

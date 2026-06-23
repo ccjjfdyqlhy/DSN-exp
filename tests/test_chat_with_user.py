@@ -5,8 +5,8 @@
 import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from usermgr import UserManager
-from chatdbmgr import ChatDBManager
+from api.auth import UserManager
+from db.chat import ChatDBManager
 from models import DeepSeekChat
 
 # 1. 登录

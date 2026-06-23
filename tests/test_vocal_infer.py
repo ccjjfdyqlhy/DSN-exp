@@ -8,7 +8,7 @@ import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from vocal_infer import VocalExp, TTSRequestError
+from audio.infer import VocalExp, TTSRequestError
 from plugins.builtin.tts_profile import TTSProfileManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

@@ -60,17 +60,27 @@ class ScannerTool:
 
         if output_dir is None:
             try:
-                from workspace import get_workspace_manager
+                from utils.workspace import get_workspace_manager
                 output_dir = str(get_workspace_manager().user_uploads_dir(uid=1))
             except Exception:
                 output_dir = "/tmp/dsn_scans"
 
         os.makedirs(output_dir, exist_ok=True)
 
-        timestamp = subprocess.run(
-            ["date", "+%Y%m%d_%H%M%S"], capture_output=True, text=True
-        ).stdout.strip()
-        output_file = os.path.join(output_dir, f"{basename}_{timestamp}.{fmt}")
+        # 查找已有的序号文件，确定起始序号
+        existing_files = [f for f in os.listdir(output_dir) if f.startswith(f"{basename}_") and f.endswith(f".{fmt}")]
+        existing_numbers = []
+        for f in existing_files:
+            try:
+                # 提取序号部分，格式为 basename_N.ext
+                num_part = f[len(basename)+1:-len(fmt)-1]
+                if num_part.isdigit():
+                    existing_numbers.append(int(num_part))
+            except (ValueError, IndexError):
+                continue
+        
+        next_number = max(existing_numbers) + 1 if existing_numbers else 1
+        output_file = os.path.join(output_dir, f"{basename}_{next_number}.{fmt}")
 
         logger.info("开始扫描: device=%s resolution=%d mode=%s → %s", device, resolution, mode, output_file)
         cmd = (

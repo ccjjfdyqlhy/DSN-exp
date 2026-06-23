@@ -16,7 +16,7 @@ logger = logging.getLogger("ModelScheduler")
 
 # 延迟导入，避免循环依赖
 def _get_lm_load_unload():
-    from models import _load_lmstudio_model, _unload_lmstudio_model
+    from .clients import _load_lmstudio_model, _unload_lmstudio_model
     return _load_lmstudio_model, _unload_lmstudio_model
 
 
@@ -108,8 +108,8 @@ class ModelScheduler:
             self.register(
                 model_name=emb_model,
                 base_url=_Cfg.LMSTUDIO_BASE_URL,
-                load_fn=lambda: _load_lmstudio_model(_Cfg.LMSTUDIO_BASE_URL, emb_model, "embedding"),
-                unload_fn=lambda: _unload_lmstudio_model(_Cfg.LMSTUDIO_BASE_URL, emb_model),
+                load_fn=lambda: _get_lm_load_unload()[0](_Cfg.LMSTUDIO_BASE_URL, emb_model, "embedding"),
+                unload_fn=lambda: _get_lm_load_unload()[1](_Cfg.LMSTUDIO_BASE_URL, emb_model),
                 resident=True,
             )
         logger.info("ModelScheduler 已初始化 (max_concurrent=%d)", self.max_concurrent)
@@ -248,6 +248,9 @@ class ModelScheduler:
             return
         if info.refcount > 0:
             return  # 还有使用方，不卸载
+        if info.resident:
+            logger.warning("常驻模型 %s 不允许卸载，已跳过", model_name)
+            return
         logger.info("正在卸载模型: %s (LRU驱逐)", model_name)
         try:
             info.unload_fn()

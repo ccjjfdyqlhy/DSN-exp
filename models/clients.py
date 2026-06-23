@@ -320,7 +320,7 @@ class LMStudioChat:
         # 注册到 ModelScheduler
         self._scheduler = None
         if managed and self.model_name:
-            from model_scheduler import ModelScheduler
+            from .scheduler import ModelScheduler
             self._scheduler = ModelScheduler.get_instance()
             self._scheduler.register(
                 model_name=self.model_name,
@@ -885,7 +885,7 @@ class OCRModel:
         # 注册到 ModelScheduler（按需加载，不占常驻名额）
         self._scheduler = None
         if managed and self.model_name:
-            from model_scheduler import ModelScheduler
+            from .scheduler import ModelScheduler
             self._scheduler = ModelScheduler.get_instance()
             self._scheduler.register(
                 model_name=self.model_name,

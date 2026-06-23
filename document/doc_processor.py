@@ -155,7 +155,7 @@ class DocProcessor:
         }
 
     def _documents_dir(self, user_id: int) -> str:
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         wm = get_workspace_manager()
         d = wm.user_documents_dir(uid=user_id)
         logger.debug("document 输出目录: %s (user_id=%d)", d, user_id)

@@ -44,7 +44,7 @@ class VocalExp:
             self._debug_init_save_dir()
 
     def _debug_init_save_dir(self):
-        self._save_dir = Path(__file__).parent / "logs" / "tts_history"
+        self._save_dir = Path(__file__).resolve().parent.parent / "logs" / "tts_history"
         self._save_dir.mkdir(parents=True, exist_ok=True)
         self.logger.debug("TTS DEBUG: 音频保存目录=%s", self._save_dir)
 

@@ -19,7 +19,7 @@ class NotebookStore:
         self._uid_last_counts: dict[int, int] = {}
 
     def _path_for(self, uid: int) -> Path:
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         wm = get_workspace_manager()
         wm.register_subdir("notebook")
         return wm.user_subdir(uid, "notebook") / f"{uid}.json"

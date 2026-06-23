@@ -169,22 +169,24 @@ class ToolPlugin(Plugin):
                 lines.append(f"  ...还有 {len(results_list) - 5} 条")
 
         elif skill == "file_manager":
-            if tool == "list_dir":
-                items = result.get("items", [])
-                lines.append(f"目录共 {len(items)} 项")
-                for item in items[:20]:
-                    marker = "📁" if item.get("type") == "dir" else "📄"
-                    lines.append(f"  {marker} {item['name']}")
-                if len(items) > 20:
-                    lines.append(f"  ...还有 {len(items) - 20} 项")
-            elif tool == "read_file":
-                content = result.get("content", "")
-                lines.append(f"读取 {result.get('path', '')} ({result.get('size', 0)} bytes)")
-                lines.append(content[:300])
-                if len(content) > 300:
-                    lines.append("  ...(已截断)")
-            elif tool == "write_file":
-                lines.append(f"已写入 {result.get('path', '')} ({result.get('size', 0)} bytes)")
+            sub_tool = params.get("tool", tool)
+            if tool in ("explore_fs", "workspace_file") and sub_tool:
+                if sub_tool in ("list_dir",):
+                    items = result.get("items", [])
+                    lines.append(f"目录共 {len(items)} 项")
+                    for item in items[:20]:
+                        marker = "📁" if item.get("type") == "dir" else "📄"
+                        lines.append(f"  {marker} {item['name']}")
+                    if len(items) > 20:
+                        lines.append(f"  ...还有 {len(items) - 20} 项")
+                elif sub_tool in ("read_file",):
+                    content = result.get("content", "")
+                    lines.append(f"读取 {result.get('path', '')} ({result.get('size', 0)} bytes)")
+                    lines.append(content[:300])
+                    if len(content) > 300:
+                        lines.append("  ...(已截断)")
+                elif sub_tool in ("write_file",):
+                    lines.append(f"已写入 {result.get('path', '')} ({result.get('size', 0)} bytes)")
 
         else:
             snippet = json.dumps(result, ensure_ascii=False, indent=2)

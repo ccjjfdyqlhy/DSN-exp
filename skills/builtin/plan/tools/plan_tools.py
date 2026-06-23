@@ -13,8 +13,8 @@ class PlanTools:
     """计划系统。AI 通过 <tool>{"skill":"plan","tool":"xxx",...}</tool> 调用。"""
 
     def __init__(self):
-        from plan_store import get_plan_db, PlanStore
-        from plan_engine import PlanEngine
+        from db.plan_store import get_plan_db, PlanStore
+        from db.plan_engine import PlanEngine
         db = get_plan_db()
         if db:
             store = PlanStore(db)

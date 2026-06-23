@@ -572,6 +572,7 @@ class ChatPipeline:
         timing: dict[str, float] = {}
         t_total = time.perf_counter()
         tts_lines: list[dict] | None = None
+        tts_task = None
 
         hooks_ordered = [
             HookPoint.PRE_FILTER,
@@ -705,11 +706,7 @@ class ChatPipeline:
                     })}\n\n"
                     ctx = await self._run_agent_loop(ctx)
                     if ctx.reply and ctx.reply != "…":
-                        yield f"data: {json.dumps({
-                            'status': 'text_ready',
-                            'reply': ctx.reply,
-                            'chat_id': ctx.chat_id,
-                        })}\n\n"
+                        ctx.extra["_agent_reply_dirty"] = True
 
                 tts_lines = tts_collected if tts_collected else None
                 if tts_task:

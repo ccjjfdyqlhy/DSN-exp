@@ -8,7 +8,7 @@ import re
 import threading
 from typing import List, Dict, Optional, Any
 
-from crypto_utils import MessageCipher
+from utils.crypto import MessageCipher
 
 # Config.py 优先于下面这个，没填配置的时候fallback
 DEFAULT_DB_FILE = "chats.db"

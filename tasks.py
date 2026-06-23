@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 import schedule
 
 from config import Config
-from chatdbmgr import ChatDBManager
+from db.chat import ChatDBManager
 from models import DeepSeekChat
 
 
@@ -609,8 +609,8 @@ class TaskManager:
         # DAILY_PLAN: 触发 PlanEngine 生成今日计划
         if task.task_type == TaskType.DAILY_PLAN:
             try:
-                from plan_engine import PlanEngine
-                from plan_store import PlanStore
+                from db.plan_engine import PlanEngine
+                from db.plan_store import PlanStore
                 from datetime import date
                 store = PlanStore(self.db)
                 engine = PlanEngine(store)
@@ -719,7 +719,7 @@ class TaskManager:
 
     def _action_shell(self, task, content, result):
         import subprocess
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         encoding = locale.getpreferredencoding(False)
         self.logger.info("执行shell命令: %s", content[:100] if len(content) <= 100 else content[:100] + "...")
         cwd = str(get_workspace_manager().user_dir(uid=getattr(task, 'user_id', 0)))
@@ -738,7 +738,7 @@ class TaskManager:
 
     def _action_python(self, task, content, result):
         import subprocess, tempfile
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         encoding = locale.getpreferredencoding(False)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8-sig') as f:
             f.write(content)
@@ -764,7 +764,7 @@ class TaskManager:
                 pass
 
     def _action_write_file(self, task, content, result):
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         file_path = task.params.get("file_path", "")
         overwrite = task.params.get("overwrite", True)
         if not file_path:
@@ -784,7 +784,7 @@ class TaskManager:
         })
 
     def _action_edit_file(self, task, content, result):
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         file_path = task.params.get("file_path", "")
         pattern = task.params.get("pattern", "")
         replacement = task.params.get("replacement", "")

@@ -4,8 +4,8 @@
 
 from flask import Blueprint, request, jsonify, g
 
-from plan_store import PlanStore, Goal, Phase, DailyTask
-from plan_engine import PlanEngine
+from db.plan_store import PlanStore, Goal, Phase, DailyTask
+from db.plan_engine import PlanEngine
 
 plan_bp = Blueprint("plan_api", __name__)
 

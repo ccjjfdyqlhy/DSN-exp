@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from config import Config
-from chatdbmgr import ChatDBManager, _tokenize
+from db.chat import ChatDBManager, _tokenize
 from models import LMSummaryModel, EmbeddingClient
 
 logger = logging.getLogger("MemorySystem")
