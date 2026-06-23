@@ -50,18 +50,31 @@ class TaskPlugin(Plugin):
         if self._task_mgr is None:
             return ctx
 
-        # agent 循环修改了 reply 时使用 ctx.reply（含 agent 最终输出中的 <task> 和代码块），
-        # 否则使用 ctx.original_reply（原始 LLM 输出，<task> 和代码块未被 _clean_reply 清除）
-        text = ctx.reply if ctx.extra.get("_agent_reply_dirty") else ctx.original_reply
+        text = ctx.original_reply
         tasks = self._parse_tasks(text)
         if not tasks:
             return ctx
 
         pending = ctx.extra.setdefault("_pending_tasks", set())
+        tag_results: list[dict] = []
         for task_data in tasks:
             tid = self._handle_task(task_data, ctx)
             if tid:
                 pending.add(tid)
+                task_type = task_data.get("type", "unknown")
+                tag_results.append({
+                    "tag": "<task>", "success": True,
+                    "summary": f"已创建 {task_type} 任务 (id={tid[:8]})",
+                    "task_id": tid, "task_type": task_type,
+                })
+            else:
+                tag_results.append({
+                    "tag": "<task>", "success": False,
+                    "summary": f"创建任务失败: {task_data.get('type', 'unknown')}",
+                })
+
+        if tag_results:
+            ctx.extra.setdefault("_tag_results", []).extend(tag_results)
 
         # 从 ctx.reply 中移除已处理的 <task>、代码块和 <help> 标签
         ctx.reply = self._ACTION_RE.sub("", ctx.reply).strip()

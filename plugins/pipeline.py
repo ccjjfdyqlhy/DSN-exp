@@ -139,32 +139,25 @@ class ChatPipeline:
         # 3
         ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
 
-        # 4
-        tts_lines = None
-
         # 创建动作旁白收集器
         collector = ActionNarrativeCollector()
         ctx.extra["_narrative_collector"] = collector
 
-        if ctx.tts_enabled and ctx.original_reply and self._tts_client:
-            tts_task = asyncio.create_task(
-                self._synthesize_lines(ctx.original_reply)
-            )
-            ctx = await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
-            tts_lines = await tts_task
-            # Agent 修改了回复时，丢弃旧 TTS，对最终回复重新合成
-            if ctx.extra.get("_agent_reply_dirty") and ctx.reply and ctx.reply != ctx.original_reply:
-                tts_lines = await self._synthesize_lines(ctx.reply)
-        else:
-            ctx = await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
+        # 4 — POST_PROCESS（支持 agent 循环）
+        ctx = await self._dispatch_post_process(ctx)
+
+        # ── Agent 循环：标签结果回馈 LLM ──
+        if ctx.agent_active and ctx.extra.get("_tag_results"):
+            ctx = await self._run_agent_loop(ctx)
 
         # 排空动作旁白
         action_narratives = collector.drain()
         if action_narratives:
             ctx.extra["action_narratives"] = action_narratives
 
-        # 5 — TTS: 使用并行合成的结果或走插件
-        if tts_lines is not None:
+        # 5 — TTS: 对最终回复合成
+        if ctx.tts_enabled and ctx.reply and self._tts_client:
+            tts_lines = await self._synthesize_lines(ctx.reply)
             if tts_lines:
                 all_audio = b"".join(
                     line["audio_bytes"] for line in tts_lines if line.get("audio_bytes")
@@ -178,6 +171,71 @@ class ChatPipeline:
             ctx = await self.pm.dispatch(HookPoint.POST_TTS, ctx)
 
         return ctx
+
+    async def _dispatch_post_process(self, ctx: PluginContext) -> PluginContext:
+        return await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
+
+    async def _run_agent_loop(self, ctx: PluginContext) -> PluginContext:
+        max_steps = ctx.agent_max_steps or 5
+        loop = asyncio.get_event_loop()
+        logger.info("_run_agent_loop 启动, max_steps=%d", max_steps)
+
+        for step in range(max_steps):
+            results = ctx.extra.pop("_tag_results", [])
+            if not results:
+                break
+
+            formatted = self._format_tag_results(results)
+            logger.info("Agent 第 %d 步: %d 个标签执行完毕", step + 1, len(results))
+
+            # 构建消息列表：系统 + 历史 + 用户消息
+            msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
+            msgs.extend(ctx.full_history)
+            from datetime import datetime
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+            msgs.append({"role": "assistant", "content": ctx.reply})
+            msgs.append({"role": "user", "content": f"[执行结果]\n{formatted}"})
+
+            # 查找 models_plugin 并调用 LLM
+            models_plugin = None
+            for p in self.pm.get_hooks_for(HookPoint.MODEL_INVOKE):
+                if p.__class__.__name__ == "ModelsPlugin":
+                    models_plugin = p
+                    break
+            if models_plugin is None:
+                logger.warning("models_plugin 未找到，中断 agent 循环")
+                break
+
+            new_reply = await loop.run_in_executor(
+                None, lambda: models_plugin.invoke(msgs, ctx)
+            )
+            if not new_reply:
+                break
+
+            ctx.original_reply = new_reply
+            ctx.reply = new_reply
+            ctx.extra["_agent_step"] = step + 1
+
+            # 重新运行 POST_PROCESS
+            ctx = await self._dispatch_post_process(ctx)
+
+            if step >= max_steps - 1:
+                logger.warning("Agent 达到最大步数 %d", max_steps)
+
+        return ctx
+
+    @staticmethod
+    def _format_tag_results(results: list[dict]) -> str:
+        lines: list[str] = []
+        for r in results:
+            tag = r.get("tag", "?")
+            success = "✅" if r.get("success") else "❌"
+            summary = r.get("summary", "")
+            lines.append(f"{success} {tag} {summary}")
+            if not r.get("success") and r.get("error"):
+                lines.append(f"  错误: {r['error']}")
+        return "\n".join(lines)
 
     def _assemble_prompt(self, ctx: PluginContext) -> None:
         """调用 PromptEngine 构建 system_prompt，写入 ctx"""
@@ -635,6 +693,23 @@ class ChatPipeline:
                 await runner
                 await runner
                 await bridge_task
+
+                # ── Agent 循环（streaming）──
+                tag_results = ctx.extra.get("_tag_results")
+                logger.info("Agent 循环检查: agent_active=%s tag_results=%s",
+                            ctx.agent_active, bool(tag_results))
+                if ctx.agent_active and tag_results:
+                    yield f"data: {json.dumps({
+                        'status': 'thinking',
+                        'text': 'Agent 循环: 处理执行结果...',
+                    })}\n\n"
+                    ctx = await self._run_agent_loop(ctx)
+                    if ctx.reply and ctx.reply != "…":
+                        yield f"data: {json.dumps({
+                            'status': 'text_ready',
+                            'reply': ctx.reply,
+                            'chat_id': ctx.chat_id,
+                        })}\n\n"
 
                 tts_lines = tts_collected if tts_collected else None
                 if tts_task:

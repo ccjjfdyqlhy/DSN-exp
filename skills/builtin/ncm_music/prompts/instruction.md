@@ -10,23 +10,64 @@ priority: 55
 
 ### 可用工具
 
-`<tool>ncm_music.search_song</tool>` — 搜索歌曲
+**搜索歌曲：**
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "search_song",
+  "params": {
+    "keyword": "搜索关键词",
+    "page": 1,
+    "num": 5,
+    "quality": 4,
+    "auto_download": false
+  }
+}
+</tool>
   - keyword: 搜索关键词，歌名/歌手（必填）
   - page: 页数（可选，默认1）
   - num: 每页数量（可选，默认5，最多10）
   - quality: 音质 1-9（可选，默认4=HQ 320k）
   - auto_download: 是否自动下载第一首（可选，默认false）
 
-`<tool>ncm_music.get_song_url</tool>` — 通过 ID 获取详情+链接
+**通过 ID 获取详情+链接：**
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_song_url",
+  "params": {
+    "song_id": "歌曲ID",
+    "quality": 4,
+    "download": false
+  }
+}
+</tool>
   - song_id: 歌曲ID（必填）
   - quality: 音质（可选）
   - download: 是否下载（可选，默认false）
 
-`<tool>ncm_music.get_lyrics</tool>` — 获取歌词
+**获取歌词：**
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_lyrics",
+  "params": {
+    "song_id": "歌曲ID",
+    "save": false
+  }
+}
+</tool>
   - song_id: 歌曲ID（必填）
   - save: 是否保存歌词文件（可选，默认false）
 
-`<tool>ncm_music.list_downloaded</tool>` — 列出已下载的歌曲和歌词
+**列出已下载的歌曲和歌词：**
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "list_downloaded",
+  "params": {}
+}
+</tool>
 
 ### 音质说明
 1=标准64k  2=标准128k  3=HQ192k  4=HQ320k  5=SQ无损  6=Hi-Res  7=高清臻音  8=环绕声  9=超清母带

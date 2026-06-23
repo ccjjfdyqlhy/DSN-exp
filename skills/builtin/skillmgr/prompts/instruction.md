@@ -31,22 +31,28 @@ priority: 10
 ### 使用示例
 
 列出技能：
-```
 <tool>
-{"skill": "skillmgr", "tool": "list_skills", "params": {}}
+{
+  "skill": "skillmgr",
+  "tool": "list_skills",
+  "params": {}
+}
 </tool>
-```
 
 下载并安装技能：
-```
 <tool>
-{"skill": "skillmgr", "tool": "download_skill", "params": {"url": "https://raw.githubusercontent.com/.../SKILL.md"}}
+{
+  "skill": "skillmgr",
+  "tool": "download_skill",
+  "params": {"url": "https://raw.githubusercontent.com/.../SKILL.md"}
+}
 </tool>
-```
 
 转换技能：
-```
 <tool>
-{"skill": "skillmgr", "tool": "convert_skill", "params": {"source_name": "agent-browser"}}
+{
+  "skill": "skillmgr",
+  "tool": "convert_skill",
+  "params": {"source_name": "agent-browser"}
+}
 </tool>
-```

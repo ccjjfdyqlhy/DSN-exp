@@ -1,5 +1,5 @@
 # skills/builtin/plan/tools/plan_tools.py
-# 计划系统工具 — AI 通过 <tool skill="plan"> 操作 Goal/Phase/DailyTask
+# 计划系统工具 — AI 通过 <tool>{"skill":"plan","tool":"xxx",...}</tool> 操作 Goal/Phase/DailyTask
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ logger = logging.getLogger("skill.plan")
 
 
 class PlanTools:
-    """计划系统。AI 通过 <tool skill="plan" tool="xxx"> 调用。"""
+    """计划系统。AI 通过 <tool>{"skill":"plan","tool":"xxx",...}</tool> 调用。"""
 
     def __init__(self):
         from plan_store import get_plan_db, PlanStore

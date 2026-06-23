@@ -98,7 +98,7 @@ class WorldPlugin(Plugin):
         if self._engine is None:
             return ctx
 
-        # 注入 ActionNarrator 到 ctx，供 AgentPlugin / SkillsPlugin / TaskPlugin 使用
+        # 注入 ActionNarrator 到 ctx，供 ToolPlugin / TaskPlugin 使用
         if self._action_narrator is not None:
             ctx.extra["_action_narrator"] = self._action_narrator
 

@@ -10,16 +10,29 @@ priority: 70
 
 ### 工作流：歌词 → 素材库
 
-1. 使用 `ncm_music.get_lyrics(song_id=xxx, save=true)` 下载歌词
+1. 使用 ncm_music.get_lyrics 下载歌词：
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_lyrics",
+  "params": {"song_id": "xxx", "save": true}
+}
+</tool>
    - 工具返回结果中 `data.plain` 是纯文本歌词
    - 工具返回结果中 `saved_to.txt_path` 是保存的文件路径
 2. 把歌词展示给用户，询问是否要加入性格素材库
-3. 用户确认后，使用 `personality_materials.import_experience` 导入：
-   ```
-   source_path: ncm 工具返回的 txt_path（如 skills/builtin/ncm_music/music/186016.txt）
-   source_label: "网易云: 晴天 - 周杰伦"
-   card_id: "exa"（默认角色卡）
-   ```
+3. 用户确认后，使用 personality_materials.import_experience 导入：
+<tool>
+{
+  "skill": "personality_materials",
+  "tool": "import_experience",
+  "params": {
+    "source_path": "ncm 工具返回的 txt_path（如 skills/builtin/ncm_music/music/186016.txt）",
+    "source_label": "网易云: 晴天 - 周杰伦",
+    "card_id": "exa"
+  }
+}
+</tool>
 4. 工具会自动把文件复制到 `character_cards/materials/{card_id}/` 并触发蒸馏
 
 ### 素材目录
@@ -32,7 +45,13 @@ character_cards/materials/exa/    ← EXA（默认角色卡）的素材
 
 ### 查看已导入素材
 
-使用 `personality_materials.list_experiences(card_id="exa")` 查看当前素材列表。
+<tool>
+{
+  "skill": "personality_materials",
+  "tool": "list_experiences",
+  "params": {"card_id": "exa"}
+}
+</tool>
 
 ### 注意事项
 

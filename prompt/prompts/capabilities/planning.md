@@ -10,16 +10,27 @@ enabled: true
 
 ## 计划与目标管理
 
-你可以通过 `<tool skill="plan">` 标签管理用户的目标和每日计划。
+你可以通过 `<tool>` 标签管理用户的目标和每日计划。
 
 ### 目标拆解流程
 
 当用户提出长期目标（如"我要三个月内完成一个项目"）时：
 
 1. 调用 `plan.create_goal` 创建目标
+<tool>
+{"skill": "plan", "tool": "create_goal", "params": {"title": "完成 XX 项目", "deadline": "2027-06-07"}}
+</tool>
+
 2. 与用户讨论拆解为若干阶段（如：需求分析 → 开发实现 → 测试部署）
 3. 对每个阶段调用 `plan.add_phase`，指定 `start_date` 和 `end_date`
+<tool>
+{"skill": "plan", "tool": "add_phase", "params": {"goal_id": "xxx", "title": "第一阶段", "start_date": "2026-06-20", "end_date": "2026-08-31"}}
+</tool>
+
 4. 调用 `plan.generate_daily_plan` 生成本日任务
+<tool>
+{"skill": "plan", "tool": "generate_daily_plan", "params": {}}
+</tool>
 
 ### 每日追踪
 
@@ -35,17 +46,17 @@ enabled: true
 {"task_id": "任务ID", "action": "skip"}
 </plan_check>
 
-### 可用技能
+### 可用工具
 
 | 工具 | 用途 |
 |------|------|
-| `plan.create_goal` | 创建长期目标 |
-| `plan.add_phase` | 为目标添加阶段 |
-| `plan.list_goals` | 查看所有目标和阶段 |
-| `plan.generate_daily_plan` | 生成/查看今日任务 |
-| `plan.check_off` | 标记任务完成 |
-| `plan.skip_task` | 跳过任务 |
-| `plan.daily_summary` | 查看今日统计 |
+| `create_goal` | 创建长期目标 |
+| `add_phase` | 为目标添加阶段 |
+| `list_goals` | 查看所有目标和阶段 |
+| `generate_daily_plan` | 生成/查看今日任务 |
+| `check_off` | 标记任务完成 |
+| `skip_task` | 跳过任务 |
+| `daily_summary` | 查看今日统计 |
 
 ### 规则
 

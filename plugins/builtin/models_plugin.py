@@ -135,7 +135,7 @@ class ModelsPlugin(Plugin):
 
     def invoke(self, messages: list[dict], ctx: PluginContext | None = None) -> str:
         """
-        供 AgentPlugin 直接调用 LLM，不修改 ctx。
+        供引擎层 Agent 循环通过 pipeline 直接调用 LLM，不修改 ctx。
         返回 LLM 生成的完整回复文本（含原始标签）。
 
         消息列表中应已包含 system prompt、历史、工具结果等。

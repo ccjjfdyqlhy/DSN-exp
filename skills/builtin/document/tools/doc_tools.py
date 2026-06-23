@@ -9,7 +9,7 @@ logger = logging.getLogger("skill.document")
 
 
 class DocTools:
-    """文档处理：OCR/HMD 管线和读取。AI 通过 <tool skill="document"> 调用。"""
+    """文档处理：OCR/HMD 管线和读取。AI 通过 <tool>{"skill":"document","tool":"process_scan",...}</tool> 调用。"""
 
     def __init__(self):
         from document.doc_processor import DocProcessor

@@ -9,7 +9,7 @@ logger = logging.getLogger("skill.document")
 
 
 class PrinterTool:
-    """打印机控制。AI 通过 <tool skill="document" tool="print_file"> 调用。"""
+    """打印机控制。AI 通过 <tool>{"skill":"document","tool":"print_file",...}</tool> 调用。"""
 
     def __init__(self):
         from document.printer import PrinterTool as _PT

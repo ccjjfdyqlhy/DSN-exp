@@ -9,7 +9,7 @@ logger = logging.getLogger("skill.document")
 
 
 class ScannerTool:
-    """扫描仪控制。AI 通过 <tool skill="document" tool="scan"> 调用。"""
+    """扫描仪控制。AI 通过 <tool>{"skill":"document","tool":"scan",...}</tool> 调用。"""
 
     def __init__(self):
         from document.scanner import ScannerTool as _ST

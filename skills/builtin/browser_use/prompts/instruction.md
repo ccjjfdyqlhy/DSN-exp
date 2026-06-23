@@ -25,11 +25,13 @@ priority: 65
 
 ### 使用方式
 
-```
 <tool>
-{"skill": "browser_use", "tool": "navigate", "params": {"url": "https://example.com"}}
+{
+  "skill": "browser_use",
+  "tool": "navigate",
+  "params": {"url": "https://example.com"}
+}
 </tool>
-```
 
 ### 使用原则
 

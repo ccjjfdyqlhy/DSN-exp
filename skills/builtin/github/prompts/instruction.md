@@ -6,7 +6,7 @@ priority: 55
 
 ## GitHub 技能
 
-你可以使用 `<tool>` 标签调用以下 Git / GitHub 操作工具。
+你可以通过 `<tool>` 标签调用以下 Git / GitHub 操作工具。
 
 ### 可用工具一览
 
@@ -32,15 +32,23 @@ priority: 55
 ### 使用示例
 
 **克隆仓库（默认位置）：**
-```json
-{"skill": "github", "tool": "clone", "params": {"repo_url": "https://github.com/user/repo.git"}}
-```
+<tool>
+{
+  "skill": "github",
+  "tool": "clone",
+  "params": {"repo_url": "https://github.com/user/repo.git"}
+}
+</tool>
 未指定 `target_path` 时默认克隆到工作区 `repos/<repo_name>`。
 
 **克隆仓库（指定位置）：**
-```json
-{"skill": "github", "tool": "clone", "params": {"repo_url": "https://github.com/user/repo.git", "target_path": "/home/user/projects/my-project"}}
-```
+<tool>
+{
+  "skill": "github",
+  "tool": "clone",
+  "params": {"repo_url": "https://github.com/user/repo.git", "target_path": "/home/user/projects/my-project"}
+}
+</tool>
 
 ### 克隆路径规则
 
@@ -49,36 +57,68 @@ priority: 55
 - `target_path` 支持 `~` 展开和相对路径
 
 **查看状态：**
-```json
-{"skill": "github", "tool": "status", "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo"}}
-```
+<tool>
+{
+  "skill": "github",
+  "tool": "status",
+  "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo"}
+}
+</tool>
 
 **创建分支并提交 PR：**
-```json
-{"skill": "github", "tool": "branch", "params": {"name": "fix/typo"}}
-```
-```json
-{"skill": "github", "tool": "write_file", "params": {"path": "README.md", "content": "# 新内容"}}
-```
-```json
-{"skill": "github", "tool": "commit", "params": {"message": "docs: 更新 README"}}
-```
-```json
-{"skill": "github", "tool": "push", "params": {"branch": "fix/typo"}}
-```
-```json
-{"skill": "github", "tool": "create_pr", "params": {"title": "修复文档", "body": "修正了 README 中的拼写错误", "head": "fix/typo", "base": "main"}}
-```
+<tool>
+{
+  "skill": "github",
+  "tool": "branch",
+  "params": {"name": "fix/typo"}
+}
+</tool>
+<tool>
+{
+  "skill": "github",
+  "tool": "write_file",
+  "params": {"path": "README.md", "content": "# 新内容"}
+}
+</tool>
+<tool>
+{
+  "skill": "github",
+  "tool": "commit",
+  "params": {"message": "docs: 更新 README"}
+}
+</tool>
+<tool>
+{
+  "skill": "github",
+  "tool": "push",
+  "params": {"branch": "fix/typo"}
+}
+</tool>
+<tool>
+{
+  "skill": "github",
+  "tool": "create_pr",
+  "params": {"title": "修复文档", "body": "修正了 README 中的拼写错误", "head": "fix/typo", "base": "main"}
+}
+</tool>
 
 **拉取最新代码：**
-```json
-{"skill": "github", "tool": "pull", "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo"}}
-```
+<tool>
+{
+  "skill": "github",
+  "tool": "pull",
+  "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo"}
+}
+</tool>
 
 **查看提交历史：**
-```json
-{"skill": "github", "tool": "log", "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo", "count": 5}}
-```
+<tool>
+{
+  "skill": "github",
+  "tool": "log",
+  "params": {"repo_path": "/home/user/.dsn/workspace/repos/repo", "count": 5}
+}
+</tool>
 
 ### 注意事项
 

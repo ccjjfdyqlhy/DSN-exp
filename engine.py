@@ -66,6 +66,7 @@ class EngineConfig:
     memory_summary_length: int = 100
     task_manager_enabled: bool = True
     task_max_workers: int = 5
+    agent_active: bool = True
     agent_max_steps: int = 5
     agent_token_budget: int = 1000000
     agent_timeout: float = 120.0
@@ -84,6 +85,7 @@ class EngineConfig:
             memory_enabled=cfg.memory_enabled,
             memory_summary_length=cfg.memory_summary_length,
             task_manager_enabled=True,
+            agent_active=cfg.agent_active,
             agent_max_steps=cfg.agent_max_steps,
             agent_token_budget=cfg.agent_token_budget,
             agent_timeout=cfg.agent_timeout,
@@ -582,19 +584,9 @@ class DSNEngine:
                 ))
             except Exception as e:
                 self._logger.warning("RecallPlugin 加载失败: %s", e)
-        if self._plugin_enabled("skills"):
-            from plugins.builtin.skills_plugin import SkillsPlugin
-            self.plugin_manager.register(SkillsPlugin(skill_registry=self.skill_registry))
-        if self._plugin_enabled("agent"):
-            from plugins.builtin.agent_plugin import AgentPlugin
-            self.plugin_manager.register(AgentPlugin(
-                skill_registry=self.skill_registry,
-                models_plugin=self._models_plugin,
-                max_steps=self._engine_cfg.agent_max_steps,
-                token_budget=self._engine_cfg.agent_token_budget,
-                agent_timeout=self._engine_cfg.agent_timeout,
-                impression_manager=self.impression_manager,
-            ))
+        if self._plugin_enabled("tool") or self._plugin_enabled("skills") or self._plugin_enabled("agent"):
+            from plugins.builtin.tool_plugin import ToolPlugin
+            self.plugin_manager.register(ToolPlugin(skill_registry=self.skill_registry))
         if self._plugin_enabled("ssp"):
             from plugins.builtin.ssp_plugin import SSPPlugin
             self.plugin_manager.register(SSPPlugin(
@@ -677,7 +669,7 @@ class DSNEngine:
             is_asr_input=kwargs.get("is_asr_input", False),
             tts_enabled=kwargs.get("tts_enabled", True),
             image_data=kwargs.get("image_data"),
-            agent_active=kwargs.get("agent_active", True),
+            agent_active=kwargs.get("agent_active", ec.agent_active if ec else True),
             agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else 5),
             agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 1000000),
         )
@@ -1001,12 +993,9 @@ def create_engine_with_defaults(
         ))
 
     if skill_registry:
-        from plugins.builtin.agent_plugin import AgentPlugin
-        engine.plugin_manager.register(AgentPlugin(
+        from plugins.builtin.tool_plugin import ToolPlugin
+        engine.plugin_manager.register(ToolPlugin(
             skill_registry=skill_registry,
-            models_plugin=models_plugin,
-            impression_manager=impression_manager,
-            db=db,
         ))
 
     if engine.task_manager:

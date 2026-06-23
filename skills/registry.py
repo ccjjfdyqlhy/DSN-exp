@@ -17,7 +17,7 @@ class SkillRegistry:
 
     职责:
     - 管理已注册技能的工具实例（动态加载 Python 模块）
-    - 提供工具调用接口（供 task_plugin / skills_plugin 调用）
+    - 提供工具调用接口（供 ToolPlugin / task_plugin 调用）
     - 聚合所有已启用技能的提示词内容（供 PromptEngine 注入）
     """
 
