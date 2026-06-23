@@ -24,13 +24,27 @@ class ScannerTool:
 
     def scan(self, resolution: int = 300, mode: str = "Color",
              user_id: int = 0) -> dict:
-        from workspace import get_workspace_manager
+        from utils.workspace import get_workspace_manager
         wm = get_workspace_manager()
         output_dir = str(wm.user_uploads_dir(uid=user_id or 1))
         results = self._st.scan(
             resolution=resolution, mode=mode, fmt="png",
             output_dir=output_dir,
         )
+        count = len(results)
         logger.info("扫描完成: %d 页 → %s (user_id=%d)",
-                     len(results), output_dir, user_id or 1)
-        return {"success": True, "files": results, "count": len(results)}
+                     count, output_dir, user_id or 1)
+        
+        # 生成文件序号列表说明
+        file_list = []
+        for i, file_info in enumerate(results, 1):
+            file_list.append(f"{i}. {file_info['filename']}")
+        
+        summary = f"共{count}份\n" + "\n".join(file_list)
+        
+        return {
+            "success": True,
+            "files": results,
+            "count": count,
+            "summary": summary
+        }

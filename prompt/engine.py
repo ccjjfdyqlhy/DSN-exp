@@ -111,7 +111,7 @@ class PromptEngine:
 
         # 6.1 工作区路径
         try:
-            from workspace import get_workspace_manager
+            from utils.workspace import get_workspace_manager
             wm = get_workspace_manager()
             uid = user_info.get("uid", 0)
             if uid:

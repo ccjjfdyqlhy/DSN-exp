@@ -19,7 +19,7 @@ class GitTool:
         if work_dir:
             self._work_dir = work_dir
         else:
-            from workspace import get_workspace_manager
+            from utils.workspace import get_workspace_manager
             wm = get_workspace_manager()
             wm.register_subdir("repos")
             self._work_dir = str(wm.root_subdir("repos"))

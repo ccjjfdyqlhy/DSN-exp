@@ -86,7 +86,7 @@ class TTSPlugin(Plugin):
         logger.info("进行 TTS 合成，文本: %s...", tts_text[:100])
 
         try:
-            from vocal_infer import TTSRequestError
+            from audio.infer import TTSRequestError
 
             params = self._build_params(tts_text)
             ctx.audio = self._tts.tts(**params)

@@ -81,7 +81,7 @@ def test_observer():
 def test_persistence():
     print("\n=== Test 5: Persistence ===")
     db_path = os.path.join(tempfile.gettempdir(), "test_personality_v2.db")
-    from chatdbmgr import ChatDBManager
+    from db.chat import ChatDBManager
     db = ChatDBManager(db_path=db_path)
 
     p2 = PersonalitySystemV2(db=db)

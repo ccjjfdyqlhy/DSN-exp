@@ -902,6 +902,12 @@
     function abortStream() {
         if (streamAbort) { streamAbort.abort(); streamAbort = null; }
         if (activeTypewriter) { activeTypewriter.abort(); activeTypewriter = null; }
+        // 停止所有正在播放的音频
+        var audios = document.querySelectorAll('audio');
+        audios.forEach(function (a) { a.pause(); a.src = ''; });
+        // 清空 TTS 行队列
+        lineQueue = [];
+        isProcessingLines = false;
         isProcessing = false;
         forceScrollToNew = false;
         dom.btnSend.textContent = '→';
@@ -1203,10 +1209,13 @@
     });
     // ── 键盘绑定 ──
     dom.msgInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            if (isProcessing) abortStream();
-            else sendMessage();
+            if (isProcessing) {
+                abortStream();
+                return;
+            }
+            sendMessage();
         } else if (e.key === 'Escape' && isProcessing) {
             e.preventDefault(); abortStream();
         }

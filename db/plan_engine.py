@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-from plan_store import PlanStore, Goal, Phase, DailyTask
+from .plan_store import PlanStore, Goal, Phase, DailyTask
 
 logger = logging.getLogger(__name__)
 

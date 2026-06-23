@@ -41,7 +41,7 @@ class MessageCipher:
         cwd = Path.cwd() / _DSN_DIR_NAME
         if cwd.exists():
             return cwd
-        return Path(__file__).resolve().parent / _DSN_DIR_NAME
+        return Path(__file__).resolve().parent.parent / _DSN_DIR_NAME
 
     def _load_or_create_master_key(self) -> bytes:
         self._dsn_dir.mkdir(mode=0o700, exist_ok=True)

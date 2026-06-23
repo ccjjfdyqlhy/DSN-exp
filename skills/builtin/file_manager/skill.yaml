@@ -1,6 +1,6 @@
 name: file_manager
 display_name: "文件管理"
-description: "管理文件系统：读取、写入、编辑、列出文件"
+description: "管理文件系统：探索文件系统、读写工作区文件"
 version: "1.0"
 author: "system"
 source: "builtin"
@@ -10,52 +10,50 @@ prompt_category: "skills"
 prompt_priority: 62
 
 tools:
-  - name: read_file
-    display_name: "读取文件"
-    description: "读取指定路径的文件内容"
-    module: "tools.file_ops"
-    class: "FileOpsTool"
+  # ── 文件系统探索（只读，默认 ~）──
+  - name: explore_fs
+    display_name: "探索文件系统"
+    description: "探索文件系统目录和文件，默认用户主目录 ~。只读操作。"
+    module: "tools.fs_explore"
+    class: "FsExploreTool"
     methods:
-      - name: read_file
-        description: "读取文件内容"
+      - name: explore_fs
+        description: "执行文件系统探索操作"
         parameters:
-          path:
+          tool:
             type: string
-            description: "文件相对路径"
+            description: "子命令: list_dir（列出目录）或 read_file（读取文件）"
             required: true
-  - name: list_dir
-    display_name: "列出目录"
-    description: "列出指定目录下的文件和子目录"
-    module: "tools.file_ops"
-    class: "FileOpsTool"
-    methods:
-      - name: list_dir
-        description: "列出目录内容"
-        parameters:
           path:
             type: string
-            description: "目录相对路径，默认当前目录"
+            description: "文件或目录路径，默认 ~"
             required: false
-  - name: write_file
-    display_name: "写入文件"
-    description: "将内容写入文件"
-    module: "tools.file_ops"
-    class: "FileOpsTool"
+
+  # ── 工作区文件管理（可读写，默认 workspace）──
+  - name: workspace_file
+    display_name: "工作区文件管理"
+    description: "管理工作区内的文件和目录。可读、写、列出。路径限制在工作区内。"
+    module: "tools.workspace_file"
+    class: "WorkspaceFileTool"
     methods:
-      - name: write_file
-        description: "写入文件内容"
+      - name: workspace_file
+        description: "执行工作区文件操作"
         parameters:
+          tool:
+            type: string
+            description: "子命令: list_dir / read_file / write_file"
+            required: true
           path:
             type: string
-            description: "文件相对路径"
-            required: true
+            description: "文件或目录相对路径"
+            required: false
           content:
             type: string
-            description: "要写入的文件内容"
-            required: true
+            description: "写入内容（仅 write_file 时使用）"
+            required: false
 
 activation:
-  keywords: ["文件", "目录", "读取", "写入", "列出", "保存"]
+  keywords: ["文件", "目录", "读取", "写入", "列出", "保存", "浏览", "导航"]
   auto_activate: false
 
 dependencies: []

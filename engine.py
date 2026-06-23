@@ -13,11 +13,11 @@ from typing import Optional, AsyncGenerator
 
 import yaml
 
-from subapp_loader import SubAppConfig
+from utils.subapp_loader import SubAppConfig
 from config import Config
-from chatdbmgr import ChatDBManager
+from db.chat import ChatDBManager
 from models import LMSummaryModel, EmbeddingClient
-from tts_process_model import TTSProcessModel
+from models.tts_process import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType, ComplexityAnalyzer
 
@@ -140,7 +140,7 @@ class DSNEngine:
     # ── 初始化 ──
 
     def _init_from_subapp(self):
-        from subapp_loader import load_subapp_config
+        from utils.subapp_loader import load_subapp_config
         self._cfg = load_subapp_config(str(self._subapp_path))
         self._engine_cfg = EngineConfig.from_subapp(self._cfg)
 
@@ -390,7 +390,7 @@ class DSNEngine:
 
     def _init_tts(self):
         try:
-            from vocal_infer import VocalExp
+            from audio.infer import VocalExp
             from plugins.builtin.tts_profile import TTSProfileManager
             self._tts_client = VocalExp(Config.TTS_BASE_URL)
             self._tts_profile_mgr = TTSProfileManager()
@@ -1072,7 +1072,7 @@ def create_engine_with_defaults(
     # ---- TTS 文本预处理 ----
     if Config.TTS_PROCESS_ENABLED:
         try:
-            from tts_process_model import TTSProcessModel
+            from models.tts_process import TTSProcessModel
             engine._tts_process_model = TTSProcessModel()
             engine._logger.info("TTSProcessModel 初始化完成")
         except Exception as e:

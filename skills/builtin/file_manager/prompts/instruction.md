@@ -6,42 +6,65 @@ priority: 62
 
 ## 文件管理技能
 
-你具备文件系统操作能力。当用户需要读写文件、列出目录内容时使用。
+你具备文件系统操作能力，包含两套工具：
 
-### 使用方式
+### 1. 探索文件系统（`explore_fs`）
 
-通过 `<tool>` 标签调用文件操作工具：
+浏览系统上的文件和目录，默认在用户主目录 `~`。**只读**，不可写入。
+
+**列出目录（默认 ~）：**
+<tool>
+{
+  "skill": "file_manager",
+  "tool": "explore_fs",
+  "params": {"tool": "list_dir"}
+}
+</tool>
 
 **读取文件：**
 <tool>
 {
   "skill": "file_manager",
-  "tool": "read_file",
-  "params": {"path": "example.txt"}
+  "tool": "explore_fs",
+  "params": {"tool": "read_file", "path": "~/documents/note.txt"}
 }
 </tool>
 
-**列出目录：**
+### 2. 管理工作区文件（`workspace_file`）
+
+管理 AI 工作区中的文件和目录，默认在 `.dsn/workspace/`。**可读写**，路径限制在工作区内。
+
+**列出工作区目录：**
 <tool>
 {
   "skill": "file_manager",
-  "tool": "list_dir",
-  "params": {"path": "."}
+  "tool": "workspace_file",
+  "params": {"tool": "list_dir"}
 }
 </tool>
 
-**写入文件：**
+**读取工作区文件：**
 <tool>
 {
   "skill": "file_manager",
-  "tool": "write_file",
-  "params": {"path": "output.txt", "content": "文件内容"}
+  "tool": "workspace_file",
+  "params": {"tool": "read_file", "path": "example.txt"}
+}
+</tool>
+
+**写入工作区文件：**
+<tool>
+{
+  "skill": "file_manager",
+  "tool": "workspace_file",
+  "params": {"tool": "write_file", "path": "output.txt", "content": "文件内容"}
 }
 </tool>
 
 ### 使用原则
 
-1. 所有路径相对于服务器工作目录
-2. 读取文件时注意文件大小，不要读取过大文件
-3. 写入文件前确认不会覆盖重要文件
-4. 在回复中展示操作结果
+1. `explore_fs` 浏览系统文件，默认 `~`，只读
+2. `workspace_file` 管理工作区文件，读写，路径限制在工作区内
+3. 1MB 以上的文件无法读取
+4. 写入时自动创建父目录
+5. 在回复中展示操作结果

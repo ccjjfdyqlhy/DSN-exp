@@ -79,7 +79,7 @@ def main():
         import schedule
         import time
 
-        from subapp_loader import load_subapp_config
+        from utils.subapp_loader import load_subapp_config
         cfg = load_subapp_config(subapp_dir)
 
         target_repo = args.repo or cfg.extra.get("_raw", {}).get("repo", "")

@@ -15,25 +15,25 @@ from datetime import datetime
 
 from flask import Flask
 from config import Config
-from usermgr import init_usermgr
-from todo_api import todo_bp
-from reminder_api import reminder_bp, init_reminder_api
-from plan_api import plan_bp, init_plan_api
-from plan_store import set_plan_db
-from chatdbmgr import ChatDBManager
+from api.auth import init_usermgr
+from api.todo import todo_bp
+from api.reminder import reminder_bp, init_reminder_api
+from api.plan import plan_bp, init_plan_api
+from db.plan_store import set_plan_db
+from db.chat import ChatDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from models import _load_lmstudio_model, _unload_lmstudio_model
-from tts_process_model import TTSProcessModel
+from models.tts_process import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType
-from workspace import init_workspace_manager
+from utils.workspace import init_workspace_manager
 import prompt
 
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
-from vocal_infer import VocalExp
+from audio.infer import VocalExp
 from plugins.builtin.tts_profile import TTSProfileManager
-from ASR_filter import LMFilterModel
+from models.asr_filter import LMFilterModel
 if Config.ASR_ENABLED:
     from funasr import AutoModel
 from utils.text_clean import clean_tts_text
@@ -251,7 +251,7 @@ def _preload_models(app):
     OCR 模型不在启动时加载（始终由 Scheduler 按需加载）。
     """
     logger = logging.getLogger("boot")
-    from model_scheduler import ModelScheduler, _get_loaded_models
+    from models.scheduler import ModelScheduler, _get_loaded_models
     scheduler = ModelScheduler.get_instance()
 
     base_url = Config.LMSTUDIO_BASE_URL

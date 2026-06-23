@@ -37,7 +37,7 @@ class WorkspaceManager:
         raw = workspace_dir or ".dsn/workspace"
         p = Path(raw)
         if not p.is_absolute():
-            p = Path(__file__).parent / p
+            p = Path(__file__).resolve().parent.parent / p
         self._root = p.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         logger.info("工作区根目录: %s", self._root)

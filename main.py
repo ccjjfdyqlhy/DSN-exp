@@ -148,6 +148,9 @@ def _enable_console_logging():
     with _console_handler_lock:
         if _console_handler is not None:
             return
+        if any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+               for h in logging.root.handlers):
+            return
         _console_handler = logging.StreamHandler(sys.stderr)
         _console_handler.setLevel(logging.INFO)
         _console_handler.setFormatter(logging.Formatter(
@@ -443,7 +446,7 @@ def _cmd_export(db, args: str):
     out_path = parts[3]
 
     import json, os
-    from crypto_utils import MessageCipher
+    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     conn = db._get_connection()
@@ -720,8 +723,8 @@ def _cmd_reminder(db, args: str):
 
 def _cmd_plan(db, args: str):
     """计划系统 CLI: list / create / today / check"""
-    from plan_engine import PlanEngine
-    from plan_store import PlanStore
+    from db.plan_engine import PlanEngine
+    from db.plan_store import PlanStore
 
     if not db:
         print("  错误: 数据库不可用")
@@ -1066,7 +1069,7 @@ def _cmd_memory_query(db, parts: list[str]):
         print("  未找到匹配的记忆")
         return
 
-    from crypto_utils import MessageCipher
+    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     results = []
@@ -1157,7 +1160,7 @@ def _cmd_memory_rebuild(db, parts: list[str]):
 
     # 查询匹配的 memory_v2 条目
     conn = db._get_connection()
-    from crypto_utils import MessageCipher
+    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     if mode == "latest":
@@ -1327,7 +1330,7 @@ def _cmd_memory_list(db, uid_str: str, cid_str: str, round_str: str | None):
         print(f"  用户 {uid} 无权访问聊天 {cid}")
         return
 
-    from crypto_utils import MessageCipher
+    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     if round_str is not None:
@@ -1932,7 +1935,7 @@ def main():
     console.print("[bold]Booting system... (importing app.py)[/]\n")
 
     try:
-        import app as app_module
+        from api import app as app_module
     except Exception as e:
         console.print(f"[red]Failed to import app.py: {e}[/]")
         sys.exit(1)
@@ -1977,7 +1980,7 @@ def main():
     steward = None
     if getattr(Config, "STEWARD_ENABLED", True):
         try:
-            from stationed import StewardModel
+            from utils.steward import StewardModel
             steward = StewardModel(Config)
             console.print(
                 "[green]驻守模型就绪[/] "
