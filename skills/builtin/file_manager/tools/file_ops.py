@@ -2,6 +2,7 @@
 # 文件操作工具
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +10,10 @@ logger = logging.getLogger("skill.file_manager")
 
 
 class FileOpsTool:
-    """文件操作工具"""
+    """文件操作工具 — 每次操作后自动返回当前工作目录的绝对路径。"""
 
     def __init__(self, config: dict[str, Any] = None):
         self.config = config or {}
-        # 默认 base_dir 指向工作区根目录
         default = self._default_base_dir()
         self.base_dir = Path(self.config.get("base_dir", str(default)))
 
@@ -25,42 +25,52 @@ class FileOpsTool:
         except Exception:
             return Path(__file__).parent.parent.parent.parent.parent
 
+    @staticmethod
+    def _cwd() -> str:
+        return str(Path.cwd().resolve())
+
     def _safe_path(self, path: str) -> Path:
         p = Path(path)
         if p.is_absolute():
             return p
         return (self.base_dir / path).resolve()
 
+    def pwd(self) -> dict[str, Any]:
+        """返回当前工作目录的绝对路径。"""
+        cwd = self._cwd()
+        return {"success": True, "cwd": cwd}
+
     def read_file(self, path: str) -> dict[str, Any]:
         try:
             p = self._safe_path(path)
             if not p.exists():
-                return {"success": False, "error": f"文件不存在: {path}"}
+                return {"success": False, "error": f"文件不存在: {path}", "cwd": self._cwd()}
             if not p.is_file():
-                return {"success": False, "error": f"不是文件: {path}"}
+                return {"success": False, "error": f"不是文件: {path}", "cwd": self._cwd()}
             size = p.stat().st_size
-            if size > 1024 * 1024:  # 1MB limit
-                return {"success": False, "error": f"文件过大 ({size} bytes), 超过1MB限制"}
+            if size > 1024 * 1024:
+                return {"success": False, "error": f"文件过大 ({size} bytes), 超过1MB限制", "cwd": self._cwd()}
             content = p.read_text(encoding='utf-8-sig')
             return {
                 "success": True,
                 "path": str(p),
                 "size": size,
                 "content": content,
+                "cwd": self._cwd(),
             }
         except PermissionError as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "cwd": self._cwd()}
         except Exception as e:
             logger.exception("读取文件失败: %s", path)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "cwd": self._cwd()}
 
     def list_dir(self, path: str = ".") -> dict[str, Any]:
         try:
             p = self._safe_path(path)
             if not p.exists():
-                return {"success": False, "error": f"目录不存在: {path}"}
+                return {"success": False, "error": f"目录不存在: {path}", "cwd": self._cwd()}
             if not p.is_dir():
-                return {"success": False, "error": f"不是目录: {path}"}
+                return {"success": False, "error": f"不是目录: {path}", "cwd": self._cwd()}
 
             items = []
             for item in sorted(p.iterdir()):
@@ -77,12 +87,13 @@ class FileOpsTool:
                 "path": str(p),
                 "items": items,
                 "count": len(items),
+                "cwd": self._cwd(),
             }
         except PermissionError as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "cwd": self._cwd()}
         except Exception as e:
             logger.exception("列出目录失败: %s", path)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "cwd": self._cwd()}
 
     def write_file(self, path: str, content: str) -> dict[str, Any]:
         try:
@@ -93,9 +104,10 @@ class FileOpsTool:
                 "success": True,
                 "path": str(p),
                 "size": len(content.encode("utf-8")),
+                "cwd": self._cwd(),
             }
         except PermissionError as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "cwd": self._cwd()}
         except Exception as e:
             logger.exception("写入文件失败: %s", path)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "cwd": self._cwd()}

@@ -353,7 +353,17 @@ class ChatPipeline:
             try:
                 processed_line = line
                 if self._tts_process_model is not None:
-                    processed_line = self._tts_process_model.process_tts_text(line)
+                    fast_first = False
+                    try:
+                        from config import Config
+                        fast_first = bool(Config.TTS_FAST_FIRST_LINE)
+                    except Exception:
+                        fast_first = True
+                    if fast_first and tts_q is not None and i == 0:
+                        local = getattr(self._tts_process_model, "_local_preprocess", None)
+                        processed_line = local(line) if callable(local) else line
+                    else:
+                        processed_line = self._tts_process_model.process_tts_text(line)
                 params = self._tts_profile_mgr.build_params(processed_line) if self._tts_profile_mgr else {
                     "text": processed_line, "text_lang": "zh",
                     "ref_audio_path": "", "prompt_lang": "en", "prompt_text": "",
@@ -691,7 +701,6 @@ class ChatPipeline:
                     if plugins_done and tts_done:
                         break
 
-                await runner
                 await runner
                 await bridge_task
 

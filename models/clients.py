@@ -339,7 +339,7 @@ class LMStudioChat:
     def _call_chat_api(self, payload: dict) -> dict:
         """调用 /v1/chat/completions。由 ModelScheduler 管理模型加载。"""
         if self._scheduler:
-            with self._scheduler.use(self.model_name):
+            with self._scheduler.use(self.model_name, timeout=self.timeout):
                 return self._do_call_chat_api(payload)
         return self._do_call_chat_api(payload)
 
@@ -745,6 +745,17 @@ class LMSummaryModel:
             "stream": False,
         }
 
+        scheduler = None
+        if is_lmstudio and self.model_name:
+            from .scheduler import ModelScheduler
+            scheduler = ModelScheduler.get_instance()
+            scheduler.register(
+                model_name=self.model_name,
+                base_url=self.base_url,
+                load_fn=lambda: _load_lmstudio_model(self.base_url, self.model_name, "摘要模型"),
+                unload_fn=lambda: _unload_lmstudio_model(self.base_url, self.model_name),
+            )
+
         def _do_request():
             self.logger.debug("%s summary request → %s", backend_name, self.model_name)
             response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
@@ -758,6 +769,10 @@ class LMSummaryModel:
                                  summary[:80] + ("..." if len(summary) > 80 else ""))
                 return summary
             raise ValueError(f"{backend_name} 响应格式异常")
+
+        if scheduler:
+            with scheduler.use(self.model_name, timeout=self.timeout):
+                return _do_request()
 
         # 快速路径: 模型已就绪，直接请求
         if is_lmstudio and self._model_ready.is_set():
@@ -956,7 +971,7 @@ class OCRModel:
 
         # managed 路径：由 Scheduler 确保模型已加载
         if self._scheduler:
-            with self._scheduler.use(self.model_name):
+            with self._scheduler.use(self.model_name, timeout=300, immediate=True):
                 return _do_request()
 
         # 传统路径：手动管理加载/卸载

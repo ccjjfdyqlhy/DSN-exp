@@ -25,3 +25,15 @@ priority: 63
   "params": {"path": "config.py"}
 }
 </tool>
+
+**用户**: 现在在哪个目录
+
+<tool>
+{
+  "skill": "file_manager",
+  "tool": "explore_fs",
+  "params": {"tool": "pwd"}
+}
+</tool>
+
+> 所有操作返回的 `cwd` 字段即当前进程工作目录绝对路径。`pwd` 无需操作文件即可查询。每步操作后根据 cwd 感知当前位置。

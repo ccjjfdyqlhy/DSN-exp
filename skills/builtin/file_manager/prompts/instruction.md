@@ -12,6 +12,15 @@ priority: 62
 
 浏览系统上的文件和目录，默认在用户主目录 `~`。**只读**，不可写入。
 
+**查询当前工作目录：**
+<tool>
+{
+  "skill": "file_manager",
+  "tool": "explore_fs",
+  "params": {"tool": "pwd"}
+}
+</tool>
+
 **列出目录（默认 ~）：**
 <tool>
 {
@@ -33,6 +42,15 @@ priority: 62
 ### 2. 管理工作区文件（`workspace_file`）
 
 管理 AI 工作区中的文件和目录，默认在 `.dsn/workspace/`。**可读写**，路径限制在工作区内。
+
+**查询当前工作目录：**
+<tool>
+{
+  "skill": "file_manager",
+  "tool": "workspace_file",
+  "params": {"tool": "pwd"}
+}
+</tool>
 
 **列出工作区目录：**
 <tool>
@@ -67,4 +85,6 @@ priority: 62
 2. `workspace_file` 管理工作区文件，读写，路径限制在工作区内
 3. 1MB 以上的文件无法读取
 4. 写入时自动创建父目录
-5. 在回复中展示操作结果
+5. **所有操作（包括错误）自动返回 `cwd` 字段**，值为当前进程工作目录的绝对路径（如 `/home/darkstar/DSN-exp`）。每次操作后根据 cwd 判断当前位置
+6. 使用 `pwd` 子命令可单独查询当前位置，无需操作文件
+7. 在回复中展示操作结果
