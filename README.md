@@ -41,7 +41,8 @@ git clone https://github.com/ccjjfdyqlhy/DSN-exp
 cd DSN-exp
 pip install -r requirements.txt
 
-# 配一下 .env（抄 .env.example，填你的 DeepSeek Key）
+# 首次运行自动进入交互式引导（配置 API Key、角色卡等）
+# 之后再次运行直接启动完整系统
 python main.py
 ```
 

@@ -136,8 +136,9 @@ class ChatPipeline:
         if ctx.filtered:
             return ctx
 
-        # 3
-        ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
+        # 3 — MODEL_INVOKE（若剧本回放命中则跳过）
+        if not ctx.skip_model:
+            ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
 
         # 创建动作旁白收集器
         collector = ActionNarrativeCollector()
@@ -615,7 +616,8 @@ class ChatPipeline:
                     })}\n\n"
 
             elif hook == HookPoint.MODEL_INVOKE:
-                ctx = await self.pm.dispatch(hook, ctx)
+                if not ctx.skip_model:
+                    ctx = await self.pm.dispatch(hook, ctx)
 
                 if ctx.original_reply:
                     if ctx.reply and ctx.reply != "…":

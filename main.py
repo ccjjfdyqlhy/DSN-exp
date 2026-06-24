@@ -15,6 +15,42 @@ from pathlib import Path
 from datetime import datetime
 from collections import deque
 
+# ── 首次启动检测：必须在任何可能触发 config.py 的 import 之前执行 ──
+_ENV_PATH = Path(__file__).parent / ".env"
+
+
+def _is_env_configured() -> bool:
+    if not _ENV_PATH.exists():
+        return False
+    try:
+        with open(_ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("#") or "=" not in stripped:
+                    continue
+                k, v = stripped.split("=", 1)
+                if k.strip().upper() == "DEEPSEEK_API_KEY":
+                    val = v.strip()
+                    return bool(val and val != "sk-your-key-here")
+    except Exception:
+        return False
+    return False
+
+
+if not _is_env_configured():
+    print("\n  ⚠ 检测到未配置状态，进入引导流程...\n")
+    try:
+        from onboarding import run as run_onboarding
+        success = run_onboarding()
+    except ImportError as e:
+        print(f"\n  ❌ 无法加载引导模块: {e}")
+        sys.exit(1)
+    if not success:
+        print("\n  配置未完成，退出。")
+        sys.exit(0)
+    print("\n  ✓ 配置完成，正在启动完整系统...\n")
+
+
 from rich.console import Console
 from rich.text import Text
 from rich.table import Table

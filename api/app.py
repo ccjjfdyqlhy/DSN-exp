@@ -27,6 +27,8 @@ prompt_engine = boot.prompt_engine
 _impression_manager = boot._impression_manager
 skill_registry = boot.skill_registry
 skill_manager = boot.skill_manager
+script_engine = boot.script_engine
+script_plugin = boot.script_plugin
 _personality_v2 = prompt_engine.personality_v2 if prompt_engine else None
 
 # 模块级辅助函数
