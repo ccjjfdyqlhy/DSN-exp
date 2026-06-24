@@ -161,6 +161,7 @@ class Config:
     MAX_CONCURRENT_LM_MODELS = int(_env("MAX_CONCURRENT_LM_MODELS", "1"))
     MODEL_LOAD_TIMEOUT = int(_env("MODEL_LOAD_TIMEOUT", "180"))
     MODEL_REQUEST_TIMEOUT = int(_env("MODEL_REQUEST_TIMEOUT", "300"))
+    TTS_FAST_FIRST_LINE = _env("TTS_FAST_FIRST_LINE", "true").lower() == "true"
 
     # ==================== Token 消耗定价 (USD / 1M tokens) ====================
     # DeepSeek v4-flash (cache miss)

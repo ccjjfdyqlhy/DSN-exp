@@ -82,6 +82,57 @@ def _env_backup_count() -> int:
     return n
 
 
+def _check_port_available(host: str, port: int):
+    import subprocess
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+        s.close()
+        return
+    except OSError:
+        pass
+
+    console.print(f"\n[yellow]端口 {port} 已被占用，正在查询占用进程……[/]")
+
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.split()
+            if len(parts) >= 6:
+                pid_info = parts[-1]
+                if "pid=" in pid_info:
+                    pid = pid_info.split("pid=")[-1].split(",")[0]
+                    try:
+                        pname = subprocess.run(
+                            ["ps", "-p", pid, "-o", "comm="],
+                            capture_output=True, text=True, timeout=3,
+                        ).stdout.strip()
+                    except Exception:
+                        pname = "?"
+                    console.print(f"  PID={pid}  进程={pname}")
+    except Exception:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["lsof", "-i", f":{port}", "-P", "-n"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.split()
+            if len(parts) >= 2:
+                console.print(f"  lsof: {' '.join(parts)}")
+    except Exception:
+        pass
+
+    raise OSError(f"Address already in use: {host}:{port}")
+
+
 def _env_write(key: str, value: str):
     """将 key=value 写入 .env 文件（更新已有行或追加）"""
     env_key = key.upper()
@@ -1967,12 +2018,19 @@ def main():
 
     server = None
     try:
+        _check_port_available(host, port)
         from werkzeug.serving import make_server
         server = make_server(host, port, flask_app, threaded=True)
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.name = "flask-server"
         server_thread.start()
         time.sleep(0.5)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            console.print(f"\n[red]端口 {port} 已被占用，详情见上方报告[/]\n")
+        else:
+            console.print(f"[red]Failed to start HTTP server: {e}[/]")
+        return
     except Exception as e:
         console.print(f"[red]Failed to start HTTP server: {e}[/]")
 

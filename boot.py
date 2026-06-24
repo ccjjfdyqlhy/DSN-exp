@@ -247,8 +247,7 @@ def _handle_action_completion(task, result, retry_depth=0):
 def _preload_models(app):
     """
     启动时检查 LMStudio 已加载的模型，缺失的立即加载。
-    嵌入模型仅加载不注册（使用独立 /v1/embeddings 端点）。
-    OCR 模型不在启动时加载（始终由 Scheduler 按需加载）。
+    嵌入模型不纳入编排槽；其他本地模型只注册，由 Scheduler 按需加载/驱逐。
     """
     logger = logging.getLogger("boot")
     from models.scheduler import ModelScheduler, _get_loaded_models
@@ -301,13 +300,13 @@ def _preload_models(app):
     # 小模型加载后重新查询（可能被 LMStudio 的 VRAM 管理卸载了主模型）
     loaded = _get_loaded_models(base_url)
 
-    # ── 再加载/注册大模型（最后加载的优先级最高）──
+    # ── 注册大模型：不在启动阶段直接加载，避免绕过调度器占满 VRAM ──
     for label, model_name, url in scheduler_models:
         scheduler.register(
             model_name=model_name,
             base_url=url,
-            load_fn=lambda mn=model_name, bu=url:
-                _load_lmstudio_model(bu, mn, label, timeout=model_load_timeout),
+            load_fn=lambda mn=model_name, bu=url, lb=label:
+                _load_lmstudio_model(bu, mn, lb, timeout=model_load_timeout),
             unload_fn=lambda mn=model_name, bu=url:
                 _unload_lmstudio_model(bu, mn),
         )
@@ -316,13 +315,7 @@ def _preload_models(app):
             logger.info("模型预加载: %s (%s) 已加载", label, model_name)
             scheduler.mark_preloaded(model_name)
         else:
-            logger.info("模型预加载: 正在加载 %s (%s) ...", label, model_name)
-            ok = _load_lmstudio_model(url, model_name, label, timeout=model_load_timeout)
-            if ok:
-                scheduler.mark_preloaded(model_name)
-            else:
-                logger.warning("模型预加载: %s (%s) 加载失败，将在首次请求时重试",
-                               label, model_name)
+            logger.info("模型预加载: %s (%s) 已注册，将按需加载", label, model_name)
 
 
 # ── 启动计时器 ──

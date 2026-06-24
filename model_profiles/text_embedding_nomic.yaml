@@ -1,0 +1,5 @@
+model: text-embedding-nomic-embed-text-v1.5@f16
+priority: 100
+orchestrated: false
+resident: true
+immediate: false

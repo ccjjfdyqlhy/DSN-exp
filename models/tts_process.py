@@ -99,6 +99,19 @@ class TTSProcessModel:
         self.max_tokens = max_tokens if max_tokens is not None else Config.TTS_PROCESS_MAX_TOKENS
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.enabled = enabled if enabled is not None else Config.TTS_PROCESS_ENABLED
+        self._scheduler = None
+        if self.enabled and self.model_name:
+            from .scheduler import ModelScheduler
+            from .clients import _load_lmstudio_model, _unload_lmstudio_model
+            self._scheduler = ModelScheduler.get_instance()
+            self._scheduler.register(
+                model_name=self.model_name,
+                base_url=self.base_url,
+                load_fn=lambda m=self.model_name, b=self.base_url:
+                    _load_lmstudio_model(b, m, "TTS 预处理模型", timeout=Config.MODEL_LOAD_TIMEOUT),
+                unload_fn=lambda m=self.model_name, b=self.base_url:
+                    _unload_lmstudio_model(b, m),
+            )
 
         if self.enabled:
             self.logger.info("TTSProcessModel 已启用 | model=%s | base_url=%s", self.model_name, self.base_url)
@@ -162,6 +175,10 @@ class TTSProcessModel:
             "stream": False,
         }
 
+        if self._scheduler:
+            with self._scheduler.use(self.model_name, timeout=max(self.timeout, Config.MODEL_REQUEST_TIMEOUT)):
+                return self._do_call_lmstudio(url, headers, payload, text)
+
         for attempt in range(2):
             try:
                 self.logger.debug("TTS 预处理 LLM 请求 → %s", self.model_name)
@@ -193,6 +210,18 @@ class TTSProcessModel:
                 raise
 
         return text
+
+    def _do_call_lmstudio(self, url: str, headers: dict, payload: dict, fallback: str) -> str:
+        self.logger.debug("TTS 预处理 LLM 请求 → %s", self.model_name)
+        response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+        response.raise_for_status()
+        result = response.json()
+        if "choices" in result and result["choices"]:
+            processed = result["choices"][0]["message"]["content"].strip()
+            if processed:
+                self.logger.debug("TTS 预处理完成: %s → %s", fallback[:40], processed[:60])
+                return processed
+        raise ValueError("LMStudio 响应格式异常")
 
     def _auto_load_model(self) -> bool:
         if not self.model_name:

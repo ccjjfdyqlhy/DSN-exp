@@ -1,0 +1,7 @@
+model: deepseek-ocr
+priority: 40
+orchestrated: true
+resident: false
+immediate: true
+request_timeout: 600
+load_timeout: 300

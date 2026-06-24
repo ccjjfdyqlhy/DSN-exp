@@ -13,7 +13,7 @@ tools:
   # ── 文件系统探索（只读，默认 ~）──
   - name: explore_fs
     display_name: "探索文件系统"
-    description: "探索文件系统目录和文件，默认用户主目录 ~。只读操作。"
+    description: "探索文件系统目录和文件，默认用户主目录 ~。只读操作。所有操作自动返回当前工作目录绝对路径(cwd)。"
     module: "tools.fs_explore"
     class: "FsExploreTool"
     methods:
@@ -22,7 +22,7 @@ tools:
         parameters:
           tool:
             type: string
-            description: "子命令: list_dir（列出目录）或 read_file（读取文件）"
+            description: "子命令: list_dir（列出目录）/ read_file（读取文件）/ pwd（查询当前工作目录绝对路径）"
             required: true
           path:
             type: string
@@ -32,7 +32,7 @@ tools:
   # ── 工作区文件管理（可读写，默认 workspace）──
   - name: workspace_file
     display_name: "工作区文件管理"
-    description: "管理工作区内的文件和目录。可读、写、列出。路径限制在工作区内。"
+    description: "管理工作区内的文件和目录。可读、写、列出。路径限制在工作区内。所有操作自动返回当前工作目录绝对路径(cwd)。"
     module: "tools.workspace_file"
     class: "WorkspaceFileTool"
     methods:
@@ -41,7 +41,7 @@ tools:
         parameters:
           tool:
             type: string
-            description: "子命令: list_dir / read_file / write_file"
+            description: "子命令: list_dir / read_file / write_file / pwd（查询当前工作目录绝对路径）"
             required: true
           path:
             type: string

@@ -1,0 +1,5 @@
+model: llama-3.2-1b-instruct
+priority: 60
+orchestrated: true
+resident: false
+immediate: false

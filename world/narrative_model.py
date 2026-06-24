@@ -212,6 +212,9 @@ class NarrativeModel:
 
     def _call_lmstudio(self, prompt: str) -> str:
         import json as _json, urllib.request as _req, urllib.error as _err
+        from config import Config
+        from models import _load_lmstudio_model, _unload_lmstudio_model
+        from models.scheduler import ModelScheduler
 
         base_url = self._base_url or "http://localhost:4501"
         url = f"{base_url}/v1/chat/completions"
@@ -228,11 +231,20 @@ class NarrativeModel:
             "stream": False,
         }).encode("utf-8")
 
+        scheduler = ModelScheduler.get_instance()
+        scheduler.register(
+            model_name=self._model_name,
+            base_url=base_url,
+            load_fn=lambda: _load_lmstudio_model(base_url, self._model_name, "叙事模型"),
+            unload_fn=lambda: _unload_lmstudio_model(base_url, self._model_name),
+        )
+
         for attempt in range(2):
             req = _req.Request(url, data=body, headers={"Content-Type": "application/json"})
             try:
-                with _req.urlopen(req, timeout=30) as resp:
-                    data = _json.loads(resp.read().decode("utf-8"))
+                with scheduler.use(self._model_name, timeout=Config.MODEL_REQUEST_TIMEOUT):
+                    with _req.urlopen(req, timeout=30) as resp:
+                        data = _json.loads(resp.read().decode("utf-8"))
                 return data["choices"][0]["message"]["content"].strip()
             except _err.HTTPError as e:
                 if attempt == 0 and self._is_no_model_error(e):
