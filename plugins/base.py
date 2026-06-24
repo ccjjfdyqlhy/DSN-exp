@@ -52,6 +52,9 @@ class PluginContext:
     agent_max_steps: int = 5             # 最大步数
     agent_token_budget: int = 1000000    # token 预算（按消息字符数简单估算）
 
+    # ---- 剧本系统 ----
+    skip_model: bool = False       # 回放命中时跳过 MODEL_INVOKE
+
     # ---- 扩展 ----
     extra: dict = field(default_factory=dict)
     recall_engine: Optional[Any] = None  # MemoryRecallEngine 实例

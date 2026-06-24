@@ -57,6 +57,8 @@ prompt_engine = None
 _impression_manager = None
 skill_registry = None
 skill_manager = None
+script_engine = None
+script_plugin = None
 completion_queue: queue.Queue = None
 _auth_manager = None
 
@@ -541,6 +543,35 @@ def create_application():
         task_manager=task_manager, personality_v3=personality_v3,
     )
     _t("DSNEngine")
+
+    # ── 剧本系统 ──
+    script_engine = None
+    script_plugin = None
+    try:
+        from scripts import ScriptEngine, ScriptState, OOCDetector
+        from scripts import ScriptRecorder, ScriptPlayer, ScriptPlugin
+        _script_state = ScriptState(db)
+        script_engine = ScriptEngine(state=_script_state)
+        _scripts_dir = os.path.join(os.path.dirname(__file__), "scripts")
+        script_engine.scan_scripts(
+            os.path.join(_scripts_dir, "builtin"),
+            os.path.join(_scripts_dir, "custom"),
+        )
+        _ooc = OOCDetector()
+        _recorder = ScriptRecorder(state=_script_state)
+        _player = ScriptPlayer(state=_script_state)
+        script_plugin = ScriptPlugin(
+            engine=script_engine, ooc=_ooc,
+            recorder=_recorder, player=_player,
+        )
+        engine.plugin_manager.register(script_plugin)
+        engine._script_engine = script_engine
+        engine._script_plugin = script_plugin
+        app.logger.info("剧本系统初始化完成: %d 个剧本",
+                        len(script_engine.list_scripts()))
+    except Exception as e:
+        app.logger.warning("剧本系统初始化失败: %s", e)
+    _t("剧本系统")
 
     # ── 提示词缓存索引 ──
     try:
