@@ -132,6 +132,19 @@ class DSNEngine:
         self._filter_model = None
         self.complexity_analyzer: Optional[ComplexityAnalyzer] = None
 
+        # Phase 2: 学习系统
+        self.question_store = None
+        self.template_manager = None
+        self.exam_composer = None
+        self.error_analyzer = None
+        self.scanner_pipeline = None
+        self.graph_store = None
+        self.graph_engine = None
+        self.knowledge_matcher = None
+        self.graph_builder = None
+        self.exam_engine = None
+        self.exam_scorer = None
+
         self._logger = logger
 
         if self._subapp_path:
@@ -544,6 +557,29 @@ class DSNEngine:
         if self._plugin_enabled("vision") and self._models_plugin:
             from plugins.builtin.vision_plugin import VisionPlugin
             self.plugin_manager.register(VisionPlugin(models_plugin=self._models_plugin))
+        if self._plugin_enabled("question_bank") and self.question_store:
+            from plugins.builtin.question_bank_plugin import QuestionBankPlugin
+            self.plugin_manager.register(QuestionBankPlugin(
+                question_store=self.question_store,
+                models_plugin=self._models_plugin,
+                exam_composer=self.exam_composer,
+                error_analyzer=self.error_analyzer,
+                scanner_pipeline=self.scanner_pipeline,
+            ))
+        if self._plugin_enabled("knowledge_graph") and self.graph_store:
+            from plugins.builtin.knowledge_graph_plugin import KnowledgeGraphPlugin
+            self.plugin_manager.register(KnowledgeGraphPlugin(
+                graph_store=self.graph_store,
+                graph_engine=self.graph_engine,
+                knowledge_matcher=self.knowledge_matcher,
+                question_store=self.question_store,
+            ))
+        if self._plugin_enabled("exam_sim") and self.exam_engine:
+            from plugins.builtin.exam_sim_plugin import ExamSimPlugin
+            self.plugin_manager.register(ExamSimPlugin(
+                exam_engine=self.exam_engine,
+                scorer=self.exam_scorer,
+            ))
         if self._plugin_enabled("world") and self.world_engine:
             from world import WorldPlugin
             self.plugin_manager.register(WorldPlugin(
@@ -860,6 +896,17 @@ def create_engine_with_defaults(
     narrative_model = None,
     task_manager = None,
     personality_v3 = None,
+    question_store = None,
+    template_manager = None,
+    exam_composer = None,
+    error_analyzer = None,
+    scanner_pipeline = None,
+    graph_store = None,
+    graph_engine = None,
+    knowledge_matcher = None,
+    graph_builder = None,
+    exam_engine = None,
+    exam_scorer = None,
 ) -> DSNEngine:
     """
     使用已有组件创建引擎（供 app.py 复用）。
@@ -1077,6 +1124,91 @@ def create_engine_with_defaults(
             engine._logger.info("TTSProcessModel 初始化完成")
         except Exception as e:
             engine._logger.warning("TTSProcessModel 初始化失败: %s", e)
+
+    # ---- Phase 2: 学习系统 ----
+    engine.question_store = question_store
+    engine.template_manager = template_manager
+    engine.exam_composer = exam_composer
+    engine.error_analyzer = error_analyzer
+    engine.scanner_pipeline = scanner_pipeline
+    engine.graph_store = graph_store
+    engine.graph_engine = graph_engine
+    engine.knowledge_matcher = knowledge_matcher
+    engine.graph_builder = graph_builder
+    engine.exam_engine = exam_engine
+    engine.exam_scorer = exam_scorer
+
+    # 注入 models_plugin 依赖
+    if question_store and models_plugin:
+        try:
+            if engine.error_analyzer is None:
+                from question_bank.error_analyzer import ErrorAnalyzer
+                engine.error_analyzer = ErrorAnalyzer(
+                    question_store=question_store,
+                    models_plugin=models_plugin,
+                )
+            elif engine.error_analyzer._models is None:
+                engine.error_analyzer._models = models_plugin
+
+            if engine.scanner_pipeline is not None and engine.scanner_pipeline._models is None:
+                engine.scanner_pipeline._models = models_plugin
+
+            if engine.knowledge_matcher is not None and engine.knowledge_matcher._models is None:
+                engine.knowledge_matcher._models = models_plugin
+        except Exception as e:
+            engine._logger.warning("学习系统分析器注入失败: %s", e)
+
+    if exam_scorer and models_plugin and exam_scorer._models is None:
+        exam_scorer._models = models_plugin
+
+    # 注册 Plugin
+    if question_store and models_plugin:
+        from plugins.builtin.question_bank_plugin import QuestionBankPlugin
+        engine.plugin_manager.register(QuestionBankPlugin(
+            question_store=question_store,
+            models_plugin=models_plugin,
+            exam_composer=exam_composer,
+            error_analyzer=engine.error_analyzer,
+            scanner_pipeline=engine.scanner_pipeline,
+        ))
+        engine._logger.info("QuestionBankPlugin 已注册")
+
+    if graph_store:
+        from plugins.builtin.knowledge_graph_plugin import KnowledgeGraphPlugin
+        engine.plugin_manager.register(KnowledgeGraphPlugin(
+            graph_store=graph_store,
+            graph_engine=graph_engine,
+            knowledge_matcher=knowledge_matcher,
+            question_store=question_store,
+        ))
+        engine._logger.info("KnowledgeGraphPlugin 已注册")
+
+    if exam_engine:
+        from plugins.builtin.exam_sim_plugin import ExamSimPlugin
+        engine.plugin_manager.register(ExamSimPlugin(
+            exam_engine=exam_engine,
+            scorer=exam_scorer,
+        ))
+        engine._logger.info("ExamSimPlugin 已注册")
+
+    # 注入学习系统依赖到技能工具实例
+    if skill_registry and question_store:
+        try:
+            for key, instance in skill_registry._tool_instances.items():
+                if key.startswith("create_question") or key.startswith("search_questions"):
+                    instance._store = question_store
+                    instance._tm = template_manager
+                elif key.startswith("compose_exam"):
+                    instance._store = question_store
+                elif key.startswith("analyze_error") or key.startswith("get_error_stats") or key.startswith("recommend_questions"):
+                    instance._store = question_store
+                    if models_plugin:
+                        instance._analyzer._models = models_plugin
+                elif key.startswith("suggest_templates") or key.startswith("get_subjects"):
+                    instance._tm = template_manager
+                    instance._store = question_store
+        except Exception as e:
+            engine._logger.warning("学习系统技能注入失败: %s", e)
 
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")

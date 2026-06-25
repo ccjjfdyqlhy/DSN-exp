@@ -505,6 +505,50 @@ def create_application():
         pass
     _t("技能系统")
 
+    # ── Phase 2: 学习系统 ──
+    _question_store = _template_manager = _exam_composer = _error_analyzer = _scanner_pipeline = None
+    _graph_store = _graph_engine = _knowledge_matcher = _graph_builder = None
+    _exam_engine = _exam_scorer = None
+    try:
+        from question_bank.template_manager import SubjectTemplateManager
+        from question_bank.store import QuestionStore
+        from question_bank.composer import ExamComposer
+        from question_bank.error_analyzer import ErrorAnalyzer
+        from question_bank.scanner_pipeline import ScannerPipeline
+        from knowledge_graph.graph_store import GraphStore
+        from knowledge_graph.graph_engine import GraphEngine
+        from knowledge_graph.matcher import KnowledgeMatcher
+        from knowledge_graph.builder import KnowledgeGraphBuilder
+        from exam_sim.engine import ExamEngine
+        from exam_sim.scorer import ExamScorer
+
+        _template_manager = SubjectTemplateManager(db=db)
+        _template_manager.init_builtin_templates()
+
+        if not _template_manager.has_subjects():
+            _template_manager.apply_template("6_subjects")
+            app.logger.info("学习系统: 首次启动，已应用默认模板 6_subjects")
+
+        _question_store = QuestionStore(db=db)
+        _exam_composer = ExamComposer(question_store=_question_store)
+        _scanner_pipeline = ScannerPipeline(
+            question_store=_question_store, models_plugin=None,
+        )
+        _error_analyzer = ErrorAnalyzer(question_store=_question_store, models_plugin=None)
+
+        _graph_store = GraphStore(db=db)
+        _graph_engine = GraphEngine(graph_store=_graph_store)
+        _knowledge_matcher = KnowledgeMatcher(graph_store=_graph_store, models_plugin=None)
+        _graph_builder = KnowledgeGraphBuilder(graph_store=_graph_store, models_plugin=None)
+
+        _exam_scorer = ExamScorer(question_store=_question_store, models_plugin=None)
+        _exam_engine = ExamEngine(db=db, question_store=_question_store, scorer=_exam_scorer)
+
+        app.logger.info("学习系统: 题库+知识图+考试引擎初始化完成")
+    except Exception as e:
+        app.logger.warning("学习系统初始化失败: %s", e)
+    _t("学习系统")
+
     # ── 人格系统 V3 ──
     if Config.PERSONALITY_V3_ENABLED:
         try:
@@ -541,6 +585,12 @@ def create_application():
         world_engine=_world_engine, world_state_manager=_world_state_manager,
         narrative_model=_narrative_model,
         task_manager=task_manager, personality_v3=personality_v3,
+        question_store=_question_store, template_manager=_template_manager,
+        exam_composer=_exam_composer, error_analyzer=_error_analyzer,
+        scanner_pipeline=_scanner_pipeline,
+        graph_store=_graph_store, graph_engine=_graph_engine,
+        knowledge_matcher=_knowledge_matcher, graph_builder=_graph_builder,
+        exam_engine=_exam_engine, exam_scorer=_exam_scorer,
     )
     _t("DSNEngine")
 

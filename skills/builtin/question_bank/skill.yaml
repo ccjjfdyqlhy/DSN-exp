@@ -1,0 +1,189 @@
+name: question_bank
+display_name: "Question Bank"
+description: "题库管理 - 题目增删改查、组卷、错题分析、模板管理"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 70
+
+tools:
+  - name: create_question
+    display_name: "Create Question"
+    description: "创建新题目"
+    module: "tools.question_crud"
+    class: "QuestionCRUDTool"
+    methods:
+      - name: create
+        description: "创建题目"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese/biology/politics/history/geography)"
+            required: true
+          content:
+            type: string
+            description: "题目内容"
+            required: true
+          answer:
+            type: string
+            description: "参考答案"
+            required: true
+          difficulty:
+            type: integer
+            description: "难度 1-5"
+            default: 3
+          tags:
+            type: array
+            description: "标签"
+            default: []
+          type_name:
+            type: string
+            description: "题型 (选择题/填空题/解答题/判断题)"
+            default: "解答题"
+
+  - name: search_questions
+    display_name: "Search Questions"
+    description: "搜索题目"
+    module: "tools.question_crud"
+    class: "QuestionCRUDTool"
+    methods:
+      - name: search
+        description: "按条件搜索题目"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码"
+          difficulty:
+            type: integer
+            description: "难度"
+          tags:
+            type: array
+            description: "标签"
+          limit:
+            type: integer
+            description: "返回数量"
+            default: 10
+
+  - name: compose_exam
+    display_name: "Compose Exam"
+    description: "组卷"
+    module: "tools.compose_exam"
+    class: "ComposeExamTool"
+    methods:
+      - name: compose
+        description: "按配置组卷"
+        parameters:
+          subject:
+            type: string
+            required: true
+            description: "学科代码"
+          count:
+            type: integer
+            description: "题目数量"
+            default: 10
+          difficulty:
+            type: integer
+            description: "平均难度"
+            default: 3
+
+  - name: analyze_error
+    display_name: "Analyze Error"
+    description: "分析错题"
+    module: "tools.error_analysis"
+    class: "ErrorAnalysisTool"
+    methods:
+      - name: analyze
+        description: "分析错题原因"
+        parameters:
+          question_id:
+            type: integer
+            required: true
+          user_answer:
+            type: string
+            required: true
+
+  - name: suggest_templates
+    display_name: "Template Management"
+    description: "科目模板管理"
+    module: "tools.template_tools"
+    class: "TemplateTools"
+    methods:
+      - name: list
+        description: "列出所有可用模板"
+      - name: apply
+        description: "应用指定模板"
+        parameters:
+          template_name:
+            type: string
+            description: "模板名称 (3_subjects/6_subjects/9_subjects)"
+            required: true
+      - name: import_template
+        description: "导入自定义模板"
+        parameters:
+          file_path:
+            type: string
+            description: "模板文件路径"
+            required: true
+      - name: create
+        description: "创建自定义模板"
+        parameters:
+          name:
+            type: string
+            description: "模板名称"
+            required: true
+          subjects:
+            type: array
+            description: "科目列表"
+            required: true
+
+  - name: get_subjects
+    display_name: "Get Subjects"
+    description: "获取当前启用的科目列表"
+    module: "tools.template_tools"
+    class: "TemplateTools"
+    methods:
+      - name: get_active
+        description: "获取当前启用的科目"
+
+  - name: get_error_stats
+    display_name: "Error Stats"
+    description: "获取错题统计"
+    module: "tools.error_analysis"
+    class: "ErrorAnalysisTool"
+    methods:
+      - name: stats
+        description: "获取用户的错题统计"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码(可选)"
+            required: false
+
+  - name: recommend_questions
+    display_name: "Recommend Questions"
+    description: "推荐巩固练习题"
+    module: "tools.error_analysis"
+    class: "ErrorAnalysisTool"
+    methods:
+      - name: recommend
+        description: "根据错题推荐相关题目"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码"
+            required: true
+          count:
+            type: integer
+            description: "推荐数量"
+            default: 5
+
+activation:
+  keywords: ["题库", "题目", "组卷", "错题", "模板", "科目", "question", "exam", "template",
+             "搜题", "出题", "组卷", "试卷", "错题本", "导入模板", "导出模板"]
+  auto_activate: false
+
+dependencies: []
+tags: [question, bank, exam, study, template]

@@ -289,6 +289,218 @@ class ChatDBManager:
                     "ON prompt_cache(uid, chat_id, category)"
                 )
                 
+                # ── 题库系统 Phase 2 表 ──
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS subjects (
+                        subject_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name         TEXT UNIQUE NOT NULL,
+                        code         TEXT UNIQUE NOT NULL,
+                        icon         TEXT DEFAULT '',
+                        typical_score INTEGER DEFAULT 100,
+                        exam_duration INTEGER DEFAULT 120,
+                        is_active    INTEGER DEFAULT 1,
+                        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS question_types (
+                        type_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name         TEXT NOT NULL,
+                        subtype      TEXT DEFAULT '',
+                        scoring_mode TEXT DEFAULT 'exact',
+                        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(name, subtype)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS subject_templates (
+                        template_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name          TEXT UNIQUE NOT NULL,
+                        description   TEXT DEFAULT '',
+                        content       TEXT NOT NULL,
+                        is_builtin    INTEGER DEFAULT 0,
+                        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS questions (
+                        question_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                        subject_id      INTEGER NOT NULL,
+                        type_id         INTEGER NOT NULL,
+                        source          TEXT DEFAULT '',
+                        difficulty      INTEGER DEFAULT 3,
+                        content         TEXT NOT NULL,
+                        options         TEXT DEFAULT '[]',
+                        answer          TEXT NOT NULL,
+                        explanation     TEXT DEFAULT '',
+                        tags            TEXT DEFAULT '[]',
+                        knowledge_points TEXT DEFAULT '[]',
+                        metadata        TEXT DEFAULT '{}',
+                        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        version         INTEGER DEFAULT 1,
+                        FOREIGN KEY (subject_id) REFERENCES subjects(subject_id),
+                        FOREIGN KEY (type_id) REFERENCES question_types(type_id)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS knowledge_point_refs (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question_id     INTEGER NOT NULL,
+                        kp_code         TEXT NOT NULL,
+                        weight          REAL DEFAULT 1.0,
+                        FOREIGN KEY (question_id) REFERENCES questions(question_id)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS error_logs (
+                        log_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id         INTEGER NOT NULL,
+                        question_id     INTEGER NOT NULL,
+                        attempt_count   INTEGER DEFAULT 1,
+                        user_answer     TEXT DEFAULT '',
+                        error_type      TEXT DEFAULT '',
+                        error_reason    TEXT DEFAULT '',
+                        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        mastered        INTEGER DEFAULT 0,
+                        mastered_at     TIMESTAMP NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(uid),
+                        FOREIGN KEY (question_id) REFERENCES questions(question_id)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS exam_papers (
+                        paper_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id         INTEGER NOT NULL,
+                        title           TEXT NOT NULL,
+                        subject_id      INTEGER NOT NULL,
+                        difficulty      INTEGER DEFAULT 3,
+                        question_ids    TEXT NOT NULL,
+                        total_score     INTEGER DEFAULT 100,
+                        time_limit_min  INTEGER DEFAULT 120,
+                        source          TEXT DEFAULT 'composed',
+                        status          TEXT DEFAULT 'draft',
+                        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(uid),
+                        FOREIGN KEY (subject_id) REFERENCES subjects(subject_id)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS exam_results (
+                        result_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                        exam_id         INTEGER NOT NULL,
+                        user_id         INTEGER NOT NULL,
+                        answers         TEXT NOT NULL,
+                        score           REAL NOT NULL,
+                        max_score       REAL NOT NULL,
+                        duration_sec    INTEGER DEFAULT 0,
+                        started_at      TIMESTAMP,
+                        submitted_at    TIMESTAMP,
+                        details         TEXT DEFAULT '{}',
+                        FOREIGN KEY (user_id) REFERENCES users(uid)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS exam_sessions (
+                        session_id     TEXT PRIMARY KEY,
+                        user_id        INTEGER NOT NULL,
+                        paper_id       INTEGER,
+                        status         TEXT DEFAULT 'idle',
+                        config         TEXT DEFAULT '{}',
+                        answers        TEXT DEFAULT '{}',
+                        score          REAL,
+                        max_score      REAL,
+                        started_at     TIMESTAMP,
+                        submitted_at   TIMESTAMP,
+                        time_limit_sec INTEGER,
+                        remaining_sec  INTEGER,
+                        auto_submitted INTEGER DEFAULT 0,
+                        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(uid),
+                        FOREIGN KEY (paper_id) REFERENCES exam_papers(paper_id)
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_subject ON questions(subject_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_error_logs_user ON error_logs(user_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_error_logs_question ON error_logs(question_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_exam_papers_user ON exam_papers(user_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_exam_results_exam ON exam_results(exam_id)")
+
+                # ── 知识图谱系统 Phase 2 Week 3-4 表 ──
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS knowledge_nodes (
+                        kp_code      TEXT PRIMARY KEY,
+                        subject      TEXT NOT NULL,
+                        name         TEXT NOT NULL,
+                        aliases      TEXT DEFAULT '[]',
+                        level        INTEGER DEFAULT 0,
+                        parent_code  TEXT,
+                        description  TEXT DEFAULT '',
+                        metadata     TEXT DEFAULT '{}',
+                        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS knowledge_edges (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source       TEXT NOT NULL,
+                        target       TEXT NOT NULL,
+                        edge_type    TEXT NOT NULL,
+                        weight       REAL DEFAULT 1.0,
+                        description  TEXT DEFAULT '',
+                        UNIQUE(source, target, edge_type),
+                        FOREIGN KEY (source) REFERENCES knowledge_nodes(kp_code),
+                        FOREIGN KEY (target) REFERENCES knowledge_nodes(kp_code)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS user_knowledge_state (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id          INTEGER NOT NULL,
+                        kp_code          TEXT NOT NULL,
+                        total_attempts   INTEGER DEFAULT 0,
+                        correct_attempts INTEGER DEFAULT 0,
+                        correct_rate     REAL DEFAULT 0.0,
+                        last_practiced   TIMESTAMP,
+                        confidence       REAL DEFAULT 0.0,
+                        next_review_at   TIMESTAMP,
+                        UNIQUE(user_id, kp_code),
+                        FOREIGN KEY (user_id) REFERENCES users(uid),
+                        FOREIGN KEY (kp_code) REFERENCES knowledge_nodes(kp_code)
+                    )
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_edges_source
+                    ON knowledge_edges(source)
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_edges_target
+                    ON knowledge_edges(target)
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_user_knowledge_state_user
+                    ON user_knowledge_state(user_id)
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_user_knowledge_state_review
+                    ON user_knowledge_state(next_review_at)
+                """)
+
+                # 预置题型
+                conn.execute("""
+                    INSERT OR IGNORE INTO question_types (name, subtype, scoring_mode) VALUES
+                        ('选择题', '单选', 'exact'),
+                        ('选择题', '多选', 'exact'),
+                        ('填空题', '填空', 'keyword'),
+                        ('解答题', '计算', 'llm'),
+                        ('解答题', '证明', 'llm'),
+                        ('解答题', '简答', 'llm'),
+                        ('判断题', '判断', 'exact'),
+                        ('作文题', '作文', 'llm'),
+                        ('阅读理解', '阅读', 'llm')
+                """)
+
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
             except sqlite3.Error as e:
