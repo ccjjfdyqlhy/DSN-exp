@@ -594,6 +594,42 @@ def create_application():
     )
     _t("DSNEngine")
 
+    # ── 语义缓存系统 ──
+    cache_engine = None
+    if Config.SEMANTIC_CACHE_ENABLED:
+        try:
+            from semantic_cache import CacheStore, L1PragmaticCache, CacheEngine
+            _cache_dir = os.path.join(os.path.dirname(__file__),
+                                      Config.SEMANTIC_CACHE_DIR)
+            _cache_store = CacheStore(db=db, cache_dir=_cache_dir)
+            _l1_cache = L1PragmaticCache(store=_cache_store)
+            _l1_cache.init_builtin_phrases()
+
+            _emb = None
+            if Config.MEMORY_EMBEDDING_ENABLED:
+                from models import EmbeddingClient
+                _emb = EmbeddingClient()
+
+            cache_engine = CacheEngine(
+                store=_cache_store,
+                l1_cache=_l1_cache,
+                embedding_client=_emb,
+                similarity_threshold=Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD,
+            )
+
+            from plugins.builtin.cache_interceptor import CacheInterceptorPlugin
+            _cache_plugin = CacheInterceptorPlugin(
+                cache_engine=cache_engine,
+                tts_client=tts_client,
+            )
+            engine.plugin_manager.register(_cache_plugin)
+            engine._cache_engine = cache_engine
+            app.logger.info("语义缓存系统: 已启用 (阈值=%.2f)",
+                            Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD)
+        except Exception as e:
+            app.logger.warning("语义缓存系统初始化失败: %s", e)
+    _t("语义缓存系统")
+
     # ── 剧本系统 ──
     script_engine = None
     script_plugin = None

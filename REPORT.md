@@ -13,7 +13,7 @@
 
 | 指标摘要 | 评分 |
 |------|-------|
-| **糟糕指数** | **79.68/100** |
+| **糟糕指数** | **79.81/100** |
 | 屎山等级 | 😐 微臭青年 |
 
 > 略带清香，偶尔飘过一丝酸爽
@@ -22,42 +22,42 @@
 
 | 指标 | 数值 |
 |--------|-------|
-| 总文件数 | 181 |
-| 已跳过 | 268 |
-| 耗时 | 992ms |
+| 总文件数 | 187 |
+| 已跳过 | 391 |
+| 耗时 | 945ms |
 
 ### 📋 项目概览
 
 | 指标 | 数值 |
 |--------|-------|
-| 总代码行数 | 30006 |
-| 总注释行数 | 1402 |
-| 整体注释比例 | 4.7% |
-| 平均文件大小 | 206 行 |
-| 最大文件 | `main.py` (2153) |
+| 总代码行数 | 30615 |
+| 总注释行数 | 1423 |
+| 整体注释比例 | 4.6% |
+| 平均文件大小 | 204 行 |
+| 最大文件 | `main.py` (2155) |
 
 #### 语言分布
 
 | 语言 | 文件数 |
 |:-----|------:|
-| Python | 178 |
+| Python | 184 |
 | JavaScript | 3 |
 
 ## 评分指标详情 {#metrics-details}
 
 | 指标摘要 | 评分 | Min | Max | Median | 状态 |
 |:-----|------:|------:|------:|------:|:------:|
-| 循环复杂度 | 9.76% | 0.0% | 80.0% | 4.0% | ✓✓ |
-| 认知复杂度 | 13.13% | 0.0% | 67.0% | 8.0% | ✓✓ |
-| 嵌套深度 | 3.44% | 0.0% | 55.0% | 0.0% | ✓✓ |
-| 函数长度 | 6.01% | 0.0% | 54.4% | 0.0% | ✓✓ |
-| 文件长度 | 2.76% | 0.0% | 91.6% | 0.0% | ✓✓ |
-| 参数数量 | 13.07% | 0.0% | 98.5% | 0.0% | ✓✓ |
-| 代码重复 | 4.59% | 0.0% | 65.0% | 0.0% | ✓✓ |
-| 结构分析 | 4.64% | 0.0% | 82.5% | 0.0% | ✓✓ |
-| 错误处理 | 32.17% | 0.0% | 98.8% | 1.8% | ✓ |
-| 注释比例 | 39.27% | 0.0% | 100.0% | 34.6% | ○ |
-| 命名规范 | 27.69% | 0.0% | 95.7% | 22.2% | ✓ |
+| 循环复杂度 | 9.55% | 0.0% | 80.0% | 4.0% | ✓✓ |
+| 认知复杂度 | 12.97% | 0.0% | 67.0% | 8.0% | ✓✓ |
+| 嵌套深度 | 3.38% | 0.0% | 55.0% | 0.0% | ✓✓ |
+| 函数长度 | 5.88% | 0.0% | 55.6% | 0.0% | ✓✓ |
+| 文件长度 | 2.68% | 0.0% | 91.6% | 0.0% | ✓✓ |
+| 参数数量 | 13.20% | 0.0% | 98.5% | 0.0% | ✓✓ |
+| 代码重复 | 4.44% | 0.0% | 65.0% | 0.0% | ✓✓ |
+| 结构分析 | 4.56% | 0.0% | 82.5% | 0.0% | ✓✓ |
+| 错误处理 | 31.78% | 0.0% | 98.8% | 0.0% | ✓ |
+| 注释比例 | 40.10% | 0.0% | 100.0% | 37.4% | ○ |
+| 命名规范 | 27.47% | 0.0% | 95.7% | 22.2% | ✓ |
 
 ## 最屎代码排行榜 {#problem-files}
 
@@ -65,7 +65,7 @@
 
 **糟糕指数: 48.14**
 
-> 行数: 2153 总计, 1787 代码, 31 注释 | 函数: 70 | 类: 1
+> 行数: 2155 总计, 1788 代码, 31 注释 | 函数: 70 | 类: 1
 
 **问题**: 🔄 复杂度问题: 36, ⚠️ 其他问题: 27, 🏗️ 结构问题: 13, ❌ 错误处理问题: 13, 📝 注释问题: 1, 🏷️ 命名问题: 10
 
@@ -73,189 +73,189 @@
 
 | 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
 |:-----|------:|------:|------:|------:|------:|:------:|
-| `_cmd_reminder` | L680-808 | 129 | 31 | 4 | 2 | ✓ |
-| `_cmd_memory_query` | L1055-1195 | 141 | 31 | 3 | 2 | ✓ |
-| `_cmd_plan` | L811-873 | 63 | 21 | 2 | 2 | ✓ |
-| `_cmd_memory_rebuild` | L1198-1326 | 121 | 21 | 3 | 2 | ✓ |
-| `main` | L2017-2148 | 122 | 21 | 3 | 0 | ✗ |
-| `_cmd_memory_list` | L1401-1485 | 85 | 17 | 2 | 4 | ✓ |
-| `_cmd_hibernate_check` | L1910-1976 | 67 | 14 | 3 | 1 | ✗ |
-| `_cmd_export` | L514-603 | 90 | 13 | 2 | 2 | ✓ |
-| `_cmd_memory` | L978-1009 | 32 | 12 | 2 | 3 | ✓ |
-| `_cmd_import` | L606-677 | 72 | 11 | 2 | 2 | ✓ |
-| `_cmd_plugin` | L922-975 | 54 | 11 | 2 | 2 | ✓ |
-| `_cmd_persona` | L1659-1698 | 40 | 11 | 2 | 2 | ✓ |
-| `_check_port_available` | L121-169 | 49 | 10 | 5 | 2 | ✗ |
-| `_env_write` | L172-199 | 28 | 10 | 5 | 2 | ✓ |
-| `_persona_materials` | L1800-1825 | 26 | 10 | 2 | 2 | ✗ |
-| `_is_env_configured` | L22-37 | 16 | 9 | 4 | 0 | ✗ |
-| `_cmd_users` | L285-323 | 39 | 9 | 2 | 2 | ✓ |
-| `_cmd_status` | L326-362 | 37 | 9 | 2 | 2 | ✓ |
-| `_cmd_detail` | L1535-1564 | 30 | 9 | 2 | 1 | ✓ |
-| `_cmd_memory_reindex` | L1012-1052 | 31 | 8 | 1 | 1 | ✓ |
-| `_persona_status` | L1701-1735 | 35 | 8 | 3 | 2 | ✗ |
-| `_cmd_hibernate` | L1879-1907 | 29 | 8 | 1 | 2 | ✗ |
-| `_cmd_config` | L403-435 | 33 | 7 | 2 | 2 | ✓ |
-| `_cmd_memory_users` | L1329-1362 | 34 | 6 | 1 | 2 | ✓ |
-| `_cmd_memory_chats` | L1365-1398 | 34 | 6 | 1 | 2 | ✓ |
-| `_cmd_prompt` | L1488-1514 | 27 | 6 | 1 | 2 | ✓ |
-| `_execute_command` | L1567-1586 | 20 | 6 | 2 | 9 | ✗ |
-| `_cmd_hibernate_archive` | L1979-2007 | 29 | 6 | 2 | 2 | ✗ |
-| `_env_backup_rotate` | L83-93 | 11 | 5 | 3 | 0 | ✓ |
-| `_enable_console_logging` | L233-246 | 14 | 5 | 2 | 0 | ✗ |
-| `_try_convert` | L388-400 | 13 | 5 | 2 | 2 | ✓ |
-| `_cmd_config_listall` | L438-457 | 20 | 5 | 2 | 1 | ✓ |
-| `_cmd_config_set` | L460-487 | 28 | 5 | 1 | 3 | ✓ |
-| `_run_index` | L1039-1048 | 10 | 5 | 2 | 0 | ✗ |
-| `_persona_list` | L1766-1797 | 32 | 5 | 1 | 1 | ✗ |
-| `_persona_rollback` | L1828-1854 | 27 | 5 | 1 | 2 | ✗ |
-| `_env_backup_restore` | L96-110 | 15 | 4 | 2 | 0 | ✓ |
-| `_mask_value` | L377-385 | 9 | 4 | 2 | 2 | ✗ |
-| `_run` | L1314-1321 | 8 | 4 | 2 | 0 | ✗ |
-| `_handle_steward_chat` | L2105-2114 | 10 | 4 | 1 | 1 | ✗ |
-| `_env_backup_count` | L113-118 | 6 | 3 | 2 | 0 | ✗ |
-| `_disable_console_logging` | L249-254 | 6 | 3 | 2 | 0 | ✗ |
-| `_cmd_newbind` | L268-282 | 15 | 3 | 1 | 1 | ✓ |
-| `_cmd_config_undo` | L490-506 | 17 | 3 | 1 | 0 | ✓ |
-| `_run` | L1748-1759 | 12 | 3 | 2 | 0 | ✗ |
-| `_persona_do_rollback` | L1864-1876 | 13 | 3 | 1 | 2 | ✓ |
-| `append_log` | L202-205 | 4 | 2 | 1 | 3 | ✗ |
-| `get_logs_snapshot` | L208-210 | 3 | 2 | 1 | 0 | ✗ |
-| `_install_log_handler` | L213-226 | 12 | 2 | 1 | 0 | ✗ |
-| `_h_plugin` | L1598-1599 | 2 | 2 | 0 | 7 | ✗ |
-| `_persona_distill` | L1738-1762 | 13 | 2 | 1 | 2 | ✗ |
-| `_cmd_hibernate_sleep` | L2010-2014 | 5 | 2 | 1 | 1 | ✗ |
-| `emit` | L220-221 | 2 | 1 | 0 | 2 | ✗ |
-| `_cmd_listconfig` | L509-511 | 3 | 1 | 0 | 1 | ✓ |
-| `_cmd_help` | L876-919 | 44 | 1 | 0 | 0 | ✓ |
-| `_cmd_memory_help` | L1517-1532 | 16 | 1 | 0 | 0 | ✓ |
-| `_h_newbind` | L1589-1590 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_users` | L1592-1593 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_status` | L1595-1596 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_memory` | L1601-1602 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_prompt` | L1604-1605 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_config` | L1607-1608 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_listconfig` | L1610-1611 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_persona` | L1613-1614 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_help` | L1616-1617 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_export` | L1620-1621 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_import` | L1624-1625 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_reminder` | L1628-1629 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_plan` | L1632-1633 | 2 | 1 | 0 | 7 | ✗ |
-| `_h_detail` | L1636-1637 | 2 | 1 | 0 | 7 | ✗ |
+| `_cmd_reminder` | L682-810 | 129 | 31 | 4 | 2 | ✓ |
+| `_cmd_memory_query` | L1057-1197 | 141 | 31 | 3 | 2 | ✓ |
+| `_cmd_plan` | L813-875 | 63 | 21 | 2 | 2 | ✓ |
+| `_cmd_memory_rebuild` | L1200-1328 | 121 | 21 | 3 | 2 | ✓ |
+| `main` | L2019-2150 | 122 | 21 | 3 | 0 | ✗ |
+| `_cmd_memory_list` | L1403-1487 | 85 | 17 | 2 | 4 | ✓ |
+| `_cmd_hibernate_check` | L1912-1978 | 67 | 14 | 3 | 1 | ✗ |
+| `_cmd_export` | L516-605 | 90 | 13 | 2 | 2 | ✓ |
+| `_cmd_memory` | L980-1011 | 32 | 12 | 2 | 3 | ✓ |
+| `_cmd_import` | L608-679 | 72 | 11 | 2 | 2 | ✓ |
+| `_cmd_plugin` | L924-977 | 54 | 11 | 2 | 2 | ✓ |
+| `_cmd_persona` | L1661-1700 | 40 | 11 | 2 | 2 | ✓ |
+| `_check_port_available` | L123-171 | 49 | 10 | 5 | 2 | ✗ |
+| `_env_write` | L174-201 | 28 | 10 | 5 | 2 | ✓ |
+| `_persona_materials` | L1802-1827 | 26 | 10 | 2 | 2 | ✗ |
+| `_is_env_configured` | L24-39 | 16 | 9 | 4 | 0 | ✗ |
+| `_cmd_users` | L287-325 | 39 | 9 | 2 | 2 | ✓ |
+| `_cmd_status` | L328-364 | 37 | 9 | 2 | 2 | ✓ |
+| `_cmd_detail` | L1537-1566 | 30 | 9 | 2 | 1 | ✓ |
+| `_cmd_memory_reindex` | L1014-1054 | 31 | 8 | 1 | 1 | ✓ |
+| `_persona_status` | L1703-1737 | 35 | 8 | 3 | 2 | ✗ |
+| `_cmd_hibernate` | L1881-1909 | 29 | 8 | 1 | 2 | ✗ |
+| `_cmd_config` | L405-437 | 33 | 7 | 2 | 2 | ✓ |
+| `_cmd_memory_users` | L1331-1364 | 34 | 6 | 1 | 2 | ✓ |
+| `_cmd_memory_chats` | L1367-1400 | 34 | 6 | 1 | 2 | ✓ |
+| `_cmd_prompt` | L1490-1516 | 27 | 6 | 1 | 2 | ✓ |
+| `_execute_command` | L1569-1588 | 20 | 6 | 2 | 9 | ✗ |
+| `_cmd_hibernate_archive` | L1981-2009 | 29 | 6 | 2 | 2 | ✗ |
+| `_env_backup_rotate` | L85-95 | 11 | 5 | 3 | 0 | ✓ |
+| `_enable_console_logging` | L235-248 | 14 | 5 | 2 | 0 | ✗ |
+| `_try_convert` | L390-402 | 13 | 5 | 2 | 2 | ✓ |
+| `_cmd_config_listall` | L440-459 | 20 | 5 | 2 | 1 | ✓ |
+| `_cmd_config_set` | L462-489 | 28 | 5 | 1 | 3 | ✓ |
+| `_run_index` | L1041-1050 | 10 | 5 | 2 | 0 | ✗ |
+| `_persona_list` | L1768-1799 | 32 | 5 | 1 | 1 | ✗ |
+| `_persona_rollback` | L1830-1856 | 27 | 5 | 1 | 2 | ✗ |
+| `_env_backup_restore` | L98-112 | 15 | 4 | 2 | 0 | ✓ |
+| `_mask_value` | L379-387 | 9 | 4 | 2 | 2 | ✗ |
+| `_run` | L1316-1323 | 8 | 4 | 2 | 0 | ✗ |
+| `_handle_steward_chat` | L2107-2116 | 10 | 4 | 1 | 1 | ✗ |
+| `_env_backup_count` | L115-120 | 6 | 3 | 2 | 0 | ✗ |
+| `_disable_console_logging` | L251-256 | 6 | 3 | 2 | 0 | ✗ |
+| `_cmd_newbind` | L270-284 | 15 | 3 | 1 | 1 | ✓ |
+| `_cmd_config_undo` | L492-508 | 17 | 3 | 1 | 0 | ✓ |
+| `_run` | L1750-1761 | 12 | 3 | 2 | 0 | ✗ |
+| `_persona_do_rollback` | L1866-1878 | 13 | 3 | 1 | 2 | ✓ |
+| `append_log` | L204-207 | 4 | 2 | 1 | 3 | ✗ |
+| `get_logs_snapshot` | L210-212 | 3 | 2 | 1 | 0 | ✗ |
+| `_install_log_handler` | L215-228 | 12 | 2 | 1 | 0 | ✗ |
+| `_h_plugin` | L1600-1601 | 2 | 2 | 0 | 7 | ✗ |
+| `_persona_distill` | L1740-1764 | 13 | 2 | 1 | 2 | ✗ |
+| `_cmd_hibernate_sleep` | L2012-2016 | 5 | 2 | 1 | 1 | ✗ |
+| `emit` | L222-223 | 2 | 1 | 0 | 2 | ✗ |
+| `_cmd_listconfig` | L511-513 | 3 | 1 | 0 | 1 | ✓ |
+| `_cmd_help` | L878-921 | 44 | 1 | 0 | 0 | ✓ |
+| `_cmd_memory_help` | L1519-1534 | 16 | 1 | 0 | 0 | ✓ |
+| `_h_newbind` | L1591-1592 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_users` | L1594-1595 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_status` | L1597-1598 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_memory` | L1603-1604 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_prompt` | L1606-1607 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_config` | L1609-1610 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_listconfig` | L1612-1613 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_persona` | L1615-1616 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_help` | L1618-1619 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_export` | L1622-1623 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_import` | L1626-1627 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_reminder` | L1630-1631 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_plan` | L1634-1635 | 2 | 1 | 0 | 7 | ✗ |
+| `_h_detail` | L1638-1639 | 2 | 1 | 0 | 7 | ✗ |
 
 **全部问题 (98)**
 
-- 🔄 `_cmd_export()` L514: 复杂度: 13
-- 🔄 `_cmd_import()` L606: 复杂度: 11
-- 🔄 `_cmd_reminder()` L680: 复杂度: 31
-- 🔄 `_cmd_plan()` L811: 复杂度: 21
-- 🔄 `_cmd_plugin()` L922: 复杂度: 11
-- 🔄 `_cmd_memory()` L978: 复杂度: 12
-- 🔄 `_cmd_memory_query()` L1055: 复杂度: 31
-- 🔄 `_cmd_memory_rebuild()` L1198: 复杂度: 21
-- 🔄 `_cmd_memory_list()` L1401: 复杂度: 17
-- 🔄 `_cmd_persona()` L1659: 复杂度: 11
-- 🔄 `_cmd_hibernate_check()` L1910: 复杂度: 14
-- 🔄 `main()` L2017: 复杂度: 21
-- 🔄 `_is_env_configured()` L22: 认知复杂度: 17
-- 🔄 `_check_port_available()` L121: 认知复杂度: 20
-- 🔄 `_env_write()` L172: 认知复杂度: 20
-- 🔄 `_cmd_users()` L285: 认知复杂度: 13
-- 🔄 `_cmd_status()` L326: 认知复杂度: 13
-- 🔄 `_cmd_export()` L514: 认知复杂度: 17
-- 🔄 `_cmd_import()` L606: 认知复杂度: 15
-- 🔄 `_cmd_reminder()` L680: 认知复杂度: 39
-- 🔄 `_cmd_plan()` L811: 认知复杂度: 25
-- 🔄 `_cmd_plugin()` L922: 认知复杂度: 15
-- 🔄 `_cmd_memory()` L978: 认知复杂度: 16
-- 🔄 `_cmd_memory_query()` L1055: 认知复杂度: 37
-- 🔄 `_cmd_memory_rebuild()` L1198: 认知复杂度: 27
-- 🔄 `_cmd_memory_list()` L1401: 认知复杂度: 21
-- 🔄 `_cmd_detail()` L1535: 认知复杂度: 13
-- 🔄 `_cmd_persona()` L1659: 认知复杂度: 15
-- 🔄 `_persona_status()` L1701: 认知复杂度: 14
-- 🔄 `_persona_materials()` L1800: 认知复杂度: 14
-- 🔄 `_cmd_hibernate_check()` L1910: 认知复杂度: 20
-- 🔄 `main()` L2017: 认知复杂度: 27
-- 🔄 `_is_env_configured()` L22: 嵌套深度: 4
-- 🔄 `_check_port_available()` L121: 嵌套深度: 5
-- 🔄 `_env_write()` L172: 嵌套深度: 5
-- 🔄 `_cmd_reminder()` L680: 嵌套深度: 4
-- 📏 `_cmd_export()` L514: 90 代码量
-- 📏 `_cmd_import()` L606: 72 代码量
-- 📏 `_cmd_reminder()` L680: 129 代码量
-- 📏 `_cmd_plan()` L811: 63 代码量
-- 📏 `_cmd_plugin()` L922: 54 代码量
-- 📏 `_cmd_memory_query()` L1055: 141 代码量
-- 📏 `_cmd_memory_rebuild()` L1198: 121 代码量
-- 📏 `_cmd_memory_list()` L1401: 85 代码量
-- 📏 `_cmd_hibernate_check()` L1910: 67 代码量
-- 📏 `main()` L2017: 122 代码量
-- 📏 `_execute_command()` L1567: 9 参数数量
-- 📏 `_h_newbind()` L1589: 7 参数数量
-- 📏 `_h_users()` L1592: 7 参数数量
-- 📏 `_h_status()` L1595: 7 参数数量
-- 📏 `_h_plugin()` L1598: 7 参数数量
-- 📏 `_h_memory()` L1601: 7 参数数量
-- 📏 `_h_prompt()` L1604: 7 参数数量
-- 📏 `_h_config()` L1607: 7 参数数量
-- 📏 `_h_listconfig()` L1610: 7 参数数量
-- 📏 `_h_persona()` L1613: 7 参数数量
-- 📏 `_h_help()` L1616: 7 参数数量
-- 📏 `_h_export()` L1620: 7 参数数量
-- 📏 `_h_import()` L1624: 7 参数数量
-- 📏 `_h_reminder()` L1628: 7 参数数量
-- 📏 `_h_plan()` L1632: 7 参数数量
-- 📏 `_h_detail()` L1636: 7 参数数量
-- 🏗️ `_is_env_configured()` L22: 中等嵌套: 4
-- 🏗️ `_env_backup_rotate()` L83: 中等嵌套: 3
-- 🏗️ `_check_port_available()` L121: 嵌套过深: 5
-- 🏗️ `_env_write()` L172: 嵌套过深: 5
-- 🏗️ `_cmd_reminder()` L680: 中等嵌套: 4
-- 🏗️ `_cmd_memory_query()` L1055: 中等嵌套: 3
-- 🏗️ `_cmd_memory_rebuild()` L1198: 中等嵌套: 3
-- 🏗️ `_persona_status()` L1701: 中等嵌套: 3
-- 🏗️ `_cmd_hibernate_check()` L1910: 中等嵌套: 3
-- 🏗️ `main()` L2017: 中等嵌套: 3
-- 🏗️ L1: 文件过大: 2153 行
+- 🔄 `_cmd_export()` L516: 复杂度: 13
+- 🔄 `_cmd_import()` L608: 复杂度: 11
+- 🔄 `_cmd_reminder()` L682: 复杂度: 31
+- 🔄 `_cmd_plan()` L813: 复杂度: 21
+- 🔄 `_cmd_plugin()` L924: 复杂度: 11
+- 🔄 `_cmd_memory()` L980: 复杂度: 12
+- 🔄 `_cmd_memory_query()` L1057: 复杂度: 31
+- 🔄 `_cmd_memory_rebuild()` L1200: 复杂度: 21
+- 🔄 `_cmd_memory_list()` L1403: 复杂度: 17
+- 🔄 `_cmd_persona()` L1661: 复杂度: 11
+- 🔄 `_cmd_hibernate_check()` L1912: 复杂度: 14
+- 🔄 `main()` L2019: 复杂度: 21
+- 🔄 `_is_env_configured()` L24: 认知复杂度: 17
+- 🔄 `_check_port_available()` L123: 认知复杂度: 20
+- 🔄 `_env_write()` L174: 认知复杂度: 20
+- 🔄 `_cmd_users()` L287: 认知复杂度: 13
+- 🔄 `_cmd_status()` L328: 认知复杂度: 13
+- 🔄 `_cmd_export()` L516: 认知复杂度: 17
+- 🔄 `_cmd_import()` L608: 认知复杂度: 15
+- 🔄 `_cmd_reminder()` L682: 认知复杂度: 39
+- 🔄 `_cmd_plan()` L813: 认知复杂度: 25
+- 🔄 `_cmd_plugin()` L924: 认知复杂度: 15
+- 🔄 `_cmd_memory()` L980: 认知复杂度: 16
+- 🔄 `_cmd_memory_query()` L1057: 认知复杂度: 37
+- 🔄 `_cmd_memory_rebuild()` L1200: 认知复杂度: 27
+- 🔄 `_cmd_memory_list()` L1403: 认知复杂度: 21
+- 🔄 `_cmd_detail()` L1537: 认知复杂度: 13
+- 🔄 `_cmd_persona()` L1661: 认知复杂度: 15
+- 🔄 `_persona_status()` L1703: 认知复杂度: 14
+- 🔄 `_persona_materials()` L1802: 认知复杂度: 14
+- 🔄 `_cmd_hibernate_check()` L1912: 认知复杂度: 20
+- 🔄 `main()` L2019: 认知复杂度: 27
+- 🔄 `_is_env_configured()` L24: 嵌套深度: 4
+- 🔄 `_check_port_available()` L123: 嵌套深度: 5
+- 🔄 `_env_write()` L174: 嵌套深度: 5
+- 🔄 `_cmd_reminder()` L682: 嵌套深度: 4
+- 📏 `_cmd_export()` L516: 90 代码量
+- 📏 `_cmd_import()` L608: 72 代码量
+- 📏 `_cmd_reminder()` L682: 129 代码量
+- 📏 `_cmd_plan()` L813: 63 代码量
+- 📏 `_cmd_plugin()` L924: 54 代码量
+- 📏 `_cmd_memory_query()` L1057: 141 代码量
+- 📏 `_cmd_memory_rebuild()` L1200: 121 代码量
+- 📏 `_cmd_memory_list()` L1403: 85 代码量
+- 📏 `_cmd_hibernate_check()` L1912: 67 代码量
+- 📏 `main()` L2019: 122 代码量
+- 📏 `_execute_command()` L1569: 9 参数数量
+- 📏 `_h_newbind()` L1591: 7 参数数量
+- 📏 `_h_users()` L1594: 7 参数数量
+- 📏 `_h_status()` L1597: 7 参数数量
+- 📏 `_h_plugin()` L1600: 7 参数数量
+- 📏 `_h_memory()` L1603: 7 参数数量
+- 📏 `_h_prompt()` L1606: 7 参数数量
+- 📏 `_h_config()` L1609: 7 参数数量
+- 📏 `_h_listconfig()` L1612: 7 参数数量
+- 📏 `_h_persona()` L1615: 7 参数数量
+- 📏 `_h_help()` L1618: 7 参数数量
+- 📏 `_h_export()` L1622: 7 参数数量
+- 📏 `_h_import()` L1626: 7 参数数量
+- 📏 `_h_reminder()` L1630: 7 参数数量
+- 📏 `_h_plan()` L1634: 7 参数数量
+- 📏 `_h_detail()` L1638: 7 参数数量
+- 🏗️ `_is_env_configured()` L24: 中等嵌套: 4
+- 🏗️ `_env_backup_rotate()` L85: 中等嵌套: 3
+- 🏗️ `_check_port_available()` L123: 嵌套过深: 5
+- 🏗️ `_env_write()` L174: 嵌套过深: 5
+- 🏗️ `_cmd_reminder()` L682: 中等嵌套: 4
+- 🏗️ `_cmd_memory_query()` L1057: 中等嵌套: 3
+- 🏗️ `_cmd_memory_rebuild()` L1200: 中等嵌套: 3
+- 🏗️ `_persona_status()` L1703: 中等嵌套: 3
+- 🏗️ `_cmd_hibernate_check()` L1912: 中等嵌套: 3
+- 🏗️ `main()` L2019: 中等嵌套: 3
+- 🏗️ L1: 文件过大: 2155 行
 - 🏗️ L1: 函数过多: 70
-- 🏗️ L1: 导入过多: 49
-- ❌ L128: 未处理的易出错调用
-- ❌ L311: 未处理的易出错调用
-- ❌ L319: 未处理的易出错调用
-- ❌ L648: 未处理的易出错调用
-- ❌ L654: 未处理的易出错调用
-- ❌ L668: 未处理的易出错调用
-- ❌ L674: 未处理的易出错调用
-- ❌ L970: 未处理的易出错调用
-- ❌ L1482: 未处理的易出错调用
-- ❌ L1733: 未处理的易出错调用
-- ❌ L1788: 未处理的易出错调用
-- ❌ L1789: 未处理的易出错调用
+- 🏗️ L1: 导入过多: 50
+- ❌ L130: 未处理的易出错调用
+- ❌ L313: 未处理的易出错调用
+- ❌ L321: 未处理的易出错调用
+- ❌ L650: 未处理的易出错调用
+- ❌ L656: 未处理的易出错调用
+- ❌ L670: 未处理的易出错调用
+- ❌ L676: 未处理的易出错调用
+- ❌ L972: 未处理的易出错调用
+- ❌ L1484: 未处理的易出错调用
+- ❌ L1735: 未处理的易出错调用
 - ❌ L1790: 未处理的易出错调用
-- 🏷️ `_is_env_configured()` L22: "_is_env_configured" - snake_case
-- 🏷️ `_env_backup_rotate()` L83: "_env_backup_rotate" - snake_case
-- 🏷️ `_env_backup_restore()` L96: "_env_backup_restore" - snake_case
-- 🏷️ `_env_backup_count()` L113: "_env_backup_count" - snake_case
-- 🏷️ `_check_port_available()` L121: "_check_port_available" - snake_case
-- 🏷️ `_env_write()` L172: "_env_write" - snake_case
-- 🏷️ `_install_log_handler()` L213: "_install_log_handler" - snake_case
-- 🏷️ `_enable_console_logging()` L233: "_enable_console_logging" - snake_case
-- 🏷️ `_disable_console_logging()` L249: "_disable_console_logging" - snake_case
-- 🏷️ `_cmd_newbind()` L268: "_cmd_newbind" - snake_case
+- ❌ L1791: 未处理的易出错调用
+- ❌ L1792: 未处理的易出错调用
+- 🏷️ `_is_env_configured()` L24: "_is_env_configured" - snake_case
+- 🏷️ `_env_backup_rotate()` L85: "_env_backup_rotate" - snake_case
+- 🏷️ `_env_backup_restore()` L98: "_env_backup_restore" - snake_case
+- 🏷️ `_env_backup_count()` L115: "_env_backup_count" - snake_case
+- 🏷️ `_check_port_available()` L123: "_check_port_available" - snake_case
+- 🏷️ `_env_write()` L174: "_env_write" - snake_case
+- 🏷️ `_install_log_handler()` L215: "_install_log_handler" - snake_case
+- 🏷️ `_enable_console_logging()` L235: "_enable_console_logging" - snake_case
+- 🏷️ `_disable_console_logging()` L251: "_disable_console_logging" - snake_case
+- 🏷️ `_cmd_newbind()` L270: "_cmd_newbind" - snake_case
 
 **详情**:
 - 循环复杂度: 平均: 6.4, 最大: 31
 - 认知复杂度: 平均: 9.2, 最大: 39
 - 嵌套深度: 平均: 1.4, 最大: 5
 - 函数长度: 平均: 27.3 行, 最大: 141 行
-- 文件长度: 1787 代码量 (2153 总计)
+- 文件长度: 1788 代码量 (2155 总计)
 - 参数数量: 平均: 2.7, 最大: 9
 - 代码重复: 1.4% 重复 (1/70)
 - 结构分析: 13 个结构问题
 - 错误处理: 13/54 个错误被忽略 (24.1%)
-- 注释比例: 1.7% (31/1787)
+- 注释比例: 1.7% (31/1788)
 - 命名规范: 发现 67 个违规
 
 ### 2. plugins/pipeline.py
@@ -853,7 +853,78 @@
 - 注释比例: 3.3% (45/1371)
 - 命名规范: 无命名违规
 
-### 7. tests/test_ncm_music.py
+### 7. boot.py
+
+**糟糕指数: 31.99**
+
+> 行数: 692 总计, 574 代码, 38 注释 | 函数: 13 | 类: 0
+
+**问题**: 🔄 复杂度问题: 7, ⚠️ 其他问题: 3, 📋 重复问题: 1, 🏗️ 结构问题: 3, ❌ 错误处理问题: 7, 📝 注释问题: 1, 🏷️ 命名问题: 9
+
+#### 函数详情
+
+| 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
+|:-----|------:|------:|------:|------:|------:|:------:|
+| `create_application` | L346-691 | 346 | 38 | 4 | 0 | ✓ |
+| `_preload_models` | L249-320 | 72 | 13 | 2 | 1 | ✓ |
+| `_synthesize_tts_lines` | L128-150 | 23 | 10 | 2 | 1 | ✗ |
+| `process_task_completion` | L177-195 | 19 | 8 | 3 | 0 | ✗ |
+| `_handle_action_completion` | L219-244 | 26 | 8 | 2 | 3 | ✗ |
+| `_convert_audio_to_wav` | L109-125 | 17 | 5 | 2 | 1 | ✗ |
+| `_process_image_input` | L81-96 | 16 | 4 | 1 | 2 | ✗ |
+| `create_chat_client` | L67-78 | 12 | 3 | 1 | 1 | ✗ |
+| `_handle_reasoner_completion` | L209-216 | 8 | 3 | 1 | 2 | ✗ |
+| `_save_debug_audio` | L99-106 | 8 | 2 | 1 | 1 | ✗ |
+| `setup_logging` | L153-174 | 22 | 2 | 1 | 1 | ✗ |
+| `_handle_reminder_completion` | L198-206 | 9 | 2 | 1 | 2 | ✗ |
+| `_t` | L330-341 | 12 | 2 | 1 | 1 | ✗ |
+
+**全部问题 (29)**
+
+- 🔄 `_preload_models()` L249: 复杂度: 13
+- 🔄 `create_application()` L346: 复杂度: 38
+- 🔄 `_synthesize_tts_lines()` L128: 认知复杂度: 14
+- 🔄 `process_task_completion()` L177: 认知复杂度: 14
+- 🔄 `_preload_models()` L249: 认知复杂度: 17
+- 🔄 `create_application()` L346: 认知复杂度: 46
+- 🔄 `create_application()` L346: 嵌套深度: 4
+- 📏 `_preload_models()` L249: 72 代码量
+- 📏 `create_application()` L346: 346 代码量
+- 📋 `_save_debug_audio()` L99: 重复模式: _save_debug_audio, _handle_reminder_completion
+- 🏗️ `process_task_completion()` L177: 中等嵌套: 3
+- 🏗️ `create_application()` L346: 中等嵌套: 4
+- 🏗️ L1: 导入过多: 52
+- ❌ L104: 未处理的易出错调用
+- ❌ L105: 未处理的易出错调用
+- ❌ L146: 未处理的易出错调用
+- ❌ L390: 未处理的易出错调用
+- ❌ L406: 未处理的易出错调用
+- ❌ L437: 未处理的易出错调用
+- ❌ L669: 未处理的易出错调用
+- 🏷️ `_process_image_input()` L81: "_process_image_input" - snake_case
+- 🏷️ `_save_debug_audio()` L99: "_save_debug_audio" - snake_case
+- 🏷️ `_convert_audio_to_wav()` L109: "_convert_audio_to_wav" - snake_case
+- 🏷️ `_synthesize_tts_lines()` L128: "_synthesize_tts_lines" - snake_case
+- 🏷️ `_handle_reminder_completion()` L198: "_handle_reminder_completion" - snake_case
+- 🏷️ `_handle_reasoner_completion()` L209: "_handle_reasoner_completion" - snake_case
+- 🏷️ `_handle_action_completion()` L219: "_handle_action_completion" - snake_case
+- 🏷️ `_preload_models()` L249: "_preload_models" - snake_case
+- 🏷️ `_t()` L330: "_t" - snake_case
+
+**详情**:
+- 循环复杂度: 平均: 7.7, 最大: 38
+- 认知复杂度: 平均: 11.1, 最大: 46
+- 嵌套深度: 平均: 1.7, 最大: 4
+- 函数长度: 平均: 45.4 行, 最大: 346 行
+- 文件长度: 574 代码量 (692 总计)
+- 参数数量: 平均: 1.2, 最大: 3
+- 代码重复: 7.7% 重复 (1/13)
+- 结构分析: 3 个结构问题
+- 错误处理: 7/33 个错误被忽略 (21.2%)
+- 注释比例: 6.6% (38/574)
+- 命名规范: 发现 9 个违规
+
+### 8. tests/test_ncm_music.py
 
 **糟糕指数: 31.96**
 
@@ -898,7 +969,7 @@
 - 注释比例: 8.0% (7/87)
 - 命名规范: 无命名违规
 
-### 8. onboarding.py
+### 9. onboarding.py
 
 **糟糕指数: 31.96**
 
@@ -986,77 +1057,6 @@
 - 错误处理: 5/14 个错误被忽略 (35.7%)
 - 注释比例: 3.3% (16/489)
 - 命名规范: 发现 22 个违规
-
-### 9. boot.py
-
-**糟糕指数: 31.40**
-
-> 行数: 656 总计, 543 代码, 37 注释 | 函数: 13 | 类: 0
-
-**问题**: 🔄 复杂度问题: 7, ⚠️ 其他问题: 3, 📋 重复问题: 1, 🏗️ 结构问题: 3, ❌ 错误处理问题: 7, 📝 注释问题: 1, 🏷️ 命名问题: 9
-
-#### 函数详情
-
-| 函数 | 行范围 | 行数 | 复杂度 | 嵌套 | 参数 | 注释 |
-|:-----|------:|------:|------:|------:|------:|:------:|
-| `create_application` | L346-655 | 310 | 35 | 4 | 0 | ✓ |
-| `_preload_models` | L249-320 | 72 | 13 | 2 | 1 | ✓ |
-| `_synthesize_tts_lines` | L128-150 | 23 | 10 | 2 | 1 | ✗ |
-| `process_task_completion` | L177-195 | 19 | 8 | 3 | 0 | ✗ |
-| `_handle_action_completion` | L219-244 | 26 | 8 | 2 | 3 | ✗ |
-| `_convert_audio_to_wav` | L109-125 | 17 | 5 | 2 | 1 | ✗ |
-| `_process_image_input` | L81-96 | 16 | 4 | 1 | 2 | ✗ |
-| `create_chat_client` | L67-78 | 12 | 3 | 1 | 1 | ✗ |
-| `_handle_reasoner_completion` | L209-216 | 8 | 3 | 1 | 2 | ✗ |
-| `_save_debug_audio` | L99-106 | 8 | 2 | 1 | 1 | ✗ |
-| `setup_logging` | L153-174 | 22 | 2 | 1 | 1 | ✗ |
-| `_handle_reminder_completion` | L198-206 | 9 | 2 | 1 | 2 | ✗ |
-| `_t` | L330-341 | 12 | 2 | 1 | 1 | ✗ |
-
-**全部问题 (29)**
-
-- 🔄 `_preload_models()` L249: 复杂度: 13
-- 🔄 `create_application()` L346: 复杂度: 35
-- 🔄 `_synthesize_tts_lines()` L128: 认知复杂度: 14
-- 🔄 `process_task_completion()` L177: 认知复杂度: 14
-- 🔄 `_preload_models()` L249: 认知复杂度: 17
-- 🔄 `create_application()` L346: 认知复杂度: 43
-- 🔄 `create_application()` L346: 嵌套深度: 4
-- 📏 `_preload_models()` L249: 72 代码量
-- 📏 `create_application()` L346: 310 代码量
-- 📋 `_save_debug_audio()` L99: 重复模式: _save_debug_audio, _handle_reminder_completion
-- 🏗️ `process_task_completion()` L177: 中等嵌套: 3
-- 🏗️ `create_application()` L346: 中等嵌套: 4
-- 🏗️ L1: 导入过多: 49
-- ❌ L104: 未处理的易出错调用
-- ❌ L105: 未处理的易出错调用
-- ❌ L146: 未处理的易出错调用
-- ❌ L390: 未处理的易出错调用
-- ❌ L406: 未处理的易出错调用
-- ❌ L437: 未处理的易出错调用
-- ❌ L633: 未处理的易出错调用
-- 🏷️ `_process_image_input()` L81: "_process_image_input" - snake_case
-- 🏷️ `_save_debug_audio()` L99: "_save_debug_audio" - snake_case
-- 🏷️ `_convert_audio_to_wav()` L109: "_convert_audio_to_wav" - snake_case
-- 🏷️ `_synthesize_tts_lines()` L128: "_synthesize_tts_lines" - snake_case
-- 🏷️ `_handle_reminder_completion()` L198: "_handle_reminder_completion" - snake_case
-- 🏷️ `_handle_reasoner_completion()` L209: "_handle_reasoner_completion" - snake_case
-- 🏷️ `_handle_action_completion()` L219: "_handle_action_completion" - snake_case
-- 🏷️ `_preload_models()` L249: "_preload_models" - snake_case
-- 🏷️ `_t()` L330: "_t" - snake_case
-
-**详情**:
-- 循环复杂度: 平均: 7.5, 最大: 35
-- 认知复杂度: 平均: 10.8, 最大: 43
-- 嵌套深度: 平均: 1.7, 最大: 4
-- 函数长度: 平均: 42.6 行, 最大: 310 行
-- 文件长度: 543 代码量 (656 总计)
-- 参数数量: 平均: 1.2, 最大: 3
-- 代码重复: 7.7% 重复 (1/13)
-- 结构分析: 3 个结构问题
-- 错误处理: 7/33 个错误被忽略 (21.2%)
-- 注释比例: 6.8% (37/543)
-- 命名规范: 发现 9 个违规
 
 ### 10. models/clients.py
 
@@ -1182,11 +1182,11 @@
 | `process_stream` | plugins/pipeline.py | 53 | 7 | 253 |
 | `main` | psychoscope/minimal.py | 44 | 6 | 192 |
 | `create_engine_with_defaults` | engine.py | 43 | 2 | 234 |
+| `create_application` | boot.py | 38 | 4 | 346 |
 | `search` | memory/core.py | 38 | 7 | 129 |
 | `msgFlow` | psychoscope/static/js/app.js | 38 | 4 | 131 |
 | `_poll_pending_tasks` | plugins/pipeline.py | 37 | 6 | 123 |
 | `sendRecording` | psychoscope/static/js/app.js | 36 | 4 | 105 |
-| `create_application` | boot.py | 35 | 4 | 310 |
 | `_summarize_result` | plugins/builtin/tool_plugin.py | 35 | 4 | 92 |
 | `_cmd_reminder` | main.py | 31 | 4 | 129 |
 
