@@ -12,8 +12,10 @@ import shutil
 import logging
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
+
+from tasks import TaskManager, TaskStatus, TaskType
 
 # ── 首次启动检测：必须在任何可能触发 config.py 的 import 之前执行 ──
 _ENV_PATH = Path(__file__).parent / ".env"
