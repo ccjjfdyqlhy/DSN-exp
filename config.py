@@ -170,3 +170,9 @@ class Config:
     # DeepSeek v4-pro (cache miss)
     DEEPSEEK_PRO_INPUT_PRICE = 0.435
     DEEPSEEK_PRO_OUTPUT_PRICE = 0.87
+
+    # ==================== 语义缓存系统 ====================
+    SEMANTIC_CACHE_ENABLED = _env("SEMANTIC_CACHE_ENABLED", "false").lower() == "true"
+    SEMANTIC_CACHE_DIR = _env("SEMANTIC_CACHE_DIR", ".dsn/semantic_cache")
+    SEMANTIC_CACHE_SIMILARITY_THRESHOLD = float(_env("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.85"))
+    SEMANTIC_CACHE_MAX_ENTRIES = int(_env("SEMANTIC_CACHE_MAX_ENTRIES", "5000"))
