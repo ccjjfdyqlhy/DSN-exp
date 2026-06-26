@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import logging
+import time
 from typing import Union
 
 from .base import HookPoint, PluginContext, Plugin, AsyncPlugin
@@ -129,11 +130,19 @@ class PluginManager:
             if not self._enabled.get(plugin.name, False):
                 continue
 
+            t0 = time.perf_counter()
             try:
                 ctx = await self._call_plugin(plugin, hook, ctx)
             except Exception:
                 logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
                 continue
+            elapsed = round((time.perf_counter() - t0) * 1000, 1)
+
+            plugin_timings = ctx.extra.get("_plugin_timings")
+            if plugin_timings is not None:
+                plugin_timings.setdefault(hook.value, []).append(
+                    (plugin.name, elapsed)
+                )
 
             if ctx.filtered:
                 logger.debug("管道在钩子 %s 被插件 %s 短路", hook.value, plugin.name)
