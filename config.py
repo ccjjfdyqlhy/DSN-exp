@@ -176,3 +176,40 @@ class Config:
     SEMANTIC_CACHE_DIR = _env("SEMANTIC_CACHE_DIR", ".dsn/semantic_cache")
     SEMANTIC_CACHE_SIMILARITY_THRESHOLD = float(_env("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.85"))
     SEMANTIC_CACHE_MAX_ENTRIES = int(_env("SEMANTIC_CACHE_MAX_ENTRIES", "5000"))
+
+    @classmethod
+    def load_skill_configs(cls):
+        """扫描所有 skills 目录下的 skill.env，加载到 Config 和环境变量"""
+        import logging
+        _log = logging.getLogger("Config")
+        from dotenv import load_dotenv as _load_dotenv
+        for _base_key in ("builtin", "custom"):
+            _base_dir = Path(__file__).parent / "skills" / _base_key
+            if not _base_dir.exists():
+                continue
+            for _skill_dir in sorted(_base_dir.iterdir()):
+                _env_file = _skill_dir / "skill.env"
+                if not _env_file.exists():
+                    continue
+                _load_dotenv(_env_file)
+                _count = 0
+                for _line in _env_file.read_text(encoding="utf-8").splitlines():
+                    _line = _line.strip()
+                    if not _line or _line.startswith("#") or "=" not in _line:
+                        continue
+                    _key, _val = _line.split("=", 1)
+                    _key = _key.strip()
+                    _val = _val.strip()
+                    _env_val = os.environ.get(_key, _val)
+                    try:
+                        if _val.lower() in ("true", "false"):
+                            _env_val = _env_val.lower() == "true"
+                        elif "." in _val:
+                            _env_val = float(_env_val)
+                        else:
+                            _env_val = int(_env_val)
+                    except ValueError:
+                        pass
+                    setattr(cls, _key, _env_val)
+                    _count += 1
+                _log.info("skill.env: %s (%d 项)", _skill_dir.name, _count)
