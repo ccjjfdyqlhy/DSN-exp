@@ -493,6 +493,7 @@ def create_application():
     try:
         from skills.registry import SkillRegistry
         from skills.manager import SkillManager
+        Config.load_skill_configs()
         skill_registry = SkillRegistry()
         skill_manager = SkillManager(
             skill_dirs=[os.path.join(os.path.dirname(__file__), "skills", "builtin"),

@@ -137,13 +137,15 @@ class ChatPipeline:
     async def process(self, ctx: PluginContext) -> PluginContext:
         timing: dict[str, float] = {}
         t_total = time.perf_counter()
+        if _TIMER_ENABLED:
+            ctx.extra["_plugin_timings"] = {}
 
         # 1
         t0 = time.perf_counter()
         ctx = await self.pm.dispatch(HookPoint.PRE_FILTER, ctx)
         timing["pre_filter"] = round((time.perf_counter() - t0) * 1000, 1)
         if ctx.filtered:
-            self._print_timing(timing)
+            self._print_timing(timing, ctx)
             return ctx
 
         # 2 — PromptEngine 组装 system prompt（为 PRE_PROCESS 插件提供底座）
@@ -156,7 +158,7 @@ class ChatPipeline:
         ctx = await self._dispatch_pre_process(ctx)
         timing["pre_process"] += round((time.perf_counter() - t0) * 1000, 1)
         if ctx.filtered:
-            self._print_timing(timing)
+            self._print_timing(timing, ctx)
             return ctx
 
         # 3 — MODEL_INVOKE（若剧本回放命中则跳过）
@@ -203,7 +205,7 @@ class ChatPipeline:
         timing["post_tts"] = round((time.perf_counter() - t0) * 1000, 1)
 
         timing["total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
-        self._print_timing(timing)
+        self._print_timing(timing, ctx)
 
         return ctx
 
@@ -218,10 +220,13 @@ class ChatPipeline:
         for step in range(max_steps):
             results = ctx.extra.pop("_tag_results", [])
             if not results:
+                logger.info("Agent 第 %d 步: _tag_results 为空，结束循环", step + 1)
                 break
 
             formatted = self._format_tag_results(results)
-            logger.info("Agent 第 %d 步: %d 个标签执行完毕", step + 1, len(results))
+            logger.info("Agent 第 %d 步: %d 个标签执行完毕, 格式化摘要 %d 字符",
+                        step + 1, len(results), len(formatted))
+            logger.debug("Agent 第 %d 步: 执行结果摘要\n%s", step + 1, formatted[:500])
 
             # 构建消息列表：系统 + 历史 + 用户消息
             msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
@@ -246,21 +251,30 @@ class ChatPipeline:
                 None, lambda: models_plugin.invoke(msgs, ctx)
             )
             if not new_reply:
+                logger.info("Agent 第 %d 步: LLM 返回空，结束循环", step + 1)
                 break
+
+            has_tool = "<tool>" in new_reply
+            logger.info("Agent 第 %d 步: LLM 回复 %d 字符, 含 <tool>=%s, 前 200=%s",
+                        step + 1, len(new_reply), has_tool, new_reply[:200].replace("\n", " "))
 
             ctx.original_reply = new_reply
             ctx.reply = new_reply
             ctx.extra["_agent_step"] = step + 1
 
             # 重新运行 POST_PROCESS
+            tag_count_before = len(ctx.extra.get("_tag_results", []))
             ctx = await self._dispatch_post_process(ctx)
+            tag_count_after = len(ctx.extra.get("_tag_results", []))
+            logger.info("Agent 第 %d 步: POST_PROCESS 后 _tag_results: %d → %d",
+                        step + 1, tag_count_before, tag_count_after)
 
             if step >= max_steps - 1:
                 logger.warning("Agent 达到最大步数 %d", max_steps)
 
         return ctx
 
-    def _print_timing(self, timing: dict[str, float]):
+    def _print_timing(self, timing: dict[str, float], ctx: PluginContext | None = None):
         if not _TIMER_ENABLED:
             return
         total = timing.get("total_ms", 0)
@@ -278,7 +292,22 @@ class ChatPipeline:
             if ms is not None:
                 pct = ms / total * 100 if total > 0 else 0
                 logger.info("  %-15s %8.0fms  (%5.1f%%)", label, ms, pct)
+        if ctx is not None:
+            pt = ctx.extra.get("_plugin_timings", {})
+            if pt:
+                logger.info("─────────────────────────────────")
+                for hook_val, plugins in pt.items():
+                    for name, ms in plugins:
+                        logger.info("    ↳ %-30s %8.0fms", name, ms)
         logger.info("═══════════════════════════════")
+
+    def _print_plugin_timing(self, timing: dict[str, float]):
+        pt = timing.get("_plugin_timings", {})
+        if not pt:
+            return
+        for hook_val, plugins in pt.items():
+            for name, ms in plugins:
+                logger.info("    ↳ %-30s %8.0fms", name, ms)
 
     @staticmethod
     def _format_tag_results(results: list[dict]) -> str:
@@ -478,10 +507,15 @@ class ChatPipeline:
         for plugin in enabled:
             desc = getattr(plugin, 'description', plugin.name)
             await progress_q.put({"status": "thinking", "text": desc, "plugin": plugin.name})
+            t0 = time.perf_counter()
             try:
                 ctx = await self.pm._call_plugin(plugin, hook, ctx)
             except Exception:
                 logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
+            elapsed = round((time.perf_counter() - t0) * 1000, 1)
+            pt = ctx.extra.get("_plugin_timings")
+            if pt is not None:
+                pt.setdefault(hook.value, []).append((plugin.name, elapsed))
             if ctx.filtered:
                 break
 
@@ -643,6 +677,8 @@ class ChatPipeline:
         """
         timing: dict[str, float] = {}
         t_total = time.perf_counter()
+        if _TIMER_ENABLED:
+            ctx.extra["_plugin_timings"] = {}
         tts_lines: list[dict] | None = None
         tts_task = None
 
@@ -859,7 +895,7 @@ class ChatPipeline:
 
             if ctx.filtered:
                 timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
-                self._print_timing(timing)
+                self._print_timing(timing, ctx)
                 yield f"data: {json.dumps({
                     'status': 'completed',
                     'reply': ctx.reply,
@@ -871,7 +907,7 @@ class ChatPipeline:
 
         # 完成
         timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
-        self._print_timing(timing)
+        self._print_timing(timing, ctx)
         completed = {
             'status': 'completed',
             'audio': ctx.audio_b64,
