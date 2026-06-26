@@ -15,8 +15,31 @@ from typing import AsyncGenerator, Callable, Awaitable, Optional
 from .base import HookPoint, PluginContext
 from .manager import PluginManager
 from world.action_narrator import ActionNarrativeCollector
+from config import Config
 
 logger = logging.getLogger("ChatPipeline")
+
+_TIMER_ENABLED = False
+
+
+def timer_enabled() -> bool:
+    return _TIMER_ENABLED
+
+
+def enable_timer():
+    global _TIMER_ENABLED
+    _TIMER_ENABLED = True
+
+
+def disable_timer():
+    global _TIMER_ENABLED
+    _TIMER_ENABLED = False
+
+
+def toggle_timer() -> bool:
+    global _TIMER_ENABLED
+    _TIMER_ENABLED = not _TIMER_ENABLED
+    return _TIMER_ENABLED
 
 
 async def _call_llm_with_msgs(ctx, msgs: list[dict]) -> str | None:
@@ -112,44 +135,50 @@ class ChatPipeline:
     # ---- 完整管道 ----
 
     async def process(self, ctx: PluginContext) -> PluginContext:
-        """
-        完整处理流程，返回处理后的 ctx。
+        timing: dict[str, float] = {}
+        t_total = time.perf_counter()
 
-        各阶段:
-        1. PRE_FILTER  — ctx.filtered=True 则短路
-        2. [PromptEngine] — 构建 system_prompt (必须在 PRE_PROCESS 之前，供世界/印象注入)
-        3. PRE_PROCESS — 上下文组装 + 世界状态/印象注入 system_prompt
-        4. MODEL_INVOKE— LLM 调用
-        5. POST_PROCESS— 任务解析 + 对话保存
-        6. POST_TTS    — TTS 语音合成
-        """
         # 1
+        t0 = time.perf_counter()
         ctx = await self.pm.dispatch(HookPoint.PRE_FILTER, ctx)
+        timing["pre_filter"] = round((time.perf_counter() - t0) * 1000, 1)
         if ctx.filtered:
+            self._print_timing(timing)
             return ctx
 
         # 2 — PromptEngine 组装 system prompt（为 PRE_PROCESS 插件提供底座）
+        t0 = time.perf_counter()
         self._assemble_prompt(ctx)
+        timing["pre_process"] = 0.0
 
         # 3
+        t0 = time.perf_counter()
         ctx = await self._dispatch_pre_process(ctx)
+        timing["pre_process"] += round((time.perf_counter() - t0) * 1000, 1)
         if ctx.filtered:
+            self._print_timing(timing)
             return ctx
 
         # 3 — MODEL_INVOKE（若剧本回放命中则跳过）
+        t0 = time.perf_counter()
         if not ctx.skip_model:
             ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
+        timing["model_invoke"] = round((time.perf_counter() - t0) * 1000, 1)
 
         # 创建动作旁白收集器
         collector = ActionNarrativeCollector()
         ctx.extra["_narrative_collector"] = collector
 
         # 4 — POST_PROCESS（支持 agent 循环）
+        t0 = time.perf_counter()
         ctx = await self._dispatch_post_process(ctx)
+        timing["post_process"] = round((time.perf_counter() - t0) * 1000, 1)
 
         # ── Agent 循环：标签结果回馈 LLM ──
         if ctx.agent_active and ctx.extra.get("_tag_results"):
+            t0 = time.perf_counter()
             ctx = await self._run_agent_loop(ctx)
+            timing["agent_loop"] = round((time.perf_counter() - t0) * 1000, 1)
 
         # 排空动作旁白
         action_narratives = collector.drain()
@@ -157,6 +186,7 @@ class ChatPipeline:
             ctx.extra["action_narratives"] = action_narratives
 
         # 5 — TTS: 对最终回复合成
+        t0 = time.perf_counter()
         if ctx.tts_enabled and ctx.reply and self._tts_client:
             tts_lines = await self._synthesize_lines(ctx.reply)
             if tts_lines:
@@ -170,6 +200,10 @@ class ChatPipeline:
             ctx.extra["tts_lines"] = tts_lines
         else:
             ctx = await self.pm.dispatch(HookPoint.POST_TTS, ctx)
+        timing["post_tts"] = round((time.perf_counter() - t0) * 1000, 1)
+
+        timing["total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
+        self._print_timing(timing)
 
         return ctx
 
@@ -226,14 +260,42 @@ class ChatPipeline:
 
         return ctx
 
+    def _print_timing(self, timing: dict[str, float]):
+        if not _TIMER_ENABLED:
+            return
+        total = timing.get("total_ms", 0)
+        stages = [
+            ("pre_filter",   "PRE_FILTER"),
+            ("pre_process",  "PRE_PROCESS"),
+            ("model_invoke", "MODEL_INVOKE"),
+            ("post_process", "POST_PROCESS"),
+            ("agent_loop",   "Agent Loop"),
+            ("post_tts",     "POST_TTS"),
+        ]
+        logger.info("═════ Pipeline 计时 ═════ total=%.0fms", total)
+        for key, label in stages:
+            ms = timing.get(key)
+            if ms is not None:
+                pct = ms / total * 100 if total > 0 else 0
+                logger.info("  %-15s %8.0fms  (%5.1f%%)", label, ms, pct)
+        logger.info("═══════════════════════════════")
+
     @staticmethod
     def _format_tag_results(results: list[dict]) -> str:
         lines: list[str] = []
         for r in results:
             tag = r.get("tag", "?")
             success = "✅" if r.get("success") else "❌"
-            summary = r.get("summary", "")
-            lines.append(f"{success} {tag} {summary}")
+            data = r.get("data")
+            if data is not None:
+                snippet = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+                if len(snippet) > 1500:
+                    keys = list(data.keys()) if isinstance(data, dict) else []
+                    snippet = snippet[:1500] + f"\n  ...(已截断, keys={keys})"
+                lines.append(f"{success} {tag}\n{snippet}")
+            else:
+                summary = r.get("summary", "")
+                lines.append(f"{success} {tag} {summary}")
             if not r.get("success") and r.get("error"):
                 lines.append(f"  错误: {r['error']}")
         return "\n".join(lines)
@@ -356,7 +418,6 @@ class ChatPipeline:
                 if self._tts_process_model is not None:
                     fast_first = False
                     try:
-                        from config import Config
                         fast_first = bool(Config.TTS_FAST_FIRST_LINE)
                     except Exception:
                         fast_first = True
@@ -437,7 +498,7 @@ class ChatPipeline:
     async def _poll_pending_tasks(self, ctx, remaining, progress_q):
         """Agent 任务循环：轮询任务完成 → 喂回主模型 → 解析新任务 → 重复，最多 N 步"""
         from tasks import TaskStatus, TaskType
-        max_steps = ctx.extra.get("agent_max_steps", 5)
+        max_steps = ctx.agent_max_steps or Config.AGENT_MAX_STEPS
         task_mgr = ctx.extra.get("_task_manager")
         # 收集本轮所有任务结果
         all_results: dict[str, dict] = {}
@@ -759,7 +820,7 @@ class ChatPipeline:
                         'chat_id': ctx.chat_id,
                     })}\n\n"
                     logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
-                    if ctx.tts_enabled and self._tts_client and ctx.reply != ctx.original_reply:
+                    if ctx.tts_enabled and self._tts_client and ctx.extra.get("_agent_step", 0) > 0:
                         tts_lines = await self._synthesize_lines(ctx.reply)
                         tts_streamed = False
                     ctx.extra["_agent_reply_dirty"] = False
@@ -798,6 +859,7 @@ class ChatPipeline:
 
             if ctx.filtered:
                 timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
+                self._print_timing(timing)
                 yield f"data: {json.dumps({
                     'status': 'completed',
                     'reply': ctx.reply,
@@ -809,6 +871,7 @@ class ChatPipeline:
 
         # 完成
         timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
+        self._print_timing(timing)
         completed = {
             'status': 'completed',
             'audio': ctx.audio_b64,

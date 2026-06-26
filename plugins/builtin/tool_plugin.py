@@ -74,7 +74,6 @@ class ToolPlugin(Plugin):
                 results.append({
                     "tag": "<tool>", "success": True,
                     "skill": skill_name, "tool": tool_name,
-                    "summary": self._summarize_result(skill_name, tool_name, params, result),
                     "data": result,
                 })
             except ValueError as e:
@@ -101,97 +100,3 @@ class ToolPlugin(Plugin):
             logger.info("ToolPlugin: 已写入 %d 条结果到 _tag_results", len(results))
 
         return ctx
-
-    @staticmethod
-    def _summarize_result(skill: str, tool: str, params: dict, result) -> str:
-        if not isinstance(result, dict):
-            s = str(result)
-            return s[:500] + "…" if len(s) > 500 else s
-
-        if not result.get("success", True):
-            return f"{skill}.{tool} 失败: {result.get('error', '未知错误')}"
-
-        lines = [f"{skill}.{tool} 成功"]
-
-        if tool == "scan":
-            files = result.get("files", [])
-            lines.append(f"扫描完成，{result.get('count', len(files))} 页")
-            for f in files:
-                path = f.get("filepath", f.get("path", ""))
-                size = f.get("size", 0)
-                if size:
-                    lines.append(f"  → {path} ({size} bytes)")
-                else:
-                    lines.append(f"  → {path}")
-
-        elif tool == "list_scanners":
-            scanners = result.get("scanners", [])
-            for s in scanners:
-                name = s.get("name", s) if isinstance(s, dict) else s
-                status = s.get("status", "") if isinstance(s, dict) else ""
-                lines.append(f"  {name}" + (f" ({status})" if status else ""))
-
-        elif tool == "list_printers":
-            printers = result.get("printers", [])
-            for p in printers:
-                name = p.get("name", p) if isinstance(p, dict) else p
-                lines.append(f"  {name}")
-
-        elif tool == "print_file":
-            lines.append(f"打印已提交: {params.get('file_path', '')}")
-
-        elif tool == "process_scan":
-            hmd = result.get("hmd_path", "")
-            docs = result.get("documents", [])
-            photos = result.get("photos", [])
-            lines.append(f"处理完成: {len(docs)} 文档, {len(photos)} 照片")
-            if hmd:
-                lines.append(f"  .hmd: {hmd}")
-            if result.get("feedback_text"):
-                lines.append(f"  反馈: {result['feedback_text'][:300]}")
-
-        elif tool == "read_hmd":
-            mda = result.get("mda", "")
-            mdb = result.get("mdb", "")
-            images = result.get("images", [])
-            lines.append(f"读取 .hmd 完成: mdA={len(mda)}字, mdB={len(mdb)}字, 图片={len(images)}张")
-
-        elif skill == "web_search":
-            results_list = result.get("results", [])
-            lines.append(f"搜索到 {len(results_list)} 条结果")
-            for r in results_list[:5]:
-                title = r.get("title", "")
-                url = r.get("url", "")
-                lines.append(f"  {title}")
-                if url:
-                    lines.append(f"    {url}")
-            if len(results_list) > 5:
-                lines.append(f"  ...还有 {len(results_list) - 5} 条")
-
-        elif skill == "file_manager":
-            sub_tool = params.get("tool", tool)
-            if tool in ("explore_fs", "workspace_file") and sub_tool:
-                if sub_tool in ("list_dir",):
-                    items = result.get("items", [])
-                    lines.append(f"目录共 {len(items)} 项")
-                    for item in items[:20]:
-                        marker = "📁" if item.get("type") == "dir" else "📄"
-                        lines.append(f"  {marker} {item['name']}")
-                    if len(items) > 20:
-                        lines.append(f"  ...还有 {len(items) - 20} 项")
-                elif sub_tool in ("read_file",):
-                    content = result.get("content", "")
-                    lines.append(f"读取 {result.get('path', '')} ({result.get('size', 0)} bytes)")
-                    lines.append(content[:300])
-                    if len(content) > 300:
-                        lines.append("  ...(已截断)")
-                elif sub_tool in ("write_file",):
-                    lines.append(f"已写入 {result.get('path', '')} ({result.get('size', 0)} bytes)")
-
-        else:
-            snippet = json.dumps(result, ensure_ascii=False, indent=2)
-            if len(snippet) > 500:
-                snippet = snippet[:500] + "\n  ..."
-            lines.append(snippet)
-
-        return "\n".join(lines)

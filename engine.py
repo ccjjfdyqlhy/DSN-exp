@@ -53,21 +53,21 @@ _ENGINE_CONFIG_PATH = "engine.yaml"
 @dataclass
 class EngineConfig:
     """引擎级配置：控制哪些子系统启用"""
-    deepseek_api_key: str = ""
-    model_type: str = "deepseek"
-    model_name: str = "deepseek-v4-flash"
-    lmstudio_base_url: str = "http://localhost:4501"
-    lmstudio_temperature: float = 0.7
-    lmstudio_max_tokens: int = 4096
-    lmstudio_timeout: int = 300
-    database_path: str = "chats.db"
-    memory_enabled: bool = True
-    memory_summary_backend: str = "deepseek"
-    memory_summary_length: int = 100
-    task_manager_enabled: bool = True
-    task_max_workers: int = 5
+    deepseek_api_key: str = Config.DEEPSEEK_API_KEY
+    model_type: str = Config.MAIN_MODEL_TYPE
+    model_name: str = Config.MAIN_MODEL_NAME
+    lmstudio_base_url: str = Config.LMSTUDIO_BASE_URL
+    lmstudio_temperature: float = Config.LMSTUDIO_TEMPERATURE
+    lmstudio_max_tokens: int = Config.LMSTUDIO_MAX_TOKENS
+    lmstudio_timeout: int = Config.LMSTUDIO_TIMEOUT
+    database_path: str = Config.DATABASE_PATH
+    memory_enabled: bool = Config.MEMORY_ENABLED
+    memory_summary_backend: str = Config.MEMORY_SUMMARY_BACKEND
+    memory_summary_length: int = Config.MEMORY_SUMMARY_LENGTH
+    task_manager_enabled: bool = Config.TASK_MANAGER_ENABLED
+    task_max_workers: int = Config.TASK_MAX_WORKERS
     agent_active: bool = True
-    agent_max_steps: int = 5
+    agent_max_steps: int = Config.AGENT_MAX_STEPS
     agent_token_budget: int = 1000000
     agent_timeout: float = 120.0
 
@@ -706,7 +706,7 @@ class DSNEngine:
             tts_enabled=kwargs.get("tts_enabled", True),
             image_data=kwargs.get("image_data"),
             agent_active=kwargs.get("agent_active", ec.agent_active if ec else True),
-            agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else 5),
+            agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else Config.AGENT_MAX_STEPS),
             agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 1000000),
         )
         if self.task_manager:
