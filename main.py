@@ -914,6 +914,7 @@ def _cmd_help():
     /reminder skip <task_id>            跳过本次触发
     /detail chats    切换聊天详细模式 (显示完整模型请求/响应)
     /detail actions  切换动作详细模式 (显示动作执行详情)
+    /timer      切换管线阶段计时 (后端控制台输出各阶段耗时)
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -1639,6 +1640,14 @@ def _h_detail(am, db, pm, pe, cc, pv, arg):
     _cmd_detail(arg)
 
 
+def _h_timer(am, db, pm, pe, cc, pv, arg):
+    from plugins.pipeline import toggle_timer
+    enabled = toggle_timer()
+    state = "开启" if enabled else "关闭"
+    print(f"  ⏱ 管线阶段计时已{state}")
+    print(f"  后续每次请求将在后端控制台输出各阶段耗时")
+
+
 _CMD_TABLE = {
     "/newbind": _h_newbind,
     "/users": _h_users,
@@ -1654,6 +1663,7 @@ _CMD_TABLE = {
     "/reminder": _h_reminder,
     "/plan": _h_plan,
     "/detail": _h_detail,
+    "/timer": _h_timer,
     "/help": _h_help,
 }
 
