@@ -1210,6 +1210,16 @@ def create_engine_with_defaults(
         except Exception as e:
             engine._logger.warning("学习系统技能注入失败: %s", e)
 
+    # 注入 scanner_pipeline 到 doc_to_questions 技能
+    if skill_registry and scanner_pipeline:
+        try:
+            for key, instance in skill_registry._tool_instances.items():
+                if key.startswith("doc_to_questions."):
+                    instance._pipeline = scanner_pipeline
+                    engine._logger.info("doc_to_questions: pipeline 已注入到 %s", key)
+        except Exception as e:
+            engine._logger.warning("doc_to_questions 注入失败: %s", e)
+
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")
     return engine
