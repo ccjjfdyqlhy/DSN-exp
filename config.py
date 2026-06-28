@@ -86,6 +86,7 @@ class Config:
     MEMORY_EMBEDDING_WEIGHT = float(_env("MEMORY_EMBEDDING_WEIGHT", "0.6"))
 
     # ==================== 用户观察日记 ====================
+    NOTEBOOK_ENABLED = _env("NOTEBOOK_ENABLED", "true").lower() == "true"  # 是否启用观察日记
     NOTEBOOK_FREQUENCY = int(_env("NOTEBOOK_FREQUENCY", "10"))  # 每 N 轮对话触发一次笔记
 
     # ==================== TTS 文本预处理 ====================
