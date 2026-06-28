@@ -1,5 +1,7 @@
 # skills/builtin/question_bank/tools/template_tools.py
 
+from __future__ import annotations
+
 
 class TemplateTools:
 
@@ -35,3 +37,18 @@ class TemplateTools:
 
     def get_question_types(self) -> list:
         return self._tm.get_question_types()
+
+    def suggest_templates(self, **kwargs) -> list | dict:
+        if not kwargs:
+            return self._tm.list_templates()
+        action = kwargs.pop("action", None) or list(kwargs.keys())[0] if kwargs else None
+        if action == "apply" or "template_name" in kwargs:
+            return self.apply(kwargs.get("template_name", ""))
+        if action == "import_template" or "file_path" in kwargs:
+            return self.import_template(kwargs.get("file_path", ""))
+        if action == "create" or ("name" in kwargs and "subjects" in kwargs):
+            return self.create(kwargs.get("name", ""), kwargs.get("subjects", []))
+        return self._tm.list_templates()
+
+    def get_subjects(self, **kwargs) -> list:
+        return self._tm.get_active_subjects()

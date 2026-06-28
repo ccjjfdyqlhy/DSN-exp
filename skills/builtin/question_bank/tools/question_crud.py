@@ -62,3 +62,9 @@ class QuestionCRUDTool:
         if q:
             return q
         return {"error": f"题目 {question_id} 不存在"}
+
+    def create_question(self, **kwargs) -> dict:
+        return self.create(**kwargs)
+
+    def search_questions(self, **kwargs) -> list:
+        return self.search(**kwargs)

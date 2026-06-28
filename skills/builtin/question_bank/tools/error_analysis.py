@@ -1,19 +1,21 @@
 # skills/builtin/question_bank/tools/error_analysis.py
 
-from question_bank.error_analyzer import ErrorAnalyzer
-
 
 class ErrorAnalysisTool:
 
     def __init__(self, question_store=None, models_plugin=None):
         self._store = question_store
-        self._analyzer = ErrorAnalyzer(
-            question_store=question_store,
-            models_plugin=models_plugin,
+        self._models = models_plugin
+
+    def _analyzer(self):
+        from question_bank.error_analyzer import ErrorAnalyzer
+        return ErrorAnalyzer(
+            question_store=self._store,
+            models_plugin=self._models,
         )
 
     def analyze(self, question_id: int, user_answer: str, user_id: int = 0) -> dict:
-        analysis = self._analyzer.analyze_error(user_id, question_id, user_answer)
+        analysis = self._analyzer().analyze_error(user_id, question_id, user_answer)
         return {
             "error_type": analysis.get("error_type"),
             "error_reason": analysis.get("error_reason"),
@@ -25,7 +27,7 @@ class ErrorAnalysisTool:
             return {"error": "QuestionStore 未初始化"}
 
         errors = self._store.get_error_logs(user_id, subject=subject)
-        weak_points = self._analyzer.get_weak_points(user_id, subject)
+        weak_points = self._analyzer().get_weak_points(user_id, subject)
 
         by_type = {}
         for e in errors:
@@ -38,14 +40,23 @@ class ErrorAnalysisTool:
             "weak_points": weak_points[:5],
         }
 
+    def analyze_error(self, **kwargs) -> dict:
+        return self.analyze(**kwargs)
+
+    def get_error_stats(self, **kwargs) -> dict:
+        return self.stats(**kwargs)
+
+    def recommend_questions(self, **kwargs) -> dict:
+        return self.recommend(**kwargs)
+
     def recommend(self, user_id: int, subject: str, count: int = 5) -> dict:
-        weak_points = self._analyzer.get_weak_points(user_id, subject)
+        weak_points = self._analyzer().get_weak_points(user_id, subject)
         if not weak_points:
             return {"error": "没有找到薄弱知识点"}
 
         recommendations = []
         for wp in weak_points[:3]:
-            questions = self._analyzer.recommend_questions(
+            questions = self._analyzer().recommend_questions(
                 user_id, wp["code"], count // 3 or 1
             )
             for q in questions:

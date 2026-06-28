@@ -69,6 +69,60 @@ class SkillDebugger:
         loaded = self.manager.scan_and_load()
         print(f"已加载 {loaded} 个技能\n")
 
+        self._inject_question_bank_deps()
+        self._inject_doc_to_questions_deps()
+
+    def _get_db(self):
+        from db.chat import ChatDBManager
+        db_path = str(PROJECT_ROOT / ".dsn" / "DSN_usrdata.db")
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        return ChatDBManager(db_path=db_path)
+
+    def _get_question_store(self, db):
+        from question_bank.store import QuestionStore
+        return QuestionStore(db=db)
+
+    def _get_template_manager(self, db):
+        from question_bank.template_manager import SubjectTemplateManager
+        tm = SubjectTemplateManager(db=db)
+        tm.init_builtin_templates()
+        if not tm.has_subjects():
+            tm.apply_template("6_subjects")
+        return tm
+
+    def _inject_question_bank_deps(self):
+        try:
+            db = self._get_db()
+            store = self._get_question_store(db)
+            tm = self._get_template_manager(db)
+            for key, inst in self.registry._tool_instances.items():
+                if key.startswith("question_bank."):
+                    inst._store = store
+                    inst._tm = tm
+            print(f"  [注入] question_bank: question_store + template_manager ✅")
+        except Exception as e:
+            print(f"  [注入] question_bank: 跳过 ({e})")
+
+    def _inject_doc_to_questions_deps(self):
+        try:
+            db = self._get_db()
+            store = self._get_question_store(db)
+            from plugins.builtin.models_plugin import ModelsPlugin
+            models = ModelsPlugin(
+                model_type=os.environ.get("MAIN_MODEL_TYPE", "deepseek"),
+                deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY") or None,
+                lmstudio_base_url=os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:4501"),
+                lmstudio_model_name=os.environ.get("LMSTUDIO_MODEL_NAME"),
+            )
+            from question_bank.scanner_pipeline import ScannerPipeline
+            pipeline = ScannerPipeline(question_store=store, models_plugin=models)
+            for key, inst in self.registry._tool_instances.items():
+                if key.startswith("doc_to_questions."):
+                    inst._pipeline = pipeline
+            print(f"  [注入] doc_to_questions: scanner_pipeline + models ✅")
+        except Exception as e:
+            print(f"  [注入] doc_to_questions: 跳过 ({e})")
+
         self._skill_list = self.registry.list_skills()
         self._tool_list = self.registry.get_all_tool_specs()
 

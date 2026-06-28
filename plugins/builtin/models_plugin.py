@@ -146,6 +146,22 @@ class ModelsPlugin(Plugin):
         chat.messages = list(messages)
         return chat.continue_conversation()
 
+    def send_message(self, message: str, model_type: str | None = None) -> str:
+        """
+        便捷方法：发送单条用户消息并获取回复。
+
+        供 ScannerPipeline / ErrorAnalyzer / KnowledgeGraph 等组件
+        在不需要完整 Pipeline 上下文时直接调用 LLM。
+
+        :param message: 用户消息（字符串，可包含系统指令）
+        :param model_type: 模型类型，默认使用构造函数中的类型
+        :return: LLM 回复文本
+        """
+        effective_type = model_type or self._model_type
+        chat = self._create_chat(effective_type)
+        chat.messages = [{"role": "user", "content": message}]
+        return chat.send_message(message)
+
     def describe_image(self, data_url: str, prompt: str = "请详细描述这张图片的内容") -> str:
         """
         调用本地 LMStudio 多模态模型描述图片，返回文字描述。
