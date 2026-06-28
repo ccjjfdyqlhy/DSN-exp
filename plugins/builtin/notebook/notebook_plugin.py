@@ -42,12 +42,16 @@ class NotebookPlugin(Plugin):
         self._store = notebook_store or NotebookStore()
         self._user_interactions: dict[int, int] = {}
         self._lock = threading.Lock()
+        self._enabled = getattr(Config, "NOTEBOOK_ENABLED", True)
         self._frequency = getattr(Config, "NOTEBOOK_FREQUENCY", 10)
 
     def on_load(self) -> None:
-        logger.info("NotebookPlugin 已加载, frequency=%d", self._frequency)
+        logger.info("NotebookPlugin 已加载, enabled=%s, frequency=%d",
+                    self._enabled, self._frequency)
 
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
+        if not self._enabled:
+            return ctx
         if hook == HookPoint.PRE_PROCESS:
             return self._on_pre_process(ctx)
         if hook == HookPoint.POST_PROCESS:

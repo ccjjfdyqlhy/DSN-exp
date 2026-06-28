@@ -10,7 +10,7 @@ logger = logging.getLogger("CacheInterceptor")
 
 class CacheInterceptorPlugin(Plugin):
     name = "cache_interceptor"
-    description = "语义缓存 — 拦截重复请求，直接返回缓存结果"
+    description = "语义缓存 — 拦截重复请求，直接返回缓存结果 (L1/L2/L3)"
     hooks = [HookPoint.PRE_FILTER, HookPoint.POST_TTS]
     priority = 0
 
@@ -30,8 +30,6 @@ class CacheInterceptorPlugin(Plugin):
             return self._write_to_cache(ctx)
         return ctx
 
-    # ── 观察窗口: 检查上一轮命中后用户是否发出纠偏信号 ──
-
     def _check_observer(self, ctx: PluginContext):
         if not self._engine:
             return
@@ -42,8 +40,6 @@ class CacheInterceptorPlugin(Plugin):
         if self._engine.is_negative_signal(ctx.message):
             self._engine.decay_score(observer_key)
 
-    # ── 前置拦截 ──
-
     def _try_serve_from_cache(self, ctx: PluginContext) -> PluginContext:
         if not self._engine:
             return ctx
@@ -52,8 +48,11 @@ class CacheInterceptorPlugin(Plugin):
         if not message:
             return ctx
 
+        session_id = self._get_session_id(ctx)
         intent_class = self._engine.classify_intent(message)
         ctx.extra["sc_intent"] = intent_class
+
+        self._engine.extract_slots_from_message(message, session_id)
 
         l1_entry = self._engine.serve_l1(intent_class)
         if l1_entry:
@@ -70,6 +69,28 @@ class CacheInterceptorPlugin(Plugin):
             logger.info("语义缓存 L1 命中: intent=%s", intent_class)
             return ctx
 
+        l2_result = self._engine.serve_l2(message, intent_class, session_id)
+        if l2_result:
+            ctx.reply = l2_result["reply_text"]
+            ctx.original_reply = l2_result["reply_text"]
+            tts_path = l2_result.get("tts_path", "")
+            if tts_path:
+                audio = self._engine._store.load_tts(tts_path)
+                if audio:
+                    ctx.audio = audio
+            self._append_to_history(ctx, message, l2_result["reply_text"])
+            ctx.filtered = True
+            ctx.extra["sc_hit"] = "l2"
+            ctx.extra["sc_action_signature"] = l2_result.get("action_signature", "")
+            ctx.extra["sc_slot_hash"] = l2_result.get("slot_hash", "")
+            ctx.extra["sc_similarity"] = l2_result.get("similarity", 0)
+            ctx.extra["sc_observer_key"] = ctx.extra.get("sc_cache_key", "")
+            ctx.extra["sc_observer_end"] = time.time() + 30
+            logger.info("语义缓存 L2 命中: sig=%s sim=%.4f",
+                        l2_result.get("action_signature", "")[:12],
+                        l2_result.get("similarity", 0))
+            return ctx
+
         results = self._engine.search(message, intent_class=intent_class, top_k=3)
         for r in results:
             if r.score < 0.35:
@@ -83,20 +104,18 @@ class CacheInterceptorPlugin(Plugin):
                     ctx.audio = audio
             self._append_to_history(ctx, message, r.reply_text)
             ctx.filtered = True
-            ctx.extra["sc_hit"] = "l2"
+            ctx.extra["sc_hit"] = "semantic"
             ctx.extra["sc_cache_key"] = r.cache_key
             ctx.extra["sc_similarity"] = r.similarity
             ctx.extra["sc_observer_key"] = r.cache_key
             ctx.extra["sc_observer_end"] = time.time() + 30
             self._engine.record_hit(r.cache_key)
-            logger.info("语义缓存 L2 命中: key=%s sim=%.4f",
+            logger.info("语义缓存语义命中: key=%s sim=%.4f",
                         r.cache_key, r.similarity)
             return ctx
 
         ctx.extra["sc_hit"] = "miss"
         return ctx
-
-    # ── 后置写入 ──
 
     def _write_to_cache(self, ctx: PluginContext) -> PluginContext:
         if not self._engine:
@@ -111,6 +130,7 @@ class CacheInterceptorPlugin(Plugin):
 
         message = ctx.message.strip()
         intent_class = ctx.extra.get("sc_intent", "")
+        session_id = self._get_session_id(ctx)
 
         tts_audio = ctx.audio
         cache_key = self._engine.cache_response(
@@ -119,13 +139,17 @@ class CacheInterceptorPlugin(Plugin):
             reply_text=reply,
             intent_class=intent_class,
             tts_audio=tts_audio,
+            session_id=session_id,
         )
         if cache_key:
             ctx.extra["sc_cached_key"] = cache_key
 
         return ctx
 
-    # ── 更新对话历史 ──
+    def _get_session_id(self, ctx: PluginContext) -> str:
+        if ctx.chat_id:
+            return f"user_{ctx.user_id}_chat_{ctx.chat_id}"
+        return f"user_{ctx.user_id}"
 
     @staticmethod
     def _append_to_history(ctx: PluginContext, user_msg: str, reply: str):

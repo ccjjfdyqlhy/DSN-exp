@@ -4,6 +4,7 @@ import os
 import sqlite3
 import struct
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -34,8 +35,6 @@ class CacheStore:
 
     def _conn(self):
         return self._db._get_connection()
-
-    # ── 表初始化 ──
 
     def _init_tables(self):
         conn = self._conn()
@@ -74,9 +73,61 @@ class CacheStore:
                 PRIMARY KEY (intent_id, speech_act_type)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sc_l2_dags (
+                action_signature TEXT PRIMARY KEY,
+                intent_id        TEXT NOT NULL DEFAULT '',
+                dag_json         TEXT NOT NULL,
+                model_version    TEXT DEFAULT '',
+                hit_count        INTEGER DEFAULT 0,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_hit_at      TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_l2_dags_intent
+            ON sc_l2_dags(intent_id)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sc_l2_results (
+                result_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_signature TEXT NOT NULL,
+                slot_hash        TEXT NOT NULL,
+                result_text      TEXT NOT NULL,
+                reply_tts_path   TEXT DEFAULT '',
+                response_json    TEXT DEFAULT '',
+                hit_count        INTEGER DEFAULT 0,
+                executed_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                duration_ms      INTEGER DEFAULT 0,
+                FOREIGN KEY (action_signature) REFERENCES sc_l2_dags(action_signature)
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_l2_results_sig_slot
+            ON sc_l2_results(action_signature, slot_hash)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sc_l3_slots (
+                session_id   TEXT NOT NULL,
+                slot_name    TEXT NOT NULL,
+                slot_type    TEXT NOT NULL DEFAULT 'str',
+                value_json   TEXT NOT NULL,
+                confidence   REAL DEFAULT 1.0,
+                source       TEXT DEFAULT 'extracted',
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at   TIMESTAMP DEFAULT '',
+                PRIMARY KEY (session_id, slot_name)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_l3_slots_session
+            ON sc_l3_slots(session_id)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_l3_slots_expires
+            ON sc_l3_slots(expires_at)
+        """)
         conn.commit()
-
-    # ── 向量序列化 ──
 
     @staticmethod
     def _vec_to_blob(vec: list[float]) -> bytes:
@@ -85,8 +136,6 @@ class CacheStore:
     @staticmethod
     def _blob_to_vec(blob: bytes) -> list[float]:
         return list(struct.unpack(f"{len(blob) // 4}f", blob))
-
-    # ── 向量索引 ──
 
     def _load_index(self):
         conn = self._conn()
@@ -136,7 +185,10 @@ class CacheStore:
             try:
                 idx = self._index_keys.index(cache_key)
                 self._index = np.delete(self._index, idx, axis=0)
-                self._index_norm = np.delete(self._index_norm, idx, axis=0) if self._index_norm is not None else None
+                self._index_norm = (
+                    np.delete(self._index_norm, idx, axis=0)
+                    if self._index_norm is not None else None
+                )
                 self._index_keys.pop(idx)
             except (ValueError, IndexError):
                 pass
@@ -170,8 +222,6 @@ class CacheStore:
                 if len(results) >= top_k:
                     break
             return results
-
-    # ── 缓存条目 CRUD ──
 
     def put_entry(self, cache_key: str, user_id: int, intent_class: str,
                   query_text: str, query_embedding: Optional[list[float]],
@@ -246,19 +296,33 @@ class CacheStore:
 
     def get_stats(self) -> dict:
         conn = self._conn()
-        total = conn.execute("SELECT COUNT(*) as cnt FROM sc_cache_entries").fetchone()["cnt"]
-        hits = conn.execute("SELECT COALESCE(SUM(hit_count), 0) as cnt FROM sc_cache_entries").fetchone()["cnt"]
+        total = conn.execute(
+            "SELECT COUNT(*) as cnt FROM sc_cache_entries"
+        ).fetchone()["cnt"]
+        hits = conn.execute(
+            "SELECT COALESCE(SUM(hit_count), 0) as cnt FROM sc_cache_entries"
+        ).fetchone()["cnt"]
         avg_score = conn.execute(
             "SELECT COALESCE(AVG(score), 0) as s FROM sc_cache_entries"
         ).fetchone()["s"]
+        l2_dags = conn.execute(
+            "SELECT COUNT(*) as cnt FROM sc_l2_dags"
+        ).fetchone()["cnt"]
+        l2_results = conn.execute(
+            "SELECT COUNT(*) as cnt FROM sc_l2_results"
+        ).fetchone()["cnt"]
+        l3_slots = conn.execute(
+            "SELECT COUNT(*) as cnt FROM sc_l3_slots"
+        ).fetchone()["cnt"]
         return {
             "total_entries": total,
             "total_hits": hits,
             "avg_score": round(avg_score, 3),
             "index_vectors": len(self._index_keys),
+            "l2_dags": l2_dags,
+            "l2_results": l2_results,
+            "l3_slots": l3_slots,
         }
-
-    # ── L1 静态语素 ──
 
     def put_l1(self, intent_id: str, speech_act_type: str,
                text: str, tts_path: str = "") -> bool:
@@ -300,7 +364,12 @@ class CacheStore:
         ).fetchall()
         return [r["intent_id"] for r in rows]
 
-    # ── TTS 文件缓存 ──
+    def list_l1_all(self) -> list[dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT * FROM sc_cache_l1 ORDER BY hit_count DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def save_tts(self, cache_key: str, audio_bytes: bytes) -> str:
         tts_path = self._tts_dir / f"{cache_key}.wav"
@@ -318,3 +387,163 @@ class CacheStore:
         tts_path = self._tts_dir / f"l1_{intent_id}_{speech_act_type}.wav"
         tts_path.write_bytes(audio_bytes)
         return str(tts_path)
+
+    def put_l2_dag(self, action_signature: str, intent_id: str,
+                   dag_json: str, model_version: str = "") -> bool:
+        conn = self._conn()
+        try:
+            conn.execute(
+                """INSERT INTO sc_l2_dags
+                   (action_signature, intent_id, dag_json, model_version)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(action_signature) DO UPDATE SET
+                     dag_json=excluded.dag_json,
+                     model_version=excluded.model_version,
+                     last_hit_at=CURRENT_TIMESTAMP""",
+                (action_signature, intent_id, dag_json, model_version),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error("写入 L2 DAG 失败: %s", e)
+            conn.rollback()
+            return False
+
+    def get_l2_dag(self, action_signature: str) -> Optional[dict]:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT * FROM sc_l2_dags WHERE action_signature=?",
+            (action_signature,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_l2_hit(self, action_signature: str):
+        conn = self._conn()
+        conn.execute(
+            "UPDATE sc_l2_dags SET hit_count = hit_count + 1, "
+            "last_hit_at = CURRENT_TIMESTAMP WHERE action_signature=?",
+            (action_signature,),
+        )
+        conn.commit()
+
+    def put_l2_result(self, action_signature: str, slot_hash: str,
+                      result_text: str, tts_path: str = "",
+                      response_json: str = "", duration_ms: int = 0) -> bool:
+        conn = self._conn()
+        try:
+            conn.execute(
+                """INSERT INTO sc_l2_results
+                   (action_signature, slot_hash, result_text, reply_tts_path,
+                    response_json, hit_count, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)
+                   ON CONFLICT(action_signature, slot_hash) DO UPDATE SET
+                     result_text=excluded.result_text,
+                     reply_tts_path=excluded.reply_tts_path,
+                     response_json=excluded.response_json,
+                     hit_count=hit_count + 1,
+                     duration_ms=excluded.duration_ms""",
+                (action_signature, slot_hash, result_text, tts_path,
+                 response_json, duration_ms),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error("写入 L2 结果失败: %s", e)
+            conn.rollback()
+            return False
+
+    def get_l2_result(self, action_signature: str, slot_hash: str) -> Optional[dict]:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT * FROM sc_l2_results WHERE action_signature=? AND slot_hash=?",
+            (action_signature, slot_hash),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def put_l3_slot(self, session_id: str, slot_name: str, slot_type: str,
+                    value_json: str, confidence: float = 1.0,
+                    source: str = "extracted", expires_at: str = "") -> bool:
+        conn = self._conn()
+        try:
+            conn.execute(
+                """INSERT INTO sc_l3_slots
+                   (session_id, slot_name, slot_type, value_json,
+                    confidence, source, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_id, slot_name) DO UPDATE SET
+                     slot_type=excluded.slot_type,
+                     value_json=excluded.value_json,
+                     confidence=excluded.confidence,
+                     source=excluded.source,
+                     expires_at=excluded.expires_at""",
+                (session_id, slot_name, slot_type, value_json,
+                 confidence, source, expires_at),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error("写入 L3 槽位失败: %s", e)
+            conn.rollback()
+            return False
+
+    def get_l3_slot(self, session_id: str, slot_name: str) -> Optional[dict]:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT * FROM sc_l3_slots WHERE session_id=? AND slot_name=?",
+            (session_id, slot_name),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_l3_slots(self, session_id: str) -> list[dict]:
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT * FROM sc_l3_slots WHERE session_id=?",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_l3_slot(self, session_id: str, slot_name: str) -> bool:
+        conn = self._conn()
+        try:
+            conn.execute(
+                "DELETE FROM sc_l3_slots WHERE session_id=? AND slot_name=?",
+                (session_id, slot_name),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error("删除 L3 槽位失败: %s", e)
+            conn.rollback()
+            return False
+
+    def clear_l3_session(self, session_id: str) -> int:
+        conn = self._conn()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM sc_l3_slots WHERE session_id=?",
+                (session_id,),
+            )
+            conn.commit()
+            return cursor.rowcount
+        except Exception as e:
+            logger.error("清除 L3 会话失败: %s", e)
+            conn.rollback()
+            return 0
+
+    def cleanup_expired_l3_slots(self) -> int:
+        conn = self._conn()
+        try:
+            now = datetime.now().isoformat()
+            cursor = conn.execute(
+                "DELETE FROM sc_l3_slots WHERE expires_at != '' AND expires_at < ?",
+                (now,),
+            )
+            conn.commit()
+            count = cursor.rowcount
+            if count > 0:
+                logger.info("清理过期 L3 槽位: %d 条", count)
+            return count
+        except Exception as e:
+            logger.error("清理过期 L3 槽位失败: %s", e)
+            conn.rollback()
+            return 0

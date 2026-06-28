@@ -545,11 +545,14 @@ def create_application():
     )
     _t("DSNEngine")
 
-    # ── 语义缓存系统 ──
+    # ── 语义缓存系统 (L1/L2/L3) ──
     cache_engine = None
     if Config.SEMANTIC_CACHE_ENABLED:
         try:
             from semantic_cache import CacheStore, L1PragmaticCache, CacheEngine
+            from semantic_cache.l2 import L2Cache
+            from semantic_cache.l3 import L3SlotRegistry
+
             _cache_dir = os.path.join(os.path.dirname(__file__),
                                       Config.SEMANTIC_CACHE_DIR)
             _cache_store = CacheStore(db=db, cache_dir=_cache_dir)
@@ -575,7 +578,10 @@ def create_application():
             )
             engine.plugin_manager.register(_cache_plugin)
             engine._cache_engine = cache_engine
-            app.logger.info("语义缓存系统: 已启用 (阈值=%.2f)",
+            engine._l2_cache = cache_engine.l2
+            engine._l3_registry = cache_engine.l3
+
+            app.logger.info("语义缓存系统: 已启用 (L1/L2/L3, 阈值=%.2f)",
                             Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD)
         except Exception as e:
             app.logger.warning("语义缓存系统初始化失败: %s", e)
