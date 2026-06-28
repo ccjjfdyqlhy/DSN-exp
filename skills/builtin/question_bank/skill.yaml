@@ -67,6 +67,20 @@ tools:
             description: "返回数量"
             default: 10
 
+  - name: delete_question
+    display_name: "Delete Question"
+    description: "删除题目"
+    module: "tools.question_crud"
+    class: "QuestionCRUDTool"
+    methods:
+      - name: delete
+        description: "删除指定题目"
+        parameters:
+          question_id:
+            type: integer
+            description: "题目 ID"
+            required: true
+
   - name: compose_exam
     display_name: "Compose Exam"
     description: "组卷"

@@ -1195,16 +1195,16 @@ def create_engine_with_defaults(
     if skill_registry and question_store:
         try:
             for key, instance in skill_registry._tool_instances.items():
-                if key.startswith("create_question") or key.startswith("search_questions"):
+                if key.startswith("question_bank.create_question") or key.startswith("question_bank.search_questions") or key.startswith("question_bank.delete_question"):
                     instance._store = question_store
                     instance._tm = template_manager
-                elif key.startswith("compose_exam"):
+                elif key.startswith("question_bank.compose_exam"):
                     instance._store = question_store
-                elif key.startswith("analyze_error") or key.startswith("get_error_stats") or key.startswith("recommend_questions"):
+                elif key.startswith("question_bank.analyze_error") or key.startswith("question_bank.get_error_stats") or key.startswith("question_bank.recommend_questions"):
                     instance._store = question_store
                     if models_plugin:
                         instance._analyzer._models = models_plugin
-                elif key.startswith("suggest_templates") or key.startswith("get_subjects"):
+                elif key.startswith("question_bank.suggest_templates") or key.startswith("question_bank.get_subjects"):
                     instance._tm = template_manager
                     instance._store = question_store
         except Exception as e:

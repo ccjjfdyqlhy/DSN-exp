@@ -68,3 +68,6 @@ class QuestionCRUDTool:
 
     def search_questions(self, **kwargs) -> list:
         return self.search(**kwargs)
+
+    def delete_question(self, question_id: int) -> dict:
+        return self.delete(question_id=question_id)

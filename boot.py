@@ -21,6 +21,7 @@ from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
+from db.question_bank import QuestionBankDBManager
 from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from models import _load_lmstudio_model, _unload_lmstudio_model
 from models.tts_process import TTSProcessModel
@@ -510,6 +511,7 @@ def create_application():
     _question_store = _template_manager = _exam_composer = _error_analyzer = _scanner_pipeline = None
     _graph_store = _graph_engine = _knowledge_matcher = _graph_builder = None
     _exam_engine = _exam_scorer = None
+    _qb_db = None
     try:
         from question_bank.template_manager import SubjectTemplateManager
         from question_bank.store import QuestionStore
@@ -523,27 +525,30 @@ def create_application():
         from exam_sim.engine import ExamEngine
         from exam_sim.scorer import ExamScorer
 
-        _template_manager = SubjectTemplateManager(db=db)
+        _qb_db = QuestionBankDBManager(db_path=app.config.get("QUESTION_BANK_DB_PATH"))
+        app.logger.info("题库数据库: %s", _qb_db.db_path)
+
+        _template_manager = SubjectTemplateManager(db=_qb_db)
         _template_manager.init_builtin_templates()
 
         if not _template_manager.has_subjects():
             _template_manager.apply_template("6_subjects")
             app.logger.info("学习系统: 首次启动，已应用默认模板 6_subjects")
 
-        _question_store = QuestionStore(db=db)
+        _question_store = QuestionStore(db=_qb_db)
         _exam_composer = ExamComposer(question_store=_question_store)
         _scanner_pipeline = ScannerPipeline(
             question_store=_question_store, models_plugin=None,
         )
         _error_analyzer = ErrorAnalyzer(question_store=_question_store, models_plugin=None)
 
-        _graph_store = GraphStore(db=db)
+        _graph_store = GraphStore(db=_qb_db)
         _graph_engine = GraphEngine(graph_store=_graph_store)
         _knowledge_matcher = KnowledgeMatcher(graph_store=_graph_store, models_plugin=None)
         _graph_builder = KnowledgeGraphBuilder(graph_store=_graph_store, models_plugin=None)
 
         _exam_scorer = ExamScorer(question_store=_question_store, models_plugin=None)
-        _exam_engine = ExamEngine(db=db, question_store=_question_store, scorer=_exam_scorer)
+        _exam_engine = ExamEngine(db=_qb_db, question_store=_question_store, scorer=_exam_scorer)
 
         app.logger.info("学习系统: 题库+知识图+考试引擎初始化完成")
     except Exception as e:

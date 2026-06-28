@@ -61,6 +61,7 @@ class Config:
 
     # ==================== 存储配置 ====================
     DATABASE_PATH = _env("DATABASE_PATH", "DSN_usrdata.db")
+    QUESTION_BANK_DB_PATH = _env("QUESTION_BANK_DB_PATH", ".dsn/question_bank.db")
     LOG_DIR = _env("LOG_DIR", "logs")
 
     # ==================== 服务配置 ====================

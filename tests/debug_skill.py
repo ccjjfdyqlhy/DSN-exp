@@ -78,6 +78,12 @@ class SkillDebugger:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         return ChatDBManager(db_path=db_path)
 
+    def _get_qb_db(self):
+        from db.question_bank import QuestionBankDBManager
+        db_path = str(PROJECT_ROOT / ".dsn" / "question_bank.db")
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        return QuestionBankDBManager(db_path=db_path)
+
     def _get_question_store(self, db):
         from question_bank.store import QuestionStore
         return QuestionStore(db=db)
@@ -92,9 +98,9 @@ class SkillDebugger:
 
     def _inject_question_bank_deps(self):
         try:
-            db = self._get_db()
-            store = self._get_question_store(db)
-            tm = self._get_template_manager(db)
+            qb_db = self._get_qb_db()
+            store = self._get_question_store(qb_db)
+            tm = self._get_template_manager(qb_db)
             for key, inst in self.registry._tool_instances.items():
                 if key.startswith("question_bank."):
                     inst._store = store
@@ -105,8 +111,8 @@ class SkillDebugger:
 
     def _inject_doc_to_questions_deps(self):
         try:
-            db = self._get_db()
-            store = self._get_question_store(db)
+            qb_db = self._get_qb_db()
+            store = self._get_question_store(qb_db)
             from plugins.builtin.models_plugin import ModelsPlugin
             models = ModelsPlugin(
                 model_type=os.environ.get("MAIN_MODEL_TYPE", "deepseek"),
