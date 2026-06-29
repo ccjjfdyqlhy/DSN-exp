@@ -87,16 +87,23 @@ def async_send():
 def task_status(task_id):
     engine = _get_engine()
     if not engine:
+        logger.warning("心跳查询 task=%s — engine 不可用", task_id)
         return jsonify({"error": "Engine not ready"}), 503
 
     record = engine.async_task_store.lookup(task_id)
     if not record:
+        logger.warning("心跳查询 task=%s — 未找到", task_id)
         return jsonify({"error": "Task not found"}), 404
 
-    if record["status"] == "running":
+    status = record["status"]
+    reply_preview = record.get("reply", "")[:60]
+    logger.info("心跳查询 task=%s — status=%s reply=%s",
+                task_id, status, reply_preview or "(空)")
+
+    if status == "running":
         return jsonify({"status": "running"})
 
-    if record["status"] == "failed":
+    if status == "failed":
         return jsonify({
             "status": "failed",
             "task_id": record["task_id"],

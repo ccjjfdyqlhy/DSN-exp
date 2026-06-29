@@ -417,10 +417,10 @@ class DSNClient:
 
 
 class AsyncTaskPoller:
-    """后台线程: 每 30s 轮询后端异步任务状态，完成时显示回复 + 播放 TTS。"""
+    """后台线程: 每 N 秒轮询后端异步任务状态，完成时显示回复 + 播放 TTS。"""
 
-    ASYNC_POLL_INTERVAL = 30
-    ASYNC_POLL_TIMEOUT = 600
+    ASYNC_POLL_INTERVAL = 8      # 每 8 秒轮询一次
+    ASYNC_POLL_TIMEOUT = 600     # 10 分钟超时
 
     def __init__(self, client: DSNClient, tts_queue: queue.Queue):
         self._client = client
@@ -429,6 +429,7 @@ class AsyncTaskPoller:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._wake_event = threading.Event()
 
     def start(self):
         if self._running:
@@ -440,6 +441,7 @@ class AsyncTaskPoller:
 
     def stop(self):
         self._running = False
+        self._wake_event.set()
         if self._thread:
             self._thread.join(timeout=2)
 
@@ -450,6 +452,7 @@ class AsyncTaskPoller:
                 self._tasks[task_id] = {"created": time.time()}
                 log.info("AsyncTaskPoller: 开始轮询 %s", task_id)
                 print(f"\n  ⏳ 异步任务已创建 ({task_id[:10]}...)，后台执行中...")
+        self._wake_event.set()
 
     def _loop(self):
         while self._running:
@@ -466,10 +469,12 @@ class AsyncTaskPoller:
                         timeout=10,
                     )
                     if resp.status_code != 200:
+                        log.warning("AsyncTaskPoller: %s HTTP %d", task_id, resp.status_code)
                         continue
 
                     data = resp.json()
                     status = data.get("status", "running")
+                    log.info("AsyncTaskPoller: %s → status=%s", task_id, status)
 
                     if status == "running":
                         with self._lock:
@@ -500,7 +505,10 @@ class AsyncTaskPoller:
 
                     to_remove.append(task_id)
 
-                except Exception:
+                except requests.exceptions.Timeout:
+                    log.warning("AsyncTaskPoller: %s 请求超时", task_id)
+                except Exception as e:
+                    log.warning("AsyncTaskPoller: %s 异常 %s", task_id, e)
                     with self._lock:
                         task = self._tasks.get(task_id)
                         if task and now - task.get("created", 0) > self.ASYNC_POLL_TIMEOUT:
@@ -511,7 +519,8 @@ class AsyncTaskPoller:
                 for tid in to_remove:
                     self._tasks.pop(tid, None)
 
-            time.sleep(self.ASYNC_POLL_INTERVAL)
+            self._wake_event.clear()
+            self._wake_event.wait(timeout=self.ASYNC_POLL_INTERVAL)
 
 
 class ReminderWatcher:
