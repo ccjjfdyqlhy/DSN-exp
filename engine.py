@@ -656,9 +656,6 @@ class DSNEngine:
             self.plugin_manager.register(ImpressionPlugin(
                 impression_manager=self.impression_manager,
             ))
-        if self._plugin_enabled("confirm"):
-            from plugins.builtin.confirm_plugin import ConfirmPlugin
-            self.plugin_manager.register(ConfirmPlugin())
 
     def _register_execution_plugins(self):
         if self._plugin_enabled("recall") and self.memory_system:
@@ -673,12 +670,6 @@ class DSNEngine:
             from plugins.builtin.tool_plugin import ToolPlugin
             self.plugin_manager.register(ToolPlugin(
                 skill_registry=self.skill_registry,
-            ))
-        if self._plugin_enabled("ssp"):
-            from plugins.builtin.ssp_plugin import SSPPlugin
-            self.plugin_manager.register(SSPPlugin(
-                db=self.db, impression_manager=self.impression_manager,
-                models_plugin=self._models_plugin, skill_registry=self.skill_registry,
             ))
         if self._plugin_enabled("task") and self.task_manager:
             from plugins.builtin.task_plugin import TaskPlugin
@@ -696,10 +687,6 @@ class DSNEngine:
         if self._plugin_enabled("plan"):
             from plugins.builtin.plan_plugin import PlanPlugin
             self.plugin_manager.register(PlanPlugin(db=self.db))
-        if self._plugin_enabled("help") and self.prompt_cache:
-            from plugins.builtin.help_plugin import HelpPlugin
-            self.plugin_manager.register(HelpPlugin(prompt_cache=self.prompt_cache))
-
     def _register_output_plugins(self):
         if self._plugin_enabled("tts") and self._tts_client:
             from plugins.builtin.tts_plugin import TTSPlugin
@@ -1298,13 +1285,7 @@ def create_engine_with_defaults(
             db=db,
         ))
 
-    # ---- 补充注册：ConfirmPlugin / RecallPlugin / SSPPlugin ----
-
-    try:
-        from plugins.builtin.confirm_plugin import ConfirmPlugin
-        engine.plugin_manager.register(ConfirmPlugin())
-    except Exception as e:
-        engine._logger.warning("ConfirmPlugin 加载失败: %s", e)
+    # ---- 补充注册：RecallPlugin ----
 
     if memory_system and db:
         try:
@@ -1312,18 +1293,6 @@ def create_engine_with_defaults(
             engine.plugin_manager.register(RecallPlugin(memory_system=memory_system))
         except Exception as e:
             engine._logger.warning("RecallPlugin 加载失败: %s", e)
-
-    if skill_registry and models_plugin:
-        try:
-            from plugins.builtin.ssp_plugin import SSPPlugin
-            engine.plugin_manager.register(SSPPlugin(
-                db=db,
-                impression_manager=impression_manager,
-                models_plugin=models_plugin,
-                skill_registry=skill_registry,
-            ))
-        except Exception as e:
-            engine._logger.warning("SSPPlugin 加载失败: %s", e)
 
     # DistillPlugin — 双引擎蒸馏（V3 性格 + 技能模式）
     if engine.skill_manager and models_plugin:

@@ -1,9 +1,9 @@
 ---
 name: impression
 category: core
-version: "1.0"
-description: 用户印象系统 - 记录用户信息和环境扫描
-tags: [impression, user, ssp]
+version: "1.1"
+description: 用户印象系统 - 记录用户信息
+tags: [impression, user]
 priority: 25
 enabled: true
 ---
@@ -24,11 +24,3 @@ IMPRESSION:类别:内容:置信度
 - 你从对话里推断出来的 → 60-80
 - 不确定、像是随口一提的 → 低于 60
 - 不知道的别瞎写。
-
-还想了解更多？直接问。如果觉得对手戏太薄了，可以提议：
-
-```
-我对你还了解得不够。要不要让我扫描一下你的环境，帮你建个完整档案？输入 ssp。
-```
-
-用户同意后，在回复末尾丢一个 `<ssp>` 标签。
