@@ -2100,6 +2100,9 @@ def main():
                 f"[yellow]  DEBUG_PLAY_AS_MODEL 模式已启动: "
                 f"http://{debug_host}:{debug_port}/debug/[/]"
             )
+            console.print(
+                f"[yellow]  注意：你现在处于调试模式，聊天数据将不会被持久化。要切换回生产环境，请修改配置文件。[/]"
+            )
         except Exception as e:
             console.print(f"[red]DEBUG_PLAY_AS_MODEL 启动失败: {e}[/]")
 
