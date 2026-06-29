@@ -52,6 +52,8 @@ class NotebookPlugin(Plugin):
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
         if not self._enabled:
             return ctx
+        if ctx.extra.get("_debug_mode"):
+            return ctx
         if hook == HookPoint.PRE_PROCESS:
             return self._on_pre_process(ctx)
         if hook == HookPoint.POST_PROCESS:
