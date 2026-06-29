@@ -318,7 +318,8 @@ def v3_card_upload():
         card = CharacterCard.from_yaml_string(data["yaml"])
         return jsonify({"success": personality_v3.upload_card(card), "card_id": card.card_id})
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        app.logger.warning("上传角色卡失败: %s", e)
+        return jsonify({"error": "Invalid card data"}), 400
 
 
 @app.route("/api/v3/card/<card_id>/distill", methods=["POST"])
@@ -332,7 +333,8 @@ def v3_card_distill(card_id):
             return jsonify({"error": "Distillation failed"}), 500
         return jsonify({"success": True, "distillation_id": d.distillation_id, "fingerprint": d.content_fingerprint})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.warning("蒸馏失败 %s: %s", card_id, e)
+        return jsonify({"error": "Distillation failed"}), 500
 
 
 @app.route("/api/v3/card/<card_id>/distillation", methods=["GET"])
