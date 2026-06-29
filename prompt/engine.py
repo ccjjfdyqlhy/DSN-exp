@@ -90,8 +90,18 @@ class PromptEngine:
         if caps:
             sections.append(caps)
 
-        # 4. 技能提示词
-        if self._skill_registry:
+        # 4. 技能提示词 — 原生 tool call 模式下跳过（工具定义在 API schema 中）
+        _inject_skill_prompts = True
+        try:
+            from config import Config
+            _mode = getattr(Config, "TOOL_CALL_MODE", "native")
+            _type = getattr(Config, "MAIN_MODEL_TYPE", "deepseek")
+            if _mode in ("native",) and _type == "deepseek":
+                _inject_skill_prompts = False
+        except Exception:
+            pass
+
+        if _inject_skill_prompts and self._skill_registry:
             try:
                 skill_prompts = self._skill_registry.get_all_skill_prompts()
                 if skill_prompts.strip():

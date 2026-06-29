@@ -428,14 +428,51 @@ class DSNEngine:
         if not skill_dirs:
             return
 
-        self.skill_manager = SkillManager(skill_dirs=skill_dirs, registry=self.skill_registry)
+        self.skill_manager = SkillManager(skill_dirs=skill_dirs,
+                                          registry=self.skill_registry)
         try:
             loaded = self.skill_manager.scan_and_load()
             self._logger.info("Skills 加载完成: %d", loaded)
-            # 注入 V3 引用到 ExaEvolution 技能
+
+            # 注入系统技能依赖
+            self._inject_system_skill_deps()
+
             self._inject_v3_to_exa_evolution()
         except Exception as e:
             self._logger.warning("Skills 加载失败: %s", e)
+
+    def _inject_system_skill_deps(self):
+        """注入运行时依赖到系统技能工具类"""
+        try:
+            # 注入 NotebookStore
+            from plugins.builtin.notebook.notebook_store import NotebookStore
+            nb_store = NotebookStore()
+
+            # 注入 PlanEngine
+            plan_engine = None
+            try:
+                from db.plan_store import PlanStore
+                from db.plan_engine import PlanEngine
+                plan_engine = PlanEngine(PlanStore(self.db))
+            except Exception:
+                pass
+
+            for key, instance in list(self.skill_registry._tool_instances.items()):
+                if not key.startswith("system."):
+                    continue
+                cls = type(instance)
+                if not hasattr(cls, '_ctx'):
+                    continue
+                cls._ctx["task_manager"] = self.task_manager
+                cls._ctx["db"] = self.db
+                cls._ctx["memory_system"] = self.memory_system
+                cls._ctx["notebook_store"] = nb_store
+                cls._ctx["plan_engine"] = plan_engine
+                cls._ctx["prompt_cache"] = self.prompt_cache
+                cls._ctx["impression_manager"] = self.impression_manager
+            self._logger.info("系统技能依赖注入完成")
+        except Exception as e:
+            self._logger.warning("系统技能依赖注入失败: %s", e)
 
     def _inject_v3_to_exa_evolution(self):
         """将 V3 引用注入到 SkillRegistry 中的 personality_materials 工具实例"""
@@ -511,6 +548,13 @@ class DSNEngine:
         self._register_personality_plugins()
         self._register_execution_plugins()
         self._register_output_plugins()
+
+        # 注入 skill_registry 到 ModelsPlugin (供 tool call schema 生成)
+        if self._models_plugin and self.skill_registry:
+            self._models_plugin.set_skill_registry(self.skill_registry)
+
+        # 补注入 prompt_cache (此时 _init_prompt 已完成)
+        self._inject_system_skill_deps()
 
     def _plugin_enabled(self, name: str) -> bool:
         if self._enable_set:
@@ -622,7 +666,9 @@ class DSNEngine:
                 self._logger.warning("RecallPlugin 加载失败: %s", e)
         if self._plugin_enabled("tool") or self._plugin_enabled("skills") or self._plugin_enabled("agent"):
             from plugins.builtin.tool_plugin import ToolPlugin
-            self.plugin_manager.register(ToolPlugin(skill_registry=self.skill_registry))
+            self.plugin_manager.register(ToolPlugin(
+                skill_registry=self.skill_registry,
+            ))
         if self._plugin_enabled("ssp"):
             from plugins.builtin.ssp_plugin import SSPPlugin
             self.plugin_manager.register(SSPPlugin(
@@ -992,6 +1038,9 @@ def create_engine_with_defaults(
         db=db,
     )
     engine.plugin_manager.register(models_plugin)
+    if skill_registry:
+        models_plugin.set_skill_registry(skill_registry)
+        logging.getLogger("DSNEngine").info("ModelsPlugin: skill_registry 已注入")
 
     if memory_system and db:
         from plugins.builtin.memory_plugin import MemoryPlugin

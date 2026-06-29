@@ -1,0 +1,290 @@
+name: system
+display_name: "系统操作"
+description: "系统级操作工具集（任务管理、记忆、笔记、计划、信号）"
+version: "1.0"
+author: "system"
+source: "system"
+enabled: true
+status: "active"
+prompt_category: "system"
+prompt_priority: 100
+tags: [system, task, memory, notebook, plan, signal]
+activation:
+  auto_activate: true
+dependencies: []
+tools:
+  - name: create_reminder
+    display_name: "创建提醒"
+    description: "创建定时提醒任务"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: create_reminder
+        description: "创建提醒任务"
+        parameters:
+          text:
+            type: string
+            description: "提醒内容"
+            required: true
+          time:
+            type: string
+            description: "提醒时间 (ISO8601)"
+            required: true
+
+  - name: create_habit
+    display_name: "创建习惯"
+    description: "创建周期性习惯任务"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: create_habit
+        description: "创建习惯任务"
+        parameters:
+          text:
+            type: string
+            description: "习惯内容"
+            required: true
+          time:
+            type: string
+            description: "首次触发时间 (ISO8601)"
+            required: true
+          interval:
+            type: string
+            description: "重复间隔 (如 30m, 1h, 1d)"
+            required: true
+
+  - name: create_countdown
+    display_name: "创建倒计时"
+    description: "创建倒计时任务"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: create_countdown
+        description: "创建倒计时"
+        parameters:
+          text:
+            type: string
+            description: "倒计时结束提示"
+            required: true
+          target:
+            type: string
+            description: "目标时间 (ISO8601)"
+            required: true
+
+  - name: create_daily_plan
+    display_name: "每日计划"
+    description: "创建每日计划触发器"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: create_daily_plan
+        description: "创建每日计划"
+        parameters:
+          trigger_time:
+            type: string
+            description: "每日触发时间 (HH:MM)"
+            required: true
+
+  - name: create_periodic
+    display_name: "周期任务"
+    description: "创建 cron 周期任务"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: create_periodic
+        description: "创建周期任务"
+        parameters:
+          cron:
+            type: string
+            description: "cron 表达式"
+            required: true
+          text:
+            type: string
+            description: "任务内容"
+            required: true
+
+  - name: create_reasoner
+    display_name: "推理任务"
+    description: "创建异步推理任务"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: create_reasoner
+        description: "创建并执行推理任务"
+        parameters:
+          question:
+            type: string
+            description: "需要推理的问题"
+            required: true
+          context:
+            type: string
+            description: "上下文信息"
+            required: false
+
+  - name: execute_action
+    display_name: "执行操作"
+    description: "执行代码操作 (shell/python/文件操作)"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: execute_action
+        description: "执行代码或文件操作"
+        parameters:
+          action_type:
+            type: string
+            description: "操作类型: shell/python/write_file/edit_file"
+            required: true
+          content:
+            type: string
+            description: "代码/命令内容"
+            required: true
+          file_path:
+            type: string
+            description: "文件路径"
+            required: false
+          overwrite:
+            type: boolean
+            description: "是否覆盖"
+            default: false
+          pattern:
+            type: string
+            description: "匹配模式"
+            required: false
+          replacement:
+            type: string
+            description: "替换内容"
+            required: false
+
+  - name: recall
+    display_name: "记忆检索"
+    description: "检索历史记忆"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: recall
+        description: "检索记忆"
+        parameters:
+          keywords:
+            type: array
+            description: "搜索关键词列表"
+            required: true
+          count:
+            type: integer
+            description: "返回条数"
+            default: 3
+          detail:
+            type: boolean
+            description: "是否还原细节"
+            default: false
+
+  - name: save_memo
+    display_name: "保存备忘"
+    description: "保存事实备忘录"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: save_memo
+        description: "保存备忘录"
+        parameters:
+          content:
+            type: string
+            description: "备忘录内容"
+            required: true
+
+  - name: save_observation
+    display_name: "观察笔记"
+    description: "保存用户观察笔记"
+    module: "tools.notebook_tools"
+    class: "NotebookTools"
+    methods:
+      - name: save_observation
+        description: "保存笔记"
+        parameters:
+          content:
+            type: string
+            description: "观察笔记内容"
+            required: true
+
+  - name: mark_task
+    display_name: "标记计划"
+    description: "标记计划任务完成或跳过"
+    module: "tools.plan_tools"
+    class: "PlanTools"
+    methods:
+      - name: mark_task
+        description: "标记任务状态"
+        parameters:
+          task_id:
+            type: string
+            description: "任务 ID"
+            required: true
+          action:
+            type: string
+            description: "操作: done / skip"
+            required: true
+
+  - name: search_prompts
+    display_name: "检索提示词"
+    description: "检索提示词库获取操作指导"
+    module: "tools.utility_tools"
+    class: "UtilityTools"
+    methods:
+      - name: search_prompts
+        description: "检索提示词"
+        parameters:
+          query:
+            type: string
+            description: "搜索查询"
+            required: true
+
+  - name: confirm
+    display_name: "确认请求"
+    description: "请求用户确认操作"
+    module: "tools.signal_tools"
+    class: "SignalTools"
+    methods:
+      - name: confirm
+        description: "触发确认请求"
+        parameters: {}
+
+  - name: start_ssp
+    display_name: "启动自维持"
+    description: "启动自维持管线"
+    module: "tools.signal_tools"
+    class: "SignalTools"
+    methods:
+      - name: start_ssp
+        description: "启动管线"
+        parameters: {}
+
+  - name: stop_ssp
+    display_name: "停止自维持"
+    description: "停止自维持管线"
+    module: "tools.signal_tools"
+    class: "SignalTools"
+    methods:
+      - name: stop_ssp
+        description: "停止管线"
+        parameters: {}
+
+  - name: record_impression
+    display_name: "记录印象"
+    description: "记录用户印象"
+    module: "tools.signal_tools"
+    class: "SignalTools"
+    methods:
+      - name: record_impression
+        description: "记录印象"
+        parameters:
+          category:
+            type: string
+            description: "印象类别"
+            required: true
+          content:
+            type: string
+            description: "印象内容"
+            required: true
+          confidence:
+            type: integer
+            description: "置信度 (0-100)"
+            default: 80

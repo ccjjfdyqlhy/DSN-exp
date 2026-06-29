@@ -1,5 +1,5 @@
 # plugins/builtin/models_plugin.py
-# 统一模型调用插件 — MODEL_INVOKE
+# 统一模型调用插件 — MODEL_INVOKE (原生 tool call 支持)
 
 from __future__ import annotations
 
@@ -8,21 +8,14 @@ from datetime import datetime
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
+from config import Config
 
 logger = logging.getLogger("ModelsPlugin")
 
 
 class ModelsPlugin(Plugin):
-    """
-    统一管理所有 LLM 后端，负责模型的调用与回复获取。
-
-    依赖: 通过 config/constructor 决定使用 DeepSeek 还是 LMStudio。
-          可选的 complexity_analyzer 用于按复杂度自动选模型。
-          db (ChatDBManager，可选) 用于保存消息。
-    """
-
     name = "models"
-    description = "统一模型调用 — DeepSeek / LMStudio 的调用与回复"
+    description = "统一模型调用 — DeepSeek / LMStudio 原生 tool call 支持"
     hooks = [HookPoint.MODEL_INVOKE]
     priority = 50
 
@@ -47,54 +40,109 @@ class ModelsPlugin(Plugin):
         self._lmstudio_timeout = lmstudio_timeout
         self._complexity = complexity_analyzer
         self._db = db
+        self._skill_registry = None
+        self._tool_call_mode = getattr(Config, "TOOL_CALL_MODE", "native")
+
+    def set_skill_registry(self, registry):
+        self._skill_registry = registry
+        tools_count = len(registry.get_tools_schema()) if registry else 0
+        logger.info("ModelsPlugin: skill_registry 已注入, %d 个可用工具", tools_count)
 
     def on_load(self) -> None:
-        logger.info("模型插件已加载 — 默认类型: %s", self._model_type)
+        logger.info("ModelsPlugin 已加载 — model_type=%s tool_call_mode=%s",
+                    self._model_type, self._tool_call_mode)
 
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
-        # 构建带系统提示词的完整历史
         system_history = [{"role": "system", "content": ctx.system_prompt}]
         full_messages = system_history + ctx.full_history
 
-        # 时间戳消息
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         timestamped = f"[{now}] {ctx.message}"
 
-        # 创建客户端并调用
         effective_type = ctx.model_type or self._model_type
+
+        # 决定是否使用原生 tool call 模式
+        use_native = (self._tool_call_mode in ("native", "auto")
+                      and effective_type == "deepseek")
+
+        tools_schema = None
+        if use_native:
+            tools_schema = self._build_tools_schema()
+            logger.info("ModelsPlugin: 原生模式, 工具 schema=%d, model=%s",
+                        len(tools_schema), effective_type)
 
         try:
             chat = self._create_chat(effective_type)
             chat.messages = full_messages.copy()
-            reply = chat.send_message(timestamped)
+
+            if tools_schema:
+                reply = chat.send_message(timestamped, tools=tools_schema)
+                logger.info("ModelsPlugin: 已发送 %d 个工具定义到 API",
+                            len(tools_schema))
+            else:
+                reply = chat.send_message(timestamped)
+                logger.info("ModelsPlugin: 未发送工具定义 (XML 模式或无可用工具)")
+
             ctx.usage = getattr(chat, 'last_usage', None)
             ctx.model_name = getattr(chat, 'last_model', effective_type)
+
+            if tools_schema is not None and hasattr(chat, 'last_tool_calls') and chat.last_tool_calls:
+                ctx.extra["_native_tool_calls"] = chat.last_tool_calls
+                ctx.extra["_last_tool_calls"] = chat.last_tool_calls
+                logger.info("ModelsPlugin: 模型返回 %d 个原生 tool_calls",
+                            len(chat.last_tool_calls))
+                for tc in chat.last_tool_calls:
+                    logger.info("  → tool_call: %s(%s)",
+                                tc.get("function", {}).get("name", "?"),
+                                tc.get("function", {}).get("arguments", "{}")[:80])
+            elif tools_schema is not None and use_native:
+                logger.info("ModelsPlugin: 模型未返回 tool_calls (文本回复)")
         except Exception as e:
             logger.error("模型调用失败: %s", e)
             ctx.reply = "抱歉，AI 服务暂不可用，请稍后重试。"
             ctx.original_reply = ctx.reply
+            ctx.filtered = True
             return ctx
 
         ctx.original_reply = reply
-
-        # 清洗回复（移除标签）
         ctx.reply = self._clean_reply(reply)
 
-        # 保存消息到数据库
         if self._db is not None and ctx.chat_id:
             try:
                 round_index = self._db.get_next_round_index(ctx.chat_id)
                 ctx.extra["round_index"] = round_index
-                self._db.append_messages(
-                    ctx.user_id, ctx.chat_id, chat.messages[-2:],
-                    round_index=round_index,
-                )
+                last_msgs = [m for m in chat.messages[-2:] if m.get("content")]
+                if last_msgs:
+                    self._db.append_messages(
+                        ctx.user_id, ctx.chat_id, last_msgs,
+                        round_index=round_index,
+                    )
             except Exception as e:
                 logger.error("保存消息失败: %s", e)
 
         return ctx
 
-    # ---- 模型客户端创建 ----
+    def _build_tools_schema(self) -> list[dict]:
+        tools = []
+        if not self._skill_registry:
+            logger.warning("ModelsPlugin: skill_registry 未注入, 工具 schema 为空")
+            return tools
+
+        try:
+            tools = self._skill_registry.get_tools_schema()
+            if tools:
+                namespaces = set()
+                for t in tools:
+                    ns = t["function"]["name"].split(".")[1] if "." in t["function"]["name"] else "root"
+                    namespaces.add(ns)
+                logger.info("ModelsPlugin: 已加载 %d 个工具 schema (命名空间: %s)",
+                            len(tools), ", ".join(sorted(namespaces)))
+            else:
+                logger.warning("ModelsPlugin: skill_registry.get_tools_schema() 返回空列表")
+        except Exception as e:
+            logger.warning("ModelsPlugin: 加载技能工具 schema 失败: %s", e)
+
+        return tools
 
     def _create_chat(self, model_type: str):
         if model_type in ("fast", "lmstudio"):
@@ -108,20 +156,25 @@ class ModelsPlugin(Plugin):
             )
         else:
             from models import DeepSeekChat
-            return DeepSeekChat(api_key=self._deepseek_api_key)
-
-    # ---- 回复清洗 ----
+            chat = DeepSeekChat(api_key=self._deepseek_api_key)
+            logger.info("ModelsPlugin: 创建 DeepSeekChat — model=%s", chat.model)
+            return chat
 
     @staticmethod
     def _clean_reply(reply: str) -> str:
         import re
-        cleaned = re.sub(r"<text>(.*?)</text>", r"\1", reply, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"```action\s*\n.*?```", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"```\w*\s*\n.*?```", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"<task>.*?</task>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"<recall>.*?</recall>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"<tool>.*?</tool>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(r"<help>.*?</help>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<text>(.*?)</text>", r"\1", reply,
+                          flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"```\w*\s*\n.*?```", "", cleaned,
+                          flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<task>.*?</task>", "", cleaned,
+                          flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<recall>.*?</recall>", "", cleaned,
+                          flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<tool>.*?</tool>", "", cleaned,
+                          flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"<help>.*?</help>", "", cleaned,
+                          flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(r"<continue\s*/>", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"<[^>]+>", "", cleaned)
         cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
@@ -131,45 +184,26 @@ class ModelsPlugin(Plugin):
             cleaned = "…"
         return cleaned
 
-    # ---- Agent 循环用 LLM 调用 ----
-
-    def invoke(self, messages: list[dict], ctx: PluginContext | None = None) -> str:
-        """
-        供引擎层 Agent 循环通过 pipeline 直接调用 LLM，不修改 ctx。
-        返回 LLM 生成的完整回复文本（含原始标签）。
-
-        消息列表中应已包含 system prompt、历史、工具结果等。
-        """
+    def invoke(self, messages: list[dict], ctx: PluginContext | None = None,
+               tools: list[dict] = None) -> str:
         effective_type = ctx.model_type if ctx and ctx.model_type else self._model_type
-
         chat = self._create_chat(effective_type)
         chat.messages = list(messages)
-        return chat.continue_conversation()
+        kwargs = {"tools": tools, "tool_choice": "auto"} if tools else {}
+        reply = chat.continue_conversation(**kwargs)
 
-    def send_message(self, message: str, model_type: str | None = None) -> str:
-        """
-        便捷方法：发送单条用户消息并获取回复。
+        if ctx and hasattr(chat, 'last_tool_calls') and chat.last_tool_calls:
+            ctx.extra.setdefault("_native_tool_calls", []).extend(
+                chat.last_tool_calls
+            )
+            ctx.extra["_last_tool_calls"] = chat.last_tool_calls
+            logger.info("ModelsPlugin.invoke: 模型返回 %d 个 tool_calls",
+                        len(chat.last_tool_calls))
+        return reply
 
-        供 ScannerPipeline / ErrorAnalyzer / KnowledgeGraph 等组件
-        在不需要完整 Pipeline 上下文时直接调用 LLM。
-
-        :param message: 用户消息（字符串，可包含系统指令）
-        :param model_type: 模型类型，默认使用构造函数中的类型
-        :return: LLM 回复文本
-        """
-        effective_type = model_type or self._model_type
-        chat = self._create_chat(effective_type)
-        chat.messages = [{"role": "user", "content": message}]
-        return chat.send_message(message)
-
-    def describe_image(self, data_url: str, prompt: str = "请详细描述这张图片的内容") -> str:
-        """
-        调用本地 LMStudio 多模态模型描述图片，返回文字描述。
-
-        始终使用 LMStudioChat，因为只有本地模型支持多模态输入。
-        """
+    def describe_image(self, data_url: str,
+                        prompt: str = "请详细描述这张图片的内容") -> str:
         from models import LMStudioChat
-
         chat = LMStudioChat(
             base_url=self._lmstudio_base_url,
             model_name=self._lmstudio_model_name,

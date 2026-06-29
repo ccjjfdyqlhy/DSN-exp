@@ -179,6 +179,10 @@ class Config:
     SEMANTIC_CACHE_SIMILARITY_THRESHOLD = float(_env("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.85"))
     SEMANTIC_CACHE_MAX_ENTRIES = int(_env("SEMANTIC_CACHE_MAX_ENTRIES", "5000"))
 
+    # ==================== 工具调用模式 ====================
+    TOOL_CALL_MODE = _env("TOOL_CALL_MODE", "native")  # "native" | "xml" | "auto"
+    TOOL_CALL_MODEL = _env("TOOL_CALL_MODEL", "deepseek-v4-pro")
+
     @classmethod
     def load_skill_configs(cls):
         """扫描所有 skills 目录下的 skill.env，加载到 Config 和环境变量"""

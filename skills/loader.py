@@ -1,5 +1,6 @@
 # skills/loader.py
 # 技能加载器 — 从目录加载技能定义 (skill.yaml + prompts/*.md + tools/*.py)
+# UPD v3 — 原生 tool call schema 生成
 
 from __future__ import annotations
 
@@ -12,24 +13,21 @@ from typing import Optional
 
 logger = logging.getLogger("SkillLoader")
 
-# frontmatter 正则
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 
 
 @dataclass
 class ToolSpec:
-    """工具规格 — 定义技能中的一个工具"""
     name: str = ""
     display_name: str = ""
     description: str = ""
-    module: str = ""           # "tools.search"
-    class_name: str = ""       # "WebSearchTool"
+    module: str = ""
+    class_name: str = ""
     methods: list = field(default_factory=list)
 
 
 @dataclass
 class SkillPrompt:
-    """技能内的提示词文件"""
     name: str = ""
     category: str = "skills"
     priority: int = 60
@@ -39,7 +37,6 @@ class SkillPrompt:
 
 @dataclass
 class Skill:
-    """技能定义 — 提示词 + 可选工具的能力包"""
     name: str
     display_name: str = ""
     description: str = ""
@@ -48,46 +45,37 @@ class Skill:
     source: str = "builtin"
     enabled: bool = True
     status: str = "active"
-
     prompt_category: str = "skills"
     prompt_priority: int = 60
-
     tools: list[ToolSpec] = field(default_factory=list)
     prompts: list[SkillPrompt] = field(default_factory=list)
-
     activation: dict = field(default_factory=dict)
     dependencies: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
-
     skill_dir: str = ""
 
 
 class SkillLoader:
-    """
-    技能加载器。
 
-    职责:
-    - 从技能目录读取 skill.yaml + prompts/*.md
-    - 解析 tools 定义为 ToolSpec 列表
-    - 构造 Skill 数据类实例
-    """
+    TYPE_MAP = {
+        "string": "string", "str": "string",
+        "integer": "integer", "int": "integer",
+        "boolean": "boolean", "bool": "boolean",
+        "array": "array", "list": "array",
+        "number": "number", "float": "number",
+    }
 
     def load(self, skill_dir: str) -> Optional[Skill]:
         path = Path(skill_dir)
         yaml_file = path / "skill.yaml"
-
         if not yaml_file.exists():
             raise FileNotFoundError(f"skill.yaml not found in {skill_dir}")
-
         with open(yaml_file, "r", encoding='utf-8-sig') as f:
             data = yaml.safe_load(f)
-
         if not data or "name" not in data:
             raise ValueError("Invalid skill.yaml: missing 'name'")
-
         prompts = self._load_prompts(path / "prompts")
         tools = self._parse_tools(data.get("tools", []))
-
         return Skill(
             name=data["name"],
             display_name=data.get("display_name", data["name"]),
@@ -111,7 +99,6 @@ class SkillLoader:
         prompts: list[SkillPrompt] = []
         if not prompts_dir.exists():
             return prompts
-
         for md_file in sorted(prompts_dir.glob("*.md")):
             try:
                 text = md_file.read_text(encoding='utf-8-sig')
@@ -122,7 +109,6 @@ class SkillLoader:
                 else:
                     meta = {}
                     content = text.strip()
-
                 prompts.append(SkillPrompt(
                     name=meta.get("name", md_file.stem),
                     category=meta.get("category", "skills"),
@@ -146,3 +132,53 @@ class SkillLoader:
                 methods=t.get("methods", []),
             ))
         return specs
+
+    def build_function_schema(self, skill_name: str, tool_spec: ToolSpec) -> dict:
+        func_name = f"skill-{skill_name}-{tool_spec.name}"
+        parameters = self._extract_parameters(tool_spec)
+        return {
+            "type": "function",
+            "function": {
+                "name": func_name,
+                "description": tool_spec.description,
+                "parameters": parameters,
+            }
+        }
+
+    def _extract_parameters(self, tool_spec: ToolSpec) -> dict:
+        properties = {}
+        required = []
+        for method in tool_spec.methods:
+            if isinstance(method, str):
+                continue
+            if isinstance(method, dict):
+                params = method.get("parameters", {})
+                if not params:
+                    continue
+                if isinstance(params, dict):
+                    for param_name, param_def in params.items():
+                        if not isinstance(param_def, dict):
+                            continue
+                        schema = self._param_def_to_schema(param_def)
+                        properties[param_name] = schema
+                        if param_def.get("required"):
+                            required.append(param_name)
+        result = {
+            "type": "object",
+            "properties": properties,
+        }
+        if required:
+            result["required"] = required
+        return result
+
+    def _param_def_to_schema(self, param_def: dict) -> dict:
+        raw_type = param_def.get("type", "string")
+        schema_type = self.TYPE_MAP.get(raw_type, "string")
+        schema = {"type": schema_type}
+        if "description" in param_def:
+            schema["description"] = param_def["description"]
+        if "default" in param_def:
+            schema["default"] = param_def["default"]
+        if schema_type == "array":
+            schema["items"] = {"type": "string"}
+        return schema
