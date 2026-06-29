@@ -25,7 +25,7 @@ class DocTools:
 
         :param scanned_files: 扫描产出的文件列表
         :param user_id: 用户 ID（默认 0=自动取第一个用户）
-        :return: {hmd_path, feedback_text, documents, photos}
+        :return: {hmd_path, feedback_text, documents_summary, photos_summary}
         """
         uid = user_id or 1
         logger.info("process_scan 开始: %d 文件 (user_id=%d)", len(scanned_files), uid)
@@ -33,29 +33,45 @@ class DocTools:
             user_id=uid,
             scanned_images=scanned_files,
         )
+        # 移除 data_url（base64 图片）避免 payload 爆炸，仅保留文件名和路径
+        for lst_key in ("documents", "photos"):
+            lst = result.get(lst_key, [])
+            summary_list = []
+            for item in lst:
+                summary_list.append({
+                    "filename": item.get("filename", ""),
+                    "filepath": item.get("filepath", ""),
+                    "category": item.get("category", ""),
+                })
+            result[f"{lst_key}_summary"] = summary_list
+            result.pop(lst_key, None)
+
         logger.info("process_scan 完成: hmd=%s docs=%d photos=%d",
                      result.get("hmd_path") or "none",
-                     len(result.get("documents", [])),
-                     len(result.get("photos", [])))
+                     len(result.get("documents_summary", [])),
+                     len(result.get("photos_summary", [])))
         return result
 
     def read_hmd(self, hmd_path: str) -> dict:
         """
         解包 .hmd 文件，返回结构化数据供 AI 阅读。
+        mda 返回全文，其他字段仅返回摘要（避免 payload 过大）。
 
         :param hmd_path: .hmd 文件路径
-        :return: {success, mda, mdb, json, images}
+        :return: {success, mda, mdb_summary, json_keys, images_count}
         """
         logger.info("read_hmd: %s", hmd_path)
         data = self._hmd.read_hmd(hmd_path)
+        mda = data.get("mda", "")
+        mdb = data.get("mdb", "")
         images = data.get("images", [])
+        js = data.get("json", {})
         logger.info("read_hmd 完成: mdA=%d chars, mdB=%d chars, images=%d",
-                     len(data.get("mda", "")), len(data.get("mdb", "")), len(images))
+                     len(mda), len(mdb), len(images))
         return {
             "success": True,
-            "mda": data.get("mda", ""),
-            "mdb": data.get("mdb", ""),
-            "json": data.get("json", {}),
-            "images": images,
-            "image_count": len(images),
+            "mda": mda,
+            "mdb_summary": f"[mdb: {len(mdb)} chars, 布局分析全文未载入，按需询问细节]",
+            "json_keys": list(js.keys()) if isinstance(js, dict) else [],
+            "images_count": len(images),
         }

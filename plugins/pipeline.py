@@ -60,7 +60,10 @@ async def _call_llm_with_msgs(ctx, msgs: list[dict]) -> str | None:
 
     def _invoke():
         try:
-            return models_plugin.invoke(msgs, ctx)
+            tools = None
+            if hasattr(models_plugin, '_build_tools_schema'):
+                tools = models_plugin._build_tools_schema()
+            return models_plugin.invoke(msgs, ctx, tools=tools)
         except Exception as e:
             logger.error("LLM 调用失败: %s", e)
             return None
@@ -166,6 +169,9 @@ class ChatPipeline:
         if not ctx.skip_model:
             ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
         timing["model_invoke"] = round((time.perf_counter() - t0) * 1000, 1)
+        if ctx.filtered:
+            self._print_timing(timing, ctx)
+            return ctx
 
         # 创建动作旁白收集器
         collector = ActionNarrativeCollector()
@@ -213,36 +219,83 @@ class ChatPipeline:
         return await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
 
     async def _run_agent_loop(self, ctx: PluginContext) -> PluginContext:
+        from datetime import datetime
         max_steps = ctx.agent_max_steps or 5
         loop = asyncio.get_event_loop()
         logger.info("_run_agent_loop 启动, max_steps=%d", max_steps)
 
+        models_plugin = None
+        for p in self.pm.get_hooks_for(HookPoint.MODEL_INVOKE):
+            if p.__class__.__name__ == "ModelsPlugin":
+                models_plugin = p
+                break
+
         for step in range(max_steps):
             results = ctx.extra.pop("_tag_results", [])
             if not results:
-                logger.info("Agent 第 %d 步: _tag_results 为空，结束循环", step + 1)
+                logger.info("Agent 第 %d 步: _tag_results 为空", step + 1)
                 break
 
-            formatted = self._format_tag_results(results)
-            logger.info("Agent 第 %d 步: %d 个标签执行完毕, 格式化摘要 %d 字符",
-                        step + 1, len(results), len(formatted))
-            logger.debug("Agent 第 %d 步: 执行结果摘要\n%s", step + 1, formatted[:500])
+            # 检测是否为原生 tool call 结果（有 function 和 tool_call_id 字段）
+            has_native_results = any(
+                r.get("function") and r.get("tool_call_id") for r in results
+            )
 
-            # 构建消息列表：系统 + 历史 + 用户消息
+            if has_native_results and models_plugin:
+                msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
+                msgs.extend(ctx.full_history)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+
+                # assistant 消息必须携带 tool_calls（对应后续 tool role 消息）
+                last_tool_calls = ctx.extra.pop("_last_tool_calls", [])
+                assistant_msg = {"role": "assistant",
+                                 "content": ctx.original_reply or ctx.reply}
+                if last_tool_calls:
+                    assistant_msg["tool_calls"] = last_tool_calls
+                msgs.append(assistant_msg)
+
+                for r in results:
+                    content = json.dumps(r.get("data", r.get("error", "")),
+                                         ensure_ascii=False, default=str)
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": r.get("tool_call_id", "unknown"),
+                        "content": content,
+                    })
+
+                tools_schema = None
+                if hasattr(models_plugin, '_build_tools_schema'):
+                    tools_schema = models_plugin._build_tools_schema()
+
+                new_reply = await loop.run_in_executor(
+                    None, lambda: models_plugin.invoke(msgs, ctx, tools=tools_schema)
+                )
+
+                logger.info("Agent 第 %d 步(native): LLM 回复 %d 字符",
+                            step + 1, len(new_reply or ""))
+                ctx.original_reply = new_reply
+                ctx.reply = (models_plugin._clean_reply(new_reply)
+                             if new_reply else "…")
+                ctx.extra["_agent_step"] = step + 1
+
+                ctx = await self._dispatch_post_process(ctx)
+                if step >= max_steps - 1:
+                    logger.warning("Agent 达到最大步数 %d", max_steps)
+                continue
+
+            # 降级模式：传统 XML 标签处理
+            formatted = self._format_tag_results(results)
+            logger.info("Agent 第 %d 步(xml): %d 个标签执行完毕",
+                        step + 1, len(results))
+
             msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
             msgs.extend(ctx.full_history)
-            from datetime import datetime
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
             msgs.append({"role": "assistant", "content": ctx.reply})
             msgs.append({"role": "user", "content": f"[执行结果]\n{formatted}"})
 
-            # 查找 models_plugin 并调用 LLM
-            models_plugin = None
-            for p in self.pm.get_hooks_for(HookPoint.MODEL_INVOKE):
-                if p.__class__.__name__ == "ModelsPlugin":
-                    models_plugin = p
-                    break
             if models_plugin is None:
                 logger.warning("models_plugin 未找到，中断 agent 循环")
                 break
@@ -251,24 +304,16 @@ class ChatPipeline:
                 None, lambda: models_plugin.invoke(msgs, ctx)
             )
             if not new_reply:
-                logger.info("Agent 第 %d 步: LLM 返回空，结束循环", step + 1)
+                logger.info("Agent 第 %d 步: LLM 返回空", step + 1)
                 break
 
-            has_tool = "<tool>" in new_reply
-            logger.info("Agent 第 %d 步: LLM 回复 %d 字符, 含 <tool>=%s, 前 200=%s",
-                        step + 1, len(new_reply), has_tool, new_reply[:200].replace("\n", " "))
-
+            logger.info("Agent 第 %d 步(xml): LLM 回复 %d 字符",
+                        step + 1, len(new_reply))
             ctx.original_reply = new_reply
             ctx.reply = new_reply
             ctx.extra["_agent_step"] = step + 1
 
-            # 重新运行 POST_PROCESS
-            tag_count_before = len(ctx.extra.get("_tag_results", []))
             ctx = await self._dispatch_post_process(ctx)
-            tag_count_after = len(ctx.extra.get("_tag_results", []))
-            logger.info("Agent 第 %d 步: POST_PROCESS 后 _tag_results: %d → %d",
-                        step + 1, tag_count_before, tag_count_after)
-
             if step >= max_steps - 1:
                 logger.warning("Agent 达到最大步数 %d", max_steps)
 
@@ -715,6 +760,12 @@ class ChatPipeline:
             elif hook == HookPoint.MODEL_INVOKE:
                 if not ctx.skip_model:
                     ctx = await self.pm.dispatch(hook, ctx)
+                if ctx.filtered:
+                    timing[hook.value] = round((time.perf_counter() - t0) * 1000)
+                    timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
+                    self._print_timing(timing, ctx)
+                    yield f"data: {json.dumps({'status': 'completed', 'reply': ctx.reply, 'chat_id': ctx.chat_id, 'filtered': True, 'timing': timing})}\n\n"
+                    return
 
                 if ctx.original_reply:
                     if ctx.reply and ctx.reply != "…":

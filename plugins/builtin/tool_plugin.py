@@ -1,6 +1,5 @@
 # plugins/builtin/tool_plugin.py
 # 工具执行插件 — POST_PROCESS (priority=35)
-# 替代旧 SkillsPlugin，统一写入 _tag_results 供引擎层 agent 循环消费
 
 from __future__ import annotations
 
@@ -16,10 +15,8 @@ _TOOL_RE = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
 
 
 class ToolPlugin(Plugin):
-    """处理 <tool> 标签，调用 SkillRegistry 执行技能工具。"""
-
     name = "tool"
-    description = "<tool> 标签解析与 SkillRegistry 调用"
+    description = "工具调用 — 原生 tool_calls + <tool> 标签降级"
     hooks = [HookPoint.POST_PROCESS]
     priority = 35
 
@@ -28,14 +25,116 @@ class ToolPlugin(Plugin):
 
     def on_load(self) -> None:
         if self._skill_registry is None:
-            logger.warning("skill_registry 未注入，ToolPlugin 将跳过工具执行")
+            logger.warning("skill_registry 未注入")
 
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
         if self._skill_registry is None or hook != HookPoint.POST_PROCESS:
             return ctx
-        return self._on_post_process(ctx)
 
-    def _on_post_process(self, ctx: PluginContext) -> PluginContext:
+        self._set_call_context(ctx)
+
+        native_calls = ctx.extra.pop("_native_tool_calls", [])
+        if native_calls:
+            logger.info("ToolPlugin: 原生模式, %d 个 tool_calls 待处理", len(native_calls))
+            return self._handle_native_tool_calls(native_calls, ctx)
+
+        if ctx.original_reply and ("<tool>" in ctx.original_reply or "<task>" in ctx.original_reply):
+            logger.info("ToolPlugin: XML 降级模式, 检测到标签")
+        return self._handle_xml_tool_tags(ctx)
+
+    def _set_call_context(self, ctx: PluginContext):
+        from skills.context import set_call_context
+        set_call_context(user_id=ctx.user_id, chat_id=ctx.chat_id or 0)
+        # 注入到系统工具类的 _ctx
+        self._inject_system_ctx(ctx)
+
+    def _inject_system_ctx(self, ctx: PluginContext):
+        for key, instance in self._skill_registry._tool_instances.items():
+            cls = type(instance)
+            if hasattr(cls, '_ctx'):
+                cls._ctx["_uid"] = ctx.user_id
+                cls._ctx["_cid"] = ctx.chat_id or 0
+
+    def _handle_native_tool_calls(self, tool_calls: list,
+                                   ctx: PluginContext) -> PluginContext:
+        logger.info("ToolPlugin(native): 处理 %d 个原生 tool_calls", len(tool_calls))
+        results = []
+        for tc in tool_calls:
+            func_name = tc.get("function", {}).get("name", "unknown")
+            try:
+                func_args = json.loads(
+                    tc.get("function", {}).get("arguments", "{}"))
+            except json.JSONDecodeError:
+                results.append({"function": func_name, "tool_call_id": tc["id"],
+                                "success": False, "error": "JSON 解析失败"})
+                logger.warning("  ✗ %s: JSON 解析失败", func_name)
+                continue
+
+            logger.info("  → 执行 %s args=%s", func_name,
+                        json.dumps(func_args, ensure_ascii=False, default=str)[:100])
+
+            # 命名空间路由：skill-{skill_name}-{tool_name}
+            parts = func_name.split("-", 2)
+            if len(parts) >= 3 and parts[0] == "skill":
+                skill_name = parts[1]
+                tool_name = parts[2]
+                try:
+                    result_data = self._skill_registry.call_tool(
+                        skill_name, tool_name, func_args)
+                    results.append({
+                        "function": func_name,
+                        "tool_call_id": tc["id"],
+                        "success": True,
+                        "data": result_data,
+                    })
+                    logger.info("  ✓ %s 执行成功", func_name)
+                except Exception as e:
+                    logger.error("  ✗ %s 执行失败: %s", func_name, e)
+                    results.append({
+                        "function": func_name,
+                        "tool_call_id": tc["id"],
+                        "success": False,
+                        "error": str(e),
+                    })
+            else:
+                results.append({
+                    "function": func_name,
+                    "tool_call_id": tc.get("id", ""),
+                    "success": False,
+                    "error": f"无法解析工具名: {func_name}",
+                })
+                logger.warning("  ✗ %s: 无法解析", func_name)
+
+        if results:
+            ctx.extra.setdefault("_tag_results", []).extend(results)
+            logger.info("ToolPlugin(native): %d 个 tool_calls", len(results))
+
+        # 处理信号类结果 — 设置 ctx 标记供后续插件消费
+        for r in results:
+            if not r.get("success"):
+                continue
+            func = r.get("function", "")
+            data = r.get("data", {})
+            if isinstance(data, str):
+                continue
+
+            if func == "skill-system-confirm":
+                if data.get("action") == "confirm_requested":
+                    ctx.extra["confirm_requested"] = True
+                    logger.info("ToolPlugin: confirm_requested 已设置")
+            elif func == "skill-system-start_ssp":
+                ctx.extra["ssp_requested"] = True
+                logger.info("ToolPlugin: ssp_requested 已设置")
+            elif func == "skill-system-stop_ssp":
+                ctx.extra["ssp_stopped"] = True
+                logger.info("ToolPlugin: ssp_stopped 已设置")
+            elif func == "skill-system-record_impression":
+                if data.get("recorded"):
+                    logger.info("ToolPlugin: impression 已记录")
+
+        return ctx
+
+    def _handle_xml_tool_tags(self, ctx: PluginContext) -> PluginContext:
         original = ctx.original_reply
         if not original:
             return ctx
@@ -44,59 +143,33 @@ class ToolPlugin(Plugin):
         if not tool_matches:
             return ctx
 
-        logger.info("ToolPlugin: 发现 %d 个 <tool> 标签，开始执行", len(tool_matches))
-
+        logger.info("ToolPlugin(xml): %d 个 <tool> 标签", len(tool_matches))
         results: list[dict] = []
 
         for match in tool_matches:
             try:
                 tool_data = json.loads(match.group(1).strip())
             except json.JSONDecodeError as e:
-                logger.error("解析 <tool> JSON 失败: %s", e)
-                results.append({
-                    "tag": "<tool>", "success": False,
-                    "skill": "", "tool": "",
-                    "summary": f"JSON 解析失败: {e}",
-                    "error": str(e),
-                })
+                results.append({"tag": "<tool>", "success": False,
+                                "summary": f"JSON 解析: {e}"})
                 continue
 
             skill_name = tool_data.get("skill", "")
             tool_name = tool_data.get("tool", "")
             params = tool_data.get("params", {})
-
             if not skill_name or not tool_name:
-                logger.warning("无效的 <tool> 数据: 缺少 skill 或 tool")
                 continue
 
             try:
-                result = self._skill_registry.call_tool(skill_name, tool_name, params)
-                results.append({
-                    "tag": "<tool>", "success": True,
-                    "skill": skill_name, "tool": tool_name,
-                    "data": result,
-                })
-            except ValueError as e:
-                logger.error("工具调用失败: %s", e)
-                results.append({
-                    "tag": "<tool>", "success": False,
-                    "skill": skill_name, "tool": tool_name,
-                    "summary": f"调用失败: {e}",
-                    "error": str(e),
-                })
+                result_data = self._skill_registry.call_tool(
+                    skill_name, tool_name, params)
+                results.append({"tag": "<tool>", "success": True,
+                                "data": result_data})
             except Exception as e:
-                logger.exception("工具执行异常: %s.%s", skill_name, tool_name)
-                results.append({
-                    "tag": "<tool>", "success": False,
-                    "skill": skill_name, "tool": tool_name,
-                    "summary": f"执行异常: {e}",
-                    "error": str(e),
-                })
+                results.append({"tag": "<tool>", "success": False,
+                                "summary": str(e)})
 
         ctx.reply = _TOOL_RE.sub("", ctx.reply).strip()
-
         if results:
             ctx.extra.setdefault("_tag_results", []).extend(results)
-            logger.info("ToolPlugin: 已写入 %d 条结果到 _tag_results", len(results))
-
         return ctx
