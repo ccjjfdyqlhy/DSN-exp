@@ -331,9 +331,13 @@ class ChatPipeline:
                     logger.error("Agent 第 %d 步(native): invoke 失败: %s", step + 1, e)
                     break
                 if not new_reply:
-                    logger.warning("Agent 第 %d 步(native): LLM 返回空，终止循环",
-                                   step + 1)
-                    break
+                    has_pending = bool(ctx.extra.get("_native_tool_calls", []))
+                    if not has_pending:
+                        logger.warning("Agent 第 %d 步(native): LLM 返回空且无待处理 tool_calls，终止",
+                                       step + 1)
+                        break
+                    logger.info("Agent 第 %d 步(native): LLM 返回空但有 %d 个待处理 tool_calls，继续执行",
+                                step + 1, len(ctx.extra.get("_native_tool_calls", [])))
 
                 logger.info("Agent 第 %d 步(native): LLM 回复 %d 字符",
                             step + 1, len(new_reply or ""))

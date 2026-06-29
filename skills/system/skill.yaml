@@ -15,7 +15,7 @@ dependencies: []
 tools:
   - name: create_reminder
     display_name: "创建提醒"
-    description: "创建定时提醒任务（后台异步执行，创建后立即返回，提醒在指定时间触发）"
+    description: "创建定时提醒/通知/闹钟。用户说「提醒我」「X分钟后/小时后」「设个提醒」「定时」等均使用此工具。time 参数为 ISO8601 格式的触发时间。后台异步执行，到时间自动通知。"
     async: true
     estimated_duration: "future"
     module: "tools.task_tools"
@@ -107,7 +107,7 @@ tools:
 
   - name: create_reasoner
     display_name: "推理任务"
-    description: "创建异步推理任务（后台 LLM 推理执行，完成后自动通知用户）"
+    description: "创建后台推理/分析/计算任务，自动调用 LLM 处理。用户说「分析一下」「推理」「算一下」「总结」等可用此工具提交后台运算。后台执行，完成后自动通知用户。"
     async: true
     estimated_duration: "10-60s"
     module: "tools.task_tools"
@@ -127,7 +127,7 @@ tools:
 
   - name: execute_action
     display_name: "执行操作"
-    description: "直接执行代码操作——shell命令/python脚本/文件读写（后台执行，执行完毕后自动通知用户）"
+    description: "在用户电脑终端执行任意 shell 命令或 Python 脚本，也可读写编辑文件。用户说「跑一下」「执行」「终端」「命令行」「nvidia-smi」「ls」「cd」等均使用此工具。shell 时 content 放命令，python 时 content 放代码，write_file/edit_file 时配合 file_path 使用。"
     async: true
     estimated_duration: "1-300s"
     module: "tools.task_tools"

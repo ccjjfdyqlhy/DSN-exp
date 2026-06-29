@@ -45,6 +45,8 @@ class TaskTools:
             task_type=TaskType.REMINDER, user_id=self._uid(), chat_id=self._cid(),
             params={"text": text, "time": time},
             priority=1, scheduled_time=scheduled)
+        logger.info("create_reminder: task_id=%s text=%s time=%s uid=%d cid=%d",
+                     tid, text[:50], time, self._uid(), self._cid())
         return {"task_id": tid}
 
     def create_habit(self, text: str, time: str, interval: str) -> dict:
