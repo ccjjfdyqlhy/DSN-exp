@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, AsyncGenerator
 
+import json
 import yaml
 
 from utils.subapp_loader import SubAppConfig
@@ -70,6 +71,8 @@ class EngineConfig:
     agent_max_steps: int = Config.AGENT_MAX_STEPS
     agent_token_budget: int = 1000000
     agent_timeout: float = 120.0
+    debug_play_as_model: bool = Config.DEBUG_PLAY_AS_MODEL
+    debug_play_as_model_port: int = Config.DEBUG_PLAY_AS_MODEL_PORT
 
     @staticmethod
     def from_subapp(cfg: SubAppConfig) -> EngineConfig:
@@ -727,12 +730,45 @@ class DSNEngine:
             ctx.extra["_task_manager"] = self.task_manager
         if hasattr(self, '_completion_queue'):
             ctx.extra["_completion_queue"] = self._completion_queue
-        if self.db:
+        if self.db and not self._is_debug_mode():
             ctx.extra["_db"] = self.db
+        if self._is_debug_mode():
+            ctx.extra["_debug_mode"] = True
         sensing_hint = kwargs.get("sensing_hint", "")
         if sensing_hint:
             ctx.extra["_sensing_hint"] = sensing_hint
         return ctx
+
+    def _is_debug_mode(self) -> bool:
+        return Config.DEBUG_PLAY_AS_MODEL
+
+    def _get_skills_info(self) -> list[dict]:
+        skills = []
+        if self.skill_registry:
+            for spec in self.skill_registry.get_all_tool_specs():
+                skills.append({
+                    "skill": spec.get("skill", ""),
+                    "name": spec.get("name", ""),
+                    "display_name": spec.get("display_name", ""),
+                    "description": spec.get("description", ""),
+                    "async": spec.get("async", False),
+                    "parameters": self._get_tool_parameters(spec),
+                })
+        return skills
+
+    def _get_tool_parameters(self, spec: dict) -> dict:
+        schema = {}
+        try:
+            from skills.loader import SkillLoader
+            loader = SkillLoader()
+            tool_spec_obj = spec.get("_tool_spec_obj")
+            if tool_spec_obj:
+                built = loader.build_function_schema(
+                    spec.get("_skill_name", ""), tool_spec_obj)
+                schema = built.get("function", {}).get("parameters", {})
+        except Exception:
+            pass
+        return schema
 
     def chat(self, message: str, user_id: int = 1,
              chat_id: int | None = None, chat_name: str = "未命名",
@@ -792,6 +828,145 @@ class DSNEngine:
 
         async for event in self.pipeline.process_stream(ctx):
             yield event
+
+    # ── 调试模式对话接口 ──
+
+    async def chat_debug(self, message: str, session_id: str = "",
+                          user_id: int = 1, chat_id: int | None = None,
+                          history: list | None = None, **kwargs) -> dict:
+        """调试模式阶段1: 执行 PRE_FILTER + PRE_PROCESS，返回上下文"""
+        ctx = self.build_context(
+            user_id=user_id, message=message,
+            chat_id=chat_id, chat_name="调试模式",
+            history=history or [], **kwargs
+        )
+
+        ctx = await self.pipeline.process_pre_process(ctx)
+
+        return {
+            "session_id": session_id,
+            "context": {
+                "system_prompt": ctx.system_prompt or "",
+                "history": ctx.full_history or [],
+                "message": ctx.message,
+                "user_id": ctx.user_id,
+                "chat_id": ctx.chat_id,
+                "filtered": ctx.filtered,
+            },
+            "skills": self._get_skills_info() if not ctx.filtered else [],
+            "extra": dict(ctx.extra) if not ctx.filtered else {},
+        }
+
+    async def chat_debug_respond(self, reply: str, session_data: dict,
+                                  tool_calls: list | None = None) -> dict:
+        """调试模式阶段2/3+: 以模型回复继续 POST_PROCESS → Agent Loop（可选）→ TTS
+
+        返回:
+            status="completed" — 处理完成，返回最终回复
+            status="await_agent_step" — 需要用户提供 Agent Loop 下一步回复
+        """
+        prev_extra = session_data.get("extra", {})
+
+        ctx = PluginContext(
+            user_id=session_data.get("user_id", 1),
+            message=session_data.get("message", ""),
+            chat_id=session_data.get("chat_id"),
+            history=session_data.get("history", []),
+            system_prompt=session_data.get("system_prompt", ""),
+            full_history=session_data.get("full_history", []),
+            extra=dict(prev_extra),
+            tts_enabled=session_data.get("tts_enabled", True),
+            agent_active=session_data.get("agent_active", True),
+            agent_max_steps=session_data.get("agent_max_steps", 10),
+            agent_step_count=session_data.get("agent_step_count", 0),
+        )
+        ctx.extra["_debug_mode"] = True
+        if self.task_manager:
+            ctx.extra["_task_manager"] = self.task_manager
+        if hasattr(self, '_completion_queue'):
+            ctx.extra["_completion_queue"] = self._completion_queue
+
+        # 清除上一轮的 tag_results，仅检测本轮新产生的结果
+        prev_tag_results = ctx.extra.pop("_tag_results", [])[:]
+
+        ctx.original_reply = reply
+        ctx.reply = reply
+        if tool_calls:
+            ctx.extra["_native_tool_calls"] = tool_calls
+            ctx.extra["_last_tool_calls"] = tool_calls
+
+        # 执行 POST_PROCESS（跳过管线内的 Agent Loop，由引擎层控制）
+        ctx = await self.pipeline.process_post_process(ctx, skip_agent_loop=True)
+
+        # 仅检测本轮新产生的 tag_results
+        new_results = ctx.extra.get("_tag_results", [])
+        all_results = prev_tag_results + new_results
+
+        if ctx.agent_active and new_results:
+            ctx.extra["_tag_results"] = all_results
+            ctx.agent_step_count += 1
+            ctx.extra["_agent_step"] = ctx.agent_step_count
+            if ctx.agent_step_count >= ctx.agent_max_steps:
+                ctx.extra["_tag_results"] = []
+            else:
+                return {
+                    "status": "await_agent_step",
+                    "step": ctx.agent_step_count,
+                    "max_steps": ctx.agent_max_steps,
+                    "reply": ctx.reply or "",
+                    "original_reply": ctx.original_reply or "",
+                    "tool_results": new_results,
+                    "filtered": ctx.filtered,
+                    "_context": self._dump_context_for_session(ctx),
+                }
+
+        # Agent Loop 结束或不需要，合成 TTS
+        ctx = await self.pipeline.process_tts(ctx)
+
+        return {
+            "status": "completed",
+            "step": ctx.agent_step_count,
+            "reply": ctx.reply or "",
+            "original_reply": ctx.original_reply or "",
+            "filtered": ctx.filtered,
+            "_context": self._dump_context_for_session(ctx),
+        }
+
+    async def process_tts(self, ctx: PluginContext) -> PluginContext:
+        """仅执行 TTS 合成（复用 pipeline 能力）"""
+        return await self.pipeline.process_tts(ctx)
+
+    def _dump_context_for_session(self, ctx: PluginContext) -> dict:
+        """将上下文的可序列化部分导出为 session 存储格式"""
+        clean_extra = {}
+        for k, v in ctx.extra.items():
+            if k in ("_task_manager", "_completion_queue", "_db", "_plugin_manager"):
+                continue
+            try:
+                json.dumps(v)
+                clean_extra[k] = v
+            except (TypeError, ValueError):
+                try:
+                    json.dumps(str(v))
+                    clean_extra[k] = str(v)
+                except (TypeError, ValueError):
+                    clean_extra[k] = f"<{type(v).__name__}>"
+        return {
+            "user_id": ctx.user_id,
+            "chat_id": ctx.chat_id,
+            "message": ctx.message,
+            "system_prompt": ctx.system_prompt,
+            "full_history": ctx.full_history,
+            "history": ctx.history,
+            "reply": ctx.reply,
+            "original_reply": ctx.original_reply,
+            "extra": clean_extra,
+            "agent_active": ctx.agent_active,
+            "agent_max_steps": ctx.agent_max_steps,
+            "agent_step_count": ctx.agent_step_count,
+            "filtered": ctx.filtered,
+            "tts_enabled": ctx.tts_enabled,
+        }
 
     def create_chat(self, user_id: int, chat_name: str = "未命名") -> int:
         return self.db.create_chat(user_id, chat_name) if self.db else 0
