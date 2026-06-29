@@ -165,6 +165,11 @@ def callback():
     jwt_token = um.generate_jwt(user_info)
 
     # 重定向到客户端本地地址，并附带 token
+    # 安全校验：仅允许自定义协议重定向，防止开放重定向
+    ALLOWED_PREFIXES = ("dsn-exp://", "com.dsn-exp://", "http://127.0.0.1", "http://localhost")
+    if not any(state.startswith(p) for p in ALLOWED_PREFIXES):
+        logger.warning("拒绝 OAuth 重定向到非本地地址: %s...", state[:60])
+        return redirect("dsn-exp://auth/callback?error=invalid_redirect")
     redirect_target = f"{state}?token={jwt_token}"
     return redirect(redirect_target)
 

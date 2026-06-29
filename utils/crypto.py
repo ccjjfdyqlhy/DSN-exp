@@ -90,11 +90,12 @@ class MessageCipher:
         master_key = os.urandom(32)
 
         secret_ct = _aes_gcm_encrypt(keystore, master_key)
-        secret_b64 = base64.b64encode(secret_ct).decode("ascii")
+        # master_key 用 keystore 加密后存入文件（非明文密钥）
+        secret_ct_b64 = base64.b64encode(secret_ct).decode("ascii")
 
         keystore_path.write_bytes(keystore)
         _secure_chmod(keystore_path)
-        secret_path.write_text(secret_b64)
+        secret_path.write_text(secret_ct_b64)
         _secure_chmod(secret_path)
 
         logger.info("已创建新的主密钥 → %s", self._dsn_dir)
