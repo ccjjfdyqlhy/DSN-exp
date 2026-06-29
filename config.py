@@ -182,6 +182,10 @@ class Config:
     TOOL_CALL_MODE = _env("TOOL_CALL_MODE", "native")  # "native" | "xml" | "auto"
     TOOL_CALL_MODEL = _env("TOOL_CALL_MODEL", "deepseek-v4-pro")
 
+    # ==================== 调试模式 ====================
+    DEBUG_PLAY_AS_MODEL = _env("DEBUG_PLAY_AS_MODEL", "false").lower() == "true"
+    DEBUG_PLAY_AS_MODEL_PORT = int(_env("DEBUG_PLAY_AS_MODEL_PORT", "5050"))
+
     @classmethod
     def load_skill_configs(cls):
         """扫描所有 skills 目录下的 skill.env，加载到 Config 和环境变量"""

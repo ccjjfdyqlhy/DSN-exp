@@ -47,6 +47,8 @@ class MemoryPlugin(Plugin):
     def _on_post_process(self, ctx: PluginContext) -> PluginContext:
         if self._ms is None or self._db is None:
             return ctx
+        if ctx.extra.get("_debug_mode"):
+            return ctx
 
         try:
             round_index = ctx.extra.get("round_index") or self._db.get_next_round_index(ctx.chat_id)
