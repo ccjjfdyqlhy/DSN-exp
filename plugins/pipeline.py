@@ -139,6 +139,41 @@ class ChatPipeline:
         self._async_store = async_task_store
         self._skill_registry = skill_registry
 
+    # ---- 管道子阶段（供调试模式等复用） ----
+
+    async def process_tts(self, ctx: PluginContext) -> PluginContext:
+        """仅执行 TTS 合成"""
+        if ctx.tts_enabled and ctx.reply:
+            if self._tts_client:
+                tts_lines = await self._synthesize_lines(ctx.reply)
+                if tts_lines:
+                    all_audio = b"".join(
+                        line["audio_bytes"] for line in tts_lines if line.get("audio_bytes"))
+                    if all_audio:
+                        import base64
+                        ctx.audio = all_audio
+                        ctx.audio_b64 = base64.b64encode(all_audio).decode("utf-8")
+            else:
+                ctx = await self.pm.dispatch(HookPoint.POST_TTS, ctx)
+        return ctx
+
+    async def process_pre_process(self, ctx: PluginContext) -> PluginContext:
+        """执行管线前半段：PRE_FILTER → PRE_PROCESS（不含 MODEL_INVOKE）"""
+        ctx = await self.pm.dispatch(HookPoint.PRE_FILTER, ctx)
+        if ctx.filtered:
+            return ctx
+        self._assemble_prompt(ctx)
+        ctx = await self._dispatch_pre_process(ctx)
+        return ctx
+
+    async def process_post_process(self, ctx: PluginContext, *,
+                                     skip_agent_loop: bool = False) -> PluginContext:
+        """执行管线后半段：POST_PROCESS → Agent Loop（跳过 MODEL_INVOKE，不含 TTS）"""
+        ctx = await self._dispatch_post_process(ctx)
+        if not skip_agent_loop and ctx.agent_active and ctx.extra.get("_tag_results"):
+            ctx = await self._run_agent_loop(ctx)
+        return ctx
+
     # ---- 完整管道 ----
 
     async def process(self, ctx: PluginContext) -> PluginContext:
@@ -238,7 +273,25 @@ class ChatPipeline:
         store.create(task_id, ctx.user_id, ctx.chat_id or 0)
 
         from copy import deepcopy
-        _ctx = deepcopy(ctx)
+
+        # Temporarily remove non-copyable shared service references (e.g. ChatDBManager._local)
+        _shared_keys = ('_db', '_task_manager', '_completion_queue')
+        _shared = {}
+        for _k in _shared_keys:
+            try:
+                _shared[_k] = ctx.extra.pop(_k)
+            except KeyError:
+                pass
+
+        try:
+            _ctx = deepcopy(ctx)
+        finally:
+            for _k, _v in _shared.items():
+                ctx.extra[_k] = _v
+
+        for _k, _v in _shared.items():
+            _ctx.extra[_k] = _v
+
         _pm = self.pm
 
         def _run_rest():

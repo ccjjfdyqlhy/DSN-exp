@@ -2082,6 +2082,27 @@ def main():
     except Exception as e:
         console.print(f"[red]Failed to start HTTP server: {e}[/]")
 
+    # ── DEBUG_PLAY_AS_MODEL 调试模式服务器 ──
+    debug_server = None
+    if getattr(Config, "DEBUG_PLAY_AS_MODEL", False):
+        try:
+            from api.debug import create_debug_app
+            debug_host = "127.0.0.1"
+            debug_port = getattr(Config, "DEBUG_PLAY_AS_MODEL_PORT", 5050)
+            debug_app = create_debug_app(engine)
+            from werkzeug.serving import make_server
+            debug_server = make_server(debug_host, debug_port, debug_app, threaded=True)
+            debug_thread = threading.Thread(target=debug_server.serve_forever, daemon=True)
+            debug_thread.name = "debug-server"
+            debug_thread.start()
+            time.sleep(0.3)
+            console.print(
+                f"[yellow]  DEBUG_PLAY_AS_MODEL 模式已启动: "
+                f"http://{debug_host}:{debug_port}/debug/[/]"
+            )
+        except Exception as e:
+            console.print(f"[red]DEBUG_PLAY_AS_MODEL 启动失败: {e}[/]")
+
     # ── 驻守模型 ──
     steward = None
     if getattr(Config, "STEWARD_ENABLED", True):
@@ -2155,6 +2176,11 @@ def main():
         try:
             if server:
                 server.shutdown()
+        except Exception:
+            pass
+        try:
+            if debug_server:
+                debug_server.shutdown()
         except Exception:
             pass
         console.print("\n[yellow]Shutting down...[/]")

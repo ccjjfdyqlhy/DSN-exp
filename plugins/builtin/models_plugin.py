@@ -130,7 +130,7 @@ class ModelsPlugin(Plugin):
         ctx.original_reply = reply
         ctx.reply = self._clean_reply(reply)
 
-        if self._db is not None and ctx.chat_id:
+        if self._db is not None and ctx.chat_id and not ctx.extra.get("_debug_mode"):
             try:
                 round_index = self._db.get_next_round_index(ctx.chat_id)
                 ctx.extra["round_index"] = round_index

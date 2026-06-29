@@ -54,6 +54,10 @@ class ToolPlugin(Plugin):
             if hasattr(cls, '_ctx'):
                 cls._ctx["_uid"] = ctx.user_id
                 cls._ctx["_cid"] = ctx.chat_id or 0
+                if "_task_manager" in ctx.extra:
+                    cls._ctx["task_manager"] = ctx.extra["_task_manager"]
+                if "_db" in ctx.extra:
+                    cls._ctx["db"] = ctx.extra["_db"]
 
     def _handle_native_tool_calls(self, tool_calls: list,
                                    ctx: PluginContext) -> PluginContext:
