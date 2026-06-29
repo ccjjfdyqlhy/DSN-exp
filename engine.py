@@ -162,6 +162,8 @@ class DSNEngine:
         self.db = ChatDBManager(db_path=abs_path)
         from prompt.impression import ImpressionManager
         self.impression_manager = ImpressionManager(db=self.db)
+        from async_task_store import AsyncTaskStore
+        self.async_task_store = AsyncTaskStore(db=self.db)
 
     def _init_tasks(self):
         if not self._engine_cfg.task_manager_enabled:
@@ -691,6 +693,8 @@ class DSNEngine:
             tts_client=self._tts_client,
             tts_profile_mgr=self._tts_profile_mgr,
             tts_process_model=self._tts_process_model,
+            async_task_store=self.async_task_store,
+            skill_registry=self.skill_registry,
         )
 
     # ── 对话接口 ──
@@ -918,6 +922,8 @@ def create_engine_with_defaults(
 
     engine = DSNEngine()
     engine.db = db
+    from async_task_store import AsyncTaskStore
+    engine.async_task_store = AsyncTaskStore(db=db)
 
     if memory_system:
         engine.memory_system = memory_system

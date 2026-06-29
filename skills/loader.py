@@ -123,14 +123,17 @@ class SkillLoader:
     def _parse_tools(self, tools_data: list) -> list[ToolSpec]:
         specs: list[ToolSpec] = []
         for t in tools_data:
-            specs.append(ToolSpec(
+            spec = ToolSpec(
                 name=t.get("name", ""),
                 display_name=t.get("display_name", ""),
                 description=t.get("description", ""),
                 module=t.get("module", ""),
                 class_name=t.get("class", ""),
                 methods=t.get("methods", []),
-            ))
+            )
+            spec.async_mode = t.get("async", False)
+            spec.estimated_duration = t.get("estimated_duration", "")
+            specs.append(spec)
         return specs
 
     def build_function_schema(self, skill_name: str, tool_spec: ToolSpec) -> dict:

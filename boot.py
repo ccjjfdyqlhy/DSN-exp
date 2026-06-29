@@ -373,6 +373,8 @@ def create_application():
     app.register_blueprint(todo_bp)
     app.register_blueprint(reminder_bp)
     app.register_blueprint(plan_bp)
+    from api.async_tasks import async_task_bp
+    app.register_blueprint(async_task_bp)
     _t("认证 + 蓝图 + 数据库")
 
     # ── 数据库 ──
@@ -543,6 +545,7 @@ def create_application():
         narrative_model=_narrative_model,
         task_manager=task_manager, personality_v3=personality_v3,
     )
+    app.config["ENGINE"] = engine
     _t("DSNEngine")
 
     # ── 语义缓存系统 (L1/L2/L3) ──

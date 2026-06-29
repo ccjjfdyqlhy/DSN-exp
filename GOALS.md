@@ -5,19 +5,15 @@
 
 所以，我最近在干嘛？
 
-**本次更新：Tool Call 原生升级 — DeepSeek 原生 function call 替换 XML 标签方案 + 技能系统架构重构 + 系统技能标准化**
+**本次更新：Tool Call 原生升级 + 异步任务系统 — DeepSeek 原生 function call 替换 XML 标签方案 + 技能系统架构重构 + 系统技能标准化 + 前后端协同异步心跳系统**
 
 ## 下一步往哪儿走
 
+**异步任务系统**：reminder/reasoner/action 自动检测 → 后台执行 → 前端 30s 心跳轮询 → 完成时一次性交付文字 + TTS。已实现管道自动检测和切换。  
+**废弃 XML 遗留**：native 模式下 system prompt 已跳过 skill instruction.md 和 capabilities，后续可移除遗留提示词文件。  
 **AI 原生功能调用**：废弃 XML 标签方案，全面接入 DeepSeek function calling。所有动作（技能工具/任务/记忆/笔记/信号）统一为 skill 目录下 YAML 定义，启动时自动生成 API schema。  
-**系统技能标准化**：task/memory/notebook/plan/signal 全部转为 `skills/system/` 下的技能文件，52+ 工具自动注册。  
-**首次启动引导**：AI 驱动的配置向导，角色卡/环境/功能交互式完成。  
-**用户了解体系重构**：做到私人知识库那种级别。先走Concepts/记忆系统路线。  
-**纸制品交互**：通过打印机/扫描仪完成基于纸制品的交互界面。  
-**环境感知**：摄像头主动抓帧，感知用户状态、环境光线、作息习惯。  
-~~**规划引擎**：大目标拆解、日计划自动生成、执行追踪、日终反馈。搞定！~~  
-~~**交互大改**：实现一个真正没webui、靠硬件驱动的交互策略。做完辣！~~  
-- [ ] 废弃 XML 标签提示词注入：native 模式下 system prompt 已跳过 skill instruction.md，后续移除 capability 中的标签说明  
+**系统技能标准化**：task/memory/notebook/plan/signal 全部转为 `skills/system/` 下的技能文件，54 个工具自动注册。  
+- [ ] `execute_action` 脱离 TaskManager 直接 subprocess 运行，不持久化到 DB 
 
 
 ## 议题
@@ -75,6 +71,11 @@ Concepts
 - [x] **DeepSeek API 兼容**：function name 格式 `^[a-zA-Z0-9_-]+$`，`required` 空数组不传，`tool_call_id` 匹配正确
 - [x] **Agent Loop 原生模式**：构造 `role:"tool"` + `tool_calls` 消息，双分支兼容 XML 降级
 - [x] **文档工具精简**：`process_scan` 返回文件摘要而非完整 base64 图片，`read_hmd` 仅返回 OCR 文本全文
+- [x] **异步任务系统**：AsyncTaskStore 双后端存储 + POST/GET API + 后台线程 Pipeline 执行 + 前端 30s 心跳轮询
+- [x] **Pipeline 自动异步切换**：`async: true` 标记工具自动检测，MODEL_INVOKE 后切换后台执行，SSE yield async_task 事件
+- [x] **前端异步轮询**：minimal.py AsyncTaskPoller 后台线程轮询 + `async_task` SSE 事件自动触发
+- [x] **execute_action 脱离 DB**：shell/python/write_file/edit_file 直接 subprocess.run 执行，不走 TaskManager 持久化
+- [x] **Pipeline 异常保护**：Agent Loop native + XML 两分支的 invoke 调用加 try/except + 空值检查
 - [ ] 接入IM！
 - [ ] 话题管理系统、多层提示词系统
 - [ ] 优化世界叙述现实系统：提示词重写、种子生成世界什么的。

@@ -63,17 +63,18 @@ python psychoscope/server.py
 ## 架构长啥样？
 
 ```
-你 ──语音/键盘──▶ 管线 (ChatPipeline) ──▶ AI (DeepSeek / LMStudio)
-                      │
+你 ──语音/键盘──▶ 管线 (ChatPipeline) ──▶ DeepSeek 原生 function call
+                      │                          │ (54 tools)
                       ├─ 记忆系统 (加密摘要 + 向量检索)
                       ├─ 人格系统 (角色卡/蒸馏/50维向量)
                       ├─ 世界系统 (天候/地理/事件)
-                      ├─ 技能系统 (搜索/文件/GitHub/音乐/文档)
+                      ├─ 技能系统 (搜索/文件/GitHub/音乐/文档/系统操作)
                       ├─ 提醒系统 (定时/倒计时/习惯)
                       ├─ 视觉系统 (摄像头感知)
                       ├─ 工作区系统 (多用户隔离目录)
                       ├─ 文档系统 (扫描仪/打印机/OCR/.hmd)
-                      └─ 语义缓存 (重复请求拦截 + 意图分类 + 向量召回)
+                      ├─ 语义缓存 (重复请求拦截 + 意图分类 + 向量召回)
+                      └─ 异步任务系统 (慢工具检测 → 后台 Pipeline → 前端心跳轮询)
 ```
 
 没有微服务、没有容器、没有一大坨依赖。Flask + SQLite + Python，一台破电脑就能跑。
@@ -85,23 +86,25 @@ python psychoscope/server.py
 ## 功能一览
 
 | 功能 | 说明 |
-|---|---|
-| 对话 | 支持 DeepSeek API / 本地 LMStudio 双后端 |
+|---|---|---|
+| 对话 | DeepSeek 原生 function call / LMStudio 双后端 |
 | 语音输入 | 实时录音 + ASR 识别，支持 VAD 静音检测 |
 | 语音输出 | 按行合成 TTS，边听边播 |
 | 长期记忆 | LLM 自动摘要 + AES-256-GCM 加密 + 向量语义搜索 |
 | 角色卡 | YAML 定义，LLM 蒸馏人格向量，4-Pass 提取 |
 | 情绪系统 | 50 维人格向量 + 实时情绪状态 + 亲密度 |
 | 世界模拟 | 天气/昼夜/地理场所切换 + 叙事生成 |
-| 技能工具 | 网页搜索 / 文件管理 / GitHub / 网易云音乐 |
+| 技能工具 | 网页搜索 / 文件管理 / GitHub / 网易云音乐 / 系统操作 |
 | 待机维护 | 自动记忆整理 + 人格蒸馏 + 日志清理 |
 | 工作区系统 | 多用户隔离目录，WORKSPACE_DIR 配置，AI 笔记/扫描/仓库默认路径 |
-| 文档系统 | scanner/printr 技能 + OCRModel + HMD 格式 + process_scan 管线 |
+| 文档系统 | scanner/printer 技能 + OCRModel + HMD 格式 + process_scan 管线 |
 | 硬件交互 | 扫描仪入题 + 打印机出卷 + OCR 识别 + .hmd 归档 |
 | 最小客户端 | 纯键盘操作，无 GUI，远程控制，小键盘友好 |
 | 模型卸载 | LMStudio unload API，OCR_UNLOAD_AFTER_USE |
 | 语义缓存 | 重复请求自动拦截 + 12 类意图分类 + 向量语义召回 + TTS 音频复用 |
 | L1 静态语素 | 无参短语缓存（确认/错误/结束语等），零算力返回 |
+| 原生 function call | 废弃 XML 标签，54 个工具全部从 skill.yaml 自动生成 API schema |
+| 异步任务系统 | 慢工具自动检测 → 后台 Pipeline 执行 → 前端 30s 心跳轮询 → 一次性交付 |
 
 ---
 
