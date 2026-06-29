@@ -274,7 +274,6 @@ class ChatPipeline:
 
         from copy import deepcopy
 
-        # Temporarily remove non-copyable shared service references (e.g. ChatDBManager._local)
         _shared_keys = ('_db', '_task_manager', '_completion_queue')
         _shared = {}
         for _k in _shared_keys:
@@ -294,33 +293,46 @@ class ChatPipeline:
 
         _pm = self.pm
 
-        def _run_rest():
+        def _run_tool():
+            """后台线程：仅执行工具调用，不走 Agent Loop / TTS"""
             _loop = asyncio.new_event_loop()
             try:
                 asyncio.set_event_loop(_loop)
+                ntc = len(_ctx.extra.get("_native_tool_calls", []))
+                logger.info("异步后台 POST_PROCESS 开始 (async=%s, native_tool_calls=%d)",
+                             task_id, ntc)
                 _sctx = _loop.run_until_complete(_pm.dispatch(HookPoint.POST_PROCESS, _ctx))
-                if _sctx.agent_active and _sctx.extra.get("_tag_results"):
-                    _sctx = _loop.run_until_complete(self._run_agent_loop(_sctx))
 
-                if _sctx.tts_enabled and _sctx.reply and self._tts_client:
-                    tts_lines = _loop.run_until_complete(self._synthesize_lines(_sctx.reply))
-                    if tts_lines:
-                        all_audio = b"".join(
-                            line["audio_bytes"] for line in tts_lines if line.get("audio_bytes"))
-                        if all_audio:
-                            import base64
-                            _sctx.audio_b64 = base64.b64encode(all_audio).decode("utf-8")
+                tag_results = _sctx.extra.get("_tag_results", [])
+                logger.info("异步后台 POST_PROCESS 完成 (async=%s, tag_results=%d)",
+                             task_id, len(tag_results))
 
-                reply = _sctx.reply or ""
-                audio_b64 = _sctx.audio_b64 or ""
-                store.complete(task_id, reply=reply, audio_b64=audio_b64)
+                linked = False
+                for i, r in enumerate(tag_results):
+                    logger.info("  tag_result[%d]: function=%s success=%s data=%s",
+                                 i, r.get("function", "?"), r.get("success"),
+                                 str(r.get("data", {}))[:120])
+                    if not r.get("success"):
+                        continue
+                    tdata = r.get("data", {})
+                    if isinstance(tdata, dict):
+                        tm_id = tdata.get("task_id", "")
+                        if tm_id and len(tm_id) > 8:
+                            store.link_taskmgr(task_id, tm_id)
+                            linked = True
+                            logger.info("  → 已联动 async=%s -> taskmgr=%s", task_id, tm_id)
+
+                if not linked:
+                    logger.info("异步工具无 taskmgr 联动，立即完成 (async=%s)", task_id)
+                    reply = _sctx.reply or "任务已完成"
+                    store.complete(task_id, reply=reply)
             except Exception as e:
                 logger.error("异步后台执行失败 %s: %s", task_id, e)
                 store.complete(task_id, error=str(e))
             finally:
                 _loop.close()
 
-        threading.Thread(target=_run_rest, daemon=True).start()
+        threading.Thread(target=_run_tool, daemon=True).start()
         ctx.reply = "任务已创建，后台执行中…"
         ctx.extra["_async_task_id"] = task_id
         logger.info("异步切换: task_id=%s", task_id)

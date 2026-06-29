@@ -49,6 +49,7 @@ class AsyncTaskStore:
             "created_at": datetime.now().isoformat(),
             "completed_at": "",
             "error": "",
+            "taskmgr_id": "",
         }
         with self._lock:
             self._tasks[task_id] = record
@@ -62,6 +63,28 @@ class AsyncTaskStore:
             conn.commit()
         logger.info("异步任务创建: %s user=%d chat=%d", task_id, user_id, chat_id)
         return record
+
+    def link_taskmgr(self, async_task_id: str, taskmgr_id: str) -> bool:
+        """将 AsyncTaskStore 任务与 TaskManager 任务关联"""
+        with self._lock:
+            record = self._tasks.get(async_task_id)
+            if not record:
+                return False
+            record["taskmgr_id"] = taskmgr_id
+        logger.info("异步任务联动: async=%s taskmgr=%s", async_task_id, taskmgr_id)
+        return True
+
+    def complete_by_taskmgr_id(self, taskmgr_id: str, reply: str) -> bool:
+        """通过 TaskManager 任务 ID 完成异步任务"""
+        async_task_id = None
+        with self._lock:
+            for tid, rec in self._tasks.items():
+                if rec.get("taskmgr_id") == taskmgr_id:
+                    async_task_id = tid
+                    break
+        if not async_task_id:
+            return False
+        return self.complete(async_task_id, reply=reply)
 
     def complete(self, task_id: str, reply: str, audio_b64: str = "",
                   error: str = "") -> bool:
