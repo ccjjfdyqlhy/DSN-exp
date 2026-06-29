@@ -36,6 +36,8 @@ class SkillRegistry:
                             "module": tool_spec.module,
                             "class": tool_spec.class_name,
                             "methods": tool_spec.methods,
+                            "async": getattr(tool_spec, "async_mode", False),
+                            "estimated_duration": getattr(tool_spec, "estimated_duration", ""),
                             "_tool_spec_obj": tool_spec,
                             "_skill_name": skill.name,
                         }

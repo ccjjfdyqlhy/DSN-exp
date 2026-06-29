@@ -124,16 +124,20 @@ class ChatPipeline:
     def __init__(
         self,
         plugin_manager: PluginManager,
-        prompt_engine=None,  # Optional[PromptEngine]
-        tts_client=None,      # VocalExp
-        tts_profile_mgr=None, # TTSProfileManager
-        tts_process_model=None,  # TTSProcessModel
+        prompt_engine=None,
+        tts_client=None,
+        tts_profile_mgr=None,
+        tts_process_model=None,
+        async_task_store=None,
+        skill_registry=None,
     ):
         self.pm = plugin_manager
         self._prompt_engine = prompt_engine
         self._tts_client = tts_client
         self._tts_profile_mgr = tts_profile_mgr
         self._tts_process_model = tts_process_model
+        self._async_store = async_task_store
+        self._skill_registry = skill_registry
 
     # ---- 完整管道 ----
 
@@ -170,6 +174,13 @@ class ChatPipeline:
             ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
         timing["model_invoke"] = round((time.perf_counter() - t0) * 1000, 1)
         if ctx.filtered:
+            self._print_timing(timing, ctx)
+            return ctx
+
+        # ── 异步工具检测：含 async 标记的工具调用 → 后台执行 ──
+        if ctx.extra.get("_async_detected") and self._async_store:
+            ctx = await self._run_async_background(ctx)
+            timing["total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
             self._print_timing(timing, ctx)
             return ctx
 
@@ -217,6 +228,50 @@ class ChatPipeline:
 
     async def _dispatch_post_process(self, ctx: PluginContext) -> PluginContext:
         return await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
+
+    async def _run_async_background(self, ctx: PluginContext) -> str:
+        import threading
+        import uuid
+
+        task_id = f"async_{uuid.uuid4().hex[:16]}"
+        store = self._async_store
+        store.create(task_id, ctx.user_id, ctx.chat_id or 0)
+
+        from copy import deepcopy
+        _ctx = deepcopy(ctx)
+        _pm = self.pm
+
+        def _run_rest():
+            _loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(_loop)
+                _sctx = _loop.run_until_complete(_pm.dispatch(HookPoint.POST_PROCESS, _ctx))
+                if _sctx.agent_active and _sctx.extra.get("_tag_results"):
+                    _sctx = _loop.run_until_complete(self._run_agent_loop(_sctx))
+
+                if _sctx.tts_enabled and _sctx.reply and self._tts_client:
+                    tts_lines = _loop.run_until_complete(self._synthesize_lines(_sctx.reply))
+                    if tts_lines:
+                        all_audio = b"".join(
+                            line["audio_bytes"] for line in tts_lines if line.get("audio_bytes"))
+                        if all_audio:
+                            import base64
+                            _sctx.audio_b64 = base64.b64encode(all_audio).decode("utf-8")
+
+                reply = _sctx.reply or ""
+                audio_b64 = _sctx.audio_b64 or ""
+                store.complete(task_id, reply=reply, audio_b64=audio_b64)
+            except Exception as e:
+                logger.error("异步后台执行失败 %s: %s", task_id, e)
+                store.complete(task_id, error=str(e))
+            finally:
+                _loop.close()
+
+        threading.Thread(target=_run_rest, daemon=True).start()
+        ctx.reply = "任务已创建，后台执行中…"
+        ctx.extra["_async_task_id"] = task_id
+        logger.info("异步切换: task_id=%s", task_id)
+        return task_id
 
     async def _run_agent_loop(self, ctx: PluginContext) -> PluginContext:
         from datetime import datetime
@@ -268,9 +323,17 @@ class ChatPipeline:
                 if hasattr(models_plugin, '_build_tools_schema'):
                     tools_schema = models_plugin._build_tools_schema()
 
-                new_reply = await loop.run_in_executor(
-                    None, lambda: models_plugin.invoke(msgs, ctx, tools=tools_schema)
-                )
+                try:
+                    new_reply = await loop.run_in_executor(
+                        None, lambda: models_plugin.invoke(msgs, ctx, tools=tools_schema)
+                    )
+                except Exception as e:
+                    logger.error("Agent 第 %d 步(native): invoke 失败: %s", step + 1, e)
+                    break
+                if not new_reply:
+                    logger.warning("Agent 第 %d 步(native): LLM 返回空，终止循环",
+                                   step + 1)
+                    break
 
                 logger.info("Agent 第 %d 步(native): LLM 回复 %d 字符",
                             step + 1, len(new_reply or ""))
@@ -300,9 +363,13 @@ class ChatPipeline:
                 logger.warning("models_plugin 未找到，中断 agent 循环")
                 break
 
-            new_reply = await loop.run_in_executor(
-                None, lambda: models_plugin.invoke(msgs, ctx)
-            )
+            try:
+                new_reply = await loop.run_in_executor(
+                    None, lambda: models_plugin.invoke(msgs, ctx)
+                )
+            except Exception as e:
+                logger.error("Agent 第 %d 步(xml): invoke 失败: %s", step + 1, e)
+                break
             if not new_reply:
                 logger.info("Agent 第 %d 步: LLM 返回空", step + 1)
                 break
@@ -765,6 +832,16 @@ class ChatPipeline:
                     timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
                     self._print_timing(timing, ctx)
                     yield f"data: {json.dumps({'status': 'completed', 'reply': ctx.reply, 'chat_id': ctx.chat_id, 'filtered': True, 'timing': timing})}\n\n"
+                    return
+
+                # ── 异步工具检测 ──
+                if ctx.extra.get("_async_detected") and self._async_store:
+                    task_id = await self._run_async_background(ctx)
+                    yield f"data: {json.dumps({'status': 'async_task', 'task_id': task_id, 'chat_id': ctx.chat_id})}\n\n"
+                    timing[hook.value] = round((time.perf_counter() - t0) * 1000)
+                    timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
+                    self._print_timing(timing, ctx)
+                    yield f"data: {json.dumps({'status': 'completed', 'reply': ctx.reply, 'chat_id': ctx.chat_id, 'filtered': True, 'task_id': task_id, 'timing': timing})}\n\n"
                     return
 
                 if ctx.original_reply:

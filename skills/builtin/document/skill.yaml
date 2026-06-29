@@ -24,6 +24,8 @@ tools:
   - name: scan
     display_name: "启动扫描"
     description: "对扫描台上的文档执行扫描，返回生成的 PNG 文件列表。扫描完成后文件保存在工作区。"
+    async: true
+    estimated_duration: "10-120s"
     module: "tools.scanner"
     class: "ScannerTool"
     methods:
@@ -80,6 +82,8 @@ tools:
   - name: process_scan
     display_name: "处理扫描结果"
     description: "对扫描产出的 PNG 文件执行完整处理管线：分类→OCR→HMD→打包。返回反馈文本供 AI 理解文档内容。"
+    async: true
+    estimated_duration: "30-300s"
     module: "tools.doc_tools"
     class: "DocTools"
     methods:
