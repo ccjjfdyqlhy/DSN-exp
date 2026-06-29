@@ -56,12 +56,14 @@ class TaskPlugin(Plugin):
             return ctx
 
         pending = ctx.extra.setdefault("_pending_tasks", set())
+        _IMMEDIATE_TYPES = {"reasoner", "action"}
         tag_results: list[dict] = []
         for task_data in tasks:
             tid = self._handle_task(task_data, ctx)
             if tid:
-                pending.add(tid)
                 task_type = task_data.get("type", "unknown")
+                if task_type in _IMMEDIATE_TYPES:
+                    pending.add(tid)
                 tag_results.append({
                     "tag": "<task>", "success": True,
                     "summary": f"已创建 {task_type} 任务 (id={tid[:8]})",

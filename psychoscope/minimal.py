@@ -162,6 +162,7 @@ class DSNClient:
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._channel = pygame.mixer.Channel(0) if HAS_AUDIO else None
         self._volume = 0.5
+        self.async_poller = None  # 异步轮询器（main() 中注入）
         if self._channel:
             self._channel.set_volume(self._volume)
         if HAS_AUDIO:
@@ -309,6 +310,24 @@ class DSNClient:
         return requests.post(f"{self.base}{path}", headers=self._headers(),
                              stream=True, timeout=(10, 120), **kwargs)
 
+    def send_async(self, message: str) -> Optional[str]:
+        """发送异步消息，返回 task_id 供 AsyncTaskPoller 轮询。"""
+        if not self.api_key or not message.strip():
+            return None
+        try:
+            resp = self._http_post("/api/chat/async_send", json={
+                "message": message,
+                "chat_id": self.chat_id,
+            })
+            if resp.status_code == 202:
+                data = resp.json()
+                return data.get("task_id")
+            log.warning("Async send HTTP %d: %s", resp.status_code, resp.text[:200])
+            return None
+        except Exception as e:
+            log.error("Async send failed: %s", e)
+            return None
+
     def send_audio(self, audio_b64: str) -> Optional[str]:
         if not self.api_key:
             return None
@@ -328,7 +347,7 @@ class DSNClient:
                 return None
 
             # TTS 直接推入播放队列，不等 SSE 结束
-            reply_text, t_first_audio = self._handle_sse_stream(resp, self._tts_queue, t0)
+            reply_text, t_first_audio = self._handle_sse_stream(resp, self._tts_queue, t0, async_poller=self.async_poller)
             elapsed = time.perf_counter() - t0
 
             # 显示首条音频耗时
@@ -351,13 +370,20 @@ class DSNClient:
 
     def _handle_sse_stream(self, resp: requests.Response,
                            tts_queue: queue.Queue | None = None,
-                           t_start: float = None) -> tuple[Optional[str], float]:
+                           t_start: float = None,
+                           async_poller=None) -> tuple[Optional[str], float]:
         reply = ""
         got_text = False
         t_first_audio = None
 
         for _evt_type, data in iter_sse_lines(resp):
             status = data.get("status", "")
+
+            if status == "async_task":
+                task_id = data.get("task_id", "")
+                if task_id and async_poller:
+                    async_poller.add_task(task_id)
+                continue
 
             if status == "text_ready":
                 reply = data.get("reply", "")
@@ -388,6 +414,104 @@ class DSNClient:
             elif status == "completed":
                 break
         return reply if got_text else None, t_first_audio
+
+
+class AsyncTaskPoller:
+    """后台线程: 每 30s 轮询后端异步任务状态，完成时显示回复 + 播放 TTS。"""
+
+    ASYNC_POLL_INTERVAL = 30
+    ASYNC_POLL_TIMEOUT = 600
+
+    def __init__(self, client: DSNClient, tts_queue: queue.Queue):
+        self._client = client
+        self._tts_queue = tts_queue
+        self._tasks: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        log.info("AsyncTaskPoller 已启动 (interval=%ds)", self.ASYNC_POLL_INTERVAL)
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def add_task(self, task_id: str):
+        """开始轮询一个异步任务"""
+        with self._lock:
+            if task_id not in self._tasks:
+                self._tasks[task_id] = {"created": time.time()}
+                log.info("AsyncTaskPoller: 开始轮询 %s", task_id)
+                print(f"\n  ⏳ 异步任务已创建 ({task_id[:10]}...)，后台执行中...")
+
+    def _loop(self):
+        while self._running:
+            to_remove = []
+            with self._lock:
+                task_ids = list(self._tasks.keys())
+                now = time.time()
+
+            for task_id in task_ids:
+                try:
+                    resp = requests.get(
+                        f"{self._client.base}/api/task/status/{task_id}",
+                        headers=self._client._headers(),
+                        timeout=10,
+                    )
+                    if resp.status_code != 200:
+                        continue
+
+                    data = resp.json()
+                    status = data.get("status", "running")
+
+                    if status == "running":
+                        with self._lock:
+                            task = self._tasks.get(task_id)
+                            if task and now - task.get("created", 0) > self.ASYNC_POLL_TIMEOUT:
+                                print(f"\n  ⚠️ 异步任务超时 ({task_id[:10]}...)")
+                                to_remove.append(task_id)
+                        continue
+
+                    # 完成
+                    reply = data.get("reply", "")
+                    audio_b64 = data.get("audio_b64", "")
+                    error = data.get("error", "")
+
+                    if status == "done":
+                        if reply:
+                            print(f"\n  💬 {reply}")
+                        if audio_b64 and HAS_AUDIO and self._tts_queue is not None:
+                            self._tts_queue.put((reply, audio_b64))
+                        self._client.chat_id = data.get("chat_id", self._client.chat_id)
+                        print(f"  ✅ 异步任务完成 ({task_id[:10]}...)")
+
+                    elif status == "failed":
+                        if error:
+                            print(f"\n  ❌ 异步任务失败: {error}")
+                        if reply:
+                            print(f"  {reply}")
+
+                    to_remove.append(task_id)
+
+                except Exception:
+                    with self._lock:
+                        task = self._tasks.get(task_id)
+                        if task and now - task.get("created", 0) > self.ASYNC_POLL_TIMEOUT:
+                            to_remove.append(task_id)
+
+            # 清理已完成/超时任务
+            with self._lock:
+                for tid in to_remove:
+                    self._tasks.pop(tid, None)
+
+            time.sleep(self.ASYNC_POLL_INTERVAL)
 
 
 class ReminderWatcher:
@@ -726,7 +850,10 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [i]      System info (server + plan)      ")
     print("  [k]      Skip latest reminder             ")
     print("  [r]      Refresh reminders sync           ")
-    print("  [h]      Show help                       ")
+    print("  [t]      Text input (sync)                 ")
+    print("  [=]      Async task (long-running)          ")
+    print("  [n/m]    Volume -/+                         ")
+    print("  [h]      Show help                         ")
     print("  [q/Ctrl+C] Quit                          ")
     print("===========================================")
     print()
@@ -862,10 +989,14 @@ def main():
     keyboard.start()
     reminder = ReminderWatcher(client)
     reminder.start()
+    async_poller = AsyncTaskPoller(client, client._tts_queue)
+    async_poller.start()
+    client.async_poller = async_poller
 
     def on_sigint(sig, frame):
         if recorder.is_recording:
             recorder.stop_and_send()
+        async_poller.stop()
         reminder.stop()
         keyboard.stop()
         save_config(cfg)
@@ -975,6 +1106,13 @@ def main():
                     except Exception as e:
                         pass
 
+            elif ch == "=":
+                text = input("  Async Task: ").strip()
+                if text:
+                    task_id = client.send_async(text)
+                    if task_id:
+                        async_poller.add_task(task_id)
+
             elif ch.lower() == "n":
                 client._volume = max(0.0, client._volume - 0.1)
                 if client._channel:
@@ -998,6 +1136,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        async_poller.stop()
         reminder.stop()
         if recorder.is_recording:
             recorder.stop_and_send()

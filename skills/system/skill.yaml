@@ -15,7 +15,9 @@ dependencies: []
 tools:
   - name: create_reminder
     display_name: "创建提醒"
-    description: "创建定时提醒任务"
+    description: "创建定时提醒任务（后台异步执行，创建后立即返回，提醒在指定时间触发）"
+    async: true
+    estimated_duration: "future"
     module: "tools.task_tools"
     class: "TaskTools"
     methods:
@@ -105,7 +107,9 @@ tools:
 
   - name: create_reasoner
     display_name: "推理任务"
-    description: "创建异步推理任务"
+    description: "创建异步推理任务（后台 LLM 推理执行，完成后自动通知用户）"
+    async: true
+    estimated_duration: "10-60s"
     module: "tools.task_tools"
     class: "TaskTools"
     methods:
@@ -123,7 +127,9 @@ tools:
 
   - name: execute_action
     display_name: "执行操作"
-    description: "执行代码操作 (shell/python/文件操作)"
+    description: "直接执行代码操作——shell命令/python脚本/文件读写（后台执行，执行完毕后自动通知用户）"
+    async: true
+    estimated_duration: "1-300s"
     module: "tools.task_tools"
     class: "TaskTools"
     methods:

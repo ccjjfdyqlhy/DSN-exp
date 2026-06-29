@@ -85,12 +85,7 @@ class PromptEngine:
             uid = user_info.get("uid", 0)
             sections.append(self._personality_v2.build_prompt(uid))
 
-        # 3. capabilities/
-        caps = self.library.get_content_by_category("capabilities")
-        if caps:
-            sections.append(caps)
-
-        # 4. 技能提示词 — 原生 tool call 模式下跳过（工具定义在 API schema 中）
+        # 3/4. 原生 tool call 模式检查 — 决定是否注入 XML 语法说明和技能提示词
         _inject_skill_prompts = True
         try:
             from config import Config
@@ -101,7 +96,13 @@ class PromptEngine:
         except Exception:
             pass
 
-        if _inject_skill_prompts and self._skill_registry:
+        # 3. capabilities/ — 原生 mode 下跳过（工具/标签语法已在 API tools 中）
+        if _inject_skill_prompts:
+            caps = self.library.get_content_by_category("capabilities")
+            if caps:
+                sections.append(caps)
+
+        # 4. 技能提示词 — 原生 tool call 模式下跳过（工具定义在 API schema 中）
             try:
                 skill_prompts = self._skill_registry.get_all_skill_prompts()
                 if skill_prompts.strip():

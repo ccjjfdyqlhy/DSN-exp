@@ -95,6 +95,18 @@ class ModelsPlugin(Plugin):
                     logger.info("  → tool_call: %s(%s)",
                                 tc.get("function", {}).get("name", "?"),
                                 tc.get("function", {}).get("arguments", "{}")[:80])
+                # 检测是否有异步工具调用
+                if self._skill_registry:
+                    for tc in chat.last_tool_calls:
+                        func_name = tc.get("function", {}).get("name", "")
+                        parts = func_name.split("-", 2)
+                        if len(parts) >= 3:
+                            spec = self._skill_registry.get_tool_spec(parts[1], parts[2])
+                            if spec and spec.get("async"):
+                                ctx.extra["_async_detected"] = True
+                                ctx.extra["_async_tool_count"] = len(chat.last_tool_calls)
+                                logger.info("ModelsPlugin: 检测到异步工具 %s，将切入后台执行", func_name)
+                                break
             elif tools_schema is not None and use_native:
                 logger.info("ModelsPlugin: 模型未返回 tool_calls (文本回复)")
         except Exception as e:

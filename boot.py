@@ -374,6 +374,8 @@ def create_application():
     app.register_blueprint(todo_bp)
     app.register_blueprint(reminder_bp)
     app.register_blueprint(plan_bp)
+    from api.async_tasks import async_task_bp
+    app.register_blueprint(async_task_bp)
     _t("认证 + 蓝图 + 数据库")
 
     # ── 数据库 ──
@@ -598,6 +600,7 @@ def create_application():
         knowledge_matcher=_knowledge_matcher, graph_builder=_graph_builder,
         exam_engine=_exam_engine, exam_scorer=_exam_scorer,
     )
+    app.config["ENGINE"] = engine
     _t("DSNEngine")
 
     # ── 语义缓存系统 (L1/L2/L3) ──

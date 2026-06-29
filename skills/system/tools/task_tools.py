@@ -1,7 +1,16 @@
 # skills/system/tools/task_tools.py
 
+import locale
+import logging
+import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
+
 from tasks import TaskType
+
+logger = logging.getLogger("skill.system")
+
+_ENCODING = locale.getpreferredencoding(False)
 
 
 class TaskTools:
@@ -21,11 +30,19 @@ class TaskTools:
             raise RuntimeError("TaskManager 未注入")
         return mgr
 
+    def _uid(self):
+        return self._ctx.get("_uid", 0)
+
+    def _cid(self):
+        return self._ctx.get("_cid", 0)
+
+    # ── 排期任务（走 TaskManager 持久化） ──
+
     def create_reminder(self, text: str, time: str) -> dict:
         mgr = self._mgr()
         scheduled = datetime.fromisoformat(time)
         tid = mgr.create_task(
-            task_type=TaskType.REMINDER, user_id=0, chat_id=0,
+            task_type=TaskType.REMINDER, user_id=self._uid(), chat_id=self._cid(),
             params={"text": text, "time": time},
             priority=1, scheduled_time=scheduled)
         return {"task_id": tid}
@@ -35,7 +52,7 @@ class TaskTools:
         scheduled = datetime.fromisoformat(time)
         interval_sec = self._parse_interval(interval)
         tid = mgr.create_task(
-            task_type=TaskType.HABIT, user_id=0, chat_id=0,
+            task_type=TaskType.HABIT, user_id=self._uid(), chat_id=self._cid(),
             params={"text": text, "time": time, "interval": interval},
             priority=1, scheduled_time=scheduled,
             interval_seconds=interval_sec)
@@ -45,7 +62,7 @@ class TaskTools:
         mgr = self._mgr()
         scheduled = datetime.fromisoformat(target)
         tid = mgr.create_task(
-            task_type=TaskType.COUNTDOWN, user_id=0, chat_id=0,
+            task_type=TaskType.COUNTDOWN, user_id=self._uid(), chat_id=self._cid(),
             params={"text": text, "target": target},
             priority=1, scheduled_time=scheduled)
         return {"task_id": tid}
@@ -58,7 +75,7 @@ class TaskTools:
         if scheduled <= now:
             scheduled += timedelta(days=1)
         tid = mgr.create_task(
-            task_type=TaskType.DAILY_PLAN, user_id=0, chat_id=0,
+            task_type=TaskType.DAILY_PLAN, user_id=self._uid(), chat_id=self._cid(),
             params={"trigger_time": trigger_time},
             priority=1, scheduled_time=scheduled)
         return {"task_id": tid}
@@ -72,38 +89,98 @@ class TaskTools:
         except Exception:
             raise ValueError(f"无效 cron 表达式: {cron}")
         tid = mgr.create_task(
-            task_type=TaskType.PERIODIC, user_id=0, chat_id=0,
+            task_type=TaskType.PERIODIC, user_id=self._uid(), chat_id=self._cid(),
             params={"cron": cron, "text": text},
             priority=1, scheduled_time=next_time)
         return {"task_id": tid}
 
+    # ── 异步推理（走 TaskManager 持久化 + 立即执行） ──
+
     def create_reasoner(self, question: str, context: str = "") -> dict:
         mgr = self._mgr()
         tid = mgr.create_task(
-            task_type=TaskType.REASONER, user_id=0, chat_id=0,
+            task_type=TaskType.REASONER, user_id=self._uid(), chat_id=self._cid(),
             params={"question": question, "context": context},
             priority=1)
         mgr.execute_task(tid)
         return {"task_id": tid}
 
+    # ── 动作执行（直接执行，不走 TaskManager/DB） ──
+
     def execute_action(self, action_type: str, content: str,
                         file_path: str = "", overwrite: bool = False,
                         pattern: str = "", replacement: str = "") -> dict:
-        mgr = self._mgr()
-        params = {"action_type": action_type, "content": content}
-        if file_path:
-            params["file_path"] = file_path
-        if overwrite:
-            params["overwrite"] = overwrite
-        if pattern:
-            params["pattern"] = pattern
-        if replacement:
-            params["replacement"] = replacement
-        tid = mgr.create_task(
-            task_type=TaskType.ACTION, user_id=0, chat_id=0,
-            params=params, priority=1)
-        mgr.execute_task(tid)
-        return {"task_id": tid}
+        """直接执行 shell/python/文件操作，不走 TaskManager 持久化。"""
+        try:
+            if action_type == "shell":
+                return self._run_shell(content)
+            elif action_type == "python":
+                return self._run_python(content)
+            elif action_type == "write_file":
+                return self._do_write_file(file_path, content, overwrite)
+            elif action_type == "edit_file":
+                return self._do_edit_file(file_path, pattern, replacement)
+            else:
+                return {"success": False, "error": f"未知操作类型: {action_type}"}
+        except Exception as e:
+            logger.error("execute_action 失败 (%s): %s", action_type, e)
+            return {"success": False, "error": str(e), "action_type": action_type}
+
+    @staticmethod
+    def _run_shell(cmd: str) -> dict:
+        logger.info("shell: %s", cmd[:120])
+        proc = subprocess.run(
+            cmd, shell=True, capture_output=True,
+            encoding=_ENCODING, errors="replace", timeout=120,
+        )
+        return {
+            "success": proc.returncode == 0,
+            "stdout": proc.stdout[:5000],
+            "stderr": proc.stderr[:2000],
+            "returncode": proc.returncode,
+        }
+
+    @staticmethod
+    def _run_python(code: str) -> dict:
+        logger.info("python: %s", code[:120])
+        proc = subprocess.run(
+            ["python3", "-c", code],
+            capture_output=True,
+            encoding=_ENCODING, errors="replace", timeout=30,
+        )
+        return {
+            "success": proc.returncode == 0,
+            "stdout": proc.stdout[:5000],
+            "stderr": proc.stderr[:2000],
+            "returncode": proc.returncode,
+        }
+
+    @staticmethod
+    def _do_write_file(file_path: str, content: str, overwrite: bool) -> dict:
+        if not file_path:
+            return {"success": False, "error": "缺少 file_path"}
+        path = Path(file_path)
+        if path.exists() and not overwrite:
+            return {"success": False, "error": f"文件已存在且 overwrite=false: {file_path}"}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        logger.info("write_file: %s (%d chars)", file_path, len(content))
+        return {"success": True, "file_path": str(path), "size": len(content)}
+
+    @staticmethod
+    def _do_edit_file(file_path: str, pattern: str, replacement: str) -> dict:
+        if not file_path or not pattern:
+            return {"success": False, "error": "缺少 file_path 或 pattern"}
+        path = Path(file_path)
+        if not path.exists():
+            return {"success": False, "error": f"文件不存在: {file_path}"}
+        text = path.read_text(encoding="utf-8")
+        new_text = text.replace(pattern, replacement)
+        if new_text == text:
+            return {"success": False, "error": "未找到匹配模式", "file_path": file_path}
+        path.write_text(new_text, encoding="utf-8")
+        logger.info("edit_file: %s (%d → %d chars)", file_path, len(text), len(new_text))
+        return {"success": True, "file_path": str(file_path), "size": len(new_text)}
 
     @staticmethod
     def _parse_interval(interval_str: str) -> int:
