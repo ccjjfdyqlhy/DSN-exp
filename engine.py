@@ -244,11 +244,16 @@ class DSNEngine:
         short_id = task.task_id[:8]
         reminder_text = result.get("reminder_text", "提醒时间到了！")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        reply = f"⏰ 提醒：{reminder_text}"
         msg = f"[系统] ⏰ 提醒（ID: {short_id}）\n现在是 {now}，你之前设置的提醒：{reminder_text}"
         try:
             self.db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
         except Exception as e:
             self._logger.error("保存提醒消息失败: %s", e)
+        # 完成关联的 AsyncTask（若有）
+        if hasattr(self, 'async_task_store') and self.async_task_store:
+            if self.async_task_store.complete_by_taskmgr_id(task.task_id, reply):
+                self._logger.info("异步任务跟随提醒完成: taskmgr=%s", task.task_id)
 
     def _handle_reasoner_completion(self, task, result):
         self._logger.info("推理任务完成: task_id=%s", task.task_id)
