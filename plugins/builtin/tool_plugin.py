@@ -57,7 +57,14 @@ class ToolPlugin(Plugin):
 
     def _handle_native_tool_calls(self, tool_calls: list,
                                    ctx: PluginContext) -> PluginContext:
+        from models import DETAIL_ACTIONS
         logger.info("ToolPlugin(native): 处理 %d 个原生 tool_calls", len(tool_calls))
+
+        if DETAIL_ACTIONS:
+            print("\n" + "=" * 60)
+            print("🔧 [ToolPlugin] 接收原生 tool_calls:")
+            print("=" * 60)
+
         results = []
         for tc in tool_calls:
             func_name = tc.get("function", {}).get("name", "unknown")
@@ -73,6 +80,16 @@ class ToolPlugin(Plugin):
             logger.info("  → 执行 %s args=%s", func_name,
                         json.dumps(func_args, ensure_ascii=False, default=str)[:100])
 
+            if DETAIL_ACTIONS:
+                print(f"\n  ▶ {func_name}")
+                print("  ┌─ 参数:")
+                for k, v in func_args.items():
+                    v_str = json.dumps(v, ensure_ascii=False, default=str)
+                    if len(v_str) > 300:
+                        v_str = v_str[:300] + f"...(总{len(v_str)}字符)"
+                    print(f"  │  {k} = {v_str}")
+                print("  └─────────────")
+
             # 命名空间路由：skill-{skill_name}-{tool_name}
             parts = func_name.split("-", 2)
             if len(parts) >= 3 and parts[0] == "skill":
@@ -81,6 +98,13 @@ class ToolPlugin(Plugin):
                 try:
                     result_data = self._skill_registry.call_tool(
                         skill_name, tool_name, func_args)
+
+                    if DETAIL_ACTIONS:
+                        r_str = json.dumps(result_data, ensure_ascii=False, default=str)
+                        if len(r_str) > 500:
+                            r_str = r_str[:500] + f"...(总{len(r_str)}字符)"
+                        print(f"  ✔ 结果: {r_str}")
+
                     results.append({
                         "function": func_name,
                         "tool_call_id": tc["id"],
@@ -90,6 +114,8 @@ class ToolPlugin(Plugin):
                     logger.info("  ✓ %s 执行成功", func_name)
                 except Exception as e:
                     logger.error("  ✗ %s 执行失败: %s", func_name, e)
+                    if DETAIL_ACTIONS:
+                        print(f"  ✗ 失败: {e}")
                     results.append({
                         "function": func_name,
                         "tool_call_id": tc["id"],

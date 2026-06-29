@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -91,10 +92,20 @@ class ModelsPlugin(Plugin):
                 ctx.extra["_last_tool_calls"] = chat.last_tool_calls
                 logger.info("ModelsPlugin: 模型返回 %d 个原生 tool_calls",
                             len(chat.last_tool_calls))
+                from models import DETAIL_ACTIONS
+                if DETAIL_ACTIONS:
+                    print("\n" + "=" * 60)
+                    print("📤 [模型响应] 原生 tool_calls:")
+                    print("=" * 60)
                 for tc in chat.last_tool_calls:
-                    logger.info("  → tool_call: %s(%s)",
-                                tc.get("function", {}).get("name", "?"),
-                                tc.get("function", {}).get("arguments", "{}")[:80])
+                    tc_name = tc.get("function", {}).get("name", "?")
+                    tc_args = tc.get("function", {}).get("arguments", "{}")
+                    logger.info("  → tool_call: %s(%s)", tc_name, tc_args[:80])
+                    if DETAIL_ACTIONS:
+                        print(f"\n  ▶ {tc['id']}")
+                        print(f"  ┌─ {tc_name}")
+                        print(f"  │  {json.dumps(json.loads(tc_args), ensure_ascii=False, indent=2)}")
+                        print("  └─────────────")
                 # 检测是否有异步工具调用
                 if self._skill_registry:
                     for tc in chat.last_tool_calls:
@@ -211,6 +222,19 @@ class ModelsPlugin(Plugin):
             ctx.extra["_last_tool_calls"] = chat.last_tool_calls
             logger.info("ModelsPlugin.invoke: 模型返回 %d 个 tool_calls",
                         len(chat.last_tool_calls))
+            from models import DETAIL_ACTIONS
+            if DETAIL_ACTIONS:
+                print("\n" + "=" * 60)
+                print("📤 [Agent Loop] 原生 tool_calls:")
+                print("=" * 60)
+                for tc in chat.last_tool_calls:
+                    tc_name = tc.get("function", {}).get("name", "?")
+                    tc_args = tc.get("function", {}).get("arguments", "{}")
+                    print(f"  ▶ {tc['id']} ─ {tc_name}")
+                    try:
+                        print(json.dumps(json.loads(tc_args), ensure_ascii=False, indent=2))
+                    except Exception:
+                        print(f"  {tc_args}")
         return reply
 
     def describe_image(self, data_url: str,
