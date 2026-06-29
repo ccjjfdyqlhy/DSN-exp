@@ -5,16 +5,19 @@
 
 所以，我最近在干嘛？
 
-**本次更新：首次启动引导 + 剧本系统初始化 + 模型共存优化 + 语义缓存系统**
+**本次更新：Tool Call 原生升级 — DeepSeek 原生 function call 替换 XML 标签方案 + 技能系统架构重构 + 系统技能标准化**
 
 ## 下一步往哪儿走
 
+**AI 原生功能调用**：废弃 XML 标签方案，全面接入 DeepSeek function calling。所有动作（技能工具/任务/记忆/笔记/信号）统一为 skill 目录下 YAML 定义，启动时自动生成 API schema。  
+**系统技能标准化**：task/memory/notebook/plan/signal 全部转为 `skills/system/` 下的技能文件，52+ 工具自动注册。  
 **首次启动引导**：AI 驱动的配置向导，角色卡/环境/功能交互式完成。  
 **用户了解体系重构**：做到私人知识库那种级别。先走Concepts/记忆系统路线。  
 **纸制品交互**：通过打印机/扫描仪完成基于纸制品的交互界面。  
 **环境感知**：摄像头主动抓帧，感知用户状态、环境光线、作息习惯。  
 ~~**规划引擎**：大目标拆解、日计划自动生成、执行追踪、日终反馈。搞定！~~  
 ~~**交互大改**：实现一个真正没webui、靠硬件驱动的交互策略。做完辣！~~  
+- [ ] 废弃 XML 标签提示词注入：native 模式下 system prompt 已跳过 skill instruction.md，后续移除 capability 中的标签说明  
 
 
 ## 议题
@@ -62,6 +65,16 @@ Concepts
 - [x] 剧本系统01：引擎初始化 + Pipeline 接入（PluginContext.skip_model 跳过 MODEL_INVOKE）
 - [x] 语义缓存引擎：numpy 向量索引 + 预标准化矩阵 + 冲突保护评分
 - [x] 语义缓存插件：PRE_FILTER(0) 拦截 + L1 静态语素 + L2 语义搜索 + 纠偏观察窗口
+- [x] **Tool Call 原生升级**：废弃 `<tool>` XML 标签，全面接入 DeepSeek 原生 function calling API
+- [x] **技能加载器重构**：`build_function_schema()` 自动从 skill.yaml 生成 OpenAI function calling schema，支持三种 methods 格式
+- [x] **系统技能标准化**：task/memory/notebook/plan/signal 转为 `skills/system/`，16 个系统工具全部从 YAML 启动时动态生成
+- [x] **技能调用上下文**：`skills/context.py` 为技能工具提供 `user_id`/`chat_id` 线程安全上下文注入
+- [x] **Token 节省**：native 模式下 PromptEngine 跳过 skill instruction.md 注入，单轮省 ~3000+ tokens
+- [x] **SSP 信号回调**：`start_ssp`/`stop_ssp` function call 实际触发 SSPPlugin 管线，替代 `<ssp>` 标签
+- [x] **模型失败短路**：模型调用异常时 `ctx.filtered=True` 跳过 POST_PROCESS，防止垃圾数据进入记忆/性格/印象
+- [x] **DeepSeek API 兼容**：function name 格式 `^[a-zA-Z0-9_-]+$`，`required` 空数组不传，`tool_call_id` 匹配正确
+- [x] **Agent Loop 原生模式**：构造 `role:"tool"` + `tool_calls` 消息，双分支兼容 XML 降级
+- [x] **文档工具精简**：`process_scan` 返回文件摘要而非完整 base64 图片，`read_hmd` 仅返回 OCR 文本全文
 - [ ] 接入IM！
 - [ ] 话题管理系统、多层提示词系统
 - [ ] 优化世界叙述现实系统：提示词重写、种子生成世界什么的。

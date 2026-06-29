@@ -72,11 +72,20 @@ class SSPPlugin(Plugin):
     def _should_activate(self, ctx: PluginContext) -> bool:
         if ctx.extra.get("ssp_active"):
             return False
+        if ctx.extra.get("ssp_stopped"):
+            ctx.extra["ssp_active"] = False
+            ctx.extra.pop("ssp_stopped", None)
+            return False
+        if ctx.extra.get("ssp_requested"):
+            if self._models is None:
+                logger.warning("SSP 收到信号但 models_plugin 未注入，跳过")
+                ctx.extra.pop("ssp_requested", None)
+                return False
+            ctx.extra.pop("ssp_requested", None)
+            return True
         reply = ctx.original_reply or ctx.reply or ""
         if re.search(r"<ssp>", reply, re.IGNORECASE):
             return True
-        if self._models is None:
-            return False
         return False
 
     def _run_ssp(self, ctx: PluginContext) -> PluginContext:

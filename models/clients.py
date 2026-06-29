@@ -111,65 +111,53 @@ class DeepSeekChat:
         use_reasoner: bool = False,
         max_history: int = 0,
     ):
-        """
-        初始化DeepSeek聊天客户端。
-
-        :param api_key: DeepSeek API密钥，若为None则从环境变量DEEPSEEK_API_KEY读取
-        :param model: 使用的模型名称，默认为deepseek-chat
-        :param api_url: API端点URL
-        :param logger: 日志记录器实例，若不提供则创建默认logger
-        :param timeout: 请求超时时间（秒）
-        :param use_reasoner: 是否使用reasoner模型
-        :param max_history: 最大历史消息数（0表示无限制），超过时丢弃最旧消息
-        """
         self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
         if not self.api_key:
             raise ValueError(
                 "API密钥必须提供，可通过参数传入或设置环境变量DEEPSEEK_API_KEY"
             )
-
         self.model = model
         self.api_url = api_url
         self.timeout = timeout
         self.use_reasoner = use_reasoner
         self.max_history = max_history
-
-        # 初始化对话历史
         self.messages: List[Dict[str, str]] = []
         self.last_usage = None
         self.last_model = self.model
+        self._last_message: Optional[dict] = None
 
-        # 设置日志记录器
         if logger is not None:
             self.logger = logger
         else:
             self.logger = logging.getLogger(self.__class__.__name__)
-            # 不再添加StreamHandler，因为根日志记录器已经配置了处理器
             self.logger.setLevel(logging.INFO)
 
-        # 如果指定使用reasoner，则切换模型
         if use_reasoner:
             self.model = self.REASONER_MODEL
-        
+
         self.logger.info("DeepSeekChat客户端初始化完成，模型：%s", self.model)
 
-    def send_message(self, message: str) -> str:
-        """发送一条用户消息，获取模型回复。"""
+    def send_message(self, message: str, tools: list[dict] = None,
+                     tool_choice: str = "auto") -> str:
         if not message or not isinstance(message, str):
             raise ValueError("消息内容必须为非空字符串")
-
         self.messages.append({"role": "user", "content": message})
-        return self._call_and_append()
+        return self._call_and_append(tools=tools, tool_choice=tool_choice)
 
-    def continue_conversation(self) -> str:
-        """不追加新用户消息，直接用当前消息列表调用 LLM（用于 Agent 工具反馈循环）。"""
-        return self._call_and_append()
+    def continue_conversation(self, tools: list[dict] = None,
+                              tool_choice: str = "auto") -> str:
+        return self._call_and_append(tools=tools, tool_choice=tool_choice)
 
-    def _call_and_append(self) -> str:
-        """核心调用逻辑：发送 self.messages → 获取回复 → 追加到 history → 返回"""
+    @property
+    def last_tool_calls(self) -> Optional[list[dict]]:
+        msg = self._last_message
+        if msg and msg.get("tool_calls"):
+            return msg["tool_calls"]
+        return None
+
+    def _call_and_append(self, tools=None, tool_choice="auto") -> str:
         self.logger.info("发送请求，消息数: %d", len(self.messages))
 
-        # 详细模式：显示完整发送内容
         if DETAIL_CHATS:
             print("\n" + "=" * 60)
             print("📤 [DeepSeek] 发送内容:")
@@ -181,7 +169,6 @@ class DeepSeekChat:
                 print(content)
             print("=" * 60)
 
-        # 上下文窗口裁剪：保留最多 max_history 条消息
         if self.max_history > 0 and len(self.messages) > self.max_history:
             system_msgs = [m for m in self.messages if m.get("role") == "system"]
             other_msgs = [m for m in self.messages if m.get("role") != "system"]
@@ -190,7 +177,6 @@ class DeepSeekChat:
             self.messages = system_msgs + other_msgs
             self.logger.info("上下文裁剪后消息数: %d", len(self.messages))
 
-        # 准备请求
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -200,41 +186,61 @@ class DeepSeekChat:
             "messages": self.messages,
             "stream": False
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
 
         try:
-            self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False))
+            self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False)[:500])
             response = requests.post(
-                self.api_url,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout
-            )
+                self.api_url, headers=headers, json=payload, timeout=self.timeout)
             response.raise_for_status()
             result = response.json()
-            self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False))
+            self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False)[:500])
 
             self.last_usage = result.get("usage")
             self.last_model = result.get("model", self.model)
 
-            # 提取助手回复
-            assistant_message = result["choices"][0]["message"]["content"]
-            self.messages.append({"role": "assistant", "content": assistant_message})
-            self.logger.info("收到助手回复: %s", assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
+            msg = result["choices"][0]["message"]
+            self._last_message = msg
 
-            # 详细模式：显示完整生成内容
-            if DETAIL_CHATS:
-                print("\n📥 [DeepSeek] 生成内容:")
-                print("-" * 60)
-                print(assistant_message)
-                print("-" * 60)
+            # 原生 tool call 模式：assistant 消息可能包含 tool_calls
+            if msg.get("tool_calls"):
+                self.messages.append({
+                    "role": "assistant",
+                    "content": msg.get("content"),
+                    "tool_calls": msg["tool_calls"],
+                })
+                content = msg.get("content") or ""
+                if content:
+                    self.logger.info("收到助手回复(含tool_call): %s",
+                                     content[:50] + "..." if len(content) > 50 else content)
+                return content
+            else:
+                assistant_message = msg["content"]
+                self.messages.append({"role": "assistant", "content": assistant_message})
+                self.logger.info("收到助手回复: %s",
+                                 assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
 
-            return assistant_message
+                if DETAIL_CHATS:
+                    print("\n📥 [DeepSeek] 生成内容:")
+                    print("-" * 60)
+                    print(assistant_message)
+                    print("-" * 60)
+
+                return assistant_message
 
         except requests.exceptions.Timeout:
             self.logger.error("请求超时（%d秒）", self.timeout)
             raise
         except requests.exceptions.RequestException as e:
-            self.logger.error("网络请求失败: %s", str(e))
+            _body = ""
+            if e.response is not None:
+                try:
+                    _body = e.response.text[:2000]
+                except Exception:
+                    pass
+            self.logger.error("网络请求失败: %s\n响应体: %s", str(e), _body if _body else "(无)")
             raise
         except KeyError as e:
             self.logger.error("响应格式异常，缺少字段: %s", str(e))
