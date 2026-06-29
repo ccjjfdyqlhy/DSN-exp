@@ -38,6 +38,22 @@ class SkillManager:
             if not skill_dir.exists():
                 logger.debug("技能目录不存在: %s", skill_dir)
                 continue
+
+            # 先检查 skill_dir 根部是否有 skill.yaml（如 skills/system/）
+            root_yaml = skill_dir / "skill.yaml"
+            if root_yaml.exists():
+                try:
+                    skill = self.loader.load(str(skill_dir))
+                    if skill:
+                        self._skills[skill.name] = skill
+                        if skill.enabled and skill.status == "active":
+                            self.registry.register_skill(skill)
+                            count += 1
+                except Exception as e:
+                    logger.error("加载技能失败 %s: %s", skill_dir, e)
+                continue  # 根部 skill.yaml 是独立技能，不继续遍历子目录
+
+            # 没有根部 skill.yaml → 遍历子目录（如 skills/builtin/ 下每个子目录一个技能）
             for sub_dir in skill_dir.iterdir():
                 if not sub_dir.is_dir() or sub_dir.name.startswith("_"):
                     continue

@@ -374,9 +374,16 @@ class TaskManager:
 
         now = datetime.now()
         delay_seconds = max(0, (task.scheduled_time - now).total_seconds())
+        self.logger.info("调度提醒: task=%s type=%s time=%s delay=%.0fs uid=%d cid=%d",
+                         task.task_id, task.task_type.value,
+                         task.scheduled_time.isoformat(), delay_seconds,
+                         task.user_id, task.chat_id)
 
         def reminder_job():
-            self.logger.info("触发提醒任务: %s", task.task_id)
+            self.logger.info("⚠️ 触发提醒任务: %s (类型: %s, 排期时间: %s, 用户: %d)",
+                             task.task_id, task.task_type.value,
+                             task.scheduled_time.isoformat() if task.scheduled_time else "N/A",
+                             task.user_id)
             self.execute_task(task.task_id)
 
             if (task.task_type == TaskType.HABIT and
@@ -468,8 +475,10 @@ class TaskManager:
                          TaskType.DAILY_PLAN, TaskType.PERIODIC) and scheduled_time:
             self._schedule_reminder_task(task)
         
-        self.logger.info("创建任务: %s (类型: %s, 用户: %d)", task_id,
-                         task_type.value, user_id)
+        self.logger.info("创建任务: %s (类型: %s, 用户: %d, 聊天: %d, 排期: %s, 参数: %s)",
+                         task_id, task_type.value, user_id, chat_id,
+                         scheduled_time.isoformat() if scheduled_time else "立即",
+                         json.dumps(params, ensure_ascii=False)[:200])
         return task_id
     
     def execute_task(self, task_id: str) -> Future:
@@ -478,6 +487,9 @@ class TaskManager:
             raise ValueError(f"任务不存在: {task_id}")
         
         task = self.tasks[task_id]
+        self.logger.info("开始执行任务: %s (类型: %s, 用户: %d, 排期: %s)",
+                         task_id, task.task_type.value, task.user_id,
+                         task.scheduled_time.isoformat() if task.scheduled_time else "立即")
         
         # 更新状态为运行中
         self._update_task_status(task_id, TaskStatus.RUNNING)
