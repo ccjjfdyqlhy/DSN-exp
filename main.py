@@ -1043,7 +1043,7 @@ def _cmd_memory_reindex(parts: list[str]):
         print("  开始索引旧记忆...")
         try:
             for processed, total, preview, skipped in ms.reindex_embeddings(
-                user_id=uid, chat_id=cid
+                user_id=uid
             ):
                 print(f"\r  进度: [{processed}/{total}] {preview[:40]:40s}", end="")
             print(f"\n  完成! 共处理 {total - skipped if 'total' in dir() else 0} 条, 跳过 {skipped if 'skipped' in dir() else 0} 条")
@@ -1112,7 +1112,7 @@ def _cmd_memory_query(db, parts: list[str]):
     if use_vector:
         embedding_query = " ".join(keywords)
         limit = 20
-        hits = ms.search(uid, cid, keywords, limit=limit, embedding_query=embedding_query)
+        hits = ms.search(uid, keywords, limit=limit, embedding_query=embedding_query)
         if not hits:
             print("  未找到匹配的记忆")
             return

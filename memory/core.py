@@ -147,12 +147,12 @@ class MemorySystem:
             logger.exception("Summarize failed uid=%d chat=%d round=%d", user_id, chat_id, round_idx)
             return None
 
-    def _get_exp_memories(self, user_id: int, chat_id: int) -> list[dict]:
+    def _get_exp_memories(self, user_id: int) -> list[dict]:
         conn = self.db._get_connection()
         rows = conn.execute(
             "SELECT id, round, content, created_at FROM memory_v2 "
-            "WHERE user_id = ? AND chat_id = ? AND type = 'exp' ORDER BY round ASC",
-            (user_id, chat_id),
+            "WHERE user_id = ? AND type = 'exp' ORDER BY id ASC",
+            (user_id,),
         ).fetchall()
         return [
             {
@@ -213,10 +213,10 @@ class MemorySystem:
     # =================================================================
 
     def assemble_context(
-        self, user_id: int, chat_id: int, history: list[dict]
+        self, user_id: int, history: list[dict]
     ) -> list[dict]:
-        memos = self._get_memos(user_id, chat_id)
-        exps = self._get_exp_memories(user_id, chat_id)
+        memos = self._get_memos(user_id)
+        exps = self._get_exp_memories(user_id)
         window = Config.MEMORY_CONTEXT_WINDOW_SIZE
         threshold = int(window * Config.MEMORY_REPLACE_THRESHOLD_RATIO)
 
@@ -245,7 +245,6 @@ class MemorySystem:
     def search(
         self,
         user_id: int,
-        chat_id: int,
         keywords: list[str],
         limit: int = 5,
         threshold: float = 0.5,
@@ -267,8 +266,8 @@ class MemorySystem:
 
         conn = self.db._get_connection()
         row = conn.execute(
-            "SELECT MAX(round) FROM memory_v2 WHERE user_id = ? AND chat_id = ?",
-            (user_id, chat_id),
+            "SELECT MAX(round) FROM memory_v2 WHERE user_id = ?",
+            (user_id,),
         ).fetchone()
         total_rounds = row[0] or 1
 
@@ -277,9 +276,9 @@ class MemorySystem:
             "FROM memory_v2 v "
             "LEFT JOIN memory_embeds e "
             "ON v.user_id = e.user_id AND v.chat_id = e.chat_id AND v.round = e.round "
-            "WHERE v.user_id = ? AND v.chat_id = ? "
+            "WHERE v.user_id = ? "
             "ORDER BY v.round DESC LIMIT ?",
-            (user_id, chat_id, limit * 20),
+            (user_id, limit * 20),
         ).fetchall()
 
         # ---- 向量搜索（若启用） ----
@@ -384,7 +383,6 @@ class MemorySystem:
     def reindex_embeddings(
         self,
         user_id: Optional[int] = None,
-        chat_id: Optional[int] = None,
     ):
         """
         生成器: 遍历消息表中的原始对话，构建文本并生成 embedding，
@@ -392,7 +390,6 @@ class MemorySystem:
 
         参数:
             user_id:  若指定则仅索引该用户
-            chat_id:  若指定则仅索引该聊天
 
         产出:
             (processed: int, total: int, current_text: str, skipped: int)
@@ -407,9 +404,6 @@ class MemorySystem:
         if user_id is not None:
             where += " AND c.user_id = ?"
             params.append(user_id)
-        if chat_id is not None:
-            where += " AND m.chat_id = ?"
-            params.append(chat_id)
 
         rows = conn.execute(
             f"SELECT DISTINCT c.user_id, m.chat_id, m.round_index "
@@ -611,7 +605,7 @@ class MemorySystem:
         if keywords:
             embedding_query = " ".join(keywords) if isinstance(keywords, list) else keywords
             hits = self.search(
-                user_id, chat_id, keywords, count,
+                user_id, keywords, count,
                 embedding_query=embedding_query if self._embedding_enabled else None,
             )
             search_text = self._format_search_results(hits, keywords)
@@ -641,12 +635,12 @@ class MemorySystem:
             conn.commit()
         return cursor.lastrowid
 
-    def _get_memos(self, user_id: int, chat_id: int) -> list[dict]:
+    def _get_memos(self, user_id: int) -> list[dict]:
         conn = self.db._get_connection()
         rows = conn.execute(
             "SELECT id, content, created_at FROM memory_v2 "
-            "WHERE user_id = ? AND chat_id = ? AND type = 'memo' ORDER BY id ASC",
-            (user_id, chat_id),
+            "WHERE user_id = ? AND type = 'memo' ORDER BY id ASC",
+            (user_id,),
         ).fetchall()
         return [
             {

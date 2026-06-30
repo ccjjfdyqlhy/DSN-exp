@@ -47,7 +47,7 @@ class MockDB:
         self._mem_count[(user_id, chat_id)] = round_index
         return 1
 
-    def get_memories(self, user_id, chat_id):
+    def get_memories(self, user_id):
         return []
 
     def get_next_round_index(self, chat_id):
