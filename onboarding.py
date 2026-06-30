@@ -207,9 +207,20 @@ def _check_third_party() -> dict:
         "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9880 2>/dev/null || echo 000",
         timeout=5,
     )
+    tts_running = r["output"].strip() == "200"
+    if not tts_running:
+        for _i in range(2):
+            time.sleep(2)
+            r = _run_shell(
+                "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9880 2>/dev/null || echo 000",
+                timeout=5,
+            )
+            if r["output"].strip() == "200":
+                tts_running = True
+                break
     result["tts"] = {
         "name": "GPT-SoVITS (TTS 语音合成, 端口 9880)",
-        "running": r["output"].strip() == "200",
+        "running": tts_running,
     }
 
     r = _run_shell(
@@ -225,9 +236,20 @@ def _check_third_party() -> dict:
         "curl -s -o /dev/null -w '%{http_code}' http://localhost:4501/v1/models 2>/dev/null || echo 000",
         timeout=5,
     )
+    lm_running = r["output"].strip() == "200"
+    if not lm_running:
+        for _i in range(2):
+            time.sleep(2)
+            r = _run_shell(
+                "curl -s -o /dev/null -w '%{http_code}' http://localhost:4501/v1/models 2>/dev/null || echo 000",
+                timeout=5,
+            )
+            if r["output"].strip() == "200":
+                lm_running = True
+                break
     result["lmstudio"] = {
         "name": "LMStudio (本地模型推理, 端口 4501)",
-        "running": r["output"].strip() == "200",
+        "running": lm_running,
     }
 
     return result
