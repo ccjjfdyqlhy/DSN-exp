@@ -19,6 +19,7 @@ from api.auth import init_usermgr
 from api.todo import todo_bp
 from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
+from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
 from db.question_bank import QuestionBankDBManager
@@ -197,6 +198,11 @@ def process_task_completion():
 
 
 def _handle_reminder_completion(task, result):
+    """提醒任务到期：只写一条 system 消息到聊天历史。
+    AI 回复 + TTS 的生成改由前端心跳接口 /api/heartbeat 触发，
+    这样可以避免 SSE 单向通信导致后端无法主动通知前端的问题。
+    task_notifications 表中的记录由 TaskManager._notify_task_completion 写入。
+    """
     short_id = task.task_id[:8]
     text = result.get("reminder_text", "提醒时间到了！")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -374,6 +380,7 @@ def create_application():
     app.register_blueprint(todo_bp)
     app.register_blueprint(reminder_bp)
     app.register_blueprint(plan_bp)
+    app.register_blueprint(heartbeat_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
     _t("认证 + 蓝图 + 数据库")
@@ -617,6 +624,8 @@ def create_application():
         exam_engine=_exam_engine, exam_scorer=_exam_scorer,
     )
     app.config["ENGINE"] = engine
+    # 初始化心跳接口（需要 engine 来生成 AI 回复 + TTS）
+    init_heartbeat_api(db, task_manager, _auth_manager, engine)
     _t("DSNEngine")
 
     # ── 语义缓存系统 (L1/L2/L3) ──

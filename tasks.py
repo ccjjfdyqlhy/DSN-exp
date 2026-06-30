@@ -872,10 +872,79 @@ class TaskManager:
         """通知任务完成（需要外部实现推送逻辑）"""
         # 这里只是一个占位符，实际推送逻辑需要在app.py中实现
         self.logger.info("任务 %s 完成，准备通知用户", task_id)
-        
+
         # 将任务完成事件放入队列，由主应用处理
         if hasattr(self, 'completion_queue'):
             self.completion_queue.put((task_id, result))
+
+        # 对于提醒类任务，写入 task_notifications 表（delivered=0），
+        # 供前端心跳接口 /api/heartbeat 拉取并触发 AI 通知 + TTS。
+        task = self.tasks.get(task_id)
+        if task and task.task_type in (TaskType.REMINDER, TaskType.HABIT,
+                                        TaskType.COUNTDOWN, TaskType.DAILY_PLAN,
+                                        TaskType.PERIODIC):
+            try:
+                self._create_notification(task, result)
+            except Exception as e:
+                self.logger.error("写入 task_notifications 失败 (task=%s): %s", task_id, e)
+
+    def _create_notification(self, task, result: Dict[str, Any]):
+        """将提醒完成事件写入 task_notifications 表，等待前端心跳拉取。"""
+        conn = self.db._get_connection()
+        conn.execute(
+            "INSERT INTO task_notifications (task_id, user_id, chat_id, result, delivered, dismissed) "
+            "VALUES (?, ?, ?, ?, 0, 0)",
+            (task.task_id, task.user_id, task.chat_id,
+             json.dumps(result, ensure_ascii=False, default=str))
+        )
+        conn.commit()
+        self.logger.info("已写入待通知提醒: task=%s uid=%d cid=%d",
+                         task.task_id, task.user_id, task.chat_id)
+
+    def fetch_pending_notifications(self, user_id: int, limit: int = 5) -> list:
+        """拉取该用户所有未投递（delivered=0, dismissed=0）的提醒通知。
+        返回 list[dict]，每项包含 notification_id / task_id / chat_id / result / task_type / params。
+        不会修改 delivered 状态（由调用方在生成 AI 回复成功后再标记）。
+        """
+        conn = self.db._get_connection()
+        rows = conn.execute(
+            "SELECT n.notification_id, n.task_id, n.user_id, n.chat_id, n.result, "
+            "       t.task_type, t.params "
+            "FROM task_notifications n "
+            "LEFT JOIN tasks t ON t.task_id = n.task_id "
+            "WHERE n.user_id = ? AND n.delivered = 0 AND n.dismissed = 0 "
+            "ORDER BY n.created_at ASC LIMIT ?",
+            (user_id, limit)
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                result = json.loads(r["result"]) if r["result"] else {}
+            except Exception:
+                result = {}
+            try:
+                params = json.loads(r["params"]) if r["params"] else {}
+            except Exception:
+                params = {}
+            out.append({
+                "notification_id": r["notification_id"],
+                "task_id": r["task_id"],
+                "user_id": r["user_id"],
+                "chat_id": r["chat_id"],
+                "result": result,
+                "task_type": r["task_type"],
+                "params": params,
+            })
+        return out
+
+    def mark_notification_delivered(self, notification_id: int):
+        """标记某条通知为已投递（前端已收到并展示）。"""
+        conn = self.db._get_connection()
+        conn.execute(
+            "UPDATE task_notifications SET delivered = 1 WHERE notification_id = ?",
+            (notification_id,)
+        )
+        conn.commit()
     
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务信息"""
