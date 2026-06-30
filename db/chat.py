@@ -169,6 +169,11 @@ class ChatDBManager:
                 # 迁移: 移除 messages 表 role 列的 CHECK 约束，允许 'system' role
                 self._migrate_messages_role(conn)
 
+                # 迁移: AI Agent 绑定支持
+                self._migrate_add_column(conn, "users", "bound_to", "INTEGER DEFAULT NULL")
+                self._migrate_add_column(conn, "users", "last_agent_sync", "TEXT DEFAULT NULL")
+                self._migrate_add_column(conn, "chats", "chat_type", "TEXT DEFAULT 'user'")
+
                 # 人格系统 v2 状态表
                 from prompt.personality_v2.persistence import CREATE_PERSONALITY_TABLE
                 conn.execute(CREATE_PERSONALITY_TABLE)
@@ -408,6 +413,132 @@ class ChatDBManager:
             conn.rollback()
             raise
 
+    # ── AI Agent 管理 ──
+
+    def create_agent(self, user_id: int, nickname: str) -> int:
+        """为指定用户创建一个 AI Agent 身份并绑定。
+        返回 agent_uid。"""
+        conn = self._get_connection()
+        try:
+            uid = self._next_user_id()
+            conn.execute(
+                "INSERT INTO users (uid, nickname, display_name) VALUES (?, ?, ?)",
+                (uid, nickname, nickname),
+            )
+            self.bind_agent(user_id, uid)
+            conn.commit()
+            self.logger.info("Agent 创建: uid=%d nickname=%s bound_to=%d", uid, nickname, user_id)
+            return uid
+        except sqlite3.Error as e:
+            self.logger.error("创建 Agent 失败: %s", e)
+            conn.rollback()
+            raise
+
+    def bind_agent(self, user_id: int, agent_uid: int) -> bool:
+        """将 AI Agent 绑定到用户。user_id 绑定 agent_uid，agent_uid 绑定 user_id。"""
+        conn = self._get_connection()
+        try:
+            # 解除旧的绑定
+            conn.execute("UPDATE users SET bound_to = NULL WHERE bound_to = ?", (user_id,))
+            conn.execute("UPDATE users SET bound_to = NULL WHERE bound_to = ?", (agent_uid,))
+            # 建立双向绑定
+            conn.execute("UPDATE users SET bound_to = ? WHERE uid = ?", (agent_uid, user_id))
+            conn.execute("UPDATE users SET bound_to = ? WHERE uid = ?", (user_id, agent_uid))
+            conn.commit()
+            self.logger.info("Agent 绑定: user=%d <-> agent=%d", user_id, agent_uid)
+            return conn.total_changes > 0
+        except sqlite3.Error as e:
+            self.logger.error("绑定 Agent 失败: %s", e)
+            conn.rollback()
+            raise
+
+    def get_bound_agent(self, user_id: int) -> Optional[int]:
+        """查询用户绑定的 AI Agent 的 uid，无绑定时返回 None。"""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT bound_to FROM users WHERE uid = ?", (user_id,)
+        ).fetchone()
+        return row["bound_to"] if row and row["bound_to"] else None
+
+    def get_bound_user(self, agent_uid: int) -> Optional[int]:
+        """查询 AI Agent 被绑定的用户的 uid，无绑定时返回 None。"""
+        return self.get_bound_agent(agent_uid)
+
+    def get_agent_chat_count(self, agent_uid: int) -> int:
+        """查询 Agent 的聊天数量（用于判断是否首次对话）。"""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM chats WHERE user_id = ? AND chat_type = 'agent'",
+            (agent_uid,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def get_agent_sync_time(self, user_id: int) -> Optional[str]:
+        """获取用户最后同步 Agent 聊天的时间戳。"""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT last_agent_sync FROM users WHERE uid = ?", (user_id,)
+        ).fetchone()
+        return row["last_agent_sync"] if row and row["last_agent_sync"] else None
+
+    def set_agent_sync_time(self, user_id: int, timestamp: Optional[str] = None) -> None:
+        """将用户的 last_agent_sync 更新为指定时间或当前时间。
+        格式与 SQLite CURRENT_TIMESTAMP 一致: YYYY-MM-DD HH:MM:SS。"""
+        from datetime import datetime
+        ts = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn = self._get_connection()
+        conn.execute(
+            "UPDATE users SET last_agent_sync = ? WHERE uid = ?", (ts, user_id)
+        )
+        conn.commit()
+
+    def get_unsynced_agent_messages(self, user_id: int, agent_uid: int,
+                                    limit: int = 20) -> list[dict]:
+        """获取用户尚未同步过的 Agent 聊天消息，按时间升序。"""
+        since = self.get_agent_sync_time(user_id)
+        conn = self._get_connection()
+        if since:
+            rows = conn.execute(
+                "SELECT m.role, m.content, m.timestamp, c.chat_name "
+                "FROM messages m "
+                "JOIN chats c ON m.chat_id = c.chat_id "
+                "WHERE c.user_id = ? AND c.chat_type = 'agent' "
+                "AND m.timestamp > ? "
+                "ORDER BY m.timestamp ASC LIMIT ?",
+                (agent_uid, since, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT m.role, m.content, m.timestamp, c.chat_name "
+                "FROM messages m "
+                "JOIN chats c ON m.chat_id = c.chat_id "
+                "WHERE c.user_id = ? AND c.chat_type = 'agent' "
+                "ORDER BY m.timestamp ASC LIMIT ?",
+                (agent_uid, limit),
+            ).fetchall()
+        return [
+            {
+                "role": r["role"],
+                "content": self._safe_decrypt(agent_uid, r["content"]),
+                "timestamp": r["timestamp"],
+                "chat_name": r["chat_name"],
+            }
+            for r in rows
+        ]
+
+    def _safe_decrypt(self, user_id: int, content: str) -> str:
+        """解密消息内容，失败时返回原样。"""
+        try:
+            return self._cipher.decrypt(user_id, content) if content else ""
+        except Exception:
+            return content or ""
+
+    @staticmethod
+    def _next_user_id() -> int:
+        import os, struct, time
+        # 生成一个足够大的伪随机 UID，避免与现有用户冲突
+        return int(time.time() * 1000) % 900000000 + 100000000
+
     def save_memory(self, user_id: int, chat_id: int, round_index: int, summary: str,
                     keywords: str = "", message_start_id: int = None, message_end_id: int = None) -> int:
         """保存摘要记忆到 memory_v2（兼容旧接口）"""
@@ -516,13 +647,13 @@ class ChatDBManager:
             self.logger.error("获取下一个 round_index 失败: %s", e)
             raise
 
-    def create_chat(self, user_id: int, chat_name: str) -> int:
-        """创建新聊天会话"""
+    def create_chat(self, user_id: int, chat_name: str, chat_type: str = "user") -> int:
+        """创建新聊天会话。chat_type 为 'user' 或 'agent'。"""
         conn = self._get_connection()
         try:
             cursor = conn.execute(
-                "INSERT INTO chats (user_id, chat_name) VALUES (?, ?)",
-                (user_id, chat_name),
+                "INSERT INTO chats (user_id, chat_name, chat_type) VALUES (?, ?, ?)",
+                (user_id, chat_name, chat_type),
             )
             conn.commit()
             return cursor.lastrowid
