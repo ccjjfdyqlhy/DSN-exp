@@ -383,10 +383,13 @@ def create_application():
     app.register_blueprint(heartbeat_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
+    from api.agent import agent_bp
+    app.register_blueprint(agent_bp)
     _t("认证 + 蓝图 + 数据库")
 
     # ── 数据库 ──
     db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
+    app.config["DB"] = db
     set_plan_db(db)
     _auth_manager.db = db
     if _auth_manager._user_count() == 0:

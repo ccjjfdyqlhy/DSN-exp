@@ -915,6 +915,10 @@ def _cmd_help():
     /detail chats    切换聊天详细模式 (显示完整模型请求/响应)
     /detail actions  切换动作详细模式 (显示动作执行详情)
     /timer      切换管线阶段计时 (后端控制台输出各阶段耗时)
+    /agent create <Agent名称> [用户ID]  创建 AI Agent 身份并生成 API Key
+    /agent list                         列出所有 Agent 绑定关系
+    /agent bind <AgentUID> <用户ID>     绑定 Agent 到用户
+    /agent unbind <AgentUID>            解除绑定
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /help       显示此帮助信息
 
@@ -1619,6 +1623,9 @@ def _h_persona(am, db, pm, pe, cc, pv, arg):
 def _h_help(am, db, pm, pe, cc, pv, arg):
     _cmd_help()
 
+def _h_agent(am, db, pm, pe, cc, pv, arg):
+    _cmd_agent(am, db, arg)
+
 
 def _h_export(am, db, pm, pe, cc, pv, arg):
     _cmd_export(db, arg)
@@ -1665,6 +1672,7 @@ _CMD_TABLE = {
     "/detail": _h_detail,
     "/timer": _h_timer,
     "/help": _h_help,
+    "/agent": _h_agent,
 }
 
 
@@ -1772,6 +1780,153 @@ def _persona_distill(v3, card_id: str):
 
     _th.Thread(target=_run, daemon=True, name="persona-distill-cli").start()
     print(f"  蒸馏已提交，完成时会输出日志。\n")
+
+
+def _cmd_agent(auth_manager, db, args: str):
+    """AI Agent 管理命令: create / bind / list / unbind"""
+    parts = args.split()
+    sub = parts[0].lower() if parts else ""
+
+    if sub not in ("create", "bind", "list", "unbind"):
+        print("""
+  /agent 命令用法:
+    /agent create <Agent名称> [用户ID]   — 创建 AI Agent 身份并生成 API Key
+    /agent bind <Agent的UID> <用户ID>    — 将现有 Agent 绑定到用户
+    /agent list                         — 列出所有已创建的 Agent
+    /agent unbind <Agent的UID>          — 解除 Agent 与用户的绑定
+
+  示例: /agent create OpenClaw 1
+        /agent list
+""")
+        return
+
+    if not db:
+        print("  错误: 数据库不可用")
+        return
+
+    if sub == "create":
+        if len(parts) < 2:
+            print("  用法: /agent create <Agent名称> [用户ID]")
+            return
+        agent_name = parts[1]
+        bound_uid = int(parts[2]) if len(parts) > 2 else 1
+
+        # 检查用户是否存在
+        conn = db._get_connection()
+        user = conn.execute("SELECT uid, nickname, display_name FROM users WHERE uid = ?",
+                            (bound_uid,)).fetchone()
+        if not user:
+            print(f"  错误: 用户 {bound_uid} 不存在，请先完成配对注册")
+            return
+        user_nick = (user["display_name"] or user["nickname"])
+
+        # 检查用户是否已绑定其他 Agent
+        existing = db.get_bound_agent(bound_uid)
+        if existing:
+            print(f"  错误: 用户 {user_nick}(UID={bound_uid}) 已绑定 Agent (UID={existing})")
+            print(f"  请先 /agent unbind {existing} 解除旧绑定")
+            return
+
+        # 创建 Agent 用户
+        agent_uid = db.create_agent(bound_uid, agent_name)
+        print(f"\n  Agent 身份已创建: uid={agent_uid} nickname={agent_name}")
+        print(f"  已绑定到用户: {user_nick} (uid={bound_uid})")
+
+        # 生成 API Key
+        if auth_manager and hasattr(auth_manager, "api_key"):
+            try:
+                raw_key, _ = auth_manager.api_key.create_key(
+                    uid=agent_uid,
+                    name=f"{agent_name}-agent",
+                    scopes="write",
+                    expires_days=365,
+                )
+                print(f"\n  安全存储（推荐，文件权限 chmod 600）:")
+                print(f"    mkdir -p ~/.dsn && chmod 700 ~/.dsn")
+                print(f"    echo '{raw_key}' > ~/.dsn/agent.key")
+                print(f"    chmod 600 ~/.dsn/agent.key")
+                print(f"\n  或在 Agent 配置中设置环境变量（安全性较低）:")
+                print(f"    export DSN_AGENT_API_KEY={raw_key}")
+                print(f"    export DSN_BASE_URL=http://localhost:5000")
+                print(f"\n  调用方式:")
+                print(f"    python agent_send.py \"你好\"")
+            except Exception as e:
+                print(f"  警告: API Key 生成失败: {e}")
+        else:
+            print("  警告: AuthManager.api_keys 不可用，请手动为 Agent 创建 API Key")
+
+    elif sub == "bind":
+        if len(parts) < 3:
+            print("  用法: /agent bind <Agent的UID> <用户ID>")
+            return
+        agent_uid = int(parts[1])
+        user_id = int(parts[2])
+
+        conn = db._get_connection()
+        agent = conn.execute("SELECT nickname FROM users WHERE uid = ?", (agent_uid,)).fetchone()
+        user = conn.execute("SELECT nickname, display_name FROM users WHERE uid = ?", (user_id,)).fetchone()
+        if not agent:
+            print(f"  错误: Agent uid={agent_uid} 不存在")
+            return
+        if not user:
+            print(f"  错误: 用户 uid={user_id} 不存在")
+            return
+
+        # 检查双向绑定冲突
+        agent_bound = db.get_bound_user(agent_uid)
+        user_bound = db.get_bound_agent(user_id)
+        if agent_bound and agent_bound != user_id:
+            print(f"  错误: Agent {agent['nickname']}(uid={agent_uid}) 已绑定到 uid={agent_bound}")
+            return
+        if user_bound and user_bound != agent_uid:
+            print(f"  错误: 用户 {user['display_name'] or user['nickname']}(uid={user_id}) 已绑定到 Agent uid={user_bound}")
+            return
+
+        db.bind_agent(user_id, agent_uid)
+        print(f"  Agent {agent['nickname']}(uid={agent_uid}) 已绑定到用户 {user['display_name'] or user['nickname']}(uid={user_id})")
+
+    elif sub == "list":
+        conn = db._get_connection()
+        rows = conn.execute(
+            "SELECT u.uid, u.nickname, u.display_name, u.bound_to, "
+            "bu.nickname as bound_nick, bu.display_name as bound_disp "
+            "FROM users u LEFT JOIN users bu ON u.bound_to = bu.uid "
+            "WHERE u.bound_to IS NOT NULL OR u.uid IN "
+            "(SELECT bound_to FROM users WHERE bound_to IS NOT NULL) "
+            "ORDER BY u.uid"
+        ).fetchall()
+        if not rows:
+            print("  暂无 Agent 绑定关系")
+            return
+        print(f"\n  {'='*55}")
+        print(f"  {'UID':<10} {'昵称':<20} {'绑定到'}")
+        print(f"  {'-'*55}")
+        for r in rows:
+            bound_to = r["bound_disp"] or r["bound_nick"] or str(r["bound_to"] or "-")
+            name = r["display_name"] or r["nickname"]
+            print(f"  {r['uid']:<10} {name:<20} {bound_to}")
+        print(f"  {'='*55}\n")
+
+    elif sub == "unbind":
+        if len(parts) < 2:
+            print("  用法: /agent unbind <Agent的UID>")
+            return
+        agent_uid = int(parts[1])
+
+        conn = db._get_connection()
+        agent = conn.execute("SELECT bound_to FROM users WHERE uid = ?", (agent_uid,)).fetchone()
+        if not agent:
+            print(f"  错误: uid={agent_uid} 不存在")
+            return
+        bound_to = agent["bound_to"]
+        if not bound_to:
+            print(f"  uid={agent_uid} 未绑定任何用户")
+            return
+
+        conn.execute("UPDATE users SET bound_to = NULL WHERE uid = ?", (agent_uid,))
+        conn.execute("UPDATE users SET bound_to = NULL WHERE uid = ?", (bound_to,))
+        conn.commit()
+        print(f"  Agent uid={agent_uid} 已与用户 uid={bound_to} 解除绑定")
 
 
 

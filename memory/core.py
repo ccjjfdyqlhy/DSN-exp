@@ -213,7 +213,7 @@ class MemorySystem:
     # =================================================================
 
     def assemble_context(
-        self, user_id: int, history: list[dict]
+        self, user_id: int, history: list[dict], cross_user_id: Optional[int] = None
     ) -> list[dict]:
         memos = self._get_memos(user_id)
         exps = self._get_exp_memories(user_id)
@@ -221,6 +221,32 @@ class MemorySystem:
         threshold = int(window * Config.MEMORY_REPLACE_THRESHOLD_RATIO)
 
         result = []
+
+        # 用户对话时：自动加载绑定的 AI Agent 的记忆 + 未同步的聊天记录
+        if cross_user_id is None and self.db is not None:
+            bound_agent = self._get_bound_agent(user_id)
+            if bound_agent:
+                agent_memos = self._get_memos(bound_agent)
+                agent_exps = self._get_exp_memories(bound_agent)
+                for m in agent_memos:
+                    result.append({"role": "system", "content": f"[AI Agent备忘] {m['content']}"})
+                for mem in agent_exps:
+                    header = f"[AI Agent记忆 · 轮次{mem['round']}]"
+                    result.append({"role": "system", "content": f"{header} {mem['content']}"})
+
+                # 注入未同步的 Agent 原始聊天记录
+                self._inject_unsynced_agent_chat(result, user_id, bound_agent)
+
+        # Agent 对话时：加载绑定的用户的记忆
+        if cross_user_id and cross_user_id != user_id:
+            cross_memos = self._get_memos(cross_user_id)
+            cross_exps = self._get_exp_memories(cross_user_id)
+            for m in cross_memos:
+                result.append({"role": "system", "content": f"[来自关联用户的备忘] {m['content']}"})
+            for mem in cross_exps:
+                header = f"[关联用户记忆 · 轮次{mem['round']}]"
+                result.append({"role": "system", "content": f"{header} {mem['content']}"})
+
         for m in memos:
             result.append({"role": "system", "content": f"[备忘] {m['content']}"})
 
@@ -650,6 +676,33 @@ class MemorySystem:
             }
             for r in rows
         ]
+
+    def _get_bound_agent(self, user_id: int) -> Optional[int]:
+        """查询用户绑定的 AI Agent 的 uid，无绑定返回 None。"""
+        if self.db is None or not hasattr(self.db, "get_bound_agent"):
+            return None
+        return self.db.get_bound_agent(user_id)
+
+    def _inject_unsynced_agent_chat(self, result: list, user_id: int, agent_uid: int) -> None:
+        """查询并注入未同步的 Agent 原始聊天消息到上下文中。"""
+        if not hasattr(self.db, "get_unsynced_agent_messages"):
+            return
+        msgs = self.db.get_unsynced_agent_messages(user_id, agent_uid, limit=20)
+        if not msgs:
+            return
+        lines = []
+        max_ts = None
+        for m in msgs:
+            ts = m.get("timestamp", "")[:16] if m.get("timestamp") else ""
+            role = "用户" if m["role"] == "user" else "DSN"
+            ts_tag = f" {ts}" if ts else ""
+            lines.append(f"[AI Agent对话{ts_tag}] {role}: {m['content']}")
+            if m.get("timestamp"):
+                max_ts = m["timestamp"]
+        if lines:
+            result.append({"role": "system", "content": "\n".join(lines)})
+        if hasattr(self.db, "set_agent_sync_time"):
+            self.db.set_agent_sync_time(user_id, timestamp=max_ts)
 
     def delete_memo(self, memo_id: int) -> bool:
         conn = self.db._get_connection()

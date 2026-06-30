@@ -38,7 +38,8 @@ class MemoryPlugin(Plugin):
     def _on_pre_process(self, ctx: PluginContext) -> PluginContext:
         if self._ms is not None:
             ctx.full_history = self._ms.assemble_context(
-                ctx.user_id, ctx.history
+                ctx.user_id, ctx.history,
+                cross_user_id=ctx.cross_user_id,
             )
         else:
             ctx.full_history = list(ctx.history)

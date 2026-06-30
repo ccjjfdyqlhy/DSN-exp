@@ -757,6 +757,7 @@ class DSNEngine:
             agent_active=kwargs.get("agent_active", ec.agent_active if ec else True),
             agent_max_steps=kwargs.get("agent_max_steps", ec.agent_max_steps if ec else Config.AGENT_MAX_STEPS),
             agent_token_budget=kwargs.get("agent_token_budget", ec.agent_token_budget if ec else 1000000),
+            cross_user_id=kwargs.get("cross_user_id"),
         )
         if self.task_manager:
             ctx.extra["_task_manager"] = self.task_manager
