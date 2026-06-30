@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from api.auth import UserManager
 from db.chat import ChatDBManager
-from models import DeepSeekChat
+from models import OpenAIChat
 
 # 1. 登录
 um = UserManager(client_id=845, client_secret="J6Hlf0Pp0mYTpRYyOhPFduJGJw828PjaDKOqXGbP")
@@ -21,7 +21,7 @@ if user_info:
     db.add_or_update_user(uid, nickname)
 
     # 3. 进行对话
-    chat = DeepSeekChat(api_key="sk-5eda1d9ea5124fb4bfb13a1832ff91ab")
+    chat = OpenAIChat(api_key="sk-5eda1d9ea5124fb4bfb13a1832ff91ab")
     chat.send_message("你好")
     chat.send_message("介绍一下自己")
 

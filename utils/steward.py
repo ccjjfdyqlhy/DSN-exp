@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger("Steward")
 
 _STEWARD_SENSITIVE_KEYS = {
-    "DEEPSEEK_API_KEY", "LITTLESKIN_CLIENT_SECRET",
+    "OPENAI_API_KEY", "LITTLESKIN_CLIENT_SECRET",
     "LITTLESKIN_CLIENT_ID", "JWT_SECRET",
 }
 
@@ -36,7 +36,7 @@ STEWARD_SYSTEM_HEADER = """你是一台DSN-exp服务器的驻守AI（代号：GU
 
 def _create_steward_client(config):
     """根据配置创建模型客户端（DeepSeek 或 LMStudio）"""
-    model_type = getattr(config, "STEWARD_MODEL_TYPE", "deepseek")
+    model_type = getattr(config, "STEWARD_MODEL_TYPE", "openai")
     model_name = getattr(config, "STEWARD_MODEL_NAME", "deepseek-v4-flash")
     timeout = getattr(config, "STEWARD_TIMEOUT", 300)
 
@@ -51,10 +51,10 @@ def _create_steward_client(config):
             max_tokens=2048,
         )
     else:
-        from models import DeepSeekChat
+        from models import OpenAIChat
         import os
-        api_key = getattr(config, "DEEPSEEK_API_KEY", None) or os.environ.get("DEEPSEEK_API_KEY")
-        return DeepSeekChat(
+        api_key = getattr(config, "OPENAI_API_KEY", None) or os.environ.get("OPENAI_API_KEY")
+        return OpenAIChat(
             api_key=api_key,
             model=model_name,
             timeout=timeout,

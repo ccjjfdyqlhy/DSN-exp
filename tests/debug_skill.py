@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(mes
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ.setdefault("DEEPSEEK_API_KEY", "debug-key")
+os.environ.setdefault("OPENAI_API_KEY", "debug-key")
 
 try:
     import readline

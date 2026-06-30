@@ -110,7 +110,7 @@ print("\n=== Test 11: NarrativeModel init ===")
 import yaml
 cfg = yaml.safe_load(open("world/worlds/default.yaml", encoding="utf-8-sig")) or {}
 nm = NarrativeModel(
-    model_type="deepseek",
+    model_type="openai",
     model_name="deepseek-v4-flash",
     temperature=0.9,
     max_tokens=150,

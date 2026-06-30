@@ -54,7 +54,7 @@ _ENGINE_CONFIG_PATH = "engine.yaml"
 @dataclass
 class EngineConfig:
     """引擎级配置：控制哪些子系统启用"""
-    deepseek_api_key: str = Config.DEEPSEEK_API_KEY
+    openai_api_key: str = Config.OPENAI_API_KEY
     model_type: str = Config.MAIN_MODEL_TYPE
     model_name: str = Config.MAIN_MODEL_NAME
     lmstudio_base_url: str = Config.LMSTUDIO_BASE_URL
@@ -77,7 +77,7 @@ class EngineConfig:
     @staticmethod
     def from_subapp(cfg: SubAppConfig) -> EngineConfig:
         return EngineConfig(
-            deepseek_api_key=cfg.model_api_key or Config.DEEPSEEK_API_KEY,
+            openai_api_key=cfg.model_api_key or Config.OPENAI_API_KEY,
             model_type=cfg.model_provider,
             model_name=cfg.model_name,
             lmstudio_base_url=cfg.lmstudio_base_url,
@@ -323,8 +323,8 @@ class DSNEngine:
                     timeout=self._engine_cfg.lmstudio_timeout,
                 )
             else:
-                from models import DeepSeekChat
-                chat = DeepSeekChat(api_key=self._engine_cfg.deepseek_api_key)
+                from models import OpenAIChat
+                chat = OpenAIChat(api_key=self._engine_cfg.openai_api_key)
             chat.messages = [{"role": "system", "content": system_prompt}]
             recent = history[-5:] if len(history) > 5 else history
             for msg in recent:
@@ -368,7 +368,7 @@ class DSNEngine:
             self.summary_model = LMSummaryModel(
                 backend=backend,
                 base_url=self._engine_cfg.lmstudio_base_url,
-                api_key=self._engine_cfg.deepseek_api_key,
+                api_key=self._engine_cfg.openai_api_key,
                 model_name=model_name,
                 summary_length=self._engine_cfg.memory_summary_length,
             )
@@ -402,7 +402,7 @@ class DSNEngine:
                 self.narrative_model = NarrativeModel(
                     model_type=Config.NARRATIVE_MODEL_TYPE,
                     model_name=Config.NARRATIVE_MODEL,
-                    api_key=Config.DEEPSEEK_API_KEY,
+                    api_key=Config.OPENAI_API_KEY,
                     base_url=Config.LMSTUDIO_BASE_URL if Config.NARRATIVE_MODEL_TYPE == "lmstudio" else None,
                     temperature=Config.NARRATIVE_TEMPERATURE,
                     max_tokens=Config.NARRATIVE_MAX_TOKENS,
@@ -593,7 +593,7 @@ class DSNEngine:
         from plugins.builtin.models_plugin import ModelsPlugin
         self._models_plugin = ModelsPlugin(
             model_type=self._engine_cfg.model_type,
-            deepseek_api_key=self._engine_cfg.deepseek_api_key,
+            openai_api_key=self._engine_cfg.openai_api_key,
             lmstudio_base_url=self._engine_cfg.lmstudio_base_url,
             lmstudio_model_name=self._engine_cfg.model_name,
             lmstudio_temperature=self._engine_cfg.lmstudio_temperature,
@@ -708,8 +708,8 @@ class DSNEngine:
             try:
                 from plugins.builtin.distill_plugin import DistillPlugin
                 from skills.distill import DistillationEngine
-                from models import DeepSeekChat
-                _skill_distill_llm = DeepSeekChat(api_key=self._engine_cfg.deepseek_api_key)
+                from models import OpenAIChat
+                _skill_distill_llm = OpenAIChat(api_key=self._engine_cfg.openai_api_key)
                 self.plugin_manager.register(DistillPlugin(
                     distillation_engine=DistillationEngine(
                         db=self.db, skill_manager=self.skill_manager,
@@ -749,7 +749,7 @@ class DSNEngine:
             chat_id=chat_id,
             chat_name=chat_name,
             history=history or [],
-            model_type=model_type or (ec.model_type if ec else "deepseek"),
+            model_type=model_type or (ec.model_type if ec else "openai"),
             nickname=nickname,
             is_asr_input=kwargs.get("is_asr_input", False),
             tts_enabled=kwargs.get("tts_enabled", True),
@@ -1206,7 +1206,7 @@ def create_engine_with_defaults(
 
     models_plugin = ModelsPlugin(
         model_type=Config.MAIN_MODEL_TYPE,
-        deepseek_api_key=Config.DEEPSEEK_API_KEY,
+        openai_api_key=Config.OPENAI_API_KEY,
         lmstudio_base_url=Config.LMSTUDIO_BASE_URL,
         lmstudio_model_name=Config.MAIN_MODEL_NAME,
         lmstudio_temperature=Config.LMSTUDIO_TEMPERATURE,
@@ -1308,8 +1308,8 @@ def create_engine_with_defaults(
         try:
             from plugins.builtin.distill_plugin import DistillPlugin
             from skills.distill import DistillationEngine
-            from models import DeepSeekChat
-            _skill_distill_llm = DeepSeekChat(api_key=Config.DEEPSEEK_API_KEY)
+            from models import OpenAIChat
+            _skill_distill_llm = OpenAIChat(api_key=Config.OPENAI_API_KEY)
             _distill_engine = DistillationEngine(
                 db=db,
                 skill_manager=engine.skill_manager,

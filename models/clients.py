@@ -86,18 +86,18 @@ def _unload_lmstudio_model(base_url: str, model_name: str) -> bool:
         logging.getLogger("models").error("卸载模型失败 (%s): %s", model_name, e)
         return False
 
-class DeepSeekChat:
+class OpenAIChat:
     """
-    DeepSeek API 聊天客户端类，支持多轮对话历史管理。
+    OpenAI 兼容 API 聊天客户端类，支持多轮对话历史管理。
+    适用于 DeepSeek、OpenAI、vLLM 等所有兼容 OpenAI 格式的 API。
     使用示例：
-        chat = DeepSeekChat(api_key="your-key")
+        chat = OpenAIChat(api_key="your-key")
         reply = chat.send_message("你好")
         print(reply)
         chat.reset_conversation()
     """
 
-    # 默认API地址和模型
-    DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions"
+    # 默认模型
     DEFAULT_MODEL = "deepseek-v4-flash"
     REASONER_MODEL = "deepseek-v4-pro"
 
@@ -105,19 +105,20 @@ class DeepSeekChat:
         self,
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
-        api_url: str = DEFAULT_API_URL,
+        api_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         timeout: int = 114514,
         use_reasoner: bool = False,
         max_history: int = 0,
     ):
-        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError(
-                "API密钥必须提供，可通过参数传入或设置环境变量DEEPSEEK_API_KEY"
+                "API密钥必须提供，可通过参数传入或设置环境变量OPENAI_API_KEY"
             )
+        from config import Config
         self.model = model
-        self.api_url = api_url
+        self.api_url = api_url or f"{Config.OPENAI_API_BASE}/chat/completions"
         self.timeout = timeout
         self.use_reasoner = use_reasoner
         self.max_history = max_history
@@ -135,7 +136,7 @@ class DeepSeekChat:
         if use_reasoner:
             self.model = self.REASONER_MODEL
 
-        self.logger.info("DeepSeekChat客户端初始化完成，模型：%s", self.model)
+        self.logger.info("OpenAIChat客户端初始化完成，模型：%s", self.model)
 
     def send_message(self, message: str, tools: list[dict] = None,
                      tool_choice: str = "auto") -> str:
@@ -160,7 +161,7 @@ class DeepSeekChat:
 
         if DETAIL_CHATS:
             print("\n" + "=" * 60)
-            print("📤 [DeepSeek] 发送内容:")
+            print("📤 [OpenAI] 发送内容:")
             print("=" * 60)
             for i, msg in enumerate(self.messages):
                 role = msg.get("role", "unknown")
@@ -223,7 +224,7 @@ class DeepSeekChat:
                                  assistant_message[:50] + "..." if len(assistant_message) > 50 else assistant_message)
 
                 if DETAIL_CHATS:
-                    print("\n📥 [DeepSeek] 生成内容:")
+                    print("\n📥 [OpenAI] 生成内容:")
                     print("-" * 60)
                     print(assistant_message)
                     print("-" * 60)
@@ -277,13 +278,13 @@ class DeepSeekChat:
         self.logger.info("API密钥已更新")
 
     def __repr__(self):
-        return f"<DeepSeekChat model={self.model} history_len={len(self.messages)}>"
+        return f"<OpenAIChat model={self.model} history_len={len(self.messages)}>"
 
 
 class LMStudioChat:
     """
     本地 LMStudio 聊天客户端类，支持多轮对话历史管理。
-    与 DeepSeekChat 接口兼容，可作为主模型的替代方案。
+    与 OpenAIChat 接口兼容，可作为主模型的替代方案。
     """
 
     def __init__(
@@ -718,7 +719,7 @@ class LMSummaryModel:
     ):
         from config import Config
 
-        self.backend = backend or getattr(Config, 'MEMORY_SUMMARY_BACKEND', 'deepseek')
+        self.backend = backend or getattr(Config, 'MEMORY_SUMMARY_BACKEND', 'openai')
         self.model_name = model_name or Config.MEMORY_MODEL
         self.summary_length = summary_length
         self.timeout = timeout
@@ -733,9 +734,9 @@ class LMSummaryModel:
         # 摘要上下文: 保持最近 10 次摘要的对话+结果
         self._summary_context = deque(maxlen=10)
 
-        if self.backend == "deepseek":
-            self.api_key = api_key or Config.DEEPSEEK_API_KEY
-            self.base_url = "https://api.deepseek.com/v1"
+        if self.backend == "openai":
+            self.api_key = api_key or Config.OPENAI_API_KEY
+            self.base_url = Config.OPENAI_API_BASE
         else:
             self.base_url = base_url or Config.LMSTUDIO_BASE_URL
             self.api_key = None
@@ -825,7 +826,7 @@ class LMSummaryModel:
         prompt = self.SUMMARY_PROMPT.strip() + "\n" + text
         self.logger.debug("生成摘要输入 (%d 字符)", len(text))
 
-        if self.backend == "deepseek":
+        if self.backend == "openai":
             url = f"{self.base_url}/chat/completions"
             headers = {
                 "Content-Type": "application/json",

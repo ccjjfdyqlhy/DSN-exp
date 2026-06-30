@@ -2,7 +2,7 @@ import os
 import threading
 import time
 
-os.environ.setdefault("DEEPSEEK_API_KEY", "test-key")
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from models.scheduler import ModelScheduler
 

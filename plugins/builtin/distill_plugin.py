@@ -106,7 +106,7 @@ class DistillPlugin(Plugin):
         card_id = self._card_id
         logger.info("V3: 开始性格蒸馏 %s...", card_id)
         try:
-            result = self._v3.distill(card_id, model_name="deepseek")
+            result = self._v3.distill(card_id, model_name="openai")
             if result:
                 self._v3.mark_distillation_done(card_id)
                 logger.info("V3: 性格蒸馏完成 version=%d dims=%d",

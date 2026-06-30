@@ -266,7 +266,7 @@ def test_all_plugins_instantiate():
         ASRFilterPlugin(filter_model=None, db=None),
         MemoryPlugin(memory_system=None, db=None),
         TaskPlugin(task_manager=None, db=None),
-        ModelsPlugin(model_type="deepseek", deepseek_api_key=None),
+        ModelsPlugin(model_type="openai", openai_api_key=None),
     ]
 
     for p in plugins:
@@ -296,7 +296,7 @@ def test_pipeline_dry_run():
     pm.register(MemoryPlugin(memory_system=mock_memory, db=mock_db))
     pm.register(TaskPlugin(task_manager=mock_tasks, db=mock_db))
     # 不注入真实 API key → ModelsPlugin 将报错，但 pipeline 会捕获
-    pm.register(ModelsPlugin(model_type="deepseek", deepseek_api_key=None))
+    pm.register(ModelsPlugin(model_type="openai", openai_api_key=None))
 
     pipeline = ChatPipeline(pm)
 

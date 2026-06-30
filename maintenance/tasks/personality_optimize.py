@@ -41,7 +41,7 @@ class PersonalityOptimizeTask(MaintenanceTask):
                 }
 
             reporter(TaskProgress(current=2, total=3, message="执行人格蒸馏..."))
-            distilled = self._v3.distill(self._card_id, model_name="deepseek")
+            distilled = self._v3.distill(self._card_id, model_name="openai")
             if distilled:
                 self._v3.mark_distillation_done(self._card_id)
                 logger.info("人格蒸馏完成 version=%d", distilled.version)

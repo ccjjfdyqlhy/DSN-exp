@@ -31,7 +31,7 @@ def _is_env_configured() -> bool:
                 if stripped.startswith("#") or "=" not in stripped:
                     continue
                 k, v = stripped.split("=", 1)
-                if k.strip().upper() == "DEEPSEEK_API_KEY":
+                if k.strip().upper() == "OPENAI_API_KEY":
                     val = v.strip()
                     return bool(val and val != "sk-your-key-here")
     except Exception:
@@ -365,12 +365,12 @@ def _cmd_status(auth_manager, db):
 
 
 SENSITIVE_CONFIG_KEYS = {
-    "DEEPSEEK_API_KEY", "LITTLESKIN_CLIENT_SECRET",
+    "OPENAI_API_KEY", "LITTLESKIN_CLIENT_SECRET",
     "LITTLESKIN_CLIENT_ID", "JWT_SECRET",
 }
 
 READONLY_CONFIG_KEYS = {
-    "DEEPSEEK_API_KEY", "LITTLESKIN_CLIENT_SECRET",
+    "OPENAI_API_KEY", "LITTLESKIN_CLIENT_SECRET",
     "LITTLESKIN_CLIENT_ID", "JWT_SECRET", "SERVER_HOST",
     "SERVER_PORT", "LOCAL_CALLBACK_PORT",
 }
@@ -1759,7 +1759,7 @@ def _persona_distill(v3, card_id: str):
     import threading as _th
     def _run():
         try:
-            d = v3.distill(card_id, model_name="deepseek")
+            d = v3.distill(card_id, model_name="openai")
             if d:
                 v3.mark_distillation_done(card_id)
                 append_log("system", "INFO",
@@ -2114,7 +2114,7 @@ def main():
             steward = StewardModel(Config)
             console.print(
                 "[green]驻守模型就绪[/] "
-                f"({getattr(Config, 'STEWARD_MODEL_TYPE', 'deepseek')}:"
+                f"({getattr(Config, 'STEWARD_MODEL_TYPE', 'openai')}:"
                 f"{getattr(Config, 'STEWARD_MODEL_NAME', 'deepseek-v4-flash')})"
             )
             append_log("system", "INFO", "驻守模型已就绪")

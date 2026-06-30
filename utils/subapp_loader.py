@@ -20,7 +20,7 @@ class SubAppConfig:
     author: str = "community"
 
     # 模型
-    model_provider: str = "deepseek"
+    model_provider: str = "openai"
     model_name: str = "deepseek-v4-flash"
     model_temperature: float = 0.7
     model_max_tokens: int = 4096
@@ -116,7 +116,7 @@ def _build_config(data: dict, subapp_dir: str) -> SubAppConfig:
         version=meta.get("version", "1.0"),
         description=meta.get("description", ""),
         author=meta.get("author", "community"),
-        model_provider=model.get("provider", "deepseek"),
+        model_provider=model.get("provider", "openai"),
         model_name=model.get("model", "deepseek-v4-flash"),
         model_temperature=model.get("temperature", 0.7),
         model_max_tokens=model.get("max_tokens", 4096),

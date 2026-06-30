@@ -42,8 +42,9 @@ class Config:
     AUTH_WEBAUTHN_RP_NAME = _env("AUTH_WEBAUTHN_RP_NAME", "DSN-exp")
     AUTH_TOTP_ISSUER = _env("AUTH_TOTP_ISSUER", "DSN-exp")
 
-    # ==================== DeepSeek API ====================
-    DEEPSEEK_API_KEY = _env("DEEPSEEK_API_KEY", required=True)
+    # ==================== OpenAI 兼容 API ====================
+    OPENAI_API_KEY = _env("OPENAI_API_KEY", required=True)
+    OPENAI_API_BASE = _env("OPENAI_API_BASE", "https://api.deepseek.com/v1")
     REASONER_ENABLED = _env("REASONER_ENABLED", "true").lower() == "true"
     REASONER_MODEL = _env("REASONER_MODEL", "deepseek-v4-pro")
     REASONER_TIMEOUT = int(_env("REASONER_TIMEOUT", "1200"))
@@ -53,7 +54,7 @@ class Config:
     TTS_BASE_URL = _env("TTS_BASE_URL", "http://127.0.0.1:9880")
 
     # ==================== 主模型配置 ====================
-    MAIN_MODEL_TYPE = _env("MAIN_MODEL_TYPE", "deepseek")
+    MAIN_MODEL_TYPE = _env("MAIN_MODEL_TYPE", "openai")
     MAIN_MODEL_NAME = _env("MAIN_MODEL_NAME", "deepseek-v4-flash")
     LMSTUDIO_TEMPERATURE = float(_env("LMSTUDIO_TEMPERATURE", "0.7"))
     LMSTUDIO_MAX_TOKENS = int(_env("LMSTUDIO_MAX_TOKENS", "4096"))
@@ -72,7 +73,7 @@ class Config:
 
     # ==================== 记忆与摘要 ====================
     MEMORY_ENABLED = _env("MEMORY_ENABLED", "true").lower() == "true"
-    MEMORY_SUMMARY_BACKEND = _env("MEMORY_SUMMARY_BACKEND", "deepseek")  # "deepseek" | "lmstudio"
+    MEMORY_SUMMARY_BACKEND = _env("MEMORY_SUMMARY_BACKEND", "openai")  # "openai" | "lmstudio"
     MEMORY_MODEL = _env("MEMORY_MODEL", "deepseek-v4-flash")
     MEMORY_SUMMARY_LENGTH = int(_env("MEMORY_SUMMARY_LENGTH", "100"))
     MEMORY_CONTEXT_WINDOW_SIZE = int(_env("MEMORY_CONTEXT_WINDOW_SIZE", "80"))
@@ -153,7 +154,7 @@ class Config:
     PERSONALITY_V3_OVERRIDE_V2 = _env("PERSONALITY_V3_OVERRIDE_V2", "true").lower() == "true"
     PERSONALITY_MODEL_NAME = _env("PERSONALITY_MODEL_NAME", "google/gemma-3-4b")
     PERSONALITY_MODEL_URL = _env("PERSONALITY_MODEL_URL", None) or _env("LMSTUDIO_BASE_URL", "http://localhost:4501")
-    DISTILLATION_MODEL = _env("DISTILLATION_MODEL", "deepseek")  # "deepseek" | "lmstudio"
+    DISTILLATION_MODEL = _env("DISTILLATION_MODEL", "openai")  # "openai" | "lmstudio"
     PERSONALITY_V3_DEFAULT_CARD = _env("PERSONALITY_V3_DEFAULT_CARD", "")
 
     # ==================== 工作区系统 ====================

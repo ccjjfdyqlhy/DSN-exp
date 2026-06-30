@@ -129,7 +129,7 @@ class PersonalitySystemV3:
 
     # === 蒸馏 ===
 
-    def distill(self, card_id: str, model_name: str = "deepseek") -> DistilledTraits | None:
+    def distill(self, card_id: str, model_name: str = "openai") -> DistilledTraits | None:
         logger.info("V3: 开始蒸馏 card_id=%s model=%s", card_id, model_name)
 
         self.import_pending_materials(card_id)
