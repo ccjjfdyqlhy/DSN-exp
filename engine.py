@@ -222,6 +222,10 @@ class DSNEngine:
 
     def _dispatch_task_completion(self, task, result):
         from tasks import TaskType
+        # 如果该 TaskManager 任务关联了 AsyncTaskStore 的异步任务，标记为完成
+        reply = (result.get("reply") or result.get("reminder_text")
+                 or result.get("conclusion") or result.get("reasoning", ""))
+        self.async_task_store.complete_by_taskmgr_id(task.task_id, reply)
         if task.task_type == TaskType.REMINDER:
             self._handle_reminder_completion(task, result)
         elif task.task_type == TaskType.REASONER:
