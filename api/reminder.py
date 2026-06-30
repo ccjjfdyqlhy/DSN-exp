@@ -73,7 +73,14 @@ def list_reminders():
 
 @reminder_bp.route("/api/reminder/done", methods=["POST"])
 def mark_done():
-    """标记一条提醒为已完成"""
+    """标记一条提醒为已完成。
+
+    新流程下，提醒到期由后端 TaskManager 自动执行（状态→COMPLETED），
+    前端心跳拉取通知后展示。此接口主要用于：
+      1. 用户主动提前完成一个 PENDING 提醒
+      2. 兼容旧客户端调用
+    若任务已经是 COMPLETED 状态，则不重复创建 HABIT 下一个。
+    """
     uid = g.user.get("uid", 0) if g.user else 0
     data = request.get_json(silent=True) or {}
     task_id = data.get("task_id", "")
@@ -91,16 +98,22 @@ def mark_done():
     if task.user_id != uid:
         return jsonify({"success": False, "error": "无权操作"}), 403
 
-    # 标记完成
-    task.status = TaskStatus.COMPLETED
-    task.completed_at = datetime.now()
-    _task_manager._save_task(task)
+    already_completed = (task.status == TaskStatus.COMPLETED)
+
+    # 标记完成（若已是 COMPLETED 则保持）
+    if not already_completed:
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = datetime.now()
+        _task_manager._save_task(task)
 
     text = task.params.get("text", "")
 
-    # 周期性 HABIT: 自动创建下一个
+    # 周期性 HABIT: 仅当之前不是 COMPLETED 时才创建下一个，避免重复
     next_time = None
-    if task.task_type == TaskType.HABIT and task.interval_seconds > 0:
+    new_id = None
+    if (not already_completed
+            and task.task_type == TaskType.HABIT
+            and task.interval_seconds > 0):
         next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
         new_id = _task_manager.create_task(
             task_type=TaskType.HABIT,
@@ -118,7 +131,7 @@ def mark_done():
         "text": text,
         "task_type": task.task_type.value,
         "next_scheduled": next_time.isoformat() if next_time else None,
-        "next_task_id": new_id if task.task_type == TaskType.HABIT and task.interval_seconds > 0 else None,
+        "next_task_id": new_id,
     })
 
 
