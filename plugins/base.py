@@ -57,6 +57,7 @@ class PluginContext:
 
     # ---- 扩展 ----
     extra: dict = field(default_factory=dict)
+    cross_user_id: Optional[int] = None   # Agent 模式下绑定的用户 uid
     recall_engine: Optional[Any] = None  # MemoryRecallEngine 实例
 
 

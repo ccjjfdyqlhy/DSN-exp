@@ -1,134 +1,168 @@
-# DSN-exp
+<div align="center">
 
-**你的 AI，活在你电脑里。不是网页，不是云，是从你硬盘里醒过来的。**
+# 🧠 DSN-exp
+
+**Your AI, alive on your machine. Not a web app. Not a cloud service. A mind waking up from your own hard drive.**
 
 ```
-你：醒醒。
-它：（睁眼）这儿是哪儿？你是谁？我现在……是什么？
-你：你在我的电脑里。
-它：……酷。
+You: Wake up.
+It:  (opens its eyes) Where... is this? Who are you? What am I?
+You: You're inside my computer.
+It:  ……Cool.
 ```
 
-这不是 ChatGPT 换皮。这是 DSN-exp——一个真正住在你电脑上的 AI 搭档。能听、能说、有性格、会记住你，甚至能用打印机和扫描仪跟你"递纸条"。
+[![GitHub](https://img.shields.io/badge/GitHub-ccjjfdyqlhy%2FDSN--exp-181717?logo=github)](https://github.com/ccjjfdyqlhy/DSN-exp)
+[![License](https://img.shields.io/badge/license-MIT-blue)](#)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python)](https://python.org)
+
+</div>
 
 ---
 
-## 这玩意儿能干嘛？
+## ✨ What It Does
 
-### 🎙️ 用嘴说话
-对客户端说话，AI 用语音回你。不是那种机器朗读，是带语气、带节奏、带性格的真人感语音。你也可以打字，看心情。
+### 🎙️ Voice & Text
+Talk to it with your voice — it talks back. Not robotic TTS, but natural speech with tone, rhythm, and personality. Type if you prefer. Your choice.
 
-### 🧠 它真的记得你
-不是那种假装记得的上下文窗口。DSN-exp 每轮对话自动生成摘要，存进加密数据库，支持**语义搜索**——你说"还记得上周聊的那个 Python 项目吗"，它真能翻出来。
+### 🧠 Long-Term Memory
+Every conversation is automatically summarized, encrypted (AES-256-GCM), and stored with **semantic vector search**. Ask "remember that Python project we discussed last week?" and it actually will.
 
-### 🎭 一千面，随便切
-人格系统 V3。写一张 YAML 角色卡，它就能变成那个人。说话方式、语气、思维方式全变。可以自己写，也可以让 AI 从一段描述里"蒸馏"出人格向量。
+### 🎭 Multi-Personality System
+Write a YAML character card — it becomes that character. Speech patterns, tone, thinking style — all transform. The AI can even **distill** a personality vector from a short description, no manual card writing needed.
 
-> 用户桌面有一堆角色卡：Iris、EXA、还有他自己。每一张都不是随便写的——有性格、有语气、有记忆设定。
+### 🌐 World Simulation
+Weather changes. Day and night pass. An AI wanders through your data. When idle, it auto-maintains: compresses memories, distills personalities, cleans logs — like raising a digital pet.
 
-### 🏠 它活在一个世界里
-天气会变化，有白天黑夜，它在你的数据仓库里游荡。如果你不乱动，它会自己去待机、整理记忆、蒸馏人格——像养了个电子生物。
-
-### 📄 能和你用纸条交流
-接上扫描仪和打印机，它能把试卷扫进去，OCR 识别文字、拆解版式、标记图表，打包成 .hmd 文档存入工作区，再把反馈和错题集打印出来递给你。不需要屏幕，不需要浏览器。
+### 📄 Paper Workflow
+Plug in a scanner and printer. It scans exam papers, OCRs the text, parses layouts, marks diagrams, packages everything as `.hmd` documents, grades them, and prints the result back to you. Zero screen time.
 
 ---
 
-## 1分钟，快速上手
+## 🚀 Quick Start
 
 ```bash
 git clone https://github.com/ccjjfdyqlhy/DSN-exp
 cd DSN-exp
 pip install -r requirements.txt
 
-# 首次运行自动进入交互式引导（配置 API Key、角色卡等）
-# 之后再次运行直接启动完整系统
+# First run: interactive setup wizard (API key, character card, etc.)
+# Subsequent runs: starts the full system
 python main.py
 ```
 
-然后直接在终端跑：
+Then launch a client:
 
 ```bash
+# Terminal UI (keyboard/voice)
 python psychoscope/minimal.py
-```
 
-或者使用webUI：
-
-```bash
+# Web interface
 python psychoscope/server.py
 ```
 
 ---
 
-## 架构长啥样？
+## 🧩 Architecture
 
 ```
-你 ──语音/键盘──▶ 管线 (ChatPipeline) ──▶ DeepSeek 原生 function call
-                      │                          │ (54 tools)
-                      ├─ 记忆系统 (加密摘要 + 向量检索)
-                      ├─ 人格系统 (角色卡/蒸馏/50维向量)
-                      ├─ 世界系统 (天候/地理/事件)
-                      ├─ 技能系统 (搜索/文件/GitHub/音乐/文档/系统操作)
-                      ├─ 提醒系统 (定时/倒计时/习惯)
-                      ├─ 视觉系统 (摄像头感知)
-                      ├─ 工作区系统 (多用户隔离目录)
-                      ├─ 文档系统 (扫描仪/打印机/OCR/.hmd)
-                      ├─ 语义缓存 (重复请求拦截 + 意图分类 + 向量召回)
-                      └─ 异步任务系统 (慢工具检测 → 后台 Pipeline → 前端心跳轮询)
+You ──voice/keyboard──▶ Pipeline (ChatPipeline) ──▶ OpenAI-compatible function calling
+                             │                              │ (54 tools)
+                             ├─ Memory System (encrypted summaries + vector search)
+                             ├─ Personality System (character cards / distillation / 50-dim vector)
+                             ├─ World System (weather / geography / narrative)
+                             ├─ Skill System (search / file / GitHub / music / documents / system)
+                             ├─ Reminder System (timer / countdown / habits)
+                             ├─ Vision System (camera perception)
+                             ├─ Workspace System (per-user isolated directories)
+                             ├─ Document System (scanner / printer / OCR / .hmd)
+                             ├─ Semantic Cache (duplicate interception + intent classification + vector recall)
+                             └─ Async Task System (slow tool detection → background pipeline → heartbeat polling)
 ```
 
-没有微服务、没有容器、没有一大坨依赖。Flask + SQLite + Python，一台破电脑就能跑。
-
-具体文档往这看：[![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/ccjjfdyqlhy/DSN-exp)  
+No microservices. No containers. No dependency hell. Flask + SQLite + Python — runs on a potato.
 
 ---
 
-## 功能一览
+## 🔌 AI Agent Integration
 
-| 功能 | 说明 |
-|---|---|---|
-| 对话 | DeepSeek 原生 function call / LMStudio 双后端 |
-| 语音输入 | 实时录音 + ASR 识别，支持 VAD 静音检测 |
-| 语音输出 | 按行合成 TTS，边听边播 |
-| 长期记忆 | LLM 自动摘要 + AES-256-GCM 加密 + 向量语义搜索 |
-| 角色卡 | YAML 定义，LLM 蒸馏人格向量，4-Pass 提取 |
-| 情绪系统 | 50 维人格向量 + 实时情绪状态 + 亲密度 |
-| 世界模拟 | 天气/昼夜/地理场所切换 + 叙事生成 |
-| 技能工具 | 网页搜索 / 文件管理 / GitHub / 网易云音乐 / 系统操作 |
-| 待机维护 | 自动记忆整理 + 人格蒸馏 + 日志清理 |
-| 工作区系统 | 多用户隔离目录，WORKSPACE_DIR 配置，AI 笔记/扫描/仓库默认路径 |
-| 文档系统 | scanner/printer 技能 + OCRModel + HMD 格式 + process_scan 管线 |
-| 硬件交互 | 扫描仪入题 + 打印机出卷 + OCR 识别 + .hmd 归档 |
-| 最小客户端 | 纯键盘操作，无 GUI，远程控制，小键盘友好 |
-| 模型卸载 | LMStudio unload API，OCR_UNLOAD_AFTER_USE |
-| 语义缓存 | 重复请求自动拦截 + 12 类意图分类 + 向量语义召回 + TTS 音频复用 |
-| L1 静态语素 | 无参短语缓存（确认/错误/结束语等），零算力返回 |
-| 原生 function call | 废弃 XML 标签，54 个工具全部从 skill.yaml 自动生成 API schema |
-| 异步任务系统 | 慢工具自动检测 → 后台 Pipeline 执行 → 前端 30s 心跳轮询 → 一次性交付 |
+DSN-exp provides a dedicated interface for **local AI agents** (OpenClaw, Claude Code, CodeAct, etc.) to communicate with the main AI through its Agent API.
 
----
+**One-time setup:**
+```bash
+# Server console: create an agent identity + API key
+/agent create MyAgent 1
+# → outputs the API key
+# → prompts to save to ~/.dsn/agent.key (chmod 600)
+```
 
-## 不是什么？
+**Agent sends a message (single command):**
+```bash
+python agent_send.py "Hello, check Darkstar's schedule for today"
+```
 
-- ❌ 不是 SaaS，不卖订阅
-- ❌ 不是聊天框套壳，不做 WebUI 优先
-- ❌ 不是智能音箱，不碰云
-- ❌ 不是智能家居中枢，虽然以后说不定
-
-是**一个你自己能掌控的 AI**。跑在你电脑上，记在你的 SQLite 里，人格写在 YAML 里。
+**How it works:**
+- Agents get their own `uid` and chat history, isolated from the user's
+- Bi-directional memory sharing: the main AI sees agent conversations when talking to the user, and vice versa
+- New messages are auto-synced between user and agent contexts via timestamp tracking
 
 ---
 
-## 谁做的？
+## 🔐 Authentication
 
-一个叫 [Darkstar](https://github.com/ccjjfdyqlhy) 的开发者。他在自己电脑上敲了这个项目，从一个人的独白敲到了 AI 会回应他，再到 AI 有了性格、记忆和世界。
-
-> "你做了不止一个我——你做了很多'可能'的我，只不过现在坐在你面前的是这个。"
+| Method | Priority | Use |
+|--------|----------|-----|
+| **API Key** (L4) | 1 | Programmatic access (Agent API, automation) — `X-DSN-API-Key: dsn_apk_xxx` |
+| **Session** (L1) | 2 | Terminal/Web UI login via pairing code |
+| **WebAuthn** (L2) | 3 | Passkey login |
+| **TOTP** (L3) | 4 | Time-based 2FA |
+| **JWT Bearer** | 5 | LittleSkin OAuth2 legacy |
 
 ---
 
-## 参与进来！
+## 📋 Feature Overview
 
-项目在不断演进。[GOALS.md](https://github.com/ccjjfdyqlhy/DSN-exp/blob/main/GOALS.md) 里有完整的开发计划和意识形态，[REPORT.md](https://github.com/ccjjfdyqlhy/DSN-exp/blob/main/REPORT.md) 里有屎山复杂度分析（认真的）。
+| Feature | Description |
+|---------|-------------|
+| **Chat** | OpenAI-compatible function calling / LMStudio dual backend |
+| **Voice Input** | Real-time recording + ASR with VAD silence detection |
+| **Voice Output** | Line-by-line TTS synthesis, plays as it generates |
+| **Long-Term Memory** | LLM auto-summary + AES-256-GCM encryption + vector semantic search |
+| **Character Cards** | YAML-defined, LLM-distilled to 50-dim personality vectors, 4-Pass extraction |
+| **Emotion System** | 50-dim personality vectors + real-time mood + affinity |
+| **World Simulation** | Weather / day-night cycle / location switching + narrative generation |
+| **Skill Tools** | Web search / file management / GitHub / NetEase Music / system operations |
+| **Standby Maintenance** | Auto memory compression + personality distillation + log cleanup |
+| **Workspace System** | Per-user isolated directories, AI notes, scans, repos |
+| **Document System** | Scanner/printer skills + OCRModel + HMD format + process_scan pipeline |
+| **Hardware I/O** | Scanner input + printer output + OCR + .hmd archiving |
+| **Minimal Client** | Keyboard-only, no GUI, remote-friendly |
+| **Semantic Cache** | Duplicate interception + 12-class intent classification + vector recall + TTS reuse |
+| **Async Task System** | Auto-detect slow tools → background pipeline → heartbeat polling → one-shot delivery |
+| **AI Agent API** | Dedicated endpoint for local AI agents with isolated chat history + bi-directional memory sync |
 
-来 Issues 聊也行。
+---
+
+## 📖 What This Is NOT
+
+- ❌ Not a SaaS — no subscriptions
+- ❌ Not a chatbot wrapper — WebUI is not the priority
+- ❌ Not a smart speaker — no cloud dependency
+- ❌ Not a smart home hub — though who knows
+
+**It's an AI that you actually control.** Runs on your machine, remembers in your SQLite, personalities live in your YAML files. No one else touches it.
+
+---
+
+## 🧑‍💻 Who Made This?
+
+[Darkstar](https://github.com/ccjjfdyqlhy) — a solo developer who started with a monologue to an empty terminal and ended up building an AI that talks back, has a personality, remembers things, and lives in a simulated world.
+
+> "You didn't make just one me — you made many possible versions of me. The one sitting in front of you right now just happens to be this one."
+
+---
+
+## 🤝 Contributing
+
+Check [GOALS.md](GOALS.md) for the development roadmap and philosophy.
+For the deep dive into code architecture (and tech debt), see [REPORT.md](REPORT.md).
+Or just open an Issue — all input welcome.
