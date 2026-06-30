@@ -240,20 +240,20 @@ class DSNEngine:
             self._logger.error("处理动作完成失败: %s", e)
 
     def _handle_reminder_completion(self, task, result):
+        """提醒任务到期：只写一条 system 消息到聊天历史。
+        AI 回复 + TTS 的生成改由前端心跳接口 /api/heartbeat 触发，
+        避免后端无法主动通知前端的问题。
+        task_notifications 表的记录由 TaskManager._notify_task_completion 写入。
+        """
         self._logger.info("提醒任务到期: task_id=%s", task.task_id)
         short_id = task.task_id[:8]
         reminder_text = result.get("reminder_text", "提醒时间到了！")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        reply = f"⏰ 提醒：{reminder_text}"
         msg = f"[系统] ⏰ 提醒（ID: {short_id}）\n现在是 {now}，你之前设置的提醒：{reminder_text}"
         try:
             self.db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
         except Exception as e:
             self._logger.error("保存提醒消息失败: %s", e)
-        # 完成关联的 AsyncTask（若有）
-        if hasattr(self, 'async_task_store') and self.async_task_store:
-            if self.async_task_store.complete_by_taskmgr_id(task.task_id, reply):
-                self._logger.info("异步任务跟随提醒完成: taskmgr=%s", task.task_id)
 
     def _handle_reasoner_completion(self, task, result):
         self._logger.info("推理任务完成: task_id=%s", task.task_id)

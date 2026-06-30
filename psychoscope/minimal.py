@@ -523,32 +523,50 @@ class AsyncTaskPoller:
             self._wake_event.wait(timeout=self.ASYNC_POLL_INTERVAL)
 
 
-class ReminderWatcher:
-    """后台线程: 每 60s 检查 reminders.json，到期则通知后端并弹回提醒。"""
+class HeartbeatPoller:
+    """后台线程: 每 N 秒向后端发心跳，检查是否有已完成的提醒任务。
 
-    def __init__(self, client: DSNClient):
+    工作流程（与 /api/heartbeat 配合）：
+      1. 每 HEARTBEAT_INTERVAL 秒发一次 GET /api/heartbeat
+      2. 如果返回 has_notification=false → 什么都不做
+      3. 如果返回 has_notification=true →
+         a. 立即显示 reply 文本
+         b. 把 audio_b64 推入 TTS 队列播放
+         c. 记录最近触发的提醒，供 'k' 键跳过
+      4. 前端不再主动判断提醒是否到期 —— 完全由后端 TaskManager 调度，
+         到期后写入 task_notifications 表，心跳拉取并触发 AI 通知 + TTS。
+    """
+
+    HEARTBEAT_INTERVAL = 5      # 每 5 秒发一次心跳
+    HEARTBEAT_TIMEOUT = 30      # 单次心跳请求超时
+
+    def __init__(self, client: "DSNClient", tts_queue: queue.Queue):
         self._client = client
+        self._tts_queue = tts_queue
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_triggered: dict[str, dict] = {}
+        self._last_triggered: dict[str, dict] = {}  # task_id -> {text, type, notification_id}
+        self._last_notification_id: Optional[int] = None
 
     def start(self):
         if self._running:
             return
         self._running = True
-        self._sync()  # 启动时立即同步
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        log.info("HeartbeatPoller 已启动 (interval=%ds)", self.HEARTBEAT_INTERVAL)
 
     def stop(self):
         self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
 
     def sync_now(self):
-        """手动触发同步"""
-        self._sync()
+        """手动触发一次心跳（兼容旧接口，'r' 键调用）。"""
+        self._beat()
 
     def skip_latest(self) -> bool:
-        """跳过最近一条触发的提醒"""
+        """跳过最近一条触发的提醒（调用 /api/reminder/skip）。"""
         if not self._last_triggered:
             return False
         task_id = list(self._last_triggered.keys())[-1]
@@ -567,108 +585,84 @@ class ReminderWatcher:
             pass
         return False
 
-    def _sync(self):
-        """从后端拉取 PENDING 提醒到本地 JSON"""
-        try:
-            resp = requests.get(
-                f"{self._client.base}/api/reminder/list",
-                headers=self._client._headers(),
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                return
-            data = resp.json()
-            remote = data.get("reminders", [])
-            # 合并: 保留本地已标记 trigger_done 的，仅追加新的
-            local = self._load_local()
-            local_ids = {r["task_id"] for r in local}
-            for rem in remote:
-                if rem["task_id"] not in local_ids:
-                    local.append({
-                        "task_id": rem["task_id"],
-                        "text": rem["text"],
-                        "scheduled_time": rem["scheduled_time"],
-                        "task_type": rem["task_type"],
-                        "interval_seconds": rem.get("interval_seconds", 0),
-                    })
-            self._save_local(local)
-        except Exception:
-            pass
-
-    def _load_local(self) -> list[dict]:
-        if REMINDER_FILE.exists():
-            try:
-                return json.loads(REMINDER_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-        return []
-
-    def _save_local(self, reminders: list[dict]):
-        TTS_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            REMINDER_FILE.write_text(
-                json.dumps(reminders, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
     def _loop(self):
+        # 启动后稍等 2 秒再开始心跳，避免与服务端握手竞争
+        time.sleep(2)
         while self._running:
             try:
-                reminders = self._load_local()
-                now = datetime.now()
-                changed = False
-                for r in reminders:
-                    try:
-                        st = datetime.fromisoformat(r["scheduled_time"])
-                    except Exception:
-                        continue
-                    if st <= now:
-                        self._trigger(r)
-                        changed = True
+                self._beat()
+            except Exception as e:
+                log.warning("HeartbeatPoller 心跳异常: %s", e)
+            # 分段 sleep，便于快速退出
+            for _ in range(self.HEARTBEAT_INTERVAL):
+                if not self._running:
+                    break
+                time.sleep(1)
 
-                if changed:
-                    # 移除已触发的
-                    remaining = []
-                    for r in reminders:
-                        try:
-                            st = datetime.fromisoformat(r["scheduled_time"])
-                        except Exception:
-                            remaining.append(r)
-                            continue
-                        if st > now:
-                            remaining.append(r)
-                    self._save_local(remaining)
-            except Exception:
-                pass
-            time.sleep(60)
-
-    def _trigger(self, reminder: dict):
-        """向后端发送 done 请求，并通知用户"""
-        task_id = reminder["task_id"]
-        text = reminder.get("text", "") or "提醒时间到了"
-        tlabel = self._type_label(reminder.get("task_type", ""))
+    def _beat(self):
+        """发一次心跳请求并处理响应。"""
         try:
-            resp = requests.post(
-                f"{self._client.base}/api/reminder/done",
-                json={"task_id": task_id},
+            resp = requests.get(
+                f"{self._client.base}/api/heartbeat",
                 headers=self._client._headers(),
-                timeout=10,
+                timeout=self.HEARTBEAT_TIMEOUT,
             )
-            if resp.status_code == 200:
-                result = resp.json()
-                if result.get("success"):
-                    print(f"\n  ⏰ [{tlabel}] {text}")
-                    _play_beep(self._client, 880)
-                    self._last_triggered[task_id] = {"text": text, "type": tlabel}
+        except requests.exceptions.RequestException as e:
+            log.debug("心跳请求失败: %s", e)
+            return
 
-                    if result.get("next_task_id"):
-                        pass
-                else:
-                    print(f"\n  ⚠️ 提醒失败: {result.get('error', '')}")
+        if resp.status_code != 200:
+            log.debug("心跳 HTTP %d", resp.status_code)
+            return
+
+        try:
+            data = resp.json()
         except Exception:
-            pass
+            return
+
+        if not data.get("has_notification"):
+            return
+
+        # 有提醒通知
+        reply = data.get("reply", "") or ""
+        audio_b64 = data.get("audio_b64", "") or ""
+        task_id = data.get("task_id", "")
+        notification_id = data.get("notification_id")
+        task_type = data.get("task_type", "reminder")
+        chat_id = data.get("chat_id")
+        tts_error = data.get("tts_error", "")
+
+        tlabel = self._type_label(task_type)
+
+        # 更新 chat_id（后端可能新建了会话）
+        if chat_id:
+            self._client.chat_id = chat_id
+
+        # 显示文本
+        if reply:
+            print(f"\n  ⏰ [{tlabel}] {reply}")
+
+        # 播放提示音
+        _play_beep(self._client, 880)
+
+        # 播放 TTS
+        if audio_b64 and HAS_AUDIO and self._tts_queue is not None:
+            self._tts_queue.put((reply, audio_b64))
+        elif tts_error:
+            print(f"  (TTS 不可用: {tts_error})")
+
+        # 记录最近触发的，供 'k' 键跳过
+        if task_id:
+            self._last_triggered[task_id] = {
+                "text": reply,
+                "type": tlabel,
+                "notification_id": notification_id,
+            }
+        if notification_id is not None:
+            self._last_notification_id = notification_id
+
+        log.info("心跳收到提醒: task=%s reply=%d chars audio=%d chars",
+                 task_id, len(reply), len(audio_b64))
 
     @staticmethod
     def _type_label(task_type: str) -> str:
@@ -677,6 +671,10 @@ class ReminderWatcher:
             "daily_plan": "每日计划", "periodic": "周期",
         }
         return labels.get(task_type, task_type)
+
+
+# 兼容旧代码：ReminderWatcher 作为 HeartbeatPoller 的别名
+ReminderWatcher = HeartbeatPoller
 
 
 class VoiceRecorder:
@@ -858,7 +856,7 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [s]      Toggle standby / wakeup         ")
     print("  [i]      System info (server + plan)      ")
     print("  [k]      Skip latest reminder             ")
-    print("  [r]      Refresh reminders sync           ")
+    print("  [r]      Trigger heartbeat now            ")
     print("  [t]      Text input (sync)                 ")
     print("  [=]      Async task (long-running)          ")
     print("  [n/m]    Volume -/+                         ")
@@ -996,7 +994,7 @@ def main():
     recorder = VoiceRecorder(client)
     keyboard = KeyboardHandler()
     keyboard.start()
-    reminder = ReminderWatcher(client)
+    reminder = HeartbeatPoller(client, client._tts_queue)
     reminder.start()
     async_poller = AsyncTaskPoller(client, client._tts_queue)
     async_poller.start()
@@ -1074,27 +1072,31 @@ def main():
             elif ch.lower() == "k":
                 if not reminder.skip_latest():
                     print("\n  No recent reminder to skip")
-                else:
-                    reminder._sync()
 
             elif ch.lower() == "r":
+                # 手动触发一次心跳，并显示后端 PENDING 提醒列表
                 reminder.sync_now()
-                reminders = reminder._load_local()
-                now = datetime.now()
-                upcoming = []
-                for r in reminders:
-                    try:
-                        st = datetime.fromisoformat(r["scheduled_time"])
-                        if st > now:
-                            upcoming.append(r)
-                    except Exception:
-                        continue
-                upcoming.sort(key=lambda r: r.get("scheduled_time", ""))
-                print(f"\n  Reminders: {len(reminders)} total, {len(upcoming)} upcoming")
-                for r in upcoming[:5]:
-                    tlabel = reminder._type_label(r.get("task_type", ""))
-                    st = r.get("scheduled_time", "")[:16].replace("T", " ")
-                    print(f"    [{tlabel}] {st}  {r.get('text', '')[:50]}")
+                try:
+                    resp = client._http_get("/api/reminder/list")
+                    if resp.status_code == 200:
+                        reminders = resp.json().get("reminders", [])
+                        now = datetime.now()
+                        upcoming = []
+                        for r in reminders:
+                            try:
+                                st = datetime.fromisoformat(r["scheduled_time"])
+                                if st > now:
+                                    upcoming.append(r)
+                            except Exception:
+                                continue
+                        upcoming.sort(key=lambda r: r.get("scheduled_time", ""))
+                        print(f"\n  Reminders: {len(reminders)} total, {len(upcoming)} upcoming")
+                        for r in upcoming[:5]:
+                            tlabel = reminder._type_label(r.get("task_type", ""))
+                            st = r.get("scheduled_time", "")[:16].replace("T", " ")
+                            print(f"    [{tlabel}] {st}  {r.get('text', '')[:50]}")
+                except Exception as e:
+                    print(f"\n  Refresh failed: {e}")
 
             elif ch.lower() == "h":
                 print_header(cfg, client, locked)
