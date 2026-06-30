@@ -90,8 +90,8 @@ class PromptEngine:
         try:
             from config import Config
             _mode = getattr(Config, "TOOL_CALL_MODE", "native")
-            _type = getattr(Config, "MAIN_MODEL_TYPE", "deepseek")
-            if _mode in ("native",) and _type == "deepseek":
+            _type = getattr(Config, "MAIN_MODEL_TYPE", "openai")
+            if _mode in ("native",) and _type == "openai":
                 _inject_skill_prompts = False
         except Exception:
             pass

@@ -47,7 +47,7 @@ EXPERIENCE_SUMMARY_MAX = 1000
 class ExperienceImporter:
     def __init__(self, summary_chat=None):
         """
-        :param summary_chat: DeepSeekChat 或 LMStudioChat 实例，用于概括长文本
+        :param summary_chat: OpenAIChat 或 LMStudioChat 实例，用于概括长文本
         """
         self._chat = summary_chat
 

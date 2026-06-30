@@ -1,5 +1,5 @@
 from .clients import (
-    DeepSeekChat,
+    OpenAIChat,
     LMStudioChat,
     LMSummaryModel,
     EmbeddingClient,
@@ -14,7 +14,7 @@ from .clients import (
 from .scheduler import ModelScheduler, _get_loaded_models
 
 __all__ = [
-    "DeepSeekChat",
+    "OpenAIChat",
     "LMStudioChat",
     "LMSummaryModel",
     "EmbeddingClient",
