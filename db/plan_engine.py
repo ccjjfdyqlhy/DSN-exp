@@ -61,7 +61,12 @@ class PlanEngine:
 
         goals = self._store.list_goals(user_id)
         tasks: list[DailyTask] = []
-        today_date = date.fromisoformat(date_str)
+        try:
+            today_date = date.fromisoformat(date_str)
+        except (ValueError, TypeError):
+            logger.warning("无效日期格式: %s，使用今天代替", date_str)
+            today_date = date.today()
+            date_str = today_date.isoformat()
 
         for goal in goals:
             if goal.status != "active":
@@ -77,7 +82,7 @@ class PlanEngine:
                     try:
                         start = date.fromisoformat(phase.start_date)
                         day_index = max(1, (today_date - start).days + 1)
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
 
                 task = DailyTask(

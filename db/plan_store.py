@@ -172,8 +172,9 @@ class PlanStore:
 
     def delete_goal(self, goal_id: str):
         conn = self.db._get_connection()
-        conn.execute("DELETE FROM phases WHERE goal_id = ?", (goal_id,))
+        conn.execute("DELETE FROM daily_tasks WHERE goal_id = ?", (goal_id,))
         conn.execute("DELETE FROM daily_tasks WHERE phase_id IN (SELECT phase_id FROM phases WHERE goal_id = ?)", (goal_id,))
+        conn.execute("DELETE FROM phases WHERE goal_id = ?", (goal_id,))
         conn.execute("DELETE FROM goals WHERE goal_id = ?", (goal_id,))
         conn.commit()
 
