@@ -1,0 +1,143 @@
+name: knowledge_graph
+display_name: "Knowledge Graph"
+description: "知识图谱 - 知识点追踪、薄弱路径分析、间隔复习推荐、图谱构建"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 72
+
+tools:
+  - name: update_knowledge_state
+    display_name: "Update Knowledge State"
+    description: "更新用户对某个知识点的掌握状态（答对/答错后调用）"
+    module: "tools.knowledge_tools"
+    class: "KnowledgeGraphTool"
+    methods:
+      - name: update_knowledge_state
+        description: "记录答题结果，更新置信度和下次复习时间"
+        parameters:
+          kp_code:
+            type: string
+            description: "知识点代码，如 KP-MATH-001"
+            required: true
+          correct:
+            type: boolean
+            description: "是否回答正确"
+            required: true
+          user_id:
+            type: integer
+            description: "用户 ID"
+            default: 0
+
+  - name: get_due_reviews
+    display_name: "Get Due Reviews"
+    description: "获取当前到期待复习的知识点列表"
+    module: "tools.knowledge_tools"
+    class: "KnowledgeGraphTool"
+    methods:
+      - name: get_due_reviews
+        description: "返回需要复习的知识点（按到期时间排序）"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户 ID"
+            default: 0
+          subject:
+            type: string
+            description: "学科代码（可选）"
+          limit:
+            type: integer
+            description: "返回条数"
+            default: 5
+
+  - name: analyze_weakness
+    display_name: "Analyze Weakness"
+    description: "薄弱路径分析：从薄弱知识点 BFS 回溯到根本原因"
+    module: "tools.knowledge_tools"
+    class: "KnowledgeGraphTool"
+    methods:
+      - name: analyze_weakness
+        description: "分析薄弱知识点路径"
+        parameters:
+          kp_code:
+            type: string
+            description: "知识点代码"
+            required: true
+          user_id:
+            type: integer
+            description: "用户 ID"
+            default: 0
+
+  - name: recommend_related
+    display_name: "Recommend Related Knowledge"
+    description: "关联知识点推荐（沿边扩散）"
+    module: "tools.knowledge_tools"
+    class: "KnowledgeGraphTool"
+    methods:
+      - name: recommend_related
+        description: "推荐与指定知识点相关的其他知识点"
+        parameters:
+          kp_code:
+            type: string
+            description: "知识点代码"
+            required: true
+          depth:
+            type: integer
+            description: "扩散深度"
+            default: 2
+
+  - name: get_mastery_summary
+    display_name: "Get Mastery Summary"
+    description: "获取学科掌握度概览（掌握/薄弱/未学统计）"
+    module: "tools.knowledge_tools"
+    class: "KnowledgeGraphTool"
+    methods:
+      - name: get_mastery_summary
+        description: "返回学科的掌握/薄弱/未学统计"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码"
+            required: true
+          user_id:
+            type: integer
+            description: "用户 ID"
+            default: 0
+
+  - name: build_from_syllabus
+    display_name: "Build Knowledge Graph"
+    description: "从教材/考纲文本构建知识图谱"
+    module: "tools.knowledge_tools"
+    class: "KnowledgeGraphTool"
+    methods:
+      - name: build_from_syllabus
+        description: "利用 LLM 从文本提取知识点结构并入库"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码"
+            required: true
+          content:
+            type: string
+            description: "教材或考纲文本"
+            required: true
+          user_id:
+            type: integer
+            description: "用户 ID"
+            default: 0
+
+activation:
+  keywords: ["知识点", "知识图谱", "薄弱", "复习", "掌握", "知识库",
+             "knowledge", "review", "mastery", "图谱"]
+  auto_activate: false
+
+dependencies:
+  - graph_store
+  - graph_engine
+  - knowledge_matcher
+  - models_plugin
+  - question_store
+tags: [knowledge, graph, study, review, mastery]

@@ -130,6 +130,33 @@ class SkillRegistry:
                 tools.append(schema)
         return tools
 
+    def inject_dependencies(self, skill_name: str, **deps) -> bool:
+        skill = self._active_skills.get(skill_name)
+        if not skill:
+            logger.warning("技能不存在: %s", skill_name)
+            return False
+
+        count = 0
+        for tool_spec in skill.tools:
+            key = f"{skill_name}.{tool_spec.name}"
+            instance = self._tool_instances.get(key)
+            if not instance:
+                continue
+            for dep_name, dep_value in deps.items():
+                if hasattr(instance, dep_name):
+                    setattr(instance, dep_name, dep_value)
+                    count += 1
+                else:
+                    logger.debug("工具 %s 无属性 %s，跳过", key, dep_name)
+        return count > 0
+
+    def get_tool_instances(self, skill_name: str) -> list:
+        instances = []
+        for key, inst in self._tool_instances.items():
+            if key.startswith(f"{skill_name}."):
+                instances.append(inst)
+        return instances
+
     def _load_tool(self, tool_spec, skill_dir: str,
                     deps: dict = None) -> Any:
         module_path = (getattr(tool_spec, "module", "")

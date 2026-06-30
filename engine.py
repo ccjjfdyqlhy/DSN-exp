@@ -1400,33 +1400,50 @@ def create_engine_with_defaults(
         engine._logger.info("ExamSimPlugin 已注册")
 
     # 注入学习系统依赖到技能工具实例
-    if skill_registry and question_store:
-        try:
-            for key, instance in skill_registry._tool_instances.items():
-                if key.startswith("question_bank.create_question") or key.startswith("question_bank.search_questions") or key.startswith("question_bank.delete_question"):
-                    instance._store = question_store
-                    instance._tm = template_manager
-                elif key.startswith("question_bank.compose_exam"):
-                    instance._store = question_store
-                elif key.startswith("question_bank.analyze_error") or key.startswith("question_bank.get_error_stats") or key.startswith("question_bank.recommend_questions"):
-                    instance._store = question_store
-                    if models_plugin:
-                        instance._analyzer._models = models_plugin
-                elif key.startswith("question_bank.suggest_templates") or key.startswith("question_bank.get_subjects"):
-                    instance._tm = template_manager
-                    instance._store = question_store
-        except Exception as e:
-            engine._logger.warning("学习系统技能注入失败: %s", e)
+    if skill_registry:
+        if question_store and template_manager and models_plugin:
+            try:
+                skill_registry.inject_dependencies("question_bank",
+                    _store=question_store,
+                    _tm=template_manager,
+                    _models=models_plugin,
+                )
+                engine._logger.info("question_bank 技能依赖已注入")
+            except Exception as e:
+                engine._logger.warning("question_bank 技能注入失败: %s", e)
 
-    # 注入 scanner_pipeline 到 doc_to_questions 技能
-    if skill_registry and scanner_pipeline:
-        try:
-            for key, instance in skill_registry._tool_instances.items():
-                if key.startswith("doc_to_questions."):
-                    instance._pipeline = scanner_pipeline
-                    engine._logger.info("doc_to_questions: pipeline 已注入到 %s", key)
-        except Exception as e:
-            engine._logger.warning("doc_to_questions 注入失败: %s", e)
+        if graph_store and graph_engine and knowledge_matcher:
+            try:
+                skill_registry.inject_dependencies("knowledge_graph",
+                    _store=graph_store,
+                    _engine=graph_engine,
+                    _matcher=knowledge_matcher,
+                    _models=models_plugin,
+                    _question_store=question_store,
+                )
+                engine._logger.info("knowledge_graph 技能依赖已注入")
+            except Exception as e:
+                engine._logger.warning("knowledge_graph 技能注入失败: %s", e)
+
+        if exam_engine and exam_scorer:
+            try:
+                skill_registry.inject_dependencies("exam_sim",
+                    _engine=exam_engine,
+                    _scorer=exam_scorer,
+                    _store=question_store,
+                )
+                engine._logger.info("exam_sim 技能依赖已注入")
+            except Exception as e:
+                engine._logger.warning("exam_sim 技能注入失败: %s", e)
+
+        if scanner_pipeline:
+            try:
+                skill_registry.inject_dependencies("doc_to_questions",
+                    _pipeline=scanner_pipeline,
+                )
+                engine._logger.info("doc_to_questions 技能依赖已注入")
+            except Exception as e:
+                engine._logger.warning("doc_to_questions 注入失败: %s", e)
 
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")

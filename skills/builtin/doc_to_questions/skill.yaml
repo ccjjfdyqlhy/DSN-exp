@@ -62,5 +62,6 @@ activation:
   keywords: ["录入题库", "提取题目", "导入题目", "识别题目", "录入", "入库", "doc_to_questions"]
   auto_activate: false
 
-dependencies: []
+dependencies:
+  - scanner_pipeline
 tags: [document, question_bank, import, ocr, extract]

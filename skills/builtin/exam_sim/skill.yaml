@@ -1,0 +1,98 @@
+name: exam_sim
+display_name: "Exam Simulator"
+description: "考试模拟 - 创建/管理/评分考试会话"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 68
+
+tools:
+  - name: create_exam
+    display_name: "Create Exam"
+    description: "创建新的考试会话（组卷 + 初始化）"
+    module: "tools.exam_tools"
+    class: "ExamSimTool"
+    methods:
+      - name: create_exam
+        description: "按配置创建考试，自动组卷"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese)"
+            required: true
+          question_count:
+            type: integer
+            description: "题目数量"
+            default: 10
+          time_limit_min:
+            type: integer
+            description: "时间限制（分钟）"
+            default: 120
+          difficulty:
+            type: integer
+            description: "难度 1-5"
+            default: 3
+
+  - name: start_exam
+    display_name: "Start Exam"
+    description: "开始考试（将状态从 configuring 转为 in_progress）"
+    module: "tools.exam_tools"
+    class: "ExamSimTool"
+    methods:
+      - name: start_exam
+        description: "开始考试会话，返回题目列表和倒计时"
+        parameters:
+          session_id:
+            type: string
+            description: "考试会话 ID"
+            required: true
+
+  - name: submit_answer
+    display_name: "Submit Answer"
+    description: "提交单题答案"
+    module: "tools.exam_tools"
+    class: "ExamSimTool"
+    methods:
+      - name: submit_answer
+        description: "提交某道题的答案"
+        parameters:
+          session_id:
+            type: string
+            description: "考试会话 ID"
+            required: true
+          question_index:
+            type: integer
+            description: "题目序号（从 0 开始）"
+            required: true
+          answer:
+            type: string
+            description: "用户答案"
+            required: true
+
+  - name: finish_exam
+    display_name: "Finish Exam"
+    description: "提交整张试卷并判分"
+    module: "tools.exam_tools"
+    class: "ExamSimTool"
+    methods:
+      - name: finish_exam
+        description: "交卷，执行判分，返回成绩报告"
+        parameters:
+          session_id:
+            type: string
+            description: "考试会话 ID"
+            required: true
+
+activation:
+  keywords: ["考试", "模拟考", "测验", "exam", "test", "quiz",
+             "组卷", "判分", "交卷"]
+  auto_activate: false
+
+dependencies:
+  - exam_engine
+  - exam_scorer
+  - question_store
+tags: [exam, sim, study, test, quiz]

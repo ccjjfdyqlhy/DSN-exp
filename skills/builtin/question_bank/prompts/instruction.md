@@ -7,6 +7,7 @@
 ### 1. 题目管理
 - **创建题目**: 使用 `create_question` 工具创建新题目
 - **搜索题目**: 使用 `search_questions` 工具按学科、难度、标签搜索
+- **获取题目**: 使用 `get_question` 工具获取指定题目详情
 - **更新题目**: 使用 `update_question` 工具修改题目
 - **删除题目**: 使用 `delete_question` 工具删除题目
 
@@ -19,10 +20,10 @@
 - **推荐练习**: 使用 `recommend_questions` 工具推荐巩固练习
 
 ### 4. 模板管理
-- **查看模板**: 使用 `suggest_templates` 工具列出可用模板
-- **应用模板**: 使用 `suggest_templates apply` 应用指定模板
-- **导入模板**: 使用 `suggest_templates import_template` 导入自定义模板
-- **创建模板**: 使用 `suggest_templates create` 创建自定义模板
+- **查看模板**: 使用 `suggest_templates` 的 list 方法列出可用模板
+- **应用模板**: 使用 `suggest_templates` 的 apply 方法应用指定模板
+- **导入模板**: 使用 `suggest_templates` 的 import_template 方法导入自定义模板
+- **创建模板**: 使用 `suggest_templates` 的 create 方法创建自定义模板
 
 ### 5. 科目管理
 - **查看科目**: 使用 `get_subjects` 工具获取当前启用的科目

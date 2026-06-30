@@ -67,6 +67,32 @@ tools:
             description: "返回数量"
             default: 10
 
+  - name: update_question
+    display_name: "Update Question"
+    description: "更新题目"
+    module: "tools.question_crud"
+    class: "QuestionCRUDTool"
+    methods:
+      - name: update
+        description: "更新指定题目的字段"
+        parameters:
+          question_id:
+            type: integer
+            description: "题目 ID"
+            required: true
+          content:
+            type: string
+            description: "题目内容"
+          answer:
+            type: string
+            description: "参考答案"
+          difficulty:
+            type: integer
+            description: "难度"
+          tags:
+            type: array
+            description: "标签"
+
   - name: delete_question
     display_name: "Delete Question"
     description: "删除题目"
@@ -75,6 +101,20 @@ tools:
     methods:
       - name: delete
         description: "删除指定题目"
+        parameters:
+          question_id:
+            type: integer
+            description: "题目 ID"
+            required: true
+
+  - name: get_question
+    display_name: "Get Question"
+    description: "获取单个题目详情"
+    module: "tools.question_crud"
+    class: "QuestionCRUDTool"
+    methods:
+      - name: get
+        description: "获取指定题目"
         parameters:
           question_id:
             type: integer
@@ -199,5 +239,8 @@ activation:
              "搜题", "出题", "组卷", "试卷", "错题本", "导入模板", "导出模板"]
   auto_activate: false
 
-dependencies: []
+dependencies:
+  - question_store
+  - template_manager
+  - models_plugin
 tags: [question, bank, exam, study, template]

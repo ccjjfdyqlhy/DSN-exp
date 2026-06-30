@@ -1,11 +1,9 @@
 # plugins/builtin/exam_sim_plugin.py
-# 考试模拟管线插件
+# 考试模拟管线插件 — 超时检测 + 关键字触发标记，工具执行由 SkillRegistry 统一处理
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 
 from plugins.base import Plugin, HookPoint, PluginContext
 
@@ -14,8 +12,8 @@ logger = logging.getLogger("ExamSimPlugin")
 
 class ExamSimPlugin(Plugin):
     name = "exam_sim"
-    description = "考试模拟 - 状态机管理、倒计时、自动判分"
-    hooks = [HookPoint.PRE_PROCESS, HookPoint.PRE_FILTER]
+    description = "考试模拟 - 超时检测 + 关键字触发标记"
+    hooks = [HookPoint.PRE_FILTER, HookPoint.PRE_PROCESS]
     priority = 18
 
     def __init__(self, exam_engine=None, scorer=None):
@@ -46,9 +44,8 @@ class ExamSimPlugin(Plugin):
     def _pre_process(self, ctx: PluginContext) -> PluginContext:
         message = ctx.message.lower()
 
-        # 检测考试指令
         exam_cmds = ["开始考试", "start exam", "提交试卷", "submit exam",
-                      "开始作答", "交卷", "查看成绩"]
+                     "开始作答", "交卷", "查看成绩"]
         is_exam_cmd = any(cmd in message for cmd in exam_cmds)
 
         if is_exam_cmd:
@@ -64,8 +61,8 @@ class ExamSimPlugin(Plugin):
                     ctx.extra["exam_filtered"] = False
 
         session_id = ctx.extra.get("exam_session_id")
-        if session_id:
-            remaining = self._engine.get_remaining_time(session_id) if self._engine else 0
+        if session_id and self._engine:
+            remaining = self._engine.get_remaining_time(session_id)
             ctx.extra["exam_remaining"] = remaining
             ctx.extra["exam_in_progress"] = True
 
