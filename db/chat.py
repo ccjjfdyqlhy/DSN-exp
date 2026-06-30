@@ -427,14 +427,14 @@ class ChatDBManager:
             conn.rollback()
             raise
 
-    def get_memories(self, user_id: int, chat_id: int) -> list[dict]:
-        """获取会话的记忆条目（基于 memory_v2），按轮次升序"""
+    def get_memories(self, user_id: int) -> list[dict]:
+        """获取用户所有记忆条目（基于 memory_v2），按轮次升序"""
         conn = self._get_connection()
         try:
             rows = conn.execute(
                 "SELECT id, round, content, created_at FROM memory_v2 "
-                "WHERE user_id = ? AND chat_id = ? AND type = 'exp' ORDER BY round ASC, id ASC",
-                (user_id, chat_id),
+                "WHERE user_id = ? AND type = 'exp' ORDER BY id ASC",
+                (user_id,),
             ).fetchall()
             return [{
                 "memory_id": r["id"],
