@@ -126,7 +126,7 @@ class TestMemorySystem(unittest.TestCase):
         self.ms.add_memo(1, 1, "用户不喜欢香菜")
         history = [{"role": "user", "content": "hello"}]
 
-        result = self.ms.assemble_context(1, 1, history)
+        result = self.ms.assemble_context(1, history)
         self.assertEqual(len(result), 3)
         self.assertIn("[备忘]", result[0]["content"])
         self.assertIn("用户生日是6月15日", result[0]["content"])
@@ -148,7 +148,7 @@ class TestMemorySystem(unittest.TestCase):
             {"role": "user", "content": f"msg{i}"}
             for i in range(10)
         ]
-        result = self.ms.assemble_context(1, 1, history)
+        result = self.ms.assemble_context(1, history)
         # 10 <= threshold (56) → no compression, just pass through
         self.assertEqual(len(result), 10)
         self.assertEqual(history, result)
@@ -160,7 +160,7 @@ class TestMemorySystem(unittest.TestCase):
 
         history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
 
-        result = self.ms.assemble_context(1, 1, history)
+        result = self.ms.assemble_context(1, history)
         # 100 > 56 → compress
         # result = [记忆1, 记忆2] + [recent 56 msgs]
         self.assertGreater(len(result), 0)
@@ -177,21 +177,21 @@ class TestMemorySystem(unittest.TestCase):
 
         history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
 
-        result = self.ms.assemble_context(1, 1, history)
+        result = self.ms.assemble_context(1, history)
         self.assertIn("[备忘]", result[0]["content"])
         self.assertIn("[记忆", result[1]["content"])
 
     # ---- 3. 主动召回 (搜索) ----
 
     def test_search_returns_empty(self):
-        hits = self.ms.search(1, 1, ["nothing"])
+        hits = self.ms.search(1, ["nothing"])
         self.assertEqual(hits, [])
 
     def test_search_finds_exact_match(self):
         self._seed_exp(1, 1, 1, "用户喜欢Python编程")
         self._seed_exp(1, 1, 2, "讨论过Rust语言特性")
 
-        hits = self.ms.search(1, 1, ["Python"])
+        hits = self.ms.search(1, ["Python"])
         self.assertEqual(len(hits), 1)
         self.assertIn("Python编程", hits[0]["content"])
 
@@ -199,7 +199,7 @@ class TestMemorySystem(unittest.TestCase):
         self._seed_exp(1, 1, 1, "用户在北京工作")
         self._seed_exp(1, 1, 2, "用户在上海出差")
 
-        hits = self.ms.search(1, 1, ["北京"])
+        hits = self.ms.search(1, ["北京"])
         self.assertEqual(len(hits), 1)
         self.assertIn("北京", hits[0]["content"])
 
@@ -207,21 +207,21 @@ class TestMemorySystem(unittest.TestCase):
         self._seed_exp(1, 1, 1, "用户使用Python和FastAPI")
         self._seed_exp(1, 1, 2, "用户使用Go和Docker")
 
-        hits = self.ms.search(1, 1, ["Python", "FastAPI"])
+        hits = self.ms.search(1, ["Python", "FastAPI"])
         self.assertEqual(len(hits), 1)
 
     def test_search_respects_limit(self):
         for i in range(10):
             self._seed_exp(1, 1, i + 1, f"Python相关的讨论第{i+1}次")
 
-        hits = self.ms.search(1, 1, ["Python"], limit=3)
+        hits = self.ms.search(1, ["Python"], limit=3)
         self.assertEqual(len(hits), 3)
 
     def test_search_includes_memos(self):
         self.ms.add_memo(1, 1, "用户的Python项目需要重构")
         self._seed_exp(1, 1, 1, "讨论了Rust")
 
-        hits = self.ms.search(1, 1, ["Python"])
+        hits = self.ms.search(1, ["Python"])
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["type"], "memo")
         self.assertIn("重构", hits[0]["content"])
@@ -280,7 +280,7 @@ class TestMemorySystem(unittest.TestCase):
             self._seed_embed(1, 1, 2, [0.1, 0.0, 0.9, 0.0])
 
             query_vec = [0.95, 0.05, 0.0, 0.0]
-            hits = ms.search(1, 1, [], embedding_query=query_vec, threshold=0.5)
+            hits = ms.search(1, [], embedding_query=query_vec, threshold=0.5)
             self.assertEqual(len(hits), 1)
             self.assertIn("Python", hits[0]["content"])
             self.assertGreater(hits[0]["score"], 0.8)
@@ -301,7 +301,7 @@ class TestMemorySystem(unittest.TestCase):
             self._seed_embed(1, 1, 2, [0.0, 1.0, 0.0])
 
             # query 向量与 round2 强匹配(cos≈1), 与 round1 正交(cos=0)
-            hits = ms.search(1, 1, ["Rust", "并发"], embedding_query=[0.0, 1.0, 0.0], threshold=0.3)
+            hits = ms.search(1, ["Rust", "并发"], embedding_query=[0.0, 1.0, 0.0], threshold=0.3)
             self.assertEqual(len(hits), 1)
             self.assertIn("Rust", hits[0]["content"])
         finally:
@@ -317,7 +317,7 @@ class TestMemorySystem(unittest.TestCase):
             ms = MemorySystem(db=self.db, summary_model=self.summary_model, embedding_client=ec)
             self._seed_exp(1, 1, 1, "用户喜欢Python编程")
             # 不设 embedding BLOB → vec_score = 0，但 keyword 仍匹配
-            hits = ms.search(1, 1, ["Python"], embedding_query=[0.9, 0.1], threshold=0.3)
+            hits = ms.search(1, ["Python"], embedding_query=[0.9, 0.1], threshold=0.3)
             self.assertEqual(len(hits), 1)
             self.assertIn("Python", hits[0]["content"])
         finally:
@@ -376,9 +376,9 @@ class _FakeEmbeddingClient:
 
         # memo should be persisted
         history = [{"role": "user", "content": "hi"}]
-        ctx = self.ms.assemble_context(1, 1, history)
-        self.assertIn("[备忘]", ctx[0]["content"])
-        self.assertIn("用户下周五截止", ctx[0]["content"])
+        result = self.ms.assemble_context(1, history)
+        self.assertIn("[备忘]", result[0]["content"])
+        self.assertIn("用户下周五截止", result[0]["content"])
 
     def test_handle_tags_multiple_recalls(self):
         self._seed_exp(1, 1, 1, "Python异步")
@@ -408,7 +408,7 @@ class _FakeEmbeddingClient:
         self.ms.summarize_turn(1, 1, 1, "Python真棒", "是的！", async_mode=False)
 
         history = [{"role": "user", "content": "msg"} for _ in range(100)]
-        result = self.ms.assemble_context(1, 1, history)
+        result = self.ms.assemble_context(1, history)
         self.assertIn("[记忆 · 轮次1]", result[0]["content"])
 
 
