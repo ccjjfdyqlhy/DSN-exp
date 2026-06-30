@@ -153,12 +153,12 @@ class TaskManager:
         # 初始化数据库表
         self._init_db()
         
+        # 加载持久化的任务（先加载，再启动调度器，避免 schedule 非线程安全的并发写入）
+        self._load_persistent_tasks()
+        
         # 启动调度器线程
         self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
         self.scheduler_thread.start()
-        
-        # 加载持久化的任务
-        self._load_persistent_tasks()
         
         self.logger.info("TaskManager 初始化完成")
 
@@ -272,6 +272,7 @@ class TaskManager:
                     task = Task.from_dict(task_data)
                     task.skip_count = row.get("skip_count", 0)
                     self.tasks[task.task_id] = task
+                    self._user_task_index.setdefault(task.user_id, set()).add(task.task_id)
 
                     task_type = task.task_type
 
@@ -386,19 +387,12 @@ class TaskManager:
                              task.user_id)
             self.execute_task(task.task_id)
 
-            if (task.task_type == TaskType.HABIT and
-                    task.interval_seconds > 0 and
-                    task.status == TaskStatus.COMPLETED):
-                next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
-                task.scheduled_time = next_time
-                task.status = TaskStatus.PENDING
-                task.result = None
-                task.error = None
-                self._save_task(task)
-                self._schedule_reminder_task(task)
-
-            if task.task_type in (TaskType.DAILY_PLAN, TaskType.PERIODIC):
+            # DAILY_PLAN 通过 schedule.every().day.at() 调度，属于 daily 重复 job，不需 CancelJob
+            if task.task_type == TaskType.DAILY_PLAN:
                 return
+
+            # REMINDER / COUNTDOWN / HABIT / PERIODIC：均为 one-shot 调度
+            # HABIT / PERIODIC 的重调度统一由 _handle_task_result 处理
             return schedule.CancelJob
 
         # DAILY_PLAN: schedule.every().day.at("07:30")
@@ -842,31 +836,47 @@ class TaskManager:
             result = future.result()
             self._update_task_status(task_id, TaskStatus.COMPLETED, result=result)
             self.logger.info("任务完成: %s", task_id)
-
-            # PERIODIC: 执行后根据 cron 表达式重新计算下一次触发
-            task = self.tasks.get(task_id)
-            if task and task.task_type == TaskType.PERIODIC:
-                cron_expr = task.params.get("cron", "")
-                if cron_expr:
-                    try:
-                        import croniter
-                        cron = croniter.croniter(cron_expr, datetime.now())
-                        next_time = cron.get_next(datetime)
-                        task.scheduled_time = next_time
-                        task.status = TaskStatus.PENDING
-                        task.result = None
-                        task.error = None
-                        self._save_task(task)
-                        self._schedule_reminder_task(task)
-                        self.logger.info("PERIODIC 任务 %s 下一次: %s", task_id, next_time)
-                    except Exception as e:
-                        self.logger.error("PERIODIC 重排失败: %s", e)
-
-            self._notify_task_completion(task_id, result)
-            
         except Exception as e:
             self._update_task_status(task_id, TaskStatus.FAILED, error=str(e))
             self.logger.error("任务失败: %s, 错误: %s", task_id, e)
+            return
+
+        # --- 以下操作不应影响任务已完成的 COMPLETED 状态 ---
+
+        # HABIT: 根据 interval_seconds 重新创建下一次提醒
+        task = self.tasks.get(task_id)
+        if task and task.task_type == TaskType.HABIT and task.interval_seconds > 0:
+            next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
+            task.scheduled_time = next_time
+            task.status = TaskStatus.PENDING
+            task.result = None
+            task.error = None
+            self._save_task(task)
+            self._schedule_reminder_task(task)
+            self.logger.info("HABIT 任务 %s 下一次: %s", task_id, next_time)
+
+        # PERIODIC: 执行后根据 cron 表达式重新计算下一次触发
+        if task and task.task_type == TaskType.PERIODIC:
+            cron_expr = task.params.get("cron", "")
+            if cron_expr:
+                try:
+                    import croniter
+                    cron = croniter.croniter(cron_expr, datetime.now())
+                    next_time = cron.get_next(datetime)
+                    task.scheduled_time = next_time
+                    task.status = TaskStatus.PENDING
+                    task.result = None
+                    task.error = None
+                    self._save_task(task)
+                    self._schedule_reminder_task(task)
+                    self.logger.info("PERIODIC 任务 %s 下一次: %s", task_id, next_time)
+                except Exception as e:
+                    self.logger.error("PERIODIC 重排失败: %s", e)
+
+        try:
+            self._notify_task_completion(task_id, result)
+        except Exception as e:
+            self.logger.error("通知任务完成失败: %s, 错误: %s", task_id, e)
     
     def _notify_task_completion(self, task_id: str, result: Dict[str, Any]):
         """通知任务完成（需要外部实现推送逻辑）"""
@@ -976,10 +986,8 @@ class TaskManager:
             task.completed_at = datetime.now()
             self._save_task(task)
             
-            # 如果是定时任务，从调度器中移除
-            if task.task_type == TaskType.REMINDER:
-                # schedule库没有直接取消任务的方法，我们标记任务状态即可
-                pass
+            # 从调度器中移除相关 job
+            self.scheduler.clear(tag=task_id)
             
             self.logger.info("任务已取消: %s", task_id)
             return True
