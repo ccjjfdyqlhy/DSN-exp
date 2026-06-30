@@ -29,16 +29,34 @@ class VocalExp:
     需要提供API的base_url。
     """
 
-    def __init__(self, base_url: str, logger: Optional[logging.Logger] = None, architecture: str = "parallel"):
+    # 可重试的网络异常类型
+    _RETRYABLE_ERRORS = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        ConnectionRefusedError,
+        ConnectionResetError,
+        ConnectionAbortedError,
+        BrokenPipeError,
+        OSError,
+    )
+
+    def __init__(self, base_url: str, logger: Optional[logging.Logger] = None, architecture: str = "parallel",
+                 max_retries: int = 3, retry_backoff: float = 2.0, retry_max_wait: float = 10.0):
         """
         :param base_url: API服务的基础地址，如 "http://127.0.0.1:9880"
         :param logger: 可选的日志记录器，若不提供则使用模块级logger
         :param architecture: 推理架构，"parallel"（并行/默认）或 "serial"（串行）
+        :param max_retries: 最大重试次数，默认3
+        :param retry_backoff: 退避基数（秒），实际等待 = backoff * 2^attempt，默认2.0
+        :param retry_max_wait: 单次重试最大等待时间上限（秒），默认10.0
         """
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.logger = logger or logging.getLogger(__name__)
         self.architecture = architecture
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
+        self.retry_max_wait = retry_max_wait
         self._save_dir = None
         if _DEBUG_SAVE_AUDIO:
             self._debug_init_save_dir()
@@ -62,58 +80,83 @@ class VocalExp:
         except Exception as e:
             self.logger.warning("TTS DEBUG: 保存音频失败 %s: %s", filepath, e)
 
+    def _is_retryable(self, exc: Exception) -> bool:
+        """判断异常是否可重试（仅网络层错误，不重试 HTTP 4xx 等业务错误）。"""
+        if isinstance(exc, self._RETRYABLE_ERRORS):
+            return True
+        if isinstance(exc, requests.exceptions.RequestException):
+            # 连接类错误（无响应）可重试，有 HTTP 响应的不重试
+            if exc.response is not None:
+                return False
+            return True
+        return False
+
     def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """
         底层请求方法，统一处理URL拼接和异常。
+        支持自动重试：网络层错误（连接拒绝、超时等）按指数退避重试。
         返回requests.Response对象，由上层方法解析。
         支持流式请求：当kwargs中包含'stream'且为True时，不会自动读取内容。
         """
         url = f"{self.base_url}{endpoint}"
-        self.logger.debug(f"发起{method}请求: {url}, 参数: {kwargs.get('params')}, JSON: {kwargs.get('json')}")
-        try:
-            response = self.session.request(method, url, **kwargs)
-            # 注意：如果stream=True，此时不会抛出HTTPError，需手动检查状态码
-            if not kwargs.get('stream'):
-                response.raise_for_status()
-            else:
-                if response.status_code >= 400:
-                    # 对于流式请求，尝试读取错误信息
-                    try:
-                        error_data = response.json()
-                        error_msg = error_data.get('message', '')
-                    except:
-                        error_msg = response.text[:200]
-                    raise requests.exceptions.HTTPError(
-                        f"{response.status_code} Error: {error_msg}",
-                        response=response
-                    )
-            self.logger.debug(f"请求成功: {response.status_code}")
-            return response
-        except requests.exceptions.RequestException as e:
-            error_msg = f"API请求失败: {e}"
-            if hasattr(e, 'response') and e.response is not None:
-                resp = e.response
-                status_code = resp.status_code
-                try:
-                    error_data = resp.json()
-                    detail = error_data.get('message') or error_data.get('detail') or error_data.get('error') or ''
-                    body_str = str(error_data)[:600]
-                except:
-                    body_str = resp.text[:600]
-                error_msg += f" [HTTP {status_code}]"
-                if detail:
-                    error_msg += f" detail={detail}"
-                error_msg += f" response_body={body_str}"
-            else:
-                error_msg += " [无响应]"
-            error_msg += f" url={url}"
-            if kwargs.get('json'):
-                json_info = kwargs['json'].copy()
-                if 'text' in json_info and len(str(json_info['text'])) > 60:
-                    json_info['text'] = json_info['text'][:60] + '...'
-                error_msg += f" body_params={json_info}"
-            self.logger.error(error_msg, exc_info=True)
-            raise TTSRequestError(error_msg) from e
+        self.logger.debug("发起%s请求: %s, 参数: %s, JSON: %s", method, url, kwargs.get('params'), kwargs.get('json'))
+
+        last_exc = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.request(method, url, **kwargs)
+                # 注意：如果stream=True，此时不会抛出HTTPError，需手动检查状态码
+                if not kwargs.get('stream'):
+                    response.raise_for_status()
+                else:
+                    if response.status_code >= 400:
+                        try:
+                            error_data = response.json()
+                            error_msg = error_data.get('message', '')
+                        except Exception:
+                            error_msg = response.text[:200]
+                        raise requests.exceptions.HTTPError(
+                            f"{response.status_code} Error: {error_msg}",
+                            response=response
+                        )
+                self.logger.debug("请求成功: %s", response.status_code)
+                return response
+            except Exception as e:
+                last_exc = e
+                if self._is_retryable(e) and attempt < self.max_retries:
+                    wait = min(self.retry_backoff * (2 ** attempt), self.retry_max_wait)
+                    self.logger.warning("请求失败，将在 %.1fs 后重试 (%d/%d): %s",
+                                        wait, attempt + 1, self.max_retries, e)
+                    time.sleep(wait)
+                    continue
+                break
+
+        # 所有重试用尽或遇到不可重试的错误
+        e = last_exc
+        error_msg = f"API请求失败: {e}"
+        if hasattr(e, 'response') and e.response is not None:
+            resp = e.response
+            status_code = resp.status_code
+            try:
+                error_data = resp.json()
+                detail = error_data.get('message') or error_data.get('detail') or error_data.get('error') or ''
+                body_str = str(error_data)[:600]
+            except Exception:
+                body_str = resp.text[:600]
+            error_msg += f" [HTTP {status_code}]"
+            if detail:
+                error_msg += f" detail={detail}"
+            error_msg += f" response_body={body_str}"
+        else:
+            error_msg += " [无响应]"
+        error_msg += f" url={url}"
+        if kwargs.get('json'):
+            json_info = kwargs['json'].copy()
+            if 'text' in json_info and len(str(json_info['text'])) > 60:
+                json_info['text'] = json_info['text'][:60] + '...'
+            error_msg += f" body_params={json_info}"
+        self.logger.error(error_msg, exc_info=True)
+        raise TTSRequestError(error_msg) from e
 
     def _detect_architecture(self, params: Dict[str, Any]) -> str:
         """根据参数字段名自动推断推理架构，用于兼容旧调用方未显式传入 architecture 的场景。"""
@@ -313,6 +356,19 @@ class VocalExp:
         if chunks:
             media_type = params.get('media_type', 'wav')
             self._debug_save_audio(b''.join(chunks), params.get('text', ''), media_type, mode="stream")
+
+    def probe(self, timeout: float = 3.0) -> bool:
+        """
+        探测 TTS 服务是否可达。用于启动时健康检查。
+        :param timeout: 连接超时时间（秒），默认3.0
+        :return: 服务可达返回 True，否则返回 False
+        """
+        url = f"{self.base_url}/"
+        try:
+            resp = self.session.get(url, timeout=timeout)
+            return resp.status_code < 500
+        except Exception:
+            return False
 
     def control(self, command: str) -> Dict[str, Any]:
         """

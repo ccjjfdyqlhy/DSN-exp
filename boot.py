@@ -427,6 +427,21 @@ def create_application():
     # ── TTS ──
     tts_client = VocalExp(app.config["TTS_BASE_URL"])
     tts_profile_mgr = TTSProfileManager()
+
+    # TTS 启动探测：等待服务就绪（最多重试3次，指数退避）
+    tts_probe_ok = False
+    for _tts_attempt in range(4):
+        if tts_client.probe(timeout=3.0):
+            tts_probe_ok = True
+            app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
+            break
+        if _tts_attempt < 3:
+            _tts_wait = min(2.0 * (2 ** _tts_attempt), 8.0)
+            app.logger.warning("TTS 服务未就绪，%.1fs 后重试 (%d/3)...", _tts_wait, _tts_attempt + 1)
+            time.sleep(_tts_wait)
+    if not tts_probe_ok:
+        app.logger.warning("TTS 服务 (端口 9880) 启动探测失败，TTS 功能可能不可用")
+
     if Config.TTS_PROCESS_ENABLED:
         try:
             _tts_process_model = TTSProcessModel()
