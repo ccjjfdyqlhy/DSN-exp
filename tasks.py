@@ -18,7 +18,7 @@ import schedule
 
 from config import Config
 from db.chat import ChatDBManager
-from models import DeepSeekChat
+from models import OpenAIChat
 
 
 class TaskType(Enum):
@@ -553,7 +553,7 @@ class TaskManager:
                 timeout=Config.REASONER_TIMEOUT,
             )
         else:
-            chat = DeepSeekChat(api_key=Config.DEEPSEEK_API_KEY)
+            chat = OpenAIChat(api_key=Config.OPENAI_API_KEY)
             model = task.params.get("model_name") or Config.REASONER_MODEL
             chat.set_model(model)
 

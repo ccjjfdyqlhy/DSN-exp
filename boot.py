@@ -22,7 +22,7 @@ from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
-from models import DeepSeekChat, LMSummaryModel, LMStudioChat, EmbeddingClient
+from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from models import _load_lmstudio_model, _unload_lmstudio_model
 from models.tts_process import TTSProcessModel
 from memory import MemorySystem
@@ -67,7 +67,7 @@ _auth_manager = None
 
 def create_chat_client(model_type: str = None):
     if model_type is None:
-        model_type = app.config.get("MAIN_MODEL_TYPE", "deepseek")
+        model_type = app.config.get("MAIN_MODEL_TYPE", "openai")
     if model_type in ("fast", "lmstudio"):
         return LMStudioChat(
             base_url=app.config.get("LMSTUDIO_BASE_URL", "http://localhost:4501"),
@@ -76,7 +76,7 @@ def create_chat_client(model_type: str = None):
             max_tokens=app.config.get("LMSTUDIO_MAX_TOKENS", 4096),
             timeout=app.config.get("LMSTUDIO_TIMEOUT", 300),
         )
-    return DeepSeekChat(api_key=app.config["DEEPSEEK_API_KEY"])
+    return OpenAIChat(api_key=app.config["OPENAI_API_KEY"])
 
 
 def _process_image_input(message: str, image_data: str) -> str:
@@ -414,7 +414,7 @@ def create_application():
     # ── 记忆与摘要 ──
     if app.config.get("MEMORY_ENABLED", True):
         summary_model = LMSummaryModel(
-            backend=app.config.get("MEMORY_SUMMARY_BACKEND", "deepseek"),
+            backend=app.config.get("MEMORY_SUMMARY_BACKEND", "openai"),
             base_url=app.config.get("LMSTUDIO_BASE_URL"),
             model_name=app.config.get("MEMORY_MODEL"),
             summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),
@@ -502,7 +502,7 @@ def create_application():
             if Config.NARRATIVE_ENABLED:
                 _narrative_model = NarrativeModel(
                     model_type=Config.NARRATIVE_MODEL_TYPE, model_name=Config.NARRATIVE_MODEL,
-                    api_key=Config.DEEPSEEK_API_KEY,
+                    api_key=Config.OPENAI_API_KEY,
                     base_url=Config.LMSTUDIO_BASE_URL if Config.NARRATIVE_MODEL_TYPE == "lmstudio" else None,
                     temperature=Config.NARRATIVE_TEMPERATURE, max_tokens=Config.NARRATIVE_MAX_TOKENS,
                     keep_history=Config.NARRATIVE_KEEP_HISTORY,

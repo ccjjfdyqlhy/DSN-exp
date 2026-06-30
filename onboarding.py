@@ -64,7 +64,7 @@ def _is_configured() -> bool:
     if not ENV_PATH.exists():
         return False
     env = _load_existing_env()
-    key = env.get("DEEPSEEK_API_KEY", "")
+    key = env.get("OPENAI_API_KEY", "")
     return bool(key and key != "sk-your-key-here")
 
 
@@ -102,8 +102,8 @@ def _run_python(code: str, timeout: int = 30) -> dict:
 
 
 def _create_chat(api_key: str):
-    from models.clients import DeepSeekChat
-    return DeepSeekChat(api_key=api_key)
+    from models.clients import OpenAIChat
+    return OpenAIChat(api_key=api_key)
 
 
 def _chat_send_with_retry(chat, message: str, max_retries: int = 3) -> str | None:
@@ -379,7 +379,7 @@ manual_overrides: {{}}
 
 def _get_api_key() -> str | None:
     """获取 DeepSeek API Key（此步骤发生在 AI 就绪之前，只能手动输入）。"""
-    existing = _env_read("DEEPSEEK_API_KEY")
+    existing = _env_read("OPENAI_API_KEY")
     api_key = None
 
     if existing and existing != "sk-your-key-here":
@@ -409,7 +409,7 @@ def _get_api_key() -> str | None:
                     continue
 
             print("  验证中...")
-            _env_write("DEEPSEEK_API_KEY", key)
+            _env_write("OPENAI_API_KEY", key)
             from dotenv import load_dotenv
             load_dotenv(ENV_PATH, override=True)
 
@@ -456,7 +456,7 @@ def _ai_guided_configure(api_key: str, env_info: dict) -> bool:
     system_prompt = f"""你是 DSN-exp 系统的配置向导，通过自然语言对话帮助用户完成所有配置。
 
 当前状态：
-- DEEPSEEK_API_KEY 已配置好，无需再配置
+- OPENAI_API_KEY 已配置好，无需再配置
 - 环境检测：{env_summary}
 - {cards_info}
 

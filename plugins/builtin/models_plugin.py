@@ -22,8 +22,8 @@ class ModelsPlugin(Plugin):
 
     def __init__(
         self,
-        model_type: str = "deepseek",
-        deepseek_api_key: str | None = None,
+        model_type: str = "openai",
+        openai_api_key: str | None = None,
         lmstudio_base_url: str = "http://localhost:4501",
         lmstudio_model_name: str | None = None,
         lmstudio_temperature: float = 0.7,
@@ -33,7 +33,7 @@ class ModelsPlugin(Plugin):
         db=None,
     ):
         self._model_type = model_type
-        self._deepseek_api_key = deepseek_api_key
+        self._openai_api_key = openai_api_key
         self._lmstudio_base_url = lmstudio_base_url
         self._lmstudio_model_name = lmstudio_model_name
         self._lmstudio_temperature = lmstudio_temperature
@@ -64,7 +64,7 @@ class ModelsPlugin(Plugin):
 
         # 决定是否使用原生 tool call 模式
         use_native = (self._tool_call_mode in ("native", "auto")
-                      and effective_type == "deepseek")
+                       and effective_type == "openai")
 
         tools_schema = None
         if use_native:
@@ -178,9 +178,9 @@ class ModelsPlugin(Plugin):
                 timeout=self._lmstudio_timeout,
             )
         else:
-            from models import DeepSeekChat
-            chat = DeepSeekChat(api_key=self._deepseek_api_key)
-            logger.info("ModelsPlugin: 创建 DeepSeekChat — model=%s", chat.model)
+            from models import OpenAIChat
+            chat = OpenAIChat(api_key=self._openai_api_key)
+            logger.info("ModelsPlugin: 创建 OpenAIChat — model=%s", chat.model)
             return chat
 
     @staticmethod

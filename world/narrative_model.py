@@ -11,14 +11,14 @@ logger = logging.getLogger("NarrativeModel")
 
 class NarrativeModel:
     """
-    叙事旁白模型 — 独立的 DeepSeekChat / LMStudioChat 实例。
+    叙事旁白模型 — 独立的 OpenAIChat / LMStudioChat 实例。
 
     由世界状态 + 人格情绪驱动，生成第三人称旁白文本。
     """
 
     def __init__(
         self,
-        model_type: str = "deepseek",
+        model_type: str = "openai",
         model_name: str = "deepseek-v4-flash",
         api_key: str | None = None,
         base_url: str | None = None,
@@ -176,12 +176,13 @@ class NarrativeModel:
     def _call_llm(self, prompt: str) -> str:
         if self._model_type == "lmstudio":
             return self._call_lmstudio(prompt)
-        return self._call_deepseek(prompt)
+        return self._call_api(prompt)
 
-    def _call_deepseek(self, prompt: str) -> str:
+    def _call_api(self, prompt: str) -> str:
         import json as _json, urllib.request as _req, urllib.error as _err
         api_key = self._api_key or ""
-        url = self._base_url or "https://api.deepseek.com/v1/chat/completions"
+        from config import Config
+        url = self._base_url or f"{Config.OPENAI_API_BASE}/chat/completions"
         messages = [{"role": "system", "content": self._system_prompt}]
         if self._keep_history:
             messages.extend(self._history)

@@ -1,5 +1,5 @@
 
-# tests/test_deepseek.py
+# tests/test_openaichat.py
 # PASSED v1_260214
 
 import os
@@ -8,10 +8,10 @@ import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models import DeepSeekChat
+from models import OpenAIChat
 
 # 简单示例
-chat = DeepSeekChat(api_key=input("请输入DeepSeek API密钥: "))
+chat = OpenAIChat(api_key=input("请输入API密钥: "))
 try:
     reply1 = chat.send_message("你好，我是小明")
     print("AI:", reply1)

@@ -1,5 +1,5 @@
 
-# tests/test_deepseek_reasoner.py
+# tests/test_openai_reasoner.py
 # v1_260329
 
 from openai import OpenAI
@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from config import Config
 
-client = OpenAI(api_key=Config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+client = OpenAI(api_key=Config.OPENAI_API_KEY, base_url="https://api.deepseek.com")
 
 # Turn 1
 messages = [{"role": "user", "content": "9.11 and 9.8, which is greater?"}]

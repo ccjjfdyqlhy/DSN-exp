@@ -149,7 +149,7 @@ class DistilledTraits:
 class DistillationEngine:
     def __init__(self, main_chat=None, fast_chat=None):
         """
-        :param main_chat: DeepSeekChat 实例，用于蒸馏（推荐 DeepSeek API）
+        :param main_chat: OpenAIChat 实例，用于蒸馏（推荐 DeepSeek API）
         :param fast_chat: 备用 LMStudioChat 实例
         """
         self._main_chat = main_chat
@@ -162,7 +162,7 @@ class DistillationEngine:
             self._fast_chat = fast_chat
 
     def run(self, card: CharacterCard, user_notes: str = "",
-            model_name: str = "deepseek") -> DistilledTraits:
+            model_name: str = "openai") -> DistilledTraits:
         """
         执行完整的 4-Pass 蒸馏流程。
         """
