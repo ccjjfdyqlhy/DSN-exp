@@ -33,3 +33,4 @@ note.txt
 /psychoscope/.dsn_client.json
 /tests/test_docs
 .opencode/
+.pyncm_session
