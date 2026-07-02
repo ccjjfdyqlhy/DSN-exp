@@ -95,3 +95,50 @@ priority: 55
 }
 </tool>
 → "本地已下载 12 首歌、8 份歌词"
+
+## 播放控制示例
+
+用户: "下一首"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "music_control",
+  "params": {"action": "next"}
+}
+</tool>
+→ "已切到下一首"
+
+用户: "现在在放什么歌"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "music_control",
+  "params": {"action": "status"}
+}
+</tool>
+→ "正在播放: 七里香.mp3"
+
+用户: "暂停一下"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "music_control",
+  "params": {"action": "pause"}
+}
+</tool>
+→ "已暂停"
+
+用户: "放晴天"
+→
+（先搜索 → 下载 → 然后播放）
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "music_control",
+  "params": {"action": "play", "value": "晴天.mp3"}
+}
+</tool>
+→ "正在播放: 晴天.mp3"

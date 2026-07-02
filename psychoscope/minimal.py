@@ -95,6 +95,200 @@ except Exception as e:
     log.warning("pygame mixer 初始化失败: %s", e)
 
 
+# ════════════════════════════════════════════════════════════════
+# MusicPlayer — 音乐播放器（独立于 TTS 的 pygame.mixer.music）
+# ════════════════════════════════════════════════════════════════
+
+_HAS_MIXER_MUSIC = HAS_AUDIO
+
+
+class MusicPlayer:
+    """音乐播放器，通过后端 API 同步状态供 AI 查看和控制。"""
+
+    def __init__(self, client: DSNClient, uid: int):
+        self.client = client
+        self.uid = uid
+        self.playlist: list[dict] = []
+        self.current_index = -1
+        self.state: str = "stopped"  # stopped / playing / paused
+        self._volume = 0.7
+        self._temp_files: list[str] = []
+        self._running = False
+        self._poll_thread: threading.Thread | None = None
+        self._prev_volume = self._volume  # 用于 duck/unduck
+
+    # ── 公开方法 ──
+
+    def load_playlist(self):
+        try:
+            resp = requests.get(
+                f"{self.client.base}/api/music/list?uid={self.uid}", timeout=5
+            )
+            if resp.status_code == 200:
+                self.playlist = resp.json().get("files", [])
+        except Exception as e:
+            log.warning("MusicPlayer: 刷新歌单失败 %s", e)
+
+    def play_index(self, idx: int):
+        if not (0 <= idx < len(self.playlist)):
+            return
+        self.stop()
+        self.current_index = idx
+        song = self.playlist[idx]
+        url = f"{self.client.base}/api/music/play/{song['filename']}?uid={self.uid}"
+        try:
+            resp = requests.get(url, stream=True, timeout=10)
+            if resp.status_code != 200:
+                log.warning("MusicPlayer: 下载失败 %d", resp.status_code)
+                return
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=song["filename"])
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    tmp.write(chunk)
+            tmp.close()
+            self._temp_files.append(tmp.name)
+            pygame.mixer.music.load(tmp.name)
+            pygame.mixer.music.set_volume(self._volume)
+            pygame.mixer.music.play()
+            self.state = "playing"
+            self._report_state()
+        except Exception as e:
+            log.warning("MusicPlayer: 播放失败 %s", e)
+
+    def toggle(self):
+        try:
+            if self.state == "playing":
+                pygame.mixer.music.pause()
+                self.state = "paused"
+            elif self.state == "paused":
+                pygame.mixer.music.unpause()
+                self.state = "playing"
+            else:
+                self.play_index(self.current_index if self.current_index >= 0 else 0)
+        except Exception:
+            log.warning("MusicPlayer.toggle: mixer error")
+        self._report_state()
+
+    def stop(self):
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        self.state = "stopped"
+        self._report_state()
+
+    def next(self):
+        if not self.playlist:
+            return
+        idx = (self.current_index + 1) % len(self.playlist) if self.current_index >= 0 else 0
+        self.play_index(idx)
+
+    def prev(self):
+        if not self.playlist:
+            return
+        idx = (self.current_index - 1) % len(self.playlist) if self.current_index >= 0 else len(self.playlist) - 1
+        self.play_index(idx)
+
+    def set_volume(self, v: float):
+        self._volume = max(0.0, min(1.0, v))
+        try:
+            pygame.mixer.music.set_volume(self._volume)
+        except Exception:
+            pass
+        self._report_state()
+
+    def duck(self):
+        """TTS 播放前降低音乐音量"""
+        if self.state == "playing":
+            self._prev_volume = self._volume
+            ducked = self._volume * 0.2
+            try:
+                pygame.mixer.music.set_volume(ducked)
+            except Exception:
+                pass
+
+    def unduck(self):
+        """TTS 播放后恢复音乐音量"""
+        if self.state == "playing":
+            try:
+                pygame.mixer.music.set_volume(self._prev_volume)
+            except Exception:
+                pass
+
+    def start_poll(self):
+        """后台轮询 pending_control 命令"""
+        self._running = True
+        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._poll_thread.start()
+
+    def stop_poll(self):
+        self._running = False
+        if self._poll_thread:
+            self._poll_thread.join(timeout=2)
+
+    def cleanup(self):
+        self.stop()
+        self.stop_poll()
+        for f in self._temp_files:
+            try:
+                os.unlink(f)
+            except Exception:
+                pass
+        self._temp_files.clear()
+
+    # ── 内部 ──
+
+    def _report_state(self):
+        current = None
+        if 0 <= self.current_index < len(self.playlist):
+            current = {"filename": self.playlist[self.current_index]["filename"]}
+        payload = {"state": self.state, "current": current, "volume": self._volume}
+        try:
+            requests.post(f"{self.client.base}/api/music/state",
+                         json=payload, timeout=2)
+        except Exception:
+            pass
+
+    def _poll_loop(self):
+        import time as _time
+        while self._running:
+            _time.sleep(1.5)
+            try:
+                resp = requests.get(
+                    f"{self.client.base}/api/music/status?consume=1", timeout=3)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                cmd = data.get("pending_control")
+                if not cmd:
+                    continue
+                action = cmd.get("action", "")
+                value = cmd.get("value")
+                log.info("MusicPlayer: 消费命令 action=%s value=%s", action, value)
+                if action == "play" and value:
+                    for i, s in enumerate(self.playlist):
+                        if s["filename"] == value:
+                            self.play_index(i)
+                            break
+                elif action == "next":
+                    self.next()
+                elif action == "prev":
+                    self.prev()
+                elif action == "pause":
+                    if self.state == "playing":
+                        self.toggle()
+                elif action == "resume":
+                    if self.state == "paused":
+                        self.toggle()
+                elif action == "stop":
+                    self.stop()
+                elif action == "volume" and value is not None:
+                    self.set_volume(float(value))
+            except Exception:
+                pass
+
+
 def _play_beep(client: DSNClient, freq: int = 600):
     """通过 pygame 播放短促反馈音。"""
     if not HAS_AUDIO or not client._channel:
@@ -163,6 +357,7 @@ class DSNClient:
         self._channel = pygame.mixer.Channel(0) if HAS_AUDIO else None
         self._volume = 0.5
         self.async_poller = None  # 异步轮询器（main() 中注入）
+        self._player: MusicPlayer | None = None  # main() 中注入
         if self._channel:
             self._channel.set_volume(self._volume)
         if HAS_AUDIO:
@@ -176,6 +371,9 @@ class DSNClient:
                 self._tts_queue.task_done()
                 continue
             text, b64 = item
+            # TTS 播放前降低音乐音量
+            if self._player:
+                self._player.duck()
             try:
                 raw = base64.b64decode(b64)
                 sound = pygame.mixer.Sound(file=io.BytesIO(raw))
@@ -189,6 +387,9 @@ class DSNClient:
                     time.sleep(0.005)
             except Exception as e:
                 log.error(f"TTS playback error: {e}")
+            # TTS 播放后恢复音乐音量
+            if self._player:
+                self._player.unduck()
             self._tts_queue.task_done()
 
     def authenticate(self, code: str = "", name: str = "") -> bool:
@@ -852,6 +1053,7 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [Knob←]  Volume down (-10%)               ")
     print("  [Knob→]  Volume up (+10%)                  ")
     print("  [a x2]   Lock / Unlock panel              ")
+    print("  [b x2]   Music Player (d=prev e=toggle f=next)")
     print("  [p]      Show personality status         ")
     print("  [s]      Toggle standby / wakeup         ")
     print("  [i]      System info (server + plan)      ")
@@ -1014,8 +1216,17 @@ def main():
 
     buffer = ""
     locked = False
+    _music_mode = False
+    _music_was_playing = False  # 录音前的音乐状态，用于正确恢复
     _last_a_ts = 0.0
+    _last_b_ts = 0.0
     _DOUBLE_CLICK_WINDOW = 0.5
+
+    # 初始化音乐播放器
+    player = MusicPlayer(client, cfg.get("uid", 1))
+    player.start_poll()
+    client._player = player  # 注入到 TTS worker 用于 ducking
+
     try:
         while True:
             ch = keyboard.get(timeout=0.15)
@@ -1042,6 +1253,23 @@ def main():
                 _last_a_ts = now
                 continue
 
+            # ── 双击 'b' 切换音乐模式 ──
+            if ch.lower() == "b":
+                now = time.time()
+                if now - _last_b_ts < _DOUBLE_CLICK_WINDOW:
+                    _music_mode = not _music_mode
+                    if _music_mode:
+                        player.load_playlist()
+                        _play_beep(client, 880)
+                        print("\n  ♪ Music Mode")
+                    else:
+                        print("\n  Exited Music Mode")
+                        _play_beep(client, 440)
+                    _last_b_ts = 0.0
+                    continue
+                _last_b_ts = now
+                continue
+
             # ── 锁定时忽略除 'a' 外所有输入 ──
             if locked:
                 continue
@@ -1051,13 +1279,22 @@ def main():
                     print()
                     recorder.stop_and_send()
                     print()
+                    # 录音结束 → 恢复音乐（仅在录音前正在播放时才恢复）
+                    if _music_was_playing and player.state == "paused":
+                        player.toggle()
+                    _music_was_playing = False
                 else:
+                    # 录音开始 → 保存当前状态并暂停音乐
+                    _music_was_playing = _music_mode and player.state == "playing"
+                    if _music_was_playing:
+                        player.toggle()
                     print("\n  Speaking... (Press Enter to stop)")
                     recorder.start()
 
             elif ch.lower() == "q":
                 if recorder.is_recording:
                     recorder.stop_and_send()
+                player.cleanup()
                 break
 
             elif ch.lower() == "p":
@@ -1125,19 +1362,43 @@ def main():
                         async_poller.add_task(task_id)
 
             elif ch.lower() == "n":
-                client._volume = max(0.0, client._volume - 0.1)
-                if client._channel:
-                    client._channel.set_volume(client._volume)
-                _play_beep(client, 400)
-                print(f"\n  Volume: {client._volume:.0%}")
+                if _music_mode:
+                    v = max(0.0, player._volume - 0.1)
+                    player.set_volume(v)
+                    _play_beep(client, 400)
+                    print(f"\n  ♪ Vol: {v:.0%}")
+                else:
+                    client._volume = max(0.0, client._volume - 0.1)
+                    if client._channel:
+                        client._channel.set_volume(client._volume)
+                    _play_beep(client, 400)
+                    print(f"\n  Volume: {client._volume:.0%}")
 
             elif ch.lower() == "m":
-                client._volume = min(1.0, client._volume + 0.1)
-                if client._channel:
-                    client._channel.set_volume(client._volume)
-                _play_beep(client, 800)
-                print(f"\n  Volume: {client._volume:.0%}")
+                if _music_mode:
+                    v = min(1.0, player._volume + 0.1)
+                    player.set_volume(v)
+                    _play_beep(client, 800)
+                    print(f"\n  ♪ Vol: {v:.0%}")
+                else:
+                    client._volume = min(1.0, client._volume + 0.1)
+                    if client._channel:
+                        client._channel.set_volume(client._volume)
+                    _play_beep(client, 800)
+                    print(f"\n  Volume: {client._volume:.0%}")
 
+            elif _music_mode and ch.lower() == "d":
+                player.prev()
+                _play_beep(client, 600)
+                print(f"\n  ♪ Prev → {player.current_index + 1}/{len(player.playlist)}")
+            elif _music_mode and ch.lower() == "e":
+                player.toggle()
+                _play_beep(client, 800 if player.state == "playing" else 400)
+                print(f"\n  ♪ {'▶' if player.state == 'playing' else '⏸'} {player.state}")
+            elif _music_mode and ch.lower() == "f":
+                player.next()
+                _play_beep(client, 600)
+                print(f"\n  ♪ Next → {player.current_index + 1}/{len(player.playlist)}")
             elif ch.lower() in ("b", "c", "d", "e", "f"):
                 pass
 
@@ -1147,6 +1408,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        player.cleanup()
         async_poller.stop()
         reminder.stop()
         if recorder.is_recording:
