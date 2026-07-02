@@ -1,0 +1,7 @@
+model: glm-4.6v
+priority: 30
+orchestrated: false
+resident: false
+immediate: false
+request_timeout: 120
+load_timeout: 60

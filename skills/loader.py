@@ -183,5 +183,8 @@ class SkillLoader:
         if "default" in param_def:
             schema["default"] = param_def["default"]
         if schema_type == "array":
-            schema["items"] = {"type": "string"}
+            if "items" in param_def:
+                schema["items"] = self._param_def_to_schema(param_def["items"])
+            else:
+                schema["items"] = {"type": "string"}
         return schema
