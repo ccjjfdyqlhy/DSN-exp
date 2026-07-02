@@ -36,29 +36,98 @@ activation:
     - 下载歌
 
 tools:
-  - name: search_song
-    display_name: "搜索歌曲"
-    description: "根据关键词搜索网易云音乐的歌曲，返回歌曲列表（含歌曲名、歌手、专辑、时长、封面、播放链接等）；可指定是否自动下载第一首"
+  # ---- 会话管理 ----
+  - name: login
+    display_name: "登录网易云"
+    description: "用 MUSIC_U Cookie 登录网易云音乐账号。如未配置 NCM_MUSIC_U 环境变量，需要从浏览器获取后传入。"
     module: "tools.ncm_api"
     class: "NCMApi"
     methods:
-      - search_song
+      - name: login
+        description: "配置 MUSIC_U 并登录"
+        parameters:
+          music_u:
+            type: string
+            description: "MUSIC_U Cookie 值（从 music.163.com 浏览器开发者工具 → Application → Cookies 获取）"
+            required: true
+
+  - name: search_song
+    display_name: "搜索歌曲"
+    description: "根据关键词搜索网易云音乐的歌曲，返回歌曲列表（含歌曲名、歌手、专辑、时长、封面）。"
+    module: "tools.ncm_api"
+    class: "NCMApi"
+    methods:
+      - name: search_song
+        description: "搜索歌曲"
+        parameters:
+          keyword:
+            type: string
+            required: true
+            description: "搜索关键词（歌名/歌手/专辑）"
+          page:
+            type: integer
+            required: false
+            description: "页数，默认1"
+          num:
+            type: integer
+            required: false
+            description: "每页数量，默认5，最多10"
+          quality:
+            type: integer
+            required: false
+            description: "音质: 1-2=标准128k, 3-4=HQ320k, 5-6=无损FLAC, 7-9=Hi-Res"
+          auto_download:
+            type: boolean
+            required: false
+            description: "是否自动下载第一首（需要登录态）"
 
   - name: get_song_url
     display_name: "获取播放链接"
-    description: "通过歌曲 ID 获取歌曲播放链接和详细信息，可选择是否下载到本地"
+    description: "通过歌曲 ID 获取歌曲播放链接（直链）和详细信息（歌名/歌手/专辑/时长/封面）。音质越高越可能需 VIP。"
     module: "tools.ncm_api"
     class: "NCMApi"
     methods:
-      - get_song_url
+      - name: get_song_url
+        description: "获取播放链接"
+        parameters:
+          song_id:
+            type: integer
+            required: false
+            description: "歌曲 ID"
+          keyword:
+            type: string
+            required: false
+            description: "搜索关键词，当 song_id=0 时用 keyword 搜索后取第 choose 首"
+          choose:
+            type: integer
+            required: false
+            description: "选择搜索结果第几首（配合 keyword 使用），默认1"
+          quality:
+            type: integer
+            required: false
+            description: "音质: 1-2=标准128k, 3-4=HQ320k, 5-6=无损FLAC, 7-9=Hi-Res"
+          download:
+            type: boolean
+            required: false
+            description: "是否下载到本地 music 目录"
 
   - name: get_lyrics
     display_name: "获取歌词"
-    description: "根据歌曲 ID 获取歌词，返回 LRC 时间轴歌词和纯文本歌词，可选择是否保存到本地文件"
+    description: "根据歌曲 ID 获取歌词，返回 LRC 时间轴歌词和纯文本歌词，可选择是否保存到本地文件。"
     module: "tools.ncm_api"
     class: "NCMApi"
     methods:
-      - get_lyrics
+      - name: get_lyrics
+        description: "获取歌词"
+        parameters:
+          song_id:
+            type: integer
+            required: true
+            description: "歌曲 ID"
+          save:
+            type: boolean
+            required: false
+            description: "是否保存歌词到本地 music 目录，默认true"
 
   - name: list_downloaded
     display_name: "列出已下载"
@@ -66,4 +135,6 @@ tools:
     module: "tools.ncm_api"
     class: "NCMApi"
     methods:
-      - list_downloaded
+      - name: list_downloaded
+        description: "列出已下载的音乐文件"
+        parameters: {}
