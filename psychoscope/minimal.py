@@ -371,24 +371,33 @@ class DSNClient:
                 self._tts_queue.task_done()
                 continue
             text, b64 = item
-            # TTS 播放前降低音乐音量
-            if self._player:
-                self._player.duck()
+            ducked = False
             try:
                 raw = base64.b64decode(b64)
                 sound = pygame.mixer.Sound(file=io.BytesIO(raw))
-                while self._channel.get_busy() and self._channel.get_queue() is not None:
-                    time.sleep(0.005)
-                if not self._channel.get_busy():
+                # TTS 播放前降低音乐音量
+                if self._player:
+                    self._player.duck()
+                    ducked = True
+                # 立即播放或排队——不等待上一个完整播完
+                if self._channel.get_busy() and self._channel.get_queue() is None:
+                    self._channel.queue(sound)
+                elif not self._channel.get_busy():
                     self._channel.play(sound)
                 else:
-                    self._channel.queue(sound)
-                while self._channel.get_busy():
-                    time.sleep(0.005)
+                    # 队列满时等待最多 0.5s 空出位置，避免丢弃
+                    for _ in range(100):
+                        if not self._channel.get_busy():
+                            self._channel.play(sound)
+                            break
+                        if self._channel.get_queue() is None:
+                            self._channel.queue(sound)
+                            break
+                        time.sleep(0.005)
             except Exception as e:
                 log.error(f"TTS playback error: {e}")
             # TTS 播放后恢复音乐音量
-            if self._player:
+            if ducked:
                 self._player.unduck()
             self._tts_queue.task_done()
 

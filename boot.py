@@ -172,6 +172,15 @@ def setup_logging(_app):
     _app.logger.propagate = True
     logging.getLogger('werkzeug').setLevel(logging.INFO)
     logging.getLogger('werkzeug').propagate = True
+
+    # 压制高频轮询端点的 werkzeug 日志
+    class _NoiseFilter(logging.Filter):
+        _NOISE_PATTERNS = ("/api/heartbeat", "/api/music/state", "/api/music/status")
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return not any(p in msg for p in self._NOISE_PATTERNS)
+    logging.getLogger('werkzeug').addFilter(_NoiseFilter())
+
     _app.logger.info("日志系统初始化完成")
 
 
