@@ -152,12 +152,6 @@ class ToolPlugin(Plugin):
                 if data.get("action") == "confirm_requested":
                     ctx.extra["confirm_requested"] = True
                     logger.info("ToolPlugin: confirm_requested 已设置")
-            elif func == "skill-system-start_ssp":
-                ctx.extra["ssp_requested"] = True
-                logger.info("ToolPlugin: ssp_requested 已设置")
-            elif func == "skill-system-stop_ssp":
-                ctx.extra["ssp_stopped"] = True
-                logger.info("ToolPlugin: ssp_stopped 已设置")
             elif func == "skill-system-record_impression":
                 if data.get("recorded"):
                     logger.info("ToolPlugin: impression 已记录")

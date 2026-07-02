@@ -46,6 +46,8 @@ class WorkspaceFileTool:
             return self._write_file(path, content)
         elif tool == "pwd":
             return self._pwd()
+        elif tool == "find":
+            return self._find(path)
         return {"success": False, "error": f"未知子命令: {tool}", "cwd": self._cwd()}
 
     def _pwd(self) -> dict[str, Any]:
@@ -88,6 +90,31 @@ class WorkspaceFileTool:
             return {"success": False, "error": str(e), "cwd": self._cwd()}
         except Exception as e:
             logger.exception("列出目录失败: %s", path)
+            return {"success": False, "error": str(e), "cwd": self._cwd()}
+
+    def _find(self, pattern: str = "*") -> dict[str, Any]:
+        """递归搜索文件，pattern 支持 glob 通配符（如 *.png, *test*）"""
+        try:
+            results = []
+            for p in self.base_dir.rglob(pattern):
+                if p.is_file():
+                    rel = p.relative_to(self.base_dir)
+                    results.append({
+                        "name": p.name,
+                        "path": str(rel),
+                        "abspath": str(p),
+                        "size": p.stat().st_size,
+                    })
+            results.sort(key=lambda x: x["path"])
+            return {
+                "success": True,
+                "pattern": pattern,
+                "results": results,
+                "count": len(results),
+                "cwd": self._cwd(),
+            }
+        except Exception as e:
+            logger.exception("搜索文件失败: %s", pattern)
             return {"success": False, "error": str(e), "cwd": self._cwd()}
 
     def _write_file(self, path: str, content: str) -> dict[str, Any]:

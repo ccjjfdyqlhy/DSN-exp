@@ -338,6 +338,28 @@ class ChatPipeline:
         logger.info("异步切换: task_id=%s", task_id)
         return task_id
 
+    @staticmethod
+    def _report_agent_progress(ctx: PluginContext, step: int, max_steps: int,
+                               tool_names: list[str], done: bool = False,
+                               reply_text: str = None):
+        """向流式前端推送 Agent 步骤进度（非阻塞，通过 ctx 内的线程安全队列）"""
+        q = ctx.extra.get("_agent_progress_queue")
+        if q is None:
+            return
+        if done:
+            q.put(None)
+            return
+        tool_text = ", ".join(tool_names) if tool_names else "处理中"
+        evt = {
+            "status": "agent_progress",
+            "step": step,
+            "max": max_steps,
+            "text": f"[{step}/{max_steps}] {tool_text}",
+        }
+        if reply_text:
+            evt["reply"] = reply_text
+        q.put(evt)
+
     async def _run_agent_loop(self, ctx: PluginContext) -> PluginContext:
         from datetime import datetime
         max_steps = ctx.agent_max_steps or 5
@@ -350,11 +372,22 @@ class ChatPipeline:
                 models_plugin = p
                 break
 
+        self._report_agent_progress(ctx, 0, max_steps, ["开始处理"])
+
         for step in range(max_steps):
             results = ctx.extra.pop("_tag_results", [])
             if not results:
                 logger.info("Agent 第 %d 步: _tag_results 为空", step + 1)
                 break
+
+            # 提取本次执行了哪些工具，用于进度提示
+            tool_names = []
+            for r in results:
+                func = r.get("function", "")
+                # "skill-document-process_scan" → "process_scan"
+                short = func.rsplit("-", 1)[-1] if "-" in func else func
+                if short:
+                    tool_names.append(short)
 
             # 检测是否为原生 tool call 结果（有 function 和 tool_call_id 字段）
             has_native_results = any(
@@ -388,6 +421,8 @@ class ChatPipeline:
                 if hasattr(models_plugin, '_build_tools_schema'):
                     tools_schema = models_plugin._build_tools_schema()
 
+                self._report_agent_progress(ctx, step + 1, max_steps, tool_names)
+
                 try:
                     new_reply = await loop.run_in_executor(
                         None, lambda: models_plugin.invoke(msgs, ctx, tools=tools_schema)
@@ -407,9 +442,15 @@ class ChatPipeline:
                 logger.info("Agent 第 %d 步(native): LLM 回复 %d 字符",
                             step + 1, len(new_reply or ""))
                 ctx.original_reply = new_reply
-                ctx.reply = (models_plugin._clean_reply(new_reply)
-                             if new_reply else "…")
+                reply_text = (models_plugin._clean_reply(new_reply)
+                              if new_reply else "…")
+                ctx.reply = reply_text
                 ctx.extra["_agent_step"] = step + 1
+
+                # 将本轮 LLM 回复推送给前端（非空且不是占位符时 TTS 会朗读）
+                if new_reply:
+                    self._report_agent_progress(ctx, step + 1, max_steps,
+                                                 tool_names, reply_text=reply_text)
 
                 ctx = await self._dispatch_post_process(ctx)
                 if step >= max_steps - 1:
@@ -420,6 +461,8 @@ class ChatPipeline:
             formatted = self._format_tag_results(results)
             logger.info("Agent 第 %d 步(xml): %d 个标签执行完毕",
                         step + 1, len(results))
+
+            self._report_agent_progress(ctx, step + 1, max_steps, tool_names)
 
             msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
             msgs.extend(ctx.full_history)
@@ -449,10 +492,16 @@ class ChatPipeline:
             ctx.reply = new_reply
             ctx.extra["_agent_step"] = step + 1
 
+            # 将本轮 LLM 回复推送给前端
+            if new_reply:
+                self._report_agent_progress(ctx, step + 1, max_steps,
+                                             tool_names, reply_text=new_reply)
+
             ctx = await self._dispatch_post_process(ctx)
             if step >= max_steps - 1:
                 logger.warning("Agent 达到最大步数 %d", max_steps)
 
+        self._report_agent_progress(ctx, max_steps, max_steps, [], done=True)
         return ctx
 
     def _print_timing(self, timing: dict[str, float], ctx: PluginContext | None = None):
@@ -1000,7 +1049,7 @@ class ChatPipeline:
                 await runner
                 await bridge_task
 
-                # ── Agent 循环（streaming）──
+                # ── Agent 循环（streaming + 实时进度）──
                 tag_results = ctx.extra.get("_tag_results")
                 logger.info("Agent 循环检查: agent_active=%s tag_results=%s",
                             ctx.agent_active, bool(tag_results))
@@ -1009,7 +1058,94 @@ class ChatPipeline:
                         'status': 'thinking',
                         'text': 'Agent 循环: 处理执行结果...',
                     })}\n\n"
-                    ctx = await self._run_agent_loop(ctx)
+
+                    agent_thread_q = queue.Queue()
+                    ctx.extra["_agent_progress_queue"] = agent_thread_q
+
+                    async def _consume_agent_progress(tq: queue.Queue,
+                                                       apq: asyncio.Queue):
+                        loop = asyncio.get_event_loop()
+                        while True:
+                            evt = await loop.run_in_executor(None, tq.get)
+                            if evt is None:
+                                break
+                            await apq.put(evt)
+
+                    agent_progress_q: asyncio.Queue = asyncio.Queue()
+                    agent_bridge = asyncio.create_task(
+                        _consume_agent_progress(agent_thread_q, agent_progress_q))
+                    agent_task = asyncio.create_task(self._run_agent_loop(ctx))
+
+                    agent_tts_task = None
+
+                    while True:
+                        try:
+                            evt = await asyncio.wait_for(
+                                agent_progress_q.get(), timeout=0.3)
+                            if evt is None:
+                                break
+                            # 先 yield 进度文本（前端显示步骤信息）
+                            yield f"data: {json.dumps(evt)}\n\n"
+                            # 如果本轮 LLM 有回复，立即 yield text_ready + 异步 TTS
+                            reply = evt.get("reply")
+                            if reply and reply != "…":
+                                yield f"data: {json.dumps({
+                                    'status': 'text_ready',
+                                    'reply': reply,
+                                    'chat_id': ctx.chat_id,
+                                })}\n\n"
+                                if ctx.tts_enabled and self._tts_client:
+                                    tts_task = asyncio.create_task(
+                                        self._synthesize_lines(reply))
+                                    agent_tts_task = tts_task
+                            # 检查上一轮 TTS 是否已完成（避免等超时）
+                            if agent_tts_task and agent_tts_task.done():
+                                for line in agent_tts_task.result():
+                                    yield f"data: {json.dumps({
+                                        'status': 'line',
+                                        'index': line['index'],
+                                        'total': line['total'],
+                                        'text': line['text'],
+                                        'audio_b64': line['audio_b64'],
+                                    })}\n\n"
+                                agent_tts_task = None
+                        except asyncio.TimeoutError:
+                            if agent_task.done():
+                                break
+                            # 保持连接活跃
+                            yield f"data: {json.dumps({
+                                'status': 'thinking',
+                                'text': 'Agent 正在执行...',
+                            })}\n\n"
+                            # 如果有 TTS 正在合成，检查是否有行 ready
+                            if agent_tts_task and agent_tts_task.done():
+                                agent_tts_lines = agent_tts_task.result()
+                                for line in agent_tts_lines:
+                                    yield f"data: {json.dumps({
+                                        'status': 'line',
+                                        'index': line['index'],
+                                        'total': line['total'],
+                                        'text': line['text'],
+                                        'audio_b64': line['audio_b64'],
+                                    })}\n\n"
+                                agent_tts_task = None
+
+                    # Agent 循环结束，收集最后一个 TTS 结果
+                    if agent_tts_task and not agent_tts_task.done():
+                        agent_tts_lines = await agent_tts_task
+                        for line in agent_tts_lines:
+                            yield f"data: {json.dumps({
+                                'status': 'line',
+                                'index': line['index'],
+                                'total': line['total'],
+                                'text': line['text'],
+                                'audio_b64': line['audio_b64'],
+                            })}\n\n"
+
+                    ctx = await agent_task
+                    await agent_bridge
+                    ctx.extra["_agent_progress_queue"] = False  # 标记已 streamed
+                    # 清除队列引用（但保留标记供后续判断）
                     if ctx.reply and ctx.reply != "…":
                         ctx.extra["_agent_reply_dirty"] = True
 
@@ -1047,15 +1183,19 @@ class ChatPipeline:
                             db.replace_last_assistant(ctx.user_id, ctx.chat_id, ctx.reply)
                         except Exception:
                             logger.exception("更新 Agent 回复到 DB 失败")
-                    yield f"data: {json.dumps({
-                        'status': 'text_ready',
-                        'reply': ctx.reply,
-                        'chat_id': ctx.chat_id,
-                    })}\n\n"
-                    logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
-                    if ctx.tts_enabled and self._tts_client and ctx.extra.get("_agent_step", 0) > 0:
-                        tts_lines = await self._synthesize_lines(ctx.reply)
-                        tts_streamed = False
+                    # 如果 Agent 循环中已经按步骤 streamed 过 text_ready + TTS，
+                    # 此处不再重复推送，避免重复音频
+                    has_agent_reply = ctx.extra.get("_agent_progress_queue") is False
+                    if not has_agent_reply:
+                        yield f"data: {json.dumps({
+                            'status': 'text_ready',
+                            'reply': ctx.reply,
+                            'chat_id': ctx.chat_id,
+                        })}\n\n"
+                        logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
+                        if ctx.tts_enabled and self._tts_client and ctx.extra.get("_agent_step", 0) > 0:
+                            tts_lines = await self._synthesize_lines(ctx.reply)
+                            tts_streamed = False
                     ctx.extra["_agent_reply_dirty"] = False
 
             elif hook == HookPoint.POST_TTS:
