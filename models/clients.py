@@ -1212,3 +1212,114 @@ class VisionModel:
 
     def __repr__(self):
         return f"<VisionModel base_url={self.base_url} model={self.model_name}>"
+
+
+class GradingModel(VisionModel):
+    """
+    视觉判分模型 — VisionModel 的子类，专用于试卷批改场景。
+
+    从已作答的试卷图片中自动分离题目原文、题图描述和学生答案，
+    以标准 AnswerSheet 格式输出。
+
+    用法:
+        gm = GradingModel()
+        sheet = gm.extract_answer_sheet(data_url)
+        sheets = gm.extract_answer_sheet_batch([{filename, data_url}, ...])
+    """
+
+    def extract_answer_sheet(self, data_url: str, max_tokens: int = 8192) -> dict:
+        """
+        从一页已作答的试卷图片中提取所有题目和学生答案。
+
+        :param data_url: 图片的 Base64 data URL
+        :param max_tokens: 最大输出 token
+        :return: {
+            "pages": [{
+                "page_number": 1,
+                "questions": [{
+                    "question_index": 0,
+                    "question_text": "题目原文（含选项）",
+                    "image_description": "题图描述，无图则为 null",
+                    "student_answer": "学生填写的答案",
+                }]
+            }]
+        }
+        """
+        if not data_url:
+            return {"pages": []}
+
+        prompt = (
+            "你是一名试卷批改助手。下面是一张已作答的试卷图片。\n\n"
+            "请仔细识别图片中所有的题目和学生的作答，按以下 JSON 格式输出：\n"
+            "{\n"
+            '  "pages": [\n'
+            "    {\n"
+            '      "page_number": 1,\n'
+            '      "questions": [\n'
+            "        {\n"
+            '          "question_index": 0,\n'
+            '          "question_text": "题目原文（包括所有选项 A/B/C/D）",\n'
+            '          "image_description": "如果题目配有图表/图片，请描述其内容；无图则为 null",\n'
+            '          "student_answer": "学生填写的答案"\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "要求：\n"
+            "1. 题目原文和学生答案严格分开，不要混在一起\n"
+            "2. 题目有配图（几何图、函数图、表格等）时在 image_description 中描述其关键信息\n"
+            "3. 学生写了多个答案时以最终/最明显的答案为准\n"
+            "4. 只返回 JSON，不要包含其他内容\n"
+            "5. 确保题目原文完整，选择题保留 A/B/C/D 选项"
+        )
+
+        try:
+            text = self.ask(data_url, prompt=prompt, max_tokens=max_tokens, temperature=0.1)
+            return self._parse_answer_sheet(text)
+        except Exception as e:
+            self.logger.error("extract_answer_sheet 失败: %s", e)
+            return {"pages": [], "error": str(e)}
+
+    def extract_answer_sheet_batch(self, images: list[dict], max_tokens: int = 8192) -> dict:
+        """
+        批量处理多页答题卡，合并为一个 answer_sheet。
+
+        :param images: [{"filename": str, "data_url": str}, ...]
+        :return: {"pages": [...]}
+        """
+        all_pages = []
+        for i, img in enumerate(images):
+            filename = img.get("filename", f"page_{i}")
+            data_url = img.get("data_url", "")
+            if not data_url:
+                continue
+            page_result = self.extract_answer_sheet(data_url, max_tokens)
+            pages = page_result.get("pages", [])
+            for p in pages:
+                p["source_file"] = filename
+            all_pages.extend(pages)
+
+        return {"pages": all_pages, "total_pages": len(all_pages)}
+
+    @staticmethod
+    def _parse_answer_sheet(text: str) -> dict:
+        text = text.strip()
+        if "```" in text:
+            lines = text.split("\n")
+            json_lines = []
+            in_block = False
+            for line in lines:
+                if line.strip().startswith("```"):
+                    if in_block:
+                        break
+                    in_block = True
+                    continue
+                if in_block:
+                    json_lines.append(line)
+            text = "\n".join(json_lines)
+        import json as _json
+        try:
+            return _json.loads(text)
+        except _json.JSONDecodeError:
+            return {"pages": [], "error": f"JSON 解析失败: {text[:300]}"}

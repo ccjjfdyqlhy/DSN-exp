@@ -16,6 +16,8 @@ class DocTools:
         from document.hmd import HmdClient
         self._processor = DocProcessor()
         self._hmd = HmdClient()
+        self._question_store = None
+        self._models = None
         logger.info("DocTools 已就绪")
 
     def process_scan(self, scanned_files: list[dict],
@@ -156,3 +158,145 @@ class DocTools:
         except Exception as e:
             logger.error("describe_image 全部失败: %s", e)
             return {"success": False, "error": f"图片分析失败: {e}"}
+
+    def process_answered_scan(self, scanned_files: list, subject: str = "math",
+                              user_id: int = 0) -> dict:
+        """
+        处理已作答的扫描试卷：识别题目 → 匹配题库 → 判分 → 错题分析。
+
+        整个流程:
+        1. 用 GradingModel 从图片中提取题目原文、题图描述、学生答案
+        2. 用 AnswerSheetMatcher 将提取的题目与题库匹配
+        3. 用 ExamScorer.score_answer_sheet() 统一判分
+        4. 自动记录 exam_results 和 error_logs
+
+        :param scanned_files: 扫描文件列表，支持字符串路径或 dict 格式
+        :param subject: 学科代码
+        :param user_id: 用户 ID
+        :return: {
+            success, score, max_score, correct_count, total_count,
+            details, error_analyses, result_id,
+            extraction: {提取详情},
+            matching: {匹配详情},
+        }
+        """
+        uid = user_id or 1
+        logger.info("process_answered_scan 开始: %d 文件, subject=%s, user_id=%d",
+                     len(scanned_files), subject, uid)
+
+        # ── Step 0: 规范化文件列表 ──
+        from models import VisionModel
+        normalized = []
+        for img in scanned_files:
+            if isinstance(img, str):
+                fp = os.path.expanduser(img)
+                if not os.path.isfile(fp):
+                    return {"success": False, "error": f"文件不存在: {fp}"}
+                normalized.append({
+                    "filename": os.path.basename(fp),
+                    "filepath": fp,
+                })
+            elif isinstance(img, dict):
+                fp = os.path.expanduser(img.get("filepath", img.get("path", "")))
+                if not os.path.isfile(fp):
+                    continue
+                normalized.append({
+                    "filename": img.get("filename", os.path.basename(fp)),
+                    "filepath": fp,
+                })
+        if not normalized:
+            return {"success": False, "error": "没有有效的扫描文件"}
+
+        # ── Step 1: GradingModel 提取 ──
+        try:
+            from models import GradingModel
+            gm = GradingModel()
+            images_with_data = []
+            for item in normalized:
+                data_url = VisionModel.encode_image(item["filepath"])
+                images_with_data.append({
+                    "filename": item["filename"],
+                    "data_url": data_url,
+                })
+            extraction = gm.extract_answer_sheet_batch(images_with_data)
+        except Exception as e:
+            logger.exception("GradingModel 提取失败")
+            return {"success": False, "error": f"图片识别失败: {e}"}
+
+        all_questions = []
+        for page in extraction.get("pages", []):
+            all_questions.extend(page.get("questions", []))
+        if not all_questions:
+            return {"success": False, "error": "未能从图片中识别出题目"}
+
+        # ── Step 2: AnswerSheetMatcher 匹配题库 ──
+        from exam_sim.answer_sheet import AnswerSheetMatcher
+        matcher = AnswerSheetMatcher(question_store=self._question_store)
+        matching = matcher.match(all_questions, subject=subject)
+
+        if not matching["matched"]:
+            return {
+                "success": False,
+                "error": "未能将提取的题目与题库匹配，请先录入这些题目",
+                "extraction": {"questions_found": len(all_questions)},
+                "matching": matching,
+            }
+
+        # ── Step 3: 统一判分 + 错题分析 ──
+        from exam_sim.scorer import ExamScorer
+        scorer = ExamScorer(
+            question_store=self._question_store,
+            models_plugin=self._models,
+        )
+        scoring = scorer.score_answer_sheet(
+            matched_answers=matching["matched"],
+            user_id=uid,
+            subject=subject,
+        )
+
+        # 持久化考试结果到 exam_results
+        result_id = None
+        if scoring.get("success") and self._question_store:
+            try:
+                details = scoring.get("details", [])
+                result_id = self._question_store.save_exam_result(
+                    exam_id=0,
+                    user_id=uid,
+                    answers={str(d["question_id"]): d["user_answer"] for d in details},
+                    score=scoring.get("score", 0),
+                    max_score=scoring.get("max_score", 0),
+                    duration_sec=0,
+                    details={
+                        "per_question": details,
+                        "error_analyses": scoring.get("error_analyses", []),
+                        "subject": subject,
+                        "source": "answered_scan",
+                    },
+                )
+                logger.info("扫描批改结果已保存: result_id=%s", result_id)
+            except Exception as e:
+                logger.warning("保存扫描批改结果失败: %s", e)
+
+        logger.info("process_answered_scan 完成: 得分 %.1f/%.1f, 正确 %d/%d",
+                     scoring.get("score", 0), scoring.get("max_score", 0),
+                     scoring.get("correct_count", 0), scoring.get("total_count", 0))
+
+        return {
+            "success": scoring.get("success", False),
+            "score": scoring.get("score", 0),
+            "max_score": scoring.get("max_score", 0),
+            "correct_count": scoring.get("correct_count", 0),
+            "total_count": scoring.get("total_count", 0),
+            "details": scoring.get("details", []),
+            "error_analyses": scoring.get("error_analyses", []),
+            "result_id": result_id,
+            "extraction": {
+                "pages": len(extraction.get("pages", [])),
+                "questions_found": len(all_questions),
+            },
+            "matching": {
+                "matched_count": matching["matched_count"],
+                "unmatched_count": matching["unmatched_count"],
+                "unmatched": matching["unmatched"],
+            },
+        }

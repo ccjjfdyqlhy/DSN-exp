@@ -1469,6 +1469,29 @@ def create_engine_with_defaults(
             except Exception as e:
                 engine._logger.warning("text_extract 注入失败: %s", e)
 
+        # 注入 document 技能依赖（用于 process_answered_scan）
+        if question_store:
+            try:
+                skill_registry.inject_dependencies("document",
+                    _question_store=question_store,
+                    _models=models_plugin,
+                )
+                engine._logger.info("document 技能依赖已注入 (process_answered_scan)")
+            except Exception as e:
+                engine._logger.warning("document 注入失败: %s", e)
+
+        # 注入 exam_review 技能依赖
+        if question_store:
+            try:
+                qb_db = getattr(question_store, "_db", None)
+                skill_registry.inject_dependencies("exam_review",
+                    _store=question_store,
+                    _db=qb_db,
+                )
+                engine._logger.info("exam_review 技能依赖已注入")
+            except Exception as e:
+                engine._logger.warning("exam_review 注入失败: %s", e)
+
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")
     return engine

@@ -149,14 +149,32 @@ class ExamEngine:
             questions = self._store.get_questions_by_ids(q_ids)
 
         if self._scorer and questions:
-            scoring_result = self._scorer.score_session(session, questions)
-            score = scoring_result["score"]
-            max_score = scoring_result["max_score"]
-            details = scoring_result["details"]
+            # 优先使用 AnswerSheet 统一判分入口
+            from .answer_sheet import AnswerSheetMatcher
+            matcher = AnswerSheetMatcher(question_store=self._store)
+            answer_sheet = matcher.from_session(session)
+
+            if answer_sheet:
+                scoring_result = self._scorer.score_answer_sheet(
+                    matched_answers=answer_sheet,
+                    user_id=session.get("user_id", 0),
+                    subject=config.get("subject"),
+                )
+                score = scoring_result["score"]
+                max_score = scoring_result["max_score"]
+                details = scoring_result["details"]
+                error_analyses = scoring_result.get("error_analyses", [])
+            else:
+                scoring_result = self._scorer.score_session(session, questions)
+                score = scoring_result["score"]
+                max_score = scoring_result["max_score"]
+                details = scoring_result["details"]
+                error_analyses = []
         else:
             score = 0
             max_score = len(questions)
             details = []
+            error_analyses = []
 
         conn.execute(
             """UPDATE exam_sessions SET
@@ -167,6 +185,29 @@ class ExamEngine:
         )
         conn.commit()
 
+        # 保存 exam_results
+        result_id = None
+        if self._store and hasattr(self._store, "save_exam_result"):
+            try:
+                user_id = session.get("user_id", 0)
+                paper_id = config.get("paper_id", session.get("paper_id", 0)) or 0
+                result_id = self._store.save_exam_result(
+                    exam_id=paper_id,
+                    user_id=user_id,
+                    answers={str(d["question_id"]): d["user_answer"] for d in details},
+                    score=score,
+                    max_score=max_score,
+                    duration_sec=duration_sec,
+                    details={
+                        "per_question": details,
+                        "error_analyses": error_analyses,
+                        "session_id": session_id,
+                    },
+                )
+                logger.info("考试结果已保存: result_id=%s", result_id)
+            except Exception as e:
+                logger.warning("save_exam_result 失败: %s", e)
+
         return {
             "success": True,
             "session_id": session_id,
@@ -176,6 +217,8 @@ class ExamEngine:
             "total_count": len(questions),
             "duration_sec": duration_sec,
             "details": details,
+            "error_analyses": error_analyses,
+            "result_id": result_id,
         }
 
     def auto_submit(self, session_id: str) -> dict:

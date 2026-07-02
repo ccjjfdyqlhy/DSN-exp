@@ -131,17 +131,155 @@ class ExamScorer:
             "details": details,
         }
 
-    def analyze_errors(self, session: dict, results: dict) -> list[dict]:
+    def score_answer_sheet(self, matched_answers: list[dict], user_id: int,
+                           subject: str = None) -> dict:
+        """
+        统一判分入口。
+
+        接受 AnswerSheet 格式（含 question_id 的已匹配条目），
+        判分后自动进行错题分析并记录到 error_logs。
+
+        :param matched_answers: [
+            {"question_id": int, "student_answer": str, "question_text": str},
+            ...
+        ]
+        :param user_id: 用户 ID
+        :param subject: 学科代码
+        :return: {
+            "success": bool,
+            "score": float, "max_score": float,
+            "correct_count": int, "total_count": int,
+            "details": [{每道题得分详情}],
+            "error_analyses": [{错题分析结果}],
+            "result_id": int or None,
+        }
+        """
+        if not self._store:
+            return {"success": False, "error": "题库未就绪"}
+
+        total_score = 0.0
+        max_score = float(len(matched_answers))
+        details = []
+        error_analyses = []
+
+        for item in matched_answers:
+            qid = item.get("question_id")
+            student_answer = item.get("student_answer", "")
+            question = self._store.get_question(qid) if qid else None
+
+            if not question:
+                details.append({
+                    "question_id": qid,
+                    "index": item.get("question_index", 0),
+                    "user_answer": student_answer,
+                    "correct": False,
+                    "score": 0.0,
+                    "max_score": 1.0,
+                    "explanation": "题目未找到或已删除",
+                })
+                continue
+
+            result = self.score_question(question, student_answer)
+            entry = {
+                "question_id": qid,
+                "index": item.get("question_index", 0),
+                "question_text": item.get("question_text", question.get("content", "")),
+                "user_answer": student_answer,
+                "correct_answer": question.get("answer", ""),
+                "correct": result["correct"],
+                "score": result["score"],
+                "max_score": result["max_score"],
+                "explanation": result["explanation"],
+            }
+            details.append(entry)
+            total_score += result["score"]
+
+            # 自动错题分析（只处理 error_logs，不涉及 exam_results）
+            if not result["correct"] and student_answer:
+                try:
+                    analysis = self._analyze_single_error(
+                        user_id, qid, student_answer, question,
+                    )
+                    error_analyses.append(analysis)
+                except Exception as e:
+                    logger.warning("单题错题分析失败: qid=%s, %s", qid, e)
+
+        correct_count = sum(1 for d in details if d["correct"])
+        return {
+            "success": True,
+            "score": total_score,
+            "max_score": max_score,
+            "correct_count": correct_count,
+            "total_count": len(details),
+            "details": details,
+            "error_analyses": error_analyses,
+        }
+
+    def analyze_errors(self, user_id: int, details: list[dict]) -> list[dict]:
+        """
+        对得分详情中所有错题进行错误分析并记录到 error_logs。
+
+        替代原有的死代码，真实调用 ErrorAnalyzer。
+
+        :param user_id: 用户 ID
+        :param details: [{"question_id", "user_answer", ...}, ...]
+        :return: [{"question_id", "error_type", "error_reason", "log_id"}, ...]
+        """
         errors = []
-        for d in results.get("details", []):
-            if not d["correct"]:
+        for d in details:
+            if d.get("correct"):
+                continue
+            qid = d.get("question_id")
+            user_answer = d.get("user_answer", "")
+            if not qid or not user_answer:
+                continue
+            try:
+                question = self._store.get_question(qid) if self._store else None
+                analysis = self._analyze_single_error(user_id, qid, user_answer, question)
+                errors.append(analysis)
+            except Exception as e:
+                logger.warning("analyze_errors 中单题分析失败: qid=%s, %s", qid, e)
                 errors.append({
-                    "question_id": d["question_id"],
-                    "user_answer": d["user_answer"],
-                    "error_type": "未分类",
-                    "error_reason": d.get("explanation", ""),
+                    "question_id": qid,
+                    "error_type": "分析异常",
+                    "error_reason": str(e),
                 })
         return errors
+
+    def _analyze_single_error(self, user_id: int, question_id: int,
+                               user_answer: str, question: dict = None) -> dict:
+        """分析单题错误原因并记录到 error_logs"""
+        analysis = {"error_type": "未分类", "error_reason": ""}
+
+        if self._models:
+            from question_bank.error_analyzer import ErrorAnalyzer
+            try:
+                analyzer = ErrorAnalyzer(
+                    question_store=self._store,
+                    models_plugin=self._models,
+                )
+                analysis = analyzer.analyze_error(user_id, question_id, user_answer)
+            except Exception as e:
+                logger.warning("ErrorAnalyzer 调用失败: %s", e)
+
+        # 记录到 error_logs
+        if self._store and hasattr(self._store, "add_error_log"):
+            try:
+                log_id = self._store.add_error_log(
+                    user_id=user_id,
+                    question_id=question_id,
+                    user_answer=user_answer,
+                    error_type=analysis.get("error_type", "未分类"),
+                    error_reason=analysis.get("error_reason", ""),
+                )
+                analysis["log_id"] = log_id
+                logger.info("错题已记录: qid=%s, type=%s, log_id=%s",
+                            question_id, analysis.get("error_type"), log_id)
+            except Exception as e:
+                logger.warning("add_error_log 失败: %s", e)
+
+        analysis["question_id"] = question_id
+        return analysis
 
     @staticmethod
     def _parse_json(text: str) -> dict:
