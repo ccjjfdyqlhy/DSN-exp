@@ -100,6 +100,9 @@ class WorkspaceManager:
     def user_documents_dir(self, uid: int = 0, display_name: str = "") -> Path:
         return self.user_subdir(uid, "documents", display_name)
 
+    def user_music_dir(self, uid: int = 0, display_name: str = "") -> Path:
+        return self.user_subdir(uid, "music", display_name)
+
     # ── 内部 ──
 
     def _user_dir(self, uid: int, display_name: str) -> Path:

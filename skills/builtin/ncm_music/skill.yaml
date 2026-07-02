@@ -50,6 +50,10 @@ tools:
             type: string
             description: "MUSIC_U Cookie 值（从 music.163.com 浏览器开发者工具 → Application → Cookies 获取）"
             required: true
+          user_id:
+            type: integer
+            required: false
+            description: "用户 ID，默认当前用户"
 
   - name: search_song
     display_name: "搜索歌曲"
@@ -71,7 +75,7 @@ tools:
           num:
             type: integer
             required: false
-            description: "每页数量，默认5，最多10"
+            description: "每页数量，默认5"
           quality:
             type: integer
             required: false
@@ -80,6 +84,10 @@ tools:
             type: boolean
             required: false
             description: "是否自动下载第一首（需要登录态）"
+          user_id:
+            type: integer
+            required: false
+            description: "用户 ID，默认当前用户"
 
   - name: get_song_url
     display_name: "获取播放链接"
@@ -109,7 +117,11 @@ tools:
           download:
             type: boolean
             required: false
-            description: "是否下载到本地 music 目录"
+            description: "是否下载到本地 workspace/<user>/music/ 目录"
+          user_id:
+            type: integer
+            required: false
+            description: "用户 ID，默认当前用户"
 
   - name: get_lyrics
     display_name: "获取歌词"
@@ -127,7 +139,33 @@ tools:
           save:
             type: boolean
             required: false
-            description: "是否保存歌词到本地 music 目录，默认true"
+            description: "是否保存歌词到本地 workspace/<user>/music/ 目录，默认true"
+          user_id:
+            type: integer
+            required: false
+            description: "用户 ID，默认当前用户"
+
+  - name: music_control
+    display_name: "控制音乐播放"
+    description: "控制音乐播放器：播放/暂停/上下曲/调音量/查看状态。用户说「下一首」「暂停」「放歌」「现在在放什么」等均使用此工具。"
+    module: "tools.ncm_api"
+    class: "NCMApi"
+    methods:
+      - name: music_control
+        description: "发送播放控制命令"
+        parameters:
+          action:
+            type: string
+            required: true
+            description: "控制命令: play(传filename) / pause / resume / stop / next / prev / volume(传0.0~1.0) / status(查看状态) / list(查看歌单)"
+          value:
+            type: string
+            required: false
+            description: "play 时传文件名（来自 list），volume 时传 0.0~1.0，其余留空"
+          user_id:
+            type: integer
+            required: false
+            description: "用户 ID，默认当前用户"
 
   - name: list_downloaded
     display_name: "列出已下载"
@@ -137,4 +175,8 @@ tools:
     methods:
       - name: list_downloaded
         description: "列出已下载的音乐文件"
-        parameters: {}
+        parameters:
+          user_id:
+            type: integer
+            required: false
+            description: "用户 ID，默认当前用户"
