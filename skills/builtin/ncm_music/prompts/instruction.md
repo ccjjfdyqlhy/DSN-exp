@@ -113,5 +113,44 @@ NCM_MUSIC_U=从浏览器获取的MUSIC_U值
 4. 用户提到"无损"时用 quality=5，"高音质"用 quality=4，"普通"用 quality=2
 5. 用户讨论歌词时用 get_lyrics，讨论时用 plain 纯文本版本
 6. 一次搜索不要返回太多（建议 5 首），让用户缩小范围
-7. 已下载到本地的歌曲文件和歌词文件保存在技能目录的 music/ 文件夹下
+7. 已下载到本地的歌曲和歌词保存在 workspace/<用户>/music/ 目录下，可用 `workspace_file` 工具的 `find` 或 `list_dir` 子命令查看
 8. 如果提示"请先登录"，引导用户获取 MUSIC_U 调用 login 工具
+
+### 音乐播放控制
+
+你可以通过 `music_control` 工具控制音乐播放器（minimal.py 客户端上的 pygame 播放器）。
+
+**查看播放状态：**
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "music_control",
+  "params": {"action": "status"}
+}
+</tool>
+
+**播放/切歌：**
+- `{"action": "next"}` — 下一首
+- `{"action": "prev"}` — 上一首
+- `{"action": "pause"}` — 暂停
+- `{"action": "resume"}` — 恢复播放
+- `{"action": "stop"}` — 停止
+- `{"action": "play", "value": "晴天.mp3"}` — 播放指定歌曲
+- `{"action": "volume", "value": "0.5"}` — 调音量 0.0~1.0
+
+**查看歌单：**
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "music_control",
+  "params": {"action": "list"}
+}
+</tool>
+
+**使用原则：**
+- 用户说"下一首""换一首" → `next`
+- 用户说"暂停""停一下" → `pause`
+- 用户说"继续放" → `resume`
+- 用户说"现在在放什么" → 先 `status` 获取状态，再回复用户
+- 用户说"放XX歌" → 先用 `search_song` 搜索，下载后用 `play` 播放
+- 客户端不在音乐模式时，播放控制命令会被排队，进入音乐模式后自动消费

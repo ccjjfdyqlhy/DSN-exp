@@ -385,6 +385,8 @@ def create_application():
     app.register_blueprint(async_task_bp)
     from api.agent import agent_bp
     app.register_blueprint(agent_bp)
+    from api.music import music_bp
+    app.register_blueprint(music_bp)
     _t("认证 + 蓝图 + 数据库")
 
     # ── 数据库 ──
