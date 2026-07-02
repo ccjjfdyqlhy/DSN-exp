@@ -141,6 +141,13 @@ class Config:
     VISION_ENABLED = _env("VISION_ENABLED", "true").lower() == "true"
     VISION_PROMPT = _env("VISION_PROMPT", "请详细描述这张图片的内容")
 
+    # ==================== 视觉模型 API（通用视觉，如 GLM-4.6V / GPT-4V） ====================
+    VISION_API_KEY = _env("VISION_API_KEY", "")
+    VISION_API_BASE = _env("VISION_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
+    VISION_MODEL_NAME = _env("VISION_MODEL_NAME", "glm-4.6v")
+    # 启用后用 VisionModel 接管所有 OCR 及 2md 布局分析，直接生成 .hmd
+    VISION_OVERRIDE = _env("VISION_OVERRIDE", "false").lower() == "true"
+
     # ==================== OCR 文档处理 ====================
     OCR_MODEL = _env("OCR_MODEL", "deepseek-ocr")
     OCR_BASE_URL = _env("OCR_BASE_URL", "http://localhost:4502")

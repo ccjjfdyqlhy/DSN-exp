@@ -14,12 +14,6 @@ class SignalTools:
     def confirm(self) -> dict:
         return {"action": "confirm_requested"}
 
-    def start_ssp(self) -> dict:
-        return {"action": "ssp_started"}
-
-    def stop_ssp(self) -> dict:
-        return {"action": "ssp_stopped"}
-
     def record_impression(self, category: str, content: str,
                            confidence: int = 80) -> dict:
         mgr = self._ctx.get("impression_manager")

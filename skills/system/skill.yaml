@@ -253,26 +253,6 @@ tools:
         description: "触发确认请求"
         parameters: {}
 
-  - name: start_ssp
-    display_name: "启动自维持"
-    description: "启动自维持管线"
-    module: "tools.signal_tools"
-    class: "SignalTools"
-    methods:
-      - name: start_ssp
-        description: "启动管线"
-        parameters: {}
-
-  - name: stop_ssp
-    display_name: "停止自维持"
-    description: "停止自维持管线"
-    module: "tools.signal_tools"
-    class: "SignalTools"
-    methods:
-      - name: stop_ssp
-        description: "停止管线"
-        parameters: {}
-
   - name: record_impression
     display_name: "记录印象"
     description: "记录用户印象"

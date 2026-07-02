@@ -41,11 +41,11 @@ tools:
         parameters:
           tool:
             type: string
-            description: "子命令: list_dir / read_file / write_file / pwd（查询当前工作目录绝对路径）"
+            description: "子命令: list_dir（列出目录）/ read_file（读取文件）/ write_file（写入文件）/ find（递归搜索，path 参数改为 glob 模式如 *.png）/ pwd（查询当前工作目录绝对路径）"
             required: true
           path:
             type: string
-            description: "文件或目录相对路径"
+            description: "文件/目录相对路径，或 find 时的 glob 搜索模式（如 *.png, **/*.txt, *test*）"
             required: false
           content:
             type: string

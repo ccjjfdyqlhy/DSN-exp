@@ -81,19 +81,21 @@ tools:
   # ---- 文档处理 ----
   - name: process_scan
     display_name: "处理扫描结果"
-    description: "对扫描产出的 PNG 文件执行完整处理管线：分类→OCR→HMD→打包。返回反馈文本供 AI 理解文档内容。"
+    description: "对扫描产出的 PNG 文件执行完整处理管线：分类→OCR→打包为 .hmd（+ .md）。返回反馈文本（已含全文 Markdown）及文件路径。"
     async: true
     estimated_duration: "30-300s"
     module: "tools.doc_tools"
     class: "DocTools"
     methods:
       - name: process_scan
-        description: "分类文档/图片、OCR 提取文本、调用 2md 布局分析、打包 .hmd"
+        description: "分类文档/图片、OCR 提取文本、打包 .hmd（+ .md）。支持两种参数格式：文件路径列表或对象列表。"
         parameters:
           scanned_files:
             type: array
-            description: "扫描产出的文件列表，格式: [{filename, filepath, size}, ...]"
+            description: "文件路径列表（推荐）：[\"/path/to/file.png\", ...] 或对象列表：[{\"filename\": \"a.png\", \"filepath\": \"/path/a.png\", \"size\": 123}]"
             required: true
+            items:
+              type: string
           user_id:
             type: integer
             description: "用户 ID，默认自动取当前用户"
@@ -113,8 +115,46 @@ tools:
             description: ".hmd 文件路径"
             required: true
 
+  # ---- 快捷操作 ----
+  - name: process_last_scan
+    display_name: "处理最近扫描"
+    description: "自动找最近一次 scan 产生的 PNG 文件，直接执行完整管线。零参数，无需手动写文件路径。推荐在 scan 之后直接调用。"
+    async: true
+    estimated_duration: "30-300s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: process_last_scan
+        description: "自动查找并处理最近扫描的 PNG 文件"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户 ID，默认自动取当前用户"
+            required: false
+
+  # ---- 图片分析 ----
+  - name: describe_image
+    display_name: "分析图片"
+    description: "用视觉多模态模型分析本地图片的内容（如截图、照片、扫描件等）。用户说「看看这张图」「分析一下这张图片」「这张图里有什么」等均使用此工具。支持 jpg/png/gif/webp。"
+    async: true
+    estimated_duration: "5-30s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: describe_image
+        description: "分析图片内容并返回文字描述"
+        parameters:
+          file_path:
+            type: string
+            description: "图片文件路径（支持 ~ 展开），如 ~/Desktop/图片3.png"
+            required: true
+          prompt:
+            type: string
+            description: "自定义分析提示词，留空则默认描述图片内容"
+            required: false
+
 activation:
-  keywords: ["扫描", "打印", "scan", "print", "扫一下", "录入", "印出来"]
+  keywords: ["扫描", "打印", "scan", "print", "扫一下", "录入", "印出来", "图片", "照片", "截图", "image"]
   auto_activate: false
 
 dependencies: []

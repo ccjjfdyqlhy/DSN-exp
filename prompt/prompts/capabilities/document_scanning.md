@@ -32,14 +32,24 @@ tags:
 3. 调用 `document.print_file` 发送打印任务
 
 ### OCR 文档处理
-扫描完成后，可以对图片进行 OCR 文字识别：
+扫描完成后，可以对图片进行 OCR 文字识别。推荐流程：
 
-1. 调用 `document.process_scan` 执行 OCR 处理
-2. 处理流程：分类 → OCR 文字识别 → 生成 Markdown → 打包为 .hmd 格式
-3. 输出文件保存在 `<文档输出目录>` 中
+1. `document.scan` 执行扫描
+2. **`document.process_last_scan`**（零参数，自动找最新扫描文件处理）或 `document.process_scan`（手动传路径）
+3. 处理流程：分类 → OCR 文字识别 → 生成 Markdown → 打包
+4. 输出文件保存在 `<文档输出目录>` 中，格式为 `.hmd`（含图片和 Markdown）
+5. `process_scan` / `process_last_scan` 返回的 `feedback_text` 已包含完整文档 Markdown 内容，可直接阅读
+6. 如果启用了 VISION_OVERRIDE，还会额外保存独立 `.md` 文件到同一目录
 
-### 读取 .hmd 文档
-已处理的文档以 .hmd 格式存储（包含图片和 Markdown）：
+### 读取文档内容
+处理后的文档内容可通过以下方式读取：
 
-1. 调用 `document.read_hmd` 读取文档内容
-2. 返回文档的 Markdown 文本和图片列表
+1. **直接读取**：`process_scan` 返回的 `feedback_text` 已含完整文字，AI 可直接引用
+2. **读取 .hmd**：调用 `document.read_hmd` 解包读取（返回 mdA + mdB + 图片列表）
+3. **读取 .md**（VISION_OVERRIDE 模式下）：用 `workspace_file` 的 `read_file` 读取 `md_path` 指向的独立 Markdown 文件
+4. **查找文件**：用 `workspace_file` 的 `find` 子命令递归搜索工作区文件
+
+### 扫描文件管理
+- `document.process_last_scan` — 零参数，自动处理最近一次扫描（推荐）
+- `document.process_scan` — 手动指定文件路径列表：`["/path/to/a.png", ...]`
+- `file_manager.workspace_file` 的 `find` 子命令 — 递归搜索文件：`{"tool": "find", "path": "*.png"}`

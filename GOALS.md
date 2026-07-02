@@ -5,8 +5,8 @@
 
 ## 最新更新
 
-**跨聊天全局记忆 + OpenAI 兼容重构 + AI Agent API**  
-全局记忆：记忆按用户而非按聊天存储，聊天不再碎片化。OpenAI 兼容重构：DeepSeekChat → OpenAIChat，支持任意 OpenAI 格式 API。AI Agent API：本地 AI Agent 可通过专用接口与主 AI 对话，双向记忆互访。
+**VisionModel + VISION_OVERRIDE 文档管线重构 + Agent 步骤实时 TTS**  
+VisionModel：通用视觉多模态模型客户端（GLM-4.6V / GPT-4V），支持 `ask`、`classify_image`、`ocr_md`。VISION_OVERRIDE：启用后用 VisionModel 接管 OCR + 2md 整条管线，直接生成 Markdown + `.hmd` + `.md`。`process_scan` 自动兼容字符串路径，新增零参数 `process_last_scan`、`describe_image` 工具、`workspace_file find` 递归搜索。Agent 循环每步骤实时 TTS 进度反馈，用户不再等沉默期。移除废弃的 `start_ssp`/`stop_ssp`。
 
 ## 下一步方向
 
@@ -18,6 +18,8 @@
 - [ ] Agent API 密钥撤销和轮换机制
 - [ ] Agent 对话历史 WebUI 查看
 - [ ] 多 Agent 支持（1 用户多 Agent）
+- [ ] 视觉感知系统增强：CameraWatcher 后台抓帧 + 环境注入
+- [ ] VISION_OVERRIDE 体验打磨：更多视觉模型后端支持
 
 ## 议题
 
@@ -31,6 +33,11 @@
 - [x] Minimal Psychoscope CLI 实现，完全无 UI 也能交互！
 - [ ] 图书馆——接入 Obsidian 笔记系统。
 - [x] 规划引擎：目标拆解、三层任务(Goal/Phase/DailyTask)模型、沉浸式闹钟
+- [x] VisionModel 通用视觉客户端 + VISION_OVERRIDE 管线
+- [x] describe_image 工具：AI 可直接分析本地图片
+- [x] process_last_scan 零参数工具：scan → 一键处理
+- [x] workspace_file find 递归搜索
+- [x] Agent 循环每步骤实时 TTS 进度反馈
 - [ ] 视觉感知协议正式落地：CameraWatcher 后台抓帧 + 环境状态描述注入管线
 - [x] 语义缓存系统：L1 静态语素 + L2 向量语义检索 + TTS 复用，拦截重复请求
 - [x] **跨聊天全局记忆**：记忆按用户聚合，聊天不再隔离
@@ -67,6 +74,7 @@
 - [x] 语义缓存插件
 - [x] **Tool Call 原生升级**：废弃 `<tool>` XML 标签
 - [x] **技能加载器重构**
+- [x] **技能 YAML array items schema 修复**
 - [x] **系统技能标准化**
 - [x] **技能调用上下文**
 - [x] **Token 节省**
@@ -75,6 +83,12 @@
 - [x] **DeepSeek API 兼容**
 - [x] **Agent Loop 原生模式**
 - [x] **文档工具精简**
+- [x] **VisionModel + VISION_OVERRIDE 管线**
+- [x] **describe_image 本地图片分析工具**
+- [x] **process_last_scan 零参数工具**
+- [x] **workspace_file find 递归搜索**
+- [x] **Agent 步骤实时 TTS 进度推送**
+- [x] **移除废弃 SSP 工具 (start_ssp/stop_ssp)**
 - [x] **异步任务系统**
 - [x] **Pipeline 自动异步切换**
 - [x] **前端异步轮询**
