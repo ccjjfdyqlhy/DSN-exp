@@ -1446,6 +1446,29 @@ def create_engine_with_defaults(
             except Exception as e:
                 engine._logger.warning("doc_to_questions 注入失败: %s", e)
 
+        # 注入新增题目录入技能依赖
+        if question_store and template_manager:
+            for _skill_name in ("quick_question", "batch_import", "quest_from_image"):
+                try:
+                    skill_registry.inject_dependencies(_skill_name,
+                        _store=question_store,
+                        _tm=template_manager,
+                    )
+                    engine._logger.info("%s 技能依赖已注入", _skill_name)
+                except Exception as e:
+                    engine._logger.warning("%s 注入失败: %s", _skill_name, e)
+
+        if question_store and template_manager and models_plugin:
+            try:
+                skill_registry.inject_dependencies("text_extract",
+                    _store=question_store,
+                    _tm=template_manager,
+                    _models=models_plugin,
+                )
+                engine._logger.info("text_extract 技能依赖已注入")
+            except Exception as e:
+                engine._logger.warning("text_extract 注入失败: %s", e)
+
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")
     return engine

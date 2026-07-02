@@ -1,0 +1,66 @@
+name: quest_from_image
+display_name: "图片识题"
+description: "通过视觉模型从题目截图或照片中识别题目内容，自动提取并入库。支持单张或批量图片。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 69
+
+tools:
+  - name: snap_question
+    display_name: "单张图片识题"
+    description: "识别一张题目截图/照片中的题目并入库。支持 preview_only 模式只预览不入库。"
+    module: "tools.quest_from_image"
+    class: "QuestFromImageTool"
+    methods:
+      - name: snap_question
+        description: "从单张图片识别题目并入库"
+        parameters:
+          file_path:
+            type: string
+            description: "图片文件路径（支持 ~ 展开），如 ~/Desktop/题目.png"
+            required: true
+          subject:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese/biology)"
+            required: true
+          preview_only:
+            type: boolean
+            description: "true=仅预览识别结果不入库, false(默认)=识别后直接入库"
+            default: false
+
+  - name: snap_batch
+    display_name: "批量图片识题"
+    description: "一次处理多张图片，每张图片中的题目分别识别后合并入库。"
+    module: "tools.quest_from_image"
+    class: "QuestFromImageTool"
+    methods:
+      - name: snap_batch
+        description: "从多张图片批量识别题目"
+        parameters:
+          file_paths:
+            type: array
+            description: "图片文件路径列表，如 [\"~/pic1.png\", \"~/pic2.png\"]"
+            required: true
+            items:
+              type: string
+          subject:
+            type: string
+            description: "学科代码"
+            required: true
+          preview_only:
+            type: boolean
+            description: "true=仅预览不入库"
+            default: false
+
+activation:
+  keywords: ["图片", "截图", "照片", "识题", "拍题", "图片录入", "snap", "quest_from_image"]
+  auto_activate: false
+
+dependencies:
+  - question_store
+  - template_manager
+tags: [question, import, image, vision, snap]
