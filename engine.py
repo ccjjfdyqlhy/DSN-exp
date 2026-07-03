@@ -324,7 +324,11 @@ class DSNEngine:
                 )
             else:
                 from models import OpenAIChat
-                chat = OpenAIChat(api_key=self._engine_cfg.openai_api_key)
+                chat = OpenAIChat(
+                    api_key=self._engine_cfg.openai_api_key,
+                    model=self._engine_cfg.model_name,
+                    api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
+                )
             chat.messages = [{"role": "system", "content": system_prompt}]
             recent = history[-5:] if len(history) > 5 else history
             for msg in recent:
@@ -709,7 +713,11 @@ class DSNEngine:
                 from plugins.builtin.distill_plugin import DistillPlugin
                 from skills.distill import DistillationEngine
                 from models import OpenAIChat
-                _skill_distill_llm = OpenAIChat(api_key=self._engine_cfg.openai_api_key)
+                _skill_distill_llm = OpenAIChat(
+                    api_key=self._engine_cfg.openai_api_key,
+                    model=self._engine_cfg.model_name,
+                    api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
+                )
                 self.plugin_manager.register(DistillPlugin(
                     distillation_engine=DistillationEngine(
                         db=self.db, skill_manager=self.skill_manager,
@@ -1208,6 +1216,8 @@ def create_engine_with_defaults(
     models_plugin = ModelsPlugin(
         model_type=Config.MAIN_MODEL_TYPE,
         openai_api_key=Config.OPENAI_API_KEY,
+        openai_api_base=Config.OPENAI_API_BASE,
+        openai_model_name=Config.MAIN_MODEL_NAME,
         lmstudio_base_url=Config.LMSTUDIO_BASE_URL,
         lmstudio_model_name=Config.MAIN_MODEL_NAME,
         lmstudio_temperature=Config.LMSTUDIO_TEMPERATURE,
@@ -1310,7 +1320,11 @@ def create_engine_with_defaults(
             from plugins.builtin.distill_plugin import DistillPlugin
             from skills.distill import DistillationEngine
             from models import OpenAIChat
-            _skill_distill_llm = OpenAIChat(api_key=Config.OPENAI_API_KEY)
+            _skill_distill_llm = OpenAIChat(
+                api_key=Config.OPENAI_API_KEY,
+                model=Config.MAIN_MODEL_NAME,
+                api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
+            )
             _distill_engine = DistillationEngine(
                 db=db,
                 skill_manager=engine.skill_manager,

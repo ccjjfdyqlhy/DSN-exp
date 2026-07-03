@@ -553,9 +553,11 @@ class TaskManager:
                 timeout=Config.REASONER_TIMEOUT,
             )
         else:
-            chat = OpenAIChat(api_key=Config.OPENAI_API_KEY)
-            model = task.params.get("model_name") or Config.REASONER_MODEL
-            chat.set_model(model)
+            chat = OpenAIChat(
+                api_key=Config.OPENAI_API_KEY,
+                model=task.params.get("model_name") or Config.REASONER_MODEL,
+                api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
+            )
 
         # 构建提示词
         system_prompt = """你是一个专业的推理AI，需要深入分析复杂问题，给出详细的思考过程和最终结论。
