@@ -148,6 +148,14 @@ class Config:
     # 启用后用 VisionModel 接管所有 OCR 及 2md 布局分析，直接生成 .hmd
     VISION_OVERRIDE = _env("VISION_OVERRIDE", "false").lower() == "true"
 
+    # ==================== 主动视觉感知 ====================
+    ACTIVE_VISION_ENABLED = _env("ACTIVE_VISION_ENABLED", "false").lower() == "true"
+    ACTIVE_VISION_INTERVAL = int(_env("ACTIVE_VISION_INTERVAL", "300"))  # 秒，主动观测间隔
+    ACTIVE_VISION_PROACTIVE_COOLDOWN = int(_env("ACTIVE_VISION_PROACTIVE_COOLDOWN", "600"))  # 秒，主动通知冷却
+    ACTIVE_VISION_PERIODIC_NOTIFY_MIN = int(_env("ACTIVE_VISION_PERIODIC_NOTIFY_MIN", "30"))  # 分钟，周期性通知间隔
+    CAMERA_DEVICE_ID = int(_env("CAMERA_DEVICE_ID", "0"))
+
+
     # ==================== OCR 文档处理 ====================
     OCR_MODEL = _env("OCR_MODEL", "deepseek-ocr")
     OCR_BASE_URL = _env("OCR_BASE_URL", "http://localhost:4502")

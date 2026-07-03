@@ -914,7 +914,8 @@ class TaskManager:
                          task.task_id, task.user_id, task.chat_id)
 
     def fetch_pending_notifications(self, user_id: int, limit: int = 5) -> list:
-        """拉取该用户所有未投递（delivered=0, dismissed=0）的提醒通知。
+        """拉取该用户所有未投递（delivered=0, dismissed=0）的通知。
+        包括该用户的提醒通知 + 全局（user_id=0）视觉感知通知。
         返回 list[dict]，每项包含 notification_id / task_id / chat_id / result / task_type / params。
         不会修改 delivered 状态（由调用方在生成 AI 回复成功后再标记）。
         """
@@ -924,7 +925,7 @@ class TaskManager:
             "       t.task_type, t.params "
             "FROM task_notifications n "
             "LEFT JOIN tasks t ON t.task_id = n.task_id "
-            "WHERE n.user_id = ? AND n.delivered = 0 AND n.dismissed = 0 "
+            "WHERE (n.user_id = ? OR n.user_id = 0) AND n.delivered = 0 AND n.dismissed = 0 "
             "ORDER BY n.created_at ASC LIMIT ?",
             (user_id, limit)
         ).fetchall()

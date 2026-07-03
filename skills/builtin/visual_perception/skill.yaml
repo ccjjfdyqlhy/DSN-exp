@@ -1,0 +1,32 @@
+name: visual_perception
+display_name: "视觉感知"
+description: "通过摄像头观察周围环境，描述用户和场景状态"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 55
+
+tools:
+  - name: look_around
+    display_name: "观察周围"
+    description: "『睁开眼睛』— 通过摄像头拍摄当前画面，用视觉模型分析你看到了什么。返回结果中包含摄像头捕捉到的实时画面描述。你可以看到用户在做什么、环境光线、场景状态。每次调用都会获取最新的真实画面。"
+    module: "tools.perception"
+    class: "VisualPerceptionTool"
+    methods:
+      - name: look_around
+        description: "观察周围环境并返回视觉描述"
+        parameters:
+          focus:
+            type: string
+            description: "关注焦点（可选）: 留空则全面描述；指定如 'user' 关注用户状态，'environment' 关注环境"
+            required: false
+
+activation:
+  keywords: ["看看", "看", "观察", "看到", "视觉", "摄像头", "周围", "环境", "你看到", "look"]
+  auto_activate: false
+
+dependencies: []
+tags: [vision, camera, perception, environment]
