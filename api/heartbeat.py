@@ -1,24 +1,24 @@
 # api/heartbeat.py
-# 心跳接口 — 前端定期 POST /api/heartbeat，后端检查是否有已完成的提醒任务。
+# 心跳接口 — 前端定期 POST /api/heartbeat，后端检查是否有未投递通知。
 #
-# 工作流程：
+# 工作流程:
 #   1. 前端每 N 秒发一次心跳请求
 #   2. 后端检查 task_notifications 表中该用户是否有 delivered=0 的记录
-#   3. 如果没有 → 返回 {"has_notification": false}，前端什么都不做
-#   4. 如果有 →
-#      a. 取出最早的一条，调用 engine.chat 生成 AI 提醒回复
-#      b. 合成 TTS 音频
-#      c. 标记该通知为 delivered=1
-#      d. 返回 {"has_notification": true, "reply": ..., "audio_b64": ..., "task_id": ...}
-#   5. 前端收到后立即显示回复、播放 TTS
+#   3. 无 → {"has_notification": false}
+#   4. 有 →
+#      a. 根据 task_type 构造 prompt (reminder/vision)
+#      b. 调 engine.chat 生成 AI 回复 + TTS
+#      c. 标记 delivered=1
+#      d. 返回 {"has_notification": true, "reply": ..., "audio_b64": ..., ...}
+#   5. 前端收到后显示回复、播放 TTS
 #
-# 这样设计的好处：
-#   - 后端 reminder 完成后不需要立即通知前端（避免 SSE 单向通信问题）
-#   - 前端心跳是主动拉取，符合"请求-响应"模型
-#   - AI 回复和 TTS 在心跳请求中同步生成，前端拿到即可用
+# 支持的 task_type:
+#   - "reminder" | "habit" | "countdown" | "daily_plan" | "periodic": 提醒类
+#   - "vision": 视觉感知类 → 主LLM根据场景描述决策是否主动说话
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
@@ -52,13 +52,22 @@ def _require_auth():
         g.user = {"uid": 0}
 
 
+# ── Prompt 构建 ──
+
+
 def _build_reminder_prompt(notification: dict) -> str:
-    """根据提醒通知构造发给主 AI 的消息。
-    notification 包含 task_type / params / result 等字段。
-    """
+    """提醒类通知的 prompt。"""
     task_type = notification.get("task_type", "reminder")
     params = notification.get("params", {}) or {}
     result = notification.get("result", {}) or {}
+
+    # result 可能是序列化的 JSON 字符串
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+
     reminder_text = result.get("reminder_text", "") or params.get("text", "提醒时间到了")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -81,14 +90,60 @@ def _build_reminder_prompt(notification: dict) -> str:
     return prompt
 
 
+def _build_vision_prompt(notification: dict) -> str:
+    """视觉感知类通知的 prompt — 主LLM根据场景描述决策是否主动说话。
+
+    通知数据格式:
+      result.task_type = "vision"
+      result.reason = "user_appeared" | "user_returned" | "light_changed" | "periodic"
+      result.description = VisionModel 的场景描述
+      result.timestamp = 观测时间
+    """
+    result = notification.get("result", {})
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+
+    desc = result.get("description", "")
+    reason = result.get("reason", "")
+    ts = result.get("timestamp", "")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    reason_labels = {
+        "user_appeared": "用户出现在摄像头画面中",
+        "user_returned": "用户回到了摄像头画面中",
+        "light_changed": "环境光线发生了变化",
+        "periodic": "距离上次主动观察已经过了一段时间",
+    }
+    reason_text = reason_labels.get(reason, "视觉环境发生了变化")
+
+    prompt = (
+        f"[视觉感知] 现在是 {now}，你通过摄像头观察到一些变化。\n"
+        f"变化原因：{reason_text}\n"
+        f"观测时间：{ts}\n"
+        f"画面描述：{desc}\n\n"
+        f"请根据这个视觉信息，判断是否需要主动跟用户说话。\n\n"
+        f"决策规则：\n"
+        f"1. 如果用户在忙（打字、工作、看书等），安静等待，不需要说话\n"
+        f"2. 如果用户刚出现/回来，可以打个招呼问候\n"
+        f"3. 如果环境有明显变化（天黑/天亮等），可以自然地提一句\n"
+        f"4. 如果用户不在画面中，不说话\n"
+        f"5. 如果用户只是正常活动，没有特殊情况，不说话\n\n"
+        f"如果你认为需要说话，请用你的语气简短说一句（一两句话）。\n"
+        f"如果你认为不需要说话，请回复一个空字符串或只有一个点号。\n"
+        f"不要复述以上规则，不要带系统标记。"
+    )
+    return prompt
+
+
+# ── 路由 ──
+
+
 @heartbeat_bp.route("/api/heartbeat", methods=["GET", "POST"])
 def heartbeat():
-    """前端心跳接口。
-    返回:
-      - {"has_notification": false}  无待通知提醒
-      - {"has_notification": true, "reply": ..., "audio_b64": ..., "task_id": ...,
-         "chat_id": ..., "notification_id": ...}  有待通知提醒，已生成 AI 回复 + TTS
-    """
+    """前端心跳接口。"""
     uid = g.user.get("uid", 0) if g.user else 0
     if not uid:
         return jsonify({"has_notification": False})
@@ -96,11 +151,11 @@ def heartbeat():
     if _task_manager is None:
         return jsonify({"has_notification": False, "error": "TaskManager 不可用"}), 200
 
-    # 1. 拉取该用户所有未投递的提醒通知
+    # 1. 拉取该用户所有未投递的通知 (reminder + vision)
     try:
         notifications = _task_manager.fetch_pending_notifications(uid, limit=1)
     except Exception as e:
-        logger.error("拉取待通知提醒失败 uid=%d: %s", uid, e)
+        logger.error("拉取待通知失败 uid=%d: %s", uid, e)
         return jsonify({"has_notification": False, "error": str(e)}), 200
 
     if not notifications:
@@ -110,68 +165,97 @@ def heartbeat():
     notification_id = notification["notification_id"]
     task_id = notification["task_id"]
     chat_id = notification.get("chat_id", 0) or 0
-    logger.info("心跳命中待通知提醒: uid=%d task=%s notif=%d",
-                uid, task_id, notification_id)
 
-    # 2. 调用主 AI 生成提醒回复 + TTS
+    # 解析 result 字段
+    raw_result = notification.get("result") or "{}"
+    if isinstance(raw_result, str):
+        try:
+            parsed_result = json.loads(raw_result)
+        except (json.JSONDecodeError, TypeError):
+            parsed_result = {}
+    else:
+        parsed_result = raw_result
+
+    task_type = parsed_result.get("task_type", notification.get("task_type", "reminder"))
+    logger.info("心跳命中待通知: uid=%d task=%s type=%s notif=%d",
+                uid, task_id, task_type, notification_id)
+
     if _engine is None:
-        logger.warning("engine 不可用，无法生成 AI 提醒回复")
-        # 仍然标记为已投递，避免反复触发
+        logger.warning("engine 不可用，无法生成 AI 回复")
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
             pass
+        fallback_reply = "（AI 不可用）"
         return jsonify({
             "has_notification": True,
-            "reply": notification["result"].get("reminder_text", "提醒时间到了"),
+            "reply": fallback_reply,
             "audio_b64": "",
             "task_id": task_id,
             "chat_id": chat_id,
             "notification_id": notification_id,
+            "task_type": task_type,
             "tts_error": "engine unavailable",
         })
 
-    prompt = _build_reminder_prompt(notification)
+    # 2. 根据 task_type 构造 prompt
+    if task_type == "vision":
+        prompt = _build_vision_prompt(notification)
+    else:
+        prompt = _build_reminder_prompt(notification)
+
+    # 3. 调主 AI 生成回复 + TTS
     try:
         result = _engine.chat(
             message=prompt,
             user_id=uid,
             chat_id=chat_id if chat_id else None,
-            chat_name="提醒",
+            chat_name="提醒" if task_type != "vision" else "视觉感知",
             nickname=g.user.get("nickname", "用户"),
             tts_enabled=True,
             is_asr_input=False,
         )
     except Exception as e:
-        logger.error("心跳生成 AI 提醒回复失败 uid=%d task=%s: %s", uid, task_id, e)
-        # 失败也标记为已投递，避免死循环
+        logger.error("心跳生成 AI 回复失败 uid=%d task=%s type=%s: %s", uid, task_id, task_type, e)
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
             pass
         return jsonify({
             "has_notification": True,
-            "reply": notification["result"].get("reminder_text", "提醒时间到了"),
+            "reply": parsed_result.get("description", "（通知）"),
             "audio_b64": "",
             "task_id": task_id,
             "chat_id": chat_id,
             "notification_id": notification_id,
+            "task_type": task_type,
             "error": str(e),
         })
 
-    reply = result.get("reply", "") or notification["result"].get("reminder_text", "提醒时间到了")
+    reply = result.get("reply", "")
     audio_b64 = result.get("audio_b64", "") or ""
     tts_error = result.get("tts_error", "")
     new_chat_id = result.get("chat_id", chat_id)
 
-    # 3. 标记该通知为已投递
+    # 视觉通知特殊处理: 如果 LLM 返回空/纯标点，表示"不需要说话"，不推送
+    if task_type == "vision":
+        stripped = reply.strip().strip(".,。，！!?？\n")
+        if not stripped or len(stripped) <= 1:
+            logger.info("视觉通知: LLM 决策不说话, 静默丢弃 reply=%r", reply)
+            try:
+                _task_manager.mark_notification_delivered(notification_id)
+            except Exception:
+                pass
+            return jsonify({"has_notification": False})
+
+    # 4. 标记为已投递
     try:
         _task_manager.mark_notification_delivered(notification_id)
     except Exception as e:
         logger.warning("标记通知已投递失败 notif=%d: %s", notification_id, e)
 
-    logger.info("心跳提醒已投递: uid=%d task=%s reply=%d chars audio=%d chars",
-                uid, task_id, len(reply), len(audio_b64))
+    logger.info("心跳通知已投递: uid=%d task=%s type=%s reply=%d chars audio=%d chars",
+                uid, task_id, task_type, len(reply), len(audio_b64))
 
     return jsonify({
         "has_notification": True,
@@ -181,7 +265,7 @@ def heartbeat():
         "task_id": task_id,
         "chat_id": new_chat_id,
         "notification_id": notification_id,
-        "task_type": notification.get("task_type", "reminder"),
+        "task_type": task_type,
     })
 
 

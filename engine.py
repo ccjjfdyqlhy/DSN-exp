@@ -606,6 +606,10 @@ class DSNEngine:
         if self._plugin_enabled("vision") and self._models_plugin:
             from plugins.builtin.vision_plugin import VisionPlugin
             self.plugin_manager.register(VisionPlugin(models_plugin=self._models_plugin))
+        if self._plugin_enabled("active_vision"):
+            from plugins.builtin.active_vision_plugin import ActiveVisionPlugin
+            avp = ActiveVisionPlugin(db=self.db)
+            self.plugin_manager.register(avp)
         if self._plugin_enabled("world") and self.world_engine:
             from world import WorldPlugin
             self.plugin_manager.register(WorldPlugin(
@@ -1193,6 +1197,10 @@ def create_engine_with_defaults(
 
     from plugins.builtin.vision_plugin import VisionPlugin
     engine.plugin_manager.register(VisionPlugin(models_plugin=models_plugin))
+
+    from plugins.builtin.active_vision_plugin import ActiveVisionPlugin
+    avp = ActiveVisionPlugin(db=db)
+    engine.plugin_manager.register(avp)
 
     if engine.world_engine:
         from world import WorldPlugin
