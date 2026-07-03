@@ -76,7 +76,11 @@ def create_chat_client(model_type: str = None):
             max_tokens=app.config.get("LMSTUDIO_MAX_TOKENS", 4096),
             timeout=app.config.get("LMSTUDIO_TIMEOUT", 300),
         )
-    return OpenAIChat(api_key=app.config["OPENAI_API_KEY"])
+    return OpenAIChat(
+        api_key=app.config["OPENAI_API_KEY"],
+        model=app.config.get("MAIN_MODEL_NAME", "deepseek-v4-flash"),
+        api_url=app.config.get("OPENAI_API_BASE")
+    )
 
 
 def _process_image_input(message: str, image_data: str) -> str:
