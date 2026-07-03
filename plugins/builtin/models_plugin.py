@@ -24,6 +24,8 @@ class ModelsPlugin(Plugin):
         self,
         model_type: str = "openai",
         openai_api_key: str | None = None,
+        openai_api_base: str | None = None,
+        openai_model_name: str | None = None,
         lmstudio_base_url: str = "http://localhost:4501",
         lmstudio_model_name: str | None = None,
         lmstudio_temperature: float = 0.7,
@@ -34,6 +36,8 @@ class ModelsPlugin(Plugin):
     ):
         self._model_type = model_type
         self._openai_api_key = openai_api_key
+        self._openai_api_base = openai_api_base
+        self._openai_model_name = openai_model_name
         self._lmstudio_base_url = lmstudio_base_url
         self._lmstudio_model_name = lmstudio_model_name
         self._lmstudio_temperature = lmstudio_temperature
@@ -179,7 +183,11 @@ class ModelsPlugin(Plugin):
             )
         else:
             from models import OpenAIChat
-            chat = OpenAIChat(api_key=self._openai_api_key)
+            chat = OpenAIChat(
+                api_key=self._openai_api_key,
+                model=self._openai_model_name or getattr(Config, "MAIN_MODEL_NAME", "deepseek-v4-flash"),
+                api_url=self._openai_api_base
+            )
             logger.info("ModelsPlugin: 创建 OpenAIChat — model=%s", chat.model)
             return chat
 

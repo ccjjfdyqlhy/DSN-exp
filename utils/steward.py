@@ -54,9 +54,11 @@ def _create_steward_client(config):
         from models import OpenAIChat
         import os
         api_key = getattr(config, "OPENAI_API_KEY", None) or os.environ.get("OPENAI_API_KEY")
+        api_base = getattr(config, "OPENAI_API_BASE", None) or os.environ.get("OPENAI_API_BASE")
         return OpenAIChat(
             api_key=api_key,
             model=model_name,
+            api_url=f"{api_base}/chat/completions" if api_base else None,
             timeout=timeout,
         )
 

@@ -1044,7 +1044,7 @@ class KeyboardHandler:
                     time.sleep(0.1)
 
 def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
-    os.system("cls" if os.name == "nt" else "clear")
+    # os.system("cls" if os.name == "nt" else "clear")
     print("===========================================")
     print("        DSN-exp  Minimal Client            ")
     print("===========================================")
