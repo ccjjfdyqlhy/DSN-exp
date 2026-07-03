@@ -9,6 +9,7 @@ tests/*.wav
 *.bak.*
 *.pyc
 .vscode/*
+.dekacode/*
 .dsn/*
 logs/*
 plans/*
