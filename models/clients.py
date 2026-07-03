@@ -110,6 +110,9 @@ class OpenAIChat:
         timeout: int = 114514,
         use_reasoner: bool = False,
         max_history: int = 0,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        extra_body: Optional[dict] = None,
     ):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -118,10 +121,17 @@ class OpenAIChat:
             )
         from config import Config
         self.model = model
-        self.api_url = api_url or f"{Config.OPENAI_API_BASE}/chat/completions"
+        raw = api_url or Config.OPENAI_API_BASE
+        if raw and "/chat/completions" not in raw:
+            self.api_url = f"{raw.rstrip('/')}/chat/completions"
+        else:
+            self.api_url = raw
         self.timeout = timeout
         self.use_reasoner = use_reasoner
         self.max_history = max_history
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._extra_body = extra_body or {}
         self.messages: List[Dict[str, str]] = []
         self.last_usage = None
         self.last_model = self.model
@@ -139,15 +149,19 @@ class OpenAIChat:
         self.logger.info("OpenAIChat客户端初始化完成，模型：%s", self.model)
 
     def send_message(self, message: str, tools: list[dict] = None,
-                     tool_choice: str = "auto") -> str:
+                     tool_choice: str = "auto",
+                     extra_body: Optional[dict] = None) -> str:
         if not message or not isinstance(message, str):
             raise ValueError("消息内容必须为非空字符串")
         self.messages.append({"role": "user", "content": message})
-        return self._call_and_append(tools=tools, tool_choice=tool_choice)
+        return self._call_and_append(tools=tools, tool_choice=tool_choice,
+                                     extra_body=extra_body)
 
     def continue_conversation(self, tools: list[dict] = None,
-                              tool_choice: str = "auto") -> str:
-        return self._call_and_append(tools=tools, tool_choice=tool_choice)
+                              tool_choice: str = "auto",
+                              extra_body: Optional[dict] = None) -> str:
+        return self._call_and_append(tools=tools, tool_choice=tool_choice,
+                                     extra_body=extra_body)
 
     @property
     def last_tool_calls(self) -> Optional[list[dict]]:
@@ -156,7 +170,8 @@ class OpenAIChat:
             return msg["tool_calls"]
         return None
 
-    def _call_and_append(self, tools=None, tool_choice="auto") -> str:
+    def _call_and_append(self, tools=None, tool_choice="auto",
+                         extra_body: Optional[dict] = None) -> str:
         self.logger.info("发送请求，消息数: %d", len(self.messages))
 
         if DETAIL_CHATS:
@@ -187,9 +202,18 @@ class OpenAIChat:
             "messages": self.messages,
             "stream": False
         }
+        if self._max_tokens is not None:
+            payload["max_tokens"] = self._max_tokens
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        body = dict(self._extra_body)
+        if extra_body:
+            body.update(extra_body)
+        if body:
+            payload.update(body)
 
         try:
             self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False)[:500])

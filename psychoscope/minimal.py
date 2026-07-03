@@ -19,7 +19,14 @@ from typing import Optional
 
 import numpy as np
 import requests
-import pygame
+
+try:
+    import vlc
+    HAS_AUDIO = True
+except ImportError:
+    vlc = None
+    HAS_AUDIO = False
+    print("[WARN] python-vlc not installed. pip install python-vlc")
 
 try:
     from pvrecorder import PvRecorder
@@ -67,57 +74,29 @@ def setup_logging():
 
 log = setup_logging()
 
-# ------ 检测 TTS 采样率并初始化 pygame mixer ------
-def _detect_tts_sample_rate() -> int:
-    """扫描 temp/ 目录，从已有 WAV 文件中检测 TTS 采样率。没有文件则返回默认 32000。"""
-    if TTS_DIR.exists():
-        for wf_path in sorted(TTS_DIR.glob("*.wav"), reverse=True):
-            try:
-                with wave.open(str(wf_path), 'rb') as wf:
-                    sr = wf.getframerate()
-                    if sr > 0:
-                        log.info("从 %s 检测到 TTS 采样率: %d Hz", wf_path.name, sr)
-                        return sr
-            except Exception:
-                pass
-    log.info("未找到已有 TTS 文件, 使用默认采样率 32000 Hz")
-    return 32000
-
-_TTS_SAMPLE_RATE = _detect_tts_sample_rate()
-
-try:
-    pygame.init()
-    pygame.mixer.init(frequency=_TTS_SAMPLE_RATE, size=-16, channels=1, buffer=512)
-    HAS_AUDIO = True
-    log.info("pygame mixer 就绪 (sr=%d Hz)", _TTS_SAMPLE_RATE)
-except Exception as e:
-    HAS_AUDIO = False
-    log.warning("pygame mixer 初始化失败: %s", e)
+if HAS_AUDIO:
+    log.info("VLC 就绪")
 
 
 # ════════════════════════════════════════════════════════════════
-# MusicPlayer — 音乐播放器（独立于 TTS 的 pygame.mixer.music）
+# MusicPlayer — 音乐播放器（独立于 TTS 的 VLC 播放）
 # ════════════════════════════════════════════════════════════════
-
-_HAS_MIXER_MUSIC = HAS_AUDIO
-
 
 class MusicPlayer:
-    """音乐播放器，通过后端 API 同步状态供 AI 查看和控制。"""
-
     def __init__(self, client: DSNClient, uid: int):
         self.client = client
         self.uid = uid
         self.playlist: list[dict] = []
         self.current_index = -1
-        self.state: str = "stopped"  # stopped / playing / paused
+        self.state: str = "stopped"
         self._volume = 0.7
         self._temp_files: list[str] = []
         self._running = False
         self._poll_thread: threading.Thread | None = None
-        self._prev_volume = self._volume  # 用于 duck/unduck
-
-    # ── 公开方法 ──
+        self._prev_volume = self._volume
+        self._player = None
+        if HAS_AUDIO:
+            self._player = vlc.MediaPlayer()
 
     def load_playlist(self):
         try:
@@ -148,9 +127,10 @@ class MusicPlayer:
                     tmp.write(chunk)
             tmp.close()
             self._temp_files.append(tmp.name)
-            pygame.mixer.music.load(tmp.name)
-            pygame.mixer.music.set_volume(self._volume)
-            pygame.mixer.music.play()
+            if self._player:
+                self._player.set_mrl(tmp.name)
+                self._player.audio_set_volume(int(self._volume * 100))
+                self._player.play()
             self.state = "playing"
             self._report_state()
         except Exception as e:
@@ -158,21 +138,22 @@ class MusicPlayer:
 
     def toggle(self):
         try:
-            if self.state == "playing":
-                pygame.mixer.music.pause()
+            if self.state == "playing" and self._player:
+                self._player.pause()
                 self.state = "paused"
-            elif self.state == "paused":
-                pygame.mixer.music.unpause()
+            elif self.state == "paused" and self._player:
+                self._player.play()
                 self.state = "playing"
             else:
                 self.play_index(self.current_index if self.current_index >= 0 else 0)
         except Exception:
-            log.warning("MusicPlayer.toggle: mixer error")
+            log.warning("MusicPlayer.toggle: player error")
         self._report_state()
 
     def stop(self):
         try:
-            pygame.mixer.music.stop()
+            if self._player:
+                self._player.stop()
         except Exception:
             pass
         self.state = "stopped"
@@ -190,34 +171,31 @@ class MusicPlayer:
         idx = (self.current_index - 1) % len(self.playlist) if self.current_index >= 0 else len(self.playlist) - 1
         self.play_index(idx)
 
-    def set_volume(self, v: float):
+    def audio_set_volume(self, v: float):
         self._volume = max(0.0, min(1.0, v))
         try:
-            pygame.mixer.music.set_volume(self._volume)
+            if self._player:
+                self._player.audio_set_volume(int(self._volume * 100))
         except Exception:
             pass
         self._report_state()
 
     def duck(self):
-        """TTS 播放前降低音乐音量"""
-        if self.state == "playing":
+        if self.state == "playing" and self._player:
             self._prev_volume = self._volume
-            ducked = self._volume * 0.2
             try:
-                pygame.mixer.music.set_volume(ducked)
+                self._player.audio_set_volume(int(self._volume * 0.2 * 100))
             except Exception:
                 pass
 
     def unduck(self):
-        """TTS 播放后恢复音乐音量"""
-        if self.state == "playing":
+        if self.state == "playing" and self._player:
             try:
-                pygame.mixer.music.set_volume(self._prev_volume)
+                self._player.audio_set_volume(int(self._prev_volume * 100))
             except Exception:
                 pass
 
     def start_poll(self):
-        """后台轮询 pending_control 命令"""
         self._running = True
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._poll_thread.start()
@@ -230,14 +208,15 @@ class MusicPlayer:
     def cleanup(self):
         self.stop()
         self.stop_poll()
+        if self._player:
+            self._player.release()
+            self._player = None
         for f in self._temp_files:
             try:
                 os.unlink(f)
             except Exception:
                 pass
         self._temp_files.clear()
-
-    # ── 内部 ──
 
     def _report_state(self):
         current = None
@@ -284,26 +263,45 @@ class MusicPlayer:
                 elif action == "stop":
                     self.stop()
                 elif action == "volume" and value is not None:
-                    self.set_volume(float(value))
+                    self.audio_set_volume(float(value))
             except Exception:
                 pass
 
 
 def _play_beep(client: DSNClient, freq: int = 600):
-    """通过 pygame 播放短促反馈音。"""
-    if not HAS_AUDIO or not client._channel:
+    if not HAS_AUDIO:
         return
     sr = 44100
     dur = 0.06
     t = np.linspace(0, dur, int(sr * dur), endpoint=False)
     wave = np.sin(2 * np.pi * freq * t) * 0.3
     samples = np.clip(wave * 32767, -32768, 32767).astype(np.int16)
+    import tempfile
+    tmp_path = None
     try:
-        snd = pygame.mixer.Sound(buffer=samples.tobytes())
-        snd.set_volume(1.0)
-        client._channel.play(snd)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(samples.tobytes())
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        tmp_path = tmp.name
+        tmp.write(buf.getvalue())
+        tmp.close()
+        p = vlc.MediaPlayer(tmp_path)
+        p.play()
+        time.sleep(dur + 0.1)
+        p.stop()
+        p.release()
     except Exception:
         pass
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
@@ -354,12 +352,9 @@ class DSNClient:
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
-        self._channel = pygame.mixer.Channel(0) if HAS_AUDIO else None
         self._volume = 0.5
-        self.async_poller = None  # 异步轮询器（main() 中注入）
-        self._player: MusicPlayer | None = None  # main() 中注入
-        if self._channel:
-            self._channel.set_volume(self._volume)
+        self.async_poller = None
+        self._player: MusicPlayer | None = None
         if HAS_AUDIO:
             self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
             self._tts_thread.start()
@@ -372,31 +367,37 @@ class DSNClient:
                 continue
             text, b64 = item
             ducked = False
+            tmp_path = None
             try:
                 raw = base64.b64decode(b64)
-                sound = pygame.mixer.Sound(file=io.BytesIO(raw))
-                # TTS 播放前降低音乐音量
                 if self._player:
                     self._player.duck()
                     ducked = True
-                # 立即播放或排队——不等待上一个完整播完
-                if self._channel.get_busy() and self._channel.get_queue() is None:
-                    self._channel.queue(sound)
-                elif not self._channel.get_busy():
-                    self._channel.play(sound)
-                else:
-                    # 队列满时等待最多 0.5s 空出位置，避免丢弃
-                    for _ in range(100):
-                        if not self._channel.get_busy():
-                            self._channel.play(sound)
-                            break
-                        if self._channel.get_queue() is None:
-                            self._channel.queue(sound)
-                            break
-                        time.sleep(0.005)
+
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+                tmp_path = tmp.name
+                tmp.write(raw)
+                tmp.close()
+
+                p = vlc.MediaPlayer(tmp_path)
+                p.audio_set_volume(int(self._volume * 100))
+                media = p.get_media()
+                media.parse()
+                duration_ms = media.get_duration()
+                if duration_ms > 0:
+                    p.play()
+                    time.sleep(duration_ms / 1000.0 + 0.2)
+                p.stop()
+                p.release()
             except Exception as e:
                 log.error(f"TTS playback error: {e}")
-            # TTS 播放后恢复音乐音量
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
             if ducked:
                 self._player.unduck()
             self._tts_queue.task_done()
@@ -1373,26 +1374,22 @@ def main():
             elif ch.lower() == "n":
                 if _music_mode:
                     v = max(0.0, player._volume - 0.1)
-                    player.set_volume(v)
+                    player.audio_set_volume(v)
                     _play_beep(client, 400)
                     print(f"\n  ♪ Vol: {v:.0%}")
                 else:
                     client._volume = max(0.0, client._volume - 0.1)
-                    if client._channel:
-                        client._channel.set_volume(client._volume)
                     _play_beep(client, 400)
                     print(f"\n  Volume: {client._volume:.0%}")
 
             elif ch.lower() == "m":
                 if _music_mode:
                     v = min(1.0, player._volume + 0.1)
-                    player.set_volume(v)
+                    player.audio_set_volume(v)
                     _play_beep(client, 800)
                     print(f"\n  ♪ Vol: {v:.0%}")
                 else:
                     client._volume = min(1.0, client._volume + 0.1)
-                    if client._channel:
-                        client._channel.set_volume(client._volume)
                     _play_beep(client, 800)
                     print(f"\n  Volume: {client._volume:.0%}")
 
