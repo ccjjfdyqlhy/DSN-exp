@@ -56,6 +56,11 @@
     var confirmTimer = null;
     var confirmActive = false;
 
+    // heartbeat
+    var heartbeatTimer = null;
+    var heartbeatLastNotifId = null;
+    var heartbeatProcessing = false;
+
     // DOM
     var $ = function (s) { return document.querySelector(s); };
     var dom = {
@@ -393,6 +398,7 @@
     }
 
     function logout() {
+        stopHeartbeat();
         token = null; currentChatId = null; chats = [];
         localStorage.removeItem('jwt_token');
         localStorage.removeItem('dsn_session');
@@ -1469,6 +1475,51 @@
         doConfirm();
     });
 
+    // ── Heartbeat: 轮询未投递通知 (提醒 + 视觉感知)
+    async function heartbeatPoll() {
+        if (heartbeatProcessing) return;
+        if (!token) return;
+        heartbeatProcessing = true;
+        try {
+            var auth = getAuthHeader();
+            var headers = { 'Content-Type': 'application/json' };
+            if (auth) headers['Authorization'] = auth;
+            var resp = await fetch(API_BASE + '/api/heartbeat', {
+                method: 'POST',
+                headers: headers,
+                body: '{}',
+            });
+            if (resp.status === 401) { logout(); return; }
+            var data = await resp.json();
+            if (!data.has_notification) { heartbeatProcessing = false; return; }
+            // 去重：同一 notification_id 不重复显示
+            if (data.notification_id && data.notification_id === heartbeatLastNotifId) {
+                heartbeatProcessing = false; return;
+            }
+            heartbeatLastNotifId = data.notification_id || null;
+            // 显示通知
+            if (data.reply) {
+                var label = data.task_type === 'vision' ? '👁' : '⏰';
+                addLineStatic(label + ' ' + aiName, data.reply, '');
+            }
+            if (data.audio_b64) {
+                playAudioBase64(data.audio_b64);
+            }
+        } catch (_) {}
+        heartbeatProcessing = false;
+    }
+
+    function startHeartbeat() {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(heartbeatPoll, 15000);
+        heartbeatPoll();
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        heartbeatLastNotifId = null;
+    }
+
     // ── init
     async function init() {
         // Check server auth status
@@ -1493,6 +1544,7 @@
             dom.loginOverlay.classList.add('hidden');
             if (chats.length > 0 && chats[0].chat_id) await selectChat(chats[0].chat_id);
             updateStatusBar();
+            startHeartbeat();
             openMaintenanceSSE();
             setInterval(checkMaintStatus, 30000);
         } catch (e) {
