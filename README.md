@@ -1,6 +1,7 @@
 
-# 🧠 DSN-exp
-## **Local AI Chat System · Fully Private · Long-Term Memory · Multiple Personalities**
+# DSN-exp
+
+**Local AI Chat System · Fully Private · Long-Term Memory · Multiple Personalities**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=for-the-badge&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)

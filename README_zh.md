@@ -1,6 +1,7 @@
 
-# 🧠 DSN-exp
-## **本地AI对话系统 · 完全私有 · 长期记忆 · 多人格**
+# DSN-exp
+
+**本地AI对话系统 · 完全私有 · 长期记忆 · 多人格**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=for-the-badge&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
