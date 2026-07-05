@@ -4,12 +4,28 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
 from config import Config
 
 logger = logging.getLogger("WorldPlugin")
+
+# 预加载命运系统提示
+_FATE_PROMPT = ""
+_fate_prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompt", "world", "fate.md")
+try:
+    with open(_fate_prompt_path, encoding="utf-8-sig") as _f:
+        _raw = _f.read()
+        # 提取 YAML front matter 后的正文
+        if _raw.startswith("---"):
+            parts = _raw.split("---", 2)
+            if len(parts) >= 3:
+                _raw = parts[2].strip()
+        _FATE_PROMPT = _raw
+except Exception:
+    pass
 
 
 class WorldPlugin(Plugin):
@@ -63,6 +79,24 @@ class WorldPlugin(Plugin):
         if self._engine is None or self._state_mgr is None:
             return ctx
 
+        # ── v4: 检查待处理的系统提示（首次激活等）──
+        pending = self._engine.get_pending_prompts()
+        if pending:
+            for prompt in sorted(pending, key=lambda p: p.get("priority", 0), reverse=True):
+                content = prompt.get("content", "")
+                if content and ctx.system_prompt:
+                    ctx.system_prompt = content + "\n\n" + ctx.system_prompt
+                    ptype = prompt.get("type", "unknown")
+                    logger.info("PRE_PROCESS: 注入系统提示 type=%s", ptype)
+                    if ptype == "activation":
+                        self._engine.mark_activated()
+                        ctx.extra["world_activated"] = True
+                        ctx.extra["world_snapshot"] = self._state_mgr.get_snapshot()
+            # 激活路径也记录交互
+            self._engine.notify_interaction()
+            return ctx  # 激活时跳过常规世界注入
+
+        # ── v3 兼容: 常规世界状态注入 ──
         snapshot = self._state_mgr.get_snapshot()
         world_prompt = self._build_world_prompt(snapshot)
         if world_prompt and ctx.system_prompt:
@@ -73,6 +107,11 @@ class WorldPlugin(Plugin):
                         t.get("season_name", ""),
                         snapshot.get("location", {}).get("name", ""),
                         snapshot.get("weather", {}).get("current", ""))
+
+        # ── 命运引擎提示 ──
+        if _FATE_PROMPT and ctx.system_prompt:
+            ctx.system_prompt = _FATE_PROMPT + "\n\n" + ctx.system_prompt
+            logger.debug("PRE_PROCESS: 命运系统提示已注入 (%d 字符)", len(_FATE_PROMPT))
 
         # 前置旁白
         if Config.NARRATIVE_PRE_ENABLED and self._narrator is not None:
@@ -89,6 +128,9 @@ class WorldPlugin(Plugin):
                     logger.info("PRE_PROCESS: 前置旁白已生成 (%d 字)", len(pre))
             except Exception as e:
                 logger.warning("前置旁白生成失败: %s", e)
+
+        # ── v4: 记录交互 ──
+        self._engine.notify_interaction()
 
         return ctx
 

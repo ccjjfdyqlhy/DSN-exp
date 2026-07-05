@@ -648,11 +648,17 @@ class DSNEngine:
             self.plugin_manager.register(avp)
         if self._plugin_enabled("world") and self.world_engine:
             from world import WorldPlugin
+            from world.action_narrator import ActionNarrator
+            action_narrator = ActionNarrator(
+                narrative_model=self.narrative_model,
+                world_engine=self.world_engine,
+            )
             self.plugin_manager.register(WorldPlugin(
                 world_engine=self.world_engine,
                 world_state_manager=self.world_state_manager,
                 narrative_model=self.narrative_model,
                 personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
+                action_narrator=action_narrator,
             ))
 
     def _register_personality_plugins(self):

@@ -52,11 +52,28 @@ class ImpressionPlugin(Plugin):
         if not reply:
             return ctx
 
+        # 获取世界上下文（如果有）
+        world_ctx = ""
+        snapshot = ctx.extra.get("world_snapshot", {})
+        if snapshot:
+            t = snapshot.get("time", {})
+            w = snapshot.get("weather", {})
+            loc = snapshot.get("location", {})
+            season = t.get("season_name", "")
+            day_part = t.get("day_part", "")
+            weather_desc = w.get("description", w.get("current", ""))
+            loc_name = loc.get("name", "")
+            world_ctx = f"[时间: {season}/{day_part}, 天气: {weather_desc}, 位置: {loc_name}]"
+
         impressions = self._parse_impressions_from_reply(reply)
         for imp in impressions:
+            evidence = imp.get("evidence", "")
+            if world_ctx and not evidence:
+                evidence = world_ctx
             self._im.add(
                 ctx.user_id, imp["category"], imp["content"],
                 imp.get("confidence", 0.6), "inferred",
+                evidence=evidence,
             )
 
         imp_count = self._im.count(ctx.user_id)
