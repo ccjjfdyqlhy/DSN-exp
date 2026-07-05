@@ -126,11 +126,25 @@ def chat_send():
         return jsonify({"error": "AI service error"}), 500
     if result.get("filtered"):
         return jsonify({"reply": "", "chat_id": result["chat_id"], "filtered": True})
-    return jsonify({
+
+    extra = result.get("extra", {})
+    resp = {
         "reply": result["reply"], "chat_id": result["chat_id"],
         "audio": result.get("audio_b64"), "tts_error": result.get("tts_error"),
-        "confirm_requested": result.get("extra", {}).get("confirm_requested", False),
-    })
+        "confirm_requested": extra.get("confirm_requested", False),
+    }
+    # ── v4 世界引擎状态 ──
+    if extra.get("world_activated"):
+        resp["world_activated"] = True
+    if extra.get("narrative"):
+        resp["narrative"] = extra["narrative"]
+    if extra.get("pre_narrative"):
+        resp["pre_narrative"] = extra["pre_narrative"]
+    if extra.get("action_narratives"):
+        resp["action_narratives"] = extra["action_narratives"]
+    if extra.get("world_snapshot"):
+        resp["world_snapshot"] = extra["world_snapshot"]
+    return jsonify(resp)
 
 
 @app.route("/api/chat/stream_send", methods=["POST"])
@@ -445,6 +459,109 @@ def impression_suggest():
         affinity_level = _personality_v2.get_state(uid).get("affinity", {}).get("level", 0)
     return jsonify({"suggest_ssp": _impression_manager.should_propose_ssp(uid, affinity_level),
                     "impression_count": _impression_manager.count(uid)})
+
+
+# ── 世界状态 ──
+
+@app.route("/api/world/state", methods=["GET"])
+@login_required
+def world_state():
+    """返回当前世界状态快照（时间、天气、位置、近期事件）"""
+    if not engine.world_engine:
+        return jsonify({"error": "World engine not available"}), 503
+    try:
+        state = engine.world_engine.get_full_state()
+        prompt = engine.world_engine.get_state_prompt()
+        return jsonify({
+            "state": state,
+            "prompt": prompt,
+            "activated": engine.world_engine.is_activated(),
+            "interaction_count": engine.world_engine.interaction_count,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── 命运引擎 ──
+
+@app.route("/api/fate/roll", methods=["POST"])
+@login_required
+def fate_roll():
+    """
+    命运骰子投掷。
+    
+    请求体: {"expression": "1d20", "label": "说服检定", "advantage": false, "disadvantage": false}
+    返回: {"expression": "1d20", "label": "...", "result": {"total": 15, "values": [15], "sides": 20, "count": 1, "crit_success": false, "crit_fail": false, "advantage": false, "disadvantage": false}}
+    """
+    if not engine.world_engine:
+        return jsonify({"error": "World engine not available"}), 503
+    try:
+        data = request.get_json() or {}
+        expr = data.get("expression", "1d20")
+        label = data.get("label", "")
+        advantage = data.get("advantage", False)
+        disadvantage = data.get("disadvantage", False)
+
+        # 解析表达式
+        import re
+        m = re.match(r'^(\d*)d(\d+)$', expr.strip().lower().replace(" ", ""))
+        if m:
+            count = int(m.group(1)) if m.group(1) else 1
+            sides = int(m.group(2))
+            result = engine.world_engine.fate_dice.roll(
+                sides, count, label=label,
+                advantage=advantage, disadvantage=disadvantage)
+        else:
+            # 骰池表达式: 2d6+1d4+3
+            from world.fate import DicePool
+            result = DicePool.from_expression(expr, label=label)
+
+        return jsonify({
+            "expression": expr,
+            "label": label,
+            "result": {
+                "total": result.total,
+                "values": result.values,
+                "sides": result.sides,
+                "count": result.count,
+                "crit_success": result.crit_success,
+                "crit_fail": result.crit_fail,
+                "advantage": result.advantage,
+                "disadvantage": result.disadvantage,
+                "label": result.label,
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/fate/table", methods=["POST"])
+@login_required
+def fate_table_roll():
+    """
+    概率表投掷。
+    
+    请求体: {"entries": [[0.4, "晴朗"], [0.3, "多云"], [0.2, "小雨"], [0.1, "雷暴"]], "label": "天气"}
+    返回: {"label": "天气", "result": {"value": "晴朗", "probability": 0.4}}
+    """
+    from world.fate import ProbabilityTable
+    try:
+        data = request.get_json() or {}
+        entries = data.get("entries", [])
+        label = data.get("label", "")
+        table = ProbabilityTable(entries, label=label)
+        result = table.roll()
+        return jsonify({
+            "label": label,
+            "result": {
+                "value": result.value,
+                "probability": result.probability,
+                "index": result.index,
+                "metadata": result.metadata,
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 # ── 直接运行 ──
