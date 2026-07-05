@@ -45,7 +45,7 @@ LOG_DIR = HERE / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / f"minimal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 48000
 SILENCE_TIMEOUT = 2.0
 MAX_RECORD_SECS = 30
 RMS_THRESHOLD = 0.008
