@@ -942,6 +942,12 @@ class ChatPipeline:
                         'style': 'pre',
                     })}\n\n"
 
+                # ── v4: 世界激活事件 ──
+                if ctx.extra.get("world_activated"):
+                    yield f"data: {json.dumps({
+                        'status': 'world_activated',
+                    })}\n\n"
+
             elif hook == HookPoint.MODEL_INVOKE:
                 if not ctx.skip_model:
                     ctx = await self.pm.dispatch(hook, ctx)
@@ -1253,6 +1259,8 @@ class ChatPipeline:
         }
         if ctx.extra.get("confirm_requested"):
             completed["confirm_requested"] = True
+        if ctx.extra.get("world_activated"):
+            completed["world_activated"] = True
         if ctx.usage:
             completed['usage'] = ctx.usage
             completed['model_name'] = ctx.model_name

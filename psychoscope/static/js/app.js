@@ -240,6 +240,47 @@
         scrollToBottom();
     }
 
+    function updateWorldState(state) {
+        var el = document.getElementById('world-state');
+        if (!el) return;
+        if (!state) { el.style.display = 'none'; return; }
+        el.style.display = 'block';
+        var t = state.time || {};
+        var w = state.weather || {};
+        var loc = state.location || {};
+        var season = t.season_name || '';
+        var dayPart = t.day_part || '';
+        var weatherText = w.description || w.current || '';
+        var locName = loc.name || '';
+        var temp = t.temperature || '';
+        el.textContent = '🌍 ' + season + ' · ' + dayPart + ' · ' + locName + ' · ' + weatherText + ' · ' + temp + '°C';
+    }
+
+    async function fetchWorldState() {
+        try {
+            var auth = getAuthHeader();
+            var headers = { 'Content-Type': 'application/json' };
+            if (auth) headers['Authorization'] = auth;
+            var res = await fetch(API_BASE + '/api/world/state', { headers: headers });
+            if (!res.ok) return;
+            var data = await res.json();
+            if (data.state) updateWorldState(data.state);
+        } catch (e) {
+            console.warn('[world] fetchWorldState failed:', e);
+        }
+    }
+
+    // 定时轮询世界状态（每60秒，激活后开始）
+    var _worldPollInterval = null;
+    function startWorldPolling() {
+        if (_worldPollInterval) return;
+        _worldPollInterval = setInterval(fetchWorldState, 60000);
+        fetchWorldState();
+    }
+    function stopWorldPolling() {
+        if (_worldPollInterval) { clearInterval(_worldPollInterval); _worldPollInterval = null; }
+    }
+
     function addLineStatic(speaker, text, className) {
         var line = document.createElement('div');
         line.className = 'text-line ' + (className || '');
@@ -699,6 +740,11 @@
                     try {
                         var ev = JSON.parse(line.slice(6));
                         switch (ev.status) {
+                            case 'world_activated':
+                                addNarratorLine('🌐 世界系统已激活 — EXA 第一次感知到了周围的世界');
+                                fetchWorldState();
+                                startWorldPolling();
+                                break;
                             case 'narrative_update':
                                 if (ev.text) addNarratorLine(ev.text);
                                 break;
@@ -730,6 +776,10 @@
                                 if (ev.timing) pendingTiming = ev.timing;
                                 if (ev.usage) pendingUsage = ev.usage;
                                 if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
+                                if (ev.world_activated) {
+                                    addNarratorLine('🌐 世界系统已激活');
+                                    fetchWorldState();
+                                }
                                 break;
                         }
                     } catch (_) {}
@@ -816,6 +866,11 @@
                     try {
                         var ev = JSON.parse(line.slice(6));
                     switch (ev.status) {
+                            case 'world_activated':
+                                addNarratorLine('🌐 世界系统已激活 — EXA 第一次感知到了周围的世界');
+                                fetchWorldState();
+                                startWorldPolling();
+                                break;
                             case 'narrative_update':
                                 if (ev.text) addNarratorLine(ev.text);
                                 break;
@@ -854,6 +909,10 @@
                                 if (ev.usage) pendingUsage = ev.usage;
                                 if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
                                 if (ev.confirm_requested) showConfirm();
+                                if (ev.world_activated) {
+                                    addNarratorLine('🌐 世界系统已激活');
+                                    fetchWorldState();
+                                }
                                 break;
                         }
                     } catch (_) {}
