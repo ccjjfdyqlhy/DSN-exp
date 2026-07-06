@@ -116,6 +116,10 @@ class ToolPlugin(Plugin):
                         "data": result_data,
                     })
                     logger.info("  ✓ %s 执行成功", func_name)
+
+                    # 触发动作旁白
+                    self._fire_action_narrative(func_name, func_args, ctx)
+
                 except Exception as e:
                     logger.error("  ✗ %s 执行失败: %s", func_name, e)
                     if DETAIL_ACTIONS:
@@ -188,7 +192,8 @@ class ToolPlugin(Plugin):
                 result_data = self._skill_registry.call_tool(
                     skill_name, tool_name, params)
                 results.append({"tag": "<tool>", "success": True,
-                                "data": result_data})
+                                "data": result_data,
+                                "skill": skill_name, "params": params})
             except Exception as e:
                 results.append({"tag": "<tool>", "success": False,
                                 "summary": str(e)})
@@ -196,4 +201,22 @@ class ToolPlugin(Plugin):
         ctx.reply = _TOOL_RE.sub("", ctx.reply).strip()
         if results:
             ctx.extra.setdefault("_tag_results", []).extend(results)
+            # 触发动作旁白（仅成功调用）
+            for r in results:
+                if r.get("success") and r.get("data"):
+                    self._fire_action_narrative(
+                        r.get("skill", ""), r.get("params", {}), ctx)
         return ctx
+
+    # ── 动作旁白 ──
+
+    def _fire_action_narrative(self, func_name: str, func_args: dict,
+                                ctx: PluginContext) -> None:
+        narrator = ctx.extra.get("_action_narrator")
+        collector = ctx.extra.get("_narrative_collector")
+        if narrator and collector:
+            narrator.fire_action_narrative(
+                action_type=func_name,
+                params=func_args,
+                collector=collector,
+            )
