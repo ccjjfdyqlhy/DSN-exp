@@ -4,12 +4,28 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
 from config import Config
 
 logger = logging.getLogger("WorldPlugin")
+
+# 预加载命运系统提示
+_FATE_PROMPT = ""
+_fate_prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompt", "world", "fate.md")
+try:
+    with open(_fate_prompt_path, encoding="utf-8-sig") as _f:
+        _raw = _f.read()
+        # 提取 YAML front matter 后的正文
+        if _raw.startswith("---"):
+            parts = _raw.split("---", 2)
+            if len(parts) >= 3:
+                _raw = parts[2].strip()
+        _FATE_PROMPT = _raw
+except Exception:
+    pass
 
 
 class WorldPlugin(Plugin):
@@ -63,6 +79,24 @@ class WorldPlugin(Plugin):
         if self._engine is None or self._state_mgr is None:
             return ctx
 
+        # ── v4: 检查待处理的系统提示（首次激活等）──
+        pending = self._engine.get_pending_prompts()
+        if pending:
+            for prompt in sorted(pending, key=lambda p: p.get("priority", 0), reverse=True):
+                content = prompt.get("content", "")
+                if content and ctx.system_prompt:
+                    ctx.system_prompt = content + "\n\n" + ctx.system_prompt
+                    ptype = prompt.get("type", "unknown")
+                    logger.info("PRE_PROCESS: 注入系统提示 type=%s", ptype)
+                    if ptype == "activation":
+                        self._engine.mark_activated()
+                        ctx.extra["world_activated"] = True
+                        ctx.extra["world_snapshot"] = self._state_mgr.get_snapshot()
+            # 激活路径也记录交互
+            self._engine.notify_interaction()
+            return ctx  # 激活时跳过常规世界注入
+
+        # ── v3 兼容: 常规世界状态注入 ──
         snapshot = self._state_mgr.get_snapshot()
         world_prompt = self._build_world_prompt(snapshot)
         if world_prompt and ctx.system_prompt:
@@ -73,6 +107,11 @@ class WorldPlugin(Plugin):
                         t.get("season_name", ""),
                         snapshot.get("location", {}).get("name", ""),
                         snapshot.get("weather", {}).get("current", ""))
+
+        # ── 命运引擎提示 ──
+        if _FATE_PROMPT and ctx.system_prompt:
+            ctx.system_prompt = _FATE_PROMPT + "\n\n" + ctx.system_prompt
+            logger.debug("PRE_PROCESS: 命运系统提示已注入 (%d 字符)", len(_FATE_PROMPT))
 
         # 前置旁白
         if Config.NARRATIVE_PRE_ENABLED and self._narrator is not None:
@@ -89,6 +128,9 @@ class WorldPlugin(Plugin):
                     logger.info("PRE_PROCESS: 前置旁白已生成 (%d 字)", len(pre))
             except Exception as e:
                 logger.warning("前置旁白生成失败: %s", e)
+
+        # ── v4: 记录交互 ──
+        self._engine.notify_interaction()
 
         return ctx
 
@@ -150,7 +192,7 @@ class WorldPlugin(Plugin):
         moved = False
         for skill in skills_found:
             room = self._engine.map_tool_to_room(skill)
-            if room != self._engine._current_location:
+            if room != self._engine.current_location:
                 self._engine.move_to(room, reason=f"调用工具 {skill}")
                 logger.info("Tool→Room: %s -> %s", skill, room)
                 moved = True
@@ -158,7 +200,7 @@ class WorldPlugin(Plugin):
         if not moved:
             for action in actions_found:
                 room = self._engine.map_tool_to_room(action)
-                if room != self._engine._current_location:
+                if room != self._engine.current_location:
                     self._engine.move_to(room, reason=f"执行 {action} 操作")
                     logger.info("Action→Room: %s -> %s", action, room)
                     break
@@ -183,24 +225,22 @@ class WorldPlugin(Plugin):
             except Exception:
                 pass
         # Detect affinity level up
-        prev = self._engine._prev_affinity_level if hasattr(self._engine, "_prev_affinity_level") else 0
+        prev = self._engine.prev_affinity_level
         current = update.get("affinity_level", 0)
         update["affinity_just_leveled_up"] = current > prev
-        if hasattr(self._engine, "_prev_affinity_level"):
-            self._engine._prev_affinity_level = current
+        self._engine.prev_affinity_level = current
 
         # Detect mood shift
-        prev_mood = self._engine._prev_mood_label if hasattr(self._engine, "_prev_mood_label") else ""
+        prev_mood = self._engine.prev_mood_label
         update["mood_changed_suddenly"] = update.get("mood_label", "") != prev_mood
-        if hasattr(self._engine, "_prev_mood_label"):
-            self._engine._prev_mood_label = update.get("mood_label", "")
+        self._engine.prev_mood_label = update.get("mood_label", "")
 
         # First tool use
         reply = ctx.original_reply or ctx.reply or ""
         has_tool = "<tool>" in reply or "\"action_type\"" in reply
-        first = (not getattr(self._engine, "_first_tool_used", False)) and has_tool
+        first = (not self._engine.first_tool_used) and has_tool
         update["first_tool_use"] = first
-        if first and hasattr(self._engine, "_first_tool_used"):
-            self._engine._first_tool_used = True
+        if first:
+            self._engine.first_tool_used = True
 
         return update
