@@ -157,13 +157,32 @@ class DicePool:
     @staticmethod
     def from_expression(expr: str, label: str = "") -> DiceResult:
         """解析骰子表达式: '2d6+1d4+3'"""
-        import re
         pool = DicePool(label=label)
-        # 匹配: 数字d数字 或 +/-数字
-        parts = re.findall(r'(\d+)d(\d+)|([+-]?\d+)', expr.replace(" ", ""))
-        for dice_count, dice_sides, modifier in parts:
-            if dice_count and dice_sides:
-                pool.add(int(dice_sides), int(dice_count))
-            elif modifier:
-                pool.modifier(int(modifier))
+        expr = expr.replace(" ", "")
+        i = 0
+        n = len(expr)
+        sign = 1
+        while i < n:
+            if expr[i] == '+':
+                sign = 1
+                i += 1
+            elif expr[i] == '-':
+                sign = -1
+                i += 1
+            if i >= n:
+                break
+            start = i
+            while i < n and expr[i].isdigit():
+                i += 1
+            num1 = int(expr[start:i]) if i > start else 1
+            if i < n and expr[i] == 'd':
+                i += 1
+                start = i
+                while i < n and expr[i].isdigit():
+                    i += 1
+                num2 = int(expr[start:i]) if i > start else 1
+                pool.add(num2, num1)
+            else:
+                pool.modifier(sign * num1)
+            sign = 1
         return pool.roll()
