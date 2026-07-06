@@ -80,7 +80,7 @@ class WorldEngine:
         self._activation_triggered: bool = False  # 首次激活提示已注入？
         self._user_character_configured: bool = False  # 用户角色卡已配置？
         self._fate_dice = Dice()                   # 命运引擎 — 骰子
-        self._fade_probability_tables: dict[str, ProbabilityTable] = {}  # 概率表缓存
+        self._fate_probability_tables: dict[str, ProbabilityTable] = {}  # 概率表缓存
 
         self._apply_config()  # 始终调用（无 config 时使用默认值）
 
@@ -460,11 +460,43 @@ class WorldEngine:
         """命运引擎骰子访问器"""
         return self._fate_dice
 
+    @property
+    def current_location(self) -> str:
+        return self._current_location
+
+    @current_location.setter
+    def current_location(self, value: str) -> None:
+        self._current_location = value
+
+    @property
+    def prev_affinity_level(self) -> int:
+        return self._prev_affinity_level
+
+    @prev_affinity_level.setter
+    def prev_affinity_level(self, value: int) -> None:
+        self._prev_affinity_level = value
+
+    @property
+    def prev_mood_label(self) -> str:
+        return self._prev_mood_label
+
+    @prev_mood_label.setter
+    def prev_mood_label(self, value: str) -> None:
+        self._prev_mood_label = value
+
+    @property
+    def first_tool_used(self) -> bool:
+        return self._first_tool_used
+
+    @first_tool_used.setter
+    def first_tool_used(self, value: bool) -> None:
+        self._first_tool_used = value
+
     def get_probability_table(self, name: str, entries: list) -> ProbabilityTable:
         """获取或创建缓存的概率表"""
-        if name not in self._fade_probability_tables:
-            self._fade_probability_tables[name] = ProbabilityTable(entries, label=name)
-        return self._fade_probability_tables[name]
+        if name not in self._fate_probability_tables:
+            self._fate_probability_tables[name] = ProbabilityTable(entries, label=name)
+        return self._fate_probability_tables[name]
 
     def get_fate_prompt(self) -> str:
         """生成命运系统提示文本，注入 system prompt"""

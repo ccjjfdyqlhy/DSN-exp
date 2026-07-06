@@ -192,7 +192,7 @@ class WorldPlugin(Plugin):
         moved = False
         for skill in skills_found:
             room = self._engine.map_tool_to_room(skill)
-            if room != self._engine._current_location:
+            if room != self._engine.current_location:
                 self._engine.move_to(room, reason=f"调用工具 {skill}")
                 logger.info("Tool→Room: %s -> %s", skill, room)
                 moved = True
@@ -200,7 +200,7 @@ class WorldPlugin(Plugin):
         if not moved:
             for action in actions_found:
                 room = self._engine.map_tool_to_room(action)
-                if room != self._engine._current_location:
+                if room != self._engine.current_location:
                     self._engine.move_to(room, reason=f"执行 {action} 操作")
                     logger.info("Action→Room: %s -> %s", action, room)
                     break
@@ -225,24 +225,22 @@ class WorldPlugin(Plugin):
             except Exception:
                 pass
         # Detect affinity level up
-        prev = self._engine._prev_affinity_level if hasattr(self._engine, "_prev_affinity_level") else 0
+        prev = self._engine.prev_affinity_level
         current = update.get("affinity_level", 0)
         update["affinity_just_leveled_up"] = current > prev
-        if hasattr(self._engine, "_prev_affinity_level"):
-            self._engine._prev_affinity_level = current
+        self._engine.prev_affinity_level = current
 
         # Detect mood shift
-        prev_mood = self._engine._prev_mood_label if hasattr(self._engine, "_prev_mood_label") else ""
+        prev_mood = self._engine.prev_mood_label
         update["mood_changed_suddenly"] = update.get("mood_label", "") != prev_mood
-        if hasattr(self._engine, "_prev_mood_label"):
-            self._engine._prev_mood_label = update.get("mood_label", "")
+        self._engine.prev_mood_label = update.get("mood_label", "")
 
         # First tool use
         reply = ctx.original_reply or ctx.reply or ""
         has_tool = "<tool>" in reply or "\"action_type\"" in reply
-        first = (not getattr(self._engine, "_first_tool_used", False)) and has_tool
+        first = (not self._engine.first_tool_used) and has_tool
         update["first_tool_use"] = first
-        if first and hasattr(self._engine, "_first_tool_used"):
-            self._engine._first_tool_used = True
+        if first:
+            self._engine.first_tool_used = True
 
         return update
