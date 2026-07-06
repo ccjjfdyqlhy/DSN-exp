@@ -479,7 +479,8 @@ def world_state():
             "interaction_count": engine.world_engine.interaction_count,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("World state error: %s", e)
+        return jsonify({"error": "Internal error"}), 500
 
 
 # ── 命运引擎 ──
@@ -532,7 +533,8 @@ def fate_roll():
             }
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        app.logger.error("Fate roll error: %s", e)
+        return jsonify({"error": "Internal error"}), 400
 
 
 @app.route("/api/fate/table", methods=["POST"])
@@ -561,7 +563,8 @@ def fate_table_roll():
             }
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        app.logger.error("Fate table roll error: %s", e)
+        return jsonify({"error": "Internal error"}), 400
 
 
 # ── 直接运行 ──
