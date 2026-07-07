@@ -8,8 +8,11 @@ import logging
 from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
+from config import Config
 
 logger = logging.getLogger("MemoryPlugin")
+
+_PERFORMANCE_MODE = getattr(Config, "PERFORMANCE_MODE", "realtime")
 
 
 class MemoryPlugin(Plugin):
@@ -49,6 +52,23 @@ class MemoryPlugin(Plugin):
         if self._ms is None or self._db is None:
             return ctx
         if ctx.extra.get("_debug_mode"):
+            return ctx
+
+        # ── fastcache 模式：挂起到 HibernateManager ──
+        if _PERFORMANCE_MODE == "fastcache":
+            hibernate = ctx.extra.get("_hibernate_manager")
+            if hibernate:
+                try:
+                    round_index = ctx.extra.get("round_index") or self._db.get_next_round_index(ctx.chat_id)
+                except Exception:
+                    round_index = None
+                hibernate.push("memory_summarize", {
+                    "user_id": ctx.user_id,
+                    "chat_id": ctx.chat_id,
+                    "message": ctx.message,
+                    "reply": ctx.original_reply or ctx.reply or "",
+                    "round_index": round_index,
+                })
             return ctx
 
         try:

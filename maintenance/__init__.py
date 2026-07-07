@@ -5,6 +5,7 @@ from .system import MaintenanceSystem
 from .state import ServerState, ServerStateMachine
 from .tracker import ActivityTracker
 from .clock import MaintenanceClock
+from .hibernate import HibernateManager
 from . import config
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "ServerState", "ServerStateMachine",
     "ActivityTracker",
     "MaintenanceClock",
+    "HibernateManager",
     "config",
 ]
