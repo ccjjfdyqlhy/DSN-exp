@@ -25,11 +25,8 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify, g, current_app
 
 from api.alarm import check_and_trigger as check_alarms
-from config import Config
 
 logger = logging.getLogger("Heartbeat")
-
-_PERFORMANCE_MODE = getattr(Config, "PERFORMANCE_MODE", "realtime")
 
 heartbeat_bp = Blueprint("heartbeat_api", __name__)
 
@@ -152,13 +149,6 @@ def heartbeat():
     uid = g.user.get("uid", 0) if g.user else 0
     if not uid:
         return jsonify({"has_notification": False})
-
-    # fastcache 模式：空闲时排空挂起任务
-    if _PERFORMANCE_MODE == "fastcache" and _engine:
-        try:
-            _engine._hibernate.drain(max_count=2)
-        except Exception as e:
-            logger.warning("Hibernate drain error: %s", e)
 
     if _task_manager is None:
         return jsonify({"has_notification": False, "error": "TaskManager 不可用"}), 200

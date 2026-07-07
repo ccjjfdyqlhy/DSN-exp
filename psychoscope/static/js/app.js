@@ -752,46 +752,50 @@
                                 if (ev.text) updateStatusBarText(ev.text);
                                 break;
                              case 'text_ready':
-                                console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
-                                if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
-                                if (ttsEnabled) break;
-                                if (ev.reply) await addMessage(aiName, ev.reply, true);
-                                break;
-                            case 'agent_action':
-                                addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
-                                updateStatusBar();
-                                break;
-                            case 'text_update':
-                                if (ev.reply) await addMessage(aiName, ev.reply, false);
-                                break;
-                            case 'task_result':
-                                break;
-                            case 'confirm_requested':
-                                showConfirm();
-                                break;
-                            case 'line':
-                                if (ev.text) { lineQueue.push(ev); processLineQueue(); }
-                                break;
-                            case 'completed':
-                                if (ev.timing) pendingTiming = ev.timing;
-                                if (ev.usage) pendingUsage = ev.usage;
-                                if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
-                                if (ev.world_activated) {
-                                    addNarratorLine('🌐 世界系统已激活');
-                                    fetchWorldState();
-                                }
-                                break;
-                        }
-                    } catch (_) {}
-                }
-            }
-            while (isProcessingLines || lineQueue.length > 0) { await wait(100); }
-            while (activeTypewriter) { await wait(100); }
-            if (pendingTiming) { showTimingLine(pendingTiming, pendingUsage); pendingTiming = null; pendingUsage = null; }
-            if (currentChatId) { await loadChats(); renderChatList(); }
-            updateStatusBar();
-        } catch (e) {
-            console.error('[sendRecording] ERROR:', e.name, e.message, e);
+                                 console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
+                                 console.log('[DEBUG:text_ready] ttsEnabled=' + ttsEnabled + ' timestamp=' + Date.now());
+                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
+                                 if (ttsEnabled) break;
+                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
+                                 break;
+                             case 'agent_action':
+                                 addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
+                                 updateStatusBar();
+                                 break;
+                             case 'text_update':
+                                 if (ev.reply) await addMessage(aiName, ev.reply, false);
+                                 break;
+                             case 'task_result':
+                                 break;
+                             case 'confirm_requested':
+                                 showConfirm();
+                                 break;
+                             case 'line':
+                                 console.log('[DEBUG:line] RECEIVED index=' + ev.index + '/' + ev.total + ' queue.length=' + lineQueue.length + ' timestamp=' + Date.now());
+                                 if (ev.text) { lineQueue.push(ev); processLineQueue(); }
+                                 break;
+                             case 'completed':
+                                 console.log('[DEBUG:completed] RECEIVED (sendRecording) timestamp=' + Date.now());
+                                 if (ev.timing) pendingTiming = ev.timing;
+                                 if (ev.usage) pendingUsage = ev.usage;
+                                 if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
+                                 if (ev.world_activated) {
+                                     addNarratorLine('🌐 世界系统已激活');
+                                     fetchWorldState();
+                                 }
+                                 break;
+                         }
+                     } catch (_) {}
+                 }
+             }
+             while (isProcessingLines || lineQueue.length > 0) { console.log('[DEBUG:post-sse] waiting... isProcessingLines=' + isProcessingLines + ' lineQueue.length=' + lineQueue.length + ' timestamp=' + Date.now()); await wait(100); }
+             console.log('[DEBUG:post-sse] lineQueue drained. timestamp=' + Date.now());
+             while (activeTypewriter) { await wait(100); }
+             if (pendingTiming) { showTimingLine(pendingTiming, pendingUsage); pendingTiming = null; pendingUsage = null; }
+             if (currentChatId) { await loadChats(); renderChatList(); }
+             updateStatusBar();
+         } catch (e) {
+             console.error('[sendRecording] ERROR:', e.name, e.message, e);
             if (e.name !== 'AbortError') addErrorLine('ERROR: ' + e.message);
         } finally {
             isProcessing = false;
@@ -865,65 +869,71 @@
                     if (line.indexOf('data: ') !== 0) continue;
                     try {
                         var ev = JSON.parse(line.slice(6));
-                    switch (ev.status) {
-                            case 'world_activated':
-                                addNarratorLine('🌐 世界系统已激活 — EXA 第一次感知到了周围的世界');
-                                fetchWorldState();
-                                startWorldPolling();
-                                break;
-                            case 'narrative_update':
-                                if (ev.text) addNarratorLine(ev.text);
-                                break;
-                            case 'thinking':
-                                if (ev.text) updateStatusBarText(ev.text);
-                                break;
-                             case 'text_ready':
-                                console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
-                                if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
-                                if (ttsEnabled) break;
-                                if (ev.reply) await addMessage(aiName, ev.reply, true);
-                                break;
-                            case 'agent_action':
-                                addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
-                                updateStatusBar();
-                                break;
-                case 'text_update':
-                                if (ev.reply) await addMessage(aiName, ev.reply, false);
-                                break;
-                            case 'task_result':
-                                break;
-                            case 'confirm_requested':
-                                showConfirm();
-                                break;
-                            case 'line':
-                                if (ev.text) {
-                                    lineQueue.push(ev);
-                                    processLineQueue();
-                                }
-                                break;
-                            case 'completed':
-                                // wait for typewriter + line queue below
-                                if (ev.timing) {
-                                    pendingTiming = ev.timing;
-                                }
-                                if (ev.usage) pendingUsage = ev.usage;
-                                if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
-                                if (ev.confirm_requested) showConfirm();
-                                if (ev.world_activated) {
-                                    addNarratorLine('🌐 世界系统已激活');
-                                    fetchWorldState();
-                                }
-                                break;
-                        }
-                    } catch (_) {}
-                }
-            }
-
+                     switch (ev.status) {
+                             case 'world_activated':
+                                 addNarratorLine('🌐 世界系统已激活 — EXA 第一次感知到了周围的世界');
+                                 fetchWorldState();
+                                 startWorldPolling();
+                                 break;
+                             case 'narrative_update':
+                                 if (ev.text) addNarratorLine(ev.text);
+                                 break;
+                             case 'thinking':
+                                 if (ev.text) updateStatusBarText(ev.text);
+                                 break;
+                              case 'text_ready':
+                                 console.log('[SSE:text_ready] reply:', (ev.reply || '').substring(0, 60));
+                                 console.log('[DEBUG:text_ready] ttsEnabled=' + ttsEnabled + ' timestamp=' + Date.now());
+                                 if (ev.chat_id && !currentChatId) currentChatId = ev.chat_id;
+                                 if (ttsEnabled) break;
+                                 if (ev.reply) await addMessage(aiName, ev.reply, true);
+                                 break;
+                             case 'agent_action':
+                                 addNarrationLine(ACTION_LABELS[ev.desc] || ev.desc || 'executing action');
+                                 updateStatusBar();
+                                 break;
+                 case 'text_update':
+                                 if (ev.reply) await addMessage(aiName, ev.reply, false);
+                                 break;
+                             case 'task_result':
+                                 break;
+                             case 'confirm_requested':
+                                 showConfirm();
+                                 break;
+                             case 'line':
+                                 if (ev.text) {
+                                     lineQueue.push(ev);
+                                     processLineQueue();
+                                 }
+                                 console.log('[DEBUG:line] RECEIVED index=' + ev.index + '/' + ev.total + ' queue.length=' + lineQueue.length + ' timestamp=' + Date.now());
+                                 break;
+                             case 'completed':
+                                 console.log('[DEBUG:completed] RECEIVED (msgFlow) timestamp=' + Date.now());
+                                 // wait for typewriter + line queue below
+                                 if (ev.timing) {
+                                     pendingTiming = ev.timing;
+                                 }
+                                 if (ev.usage) pendingUsage = ev.usage;
+                                 if (ev.audio && !ttsEnabled) audioB64 = ev.audio;
+                                 if (ev.confirm_requested) showConfirm();
+                                 if (ev.world_activated) {
+                                     addNarratorLine('🌐 世界系统已激活');
+                                     fetchWorldState();
+                                 }
+                                 break;
+                         }
+                     } catch (_) {}
+                 }
+             }
+ 
             // Wait for line queue and active typewriter to finish
             while (isProcessingLines || lineQueue.length > 0) {
+                console.log('[DEBUG:post-sse] waiting... isProcessingLines=' + isProcessingLines + ' lineQueue.length=' + lineQueue.length + ' timestamp=' + Date.now());
                 await wait(100);
             }
+            console.log('[DEBUG:post-sse] lineQueue drained. timestamp=' + Date.now());
             while (activeTypewriter) {
+                console.log('[DEBUG:post-sse] waiting for typewriter... timestamp=' + Date.now());
                 await wait(100);
             }
             if (pendingTiming) {
@@ -1001,6 +1011,7 @@
     }
 
     function playAudioBase64Wait(b64) {
+        console.log('[DEBUG:playAudio] START timestamp=' + Date.now());
         return new Promise(function (resolve) {
             try {
                 var raw = atob(b64);
@@ -1008,34 +1019,39 @@
                 for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
                 var url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
                 var a = new Audio(url);
-                a.onended = function () { URL.revokeObjectURL(url); resolve(); };
-                a.onerror = function () { URL.revokeObjectURL(url); resolve(); };
+                a.onended = function () { URL.revokeObjectURL(url); console.log('[DEBUG:playAudio] ENDED timestamp=' + Date.now()); resolve(); };
+                a.onerror = function () { URL.revokeObjectURL(url); console.log('[DEBUG:playAudio] ERROR timestamp=' + Date.now()); resolve(); };
                 var played = a.play();
-                if (played && played.catch) played.catch(function () { resolve(); });
-            } catch (_) { resolve(); }
+                if (played && played.catch) played.catch(function () { console.log('[DEBUG:playAudio] PLAY FAILED timestamp=' + Date.now()); resolve(); });
+            } catch (_) { console.log('[DEBUG:playAudio] EXCEPTION timestamp=' + Date.now()); resolve(); }
         });
     }
 
     function processLineQueue() {
         if (isProcessingLines || lineQueue.length === 0) return;
         isProcessingLines = true;
+        console.log('[DEBUG:processLineQueue] STARTED queue.length=' + lineQueue.length + ' timestamp=' + Date.now());
         (async function () {
             var isFirstLine = true;
             while (lineQueue.length > 0) {
                 var line = lineQueue.shift();
+                console.log('[DEBUG:processLineQueue] processing index=' + line.index + '/' + line.total + ' hasAudio=' + !!line.audio_b64 + ' timestamp=' + Date.now());
                 var audioPromise = line.audio_b64
                     ? playAudioBase64Wait(line.audio_b64)
                     : Promise.resolve();
                 if (line.audio_b64) {
                     await addMessage(aiName, line.text, isFirstLine);
                     isFirstLine = false;
+                    console.log('[DEBUG:processLineQueue] waiting for audio to finish... timestamp=' + Date.now());
                     await audioPromise;
+                    console.log('[DEBUG:processLineQueue] audio done. timestamp=' + Date.now());
                 } else {
                     await addMessage(aiName, line.text, isFirstLine);
                     isFirstLine = false;
                 }
             }
             isProcessingLines = false;
+            console.log('[DEBUG:processLineQueue] FINISHED queue.length=' + lineQueue.length + ' timestamp=' + Date.now());
             if (pendingTiming && lineQueue.length === 0) {
                 showTimingLine(pendingTiming, pendingUsage);
                 pendingTiming = null;
