@@ -8,8 +8,11 @@ import logging
 import threading
 
 from plugins.base import Plugin, HookPoint, PluginContext
+from config import Config
 
 logger = logging.getLogger("PersonalityV3Plugin")
+
+_PERFORMANCE_MODE = getattr(Config, "PERFORMANCE_MODE", "realtime")
 
 
 def _format_recent_history(history: list[dict], current_msg: str, limit: int = 8) -> str:
@@ -72,6 +75,18 @@ class PersonalityV3Plugin(Plugin):
         user_message = ctx.message
         user_id = ctx.user_id
         conversation_history = _format_recent_history(ctx.history, user_message, limit=8)
+
+        # ── fastcache 模式：挂起到 HibernateManager ──
+        if _PERFORMANCE_MODE == "fastcache":
+            hibernate = ctx.extra.get("_hibernate_manager")
+            if hibernate:
+                hibernate.push("personality_analysis", {
+                    "user_id": user_id,
+                    "message": user_message,
+                    "reply": ai_reply,
+                    "history": conversation_history,
+                })
+            return ctx
 
         def _run():
             try:

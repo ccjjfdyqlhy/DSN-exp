@@ -352,12 +352,24 @@ class DSNClient:
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
-        self._volume = 0.5
+        self._volume = 1.0
         self.async_poller = None
         self._player: MusicPlayer | None = None
+        self._tts_stop = threading.Event()
         if HAS_AUDIO:
             self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
             self._tts_thread.start()
+
+    def stop_tts(self):
+        """停止当前 TTS 播放并清空队列。"""
+        self._tts_stop.set()
+        while not self._tts_queue.empty():
+            try:
+                self._tts_queue.get_nowait()
+                self._tts_queue.task_done()
+            except queue.Empty:
+                break
+        # 清掉残留 TTS 临时文件
 
     def _tts_worker(self):
         while True:
@@ -369,6 +381,7 @@ class DSNClient:
             ducked = False
             tmp_path = None
             try:
+                self._tts_stop.clear()
                 raw = base64.b64decode(b64)
                 if self._player:
                     self._player.duck()
@@ -381,13 +394,21 @@ class DSNClient:
                 tmp.close()
 
                 p = vlc.MediaPlayer(tmp_path)
-                p.audio_set_volume(int(self._volume * 100))
+                p.audio_set_volume(100)
                 media = p.get_media()
                 media.parse()
                 duration_ms = media.get_duration()
                 if duration_ms > 0:
                     p.play()
-                    time.sleep(duration_ms / 1000.0 + 0.2)
+                    # 分段 sleep 以便响应停止信号
+                    played = 0.0
+                    step = 0.3
+                    total = duration_ms / 1000.0 + 0.2
+                    while played < total:
+                        if self._tts_stop.is_set():
+                            break
+                        time.sleep(step)
+                        played += step
                 p.stop()
                 p.release()
             except Exception as e:
@@ -879,7 +900,7 @@ class HeartbeatPoller:
     def _type_label(task_type: str) -> str:
         labels = {
             "reminder": "提醒", "habit": "习惯", "countdown": "倒计时",
-            "daily_plan": "每日计划", "periodic": "周期",
+            "daily_plan": "每日计划", "periodic": "周期", "alarm": "闹钟",
         }
         return labels.get(task_type, task_type)
 
@@ -1054,24 +1075,21 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     host = cfg.get("host", f"{DEFAULT_HOST}:{DEFAULT_PORT}")
     print(f"  Backend : {host}")
     print(f"  User    : uid={uid} ({name})")
-    vol = int(client._volume * 100) if client else 50
-    print(f"  Volume  : {vol}%")
     if locked:
         print("  🔒 Panel locked")
     print("===========================================")
     print("  [Enter]  Start / Stop speaking           ")
-    print("  [Knob←]  Volume down (-10%)               ")
-    print("  [Knob→]  Volume up (+10%)                  ")
     print("  [a x2]   Lock / Unlock panel              ")
     print("  [b x2]   Music Player (d=prev e=toggle f=next)")
     print("  [p]      Show personality status         ")
     print("  [s]      Toggle standby / wakeup         ")
     print("  [i]      System info (server + plan)      ")
     print("  [k]      Skip latest reminder             ")
+    print("  [l]      Show alarm status                ")
+    print("  [f]      Silence alarm (stop TTS + dismiss)")
     print("  [r]      Trigger heartbeat now            ")
     print("  [t]      Text input (sync)                 ")
     print("  [=]      Async task (long-running)          ")
-    print("  [n/m]    Volume -/+                         ")
     print("  [h]      Show help                         ")
     print("  [q/Ctrl+C] Quit                          ")
     print("===========================================")
@@ -1321,7 +1339,7 @@ def main():
                     print("\n  No recent reminder to skip")
 
             elif ch.lower() == "r":
-                # 手动触发一次心跳，并显示后端 PENDING 提醒列表
+                # 手动触发一次心跳，并显示后端 PENDING 提醒 + 闹钟列表
                 reminder.sync_now()
                 try:
                     resp = client._http_get("/api/reminder/list")
@@ -1343,10 +1361,89 @@ def main():
                             st = r.get("scheduled_time", "")[:16].replace("T", " ")
                             print(f"    [{tlabel}] {st}  {r.get('text', '')[:50]}")
                 except Exception as e:
-                    print(f"\n  Refresh failed: {e}")
+                    log.warning("Reminder list failed: %s", e)
+
+                try:
+                    resp = client._http_get("/api/alarms")
+                    if resp.status_code == 200:
+                        alarms = resp.json().get("alarms", [])
+                        if alarms:
+                            print(f"  Alarms: {len(alarms)} total")
+                            for a in alarms:
+                                wd = ",".join(a["days"]) if a["days"] else "每天"
+                                status = "开" if a["enabled"] else "关"
+                                print(f"    ⏰ {a['time']} [{wd}] {a['message'][:40]} ({status})")
+                    resp2 = client._http_get("/api/alarms/now")
+                    if resp2.status_code == 200:
+                        nxt = resp2.json().get("next_alarm")
+                        if nxt:
+                            cd = nxt.get("countdown", "?")
+                            icon = "⚡已触发" if nxt.get("fired") else "🔔等待"
+                            print(f"    {icon} 下次: {nxt['date']}({nxt['weekday']}) {nxt['time']} 剩{cd}")
+                except Exception as e:
+                    log.warning("Alarm list failed: %s", e)
 
             elif ch.lower() == "h":
                 print_header(cfg, client, locked)
+
+            elif ch.lower() == "f":
+                # 停止闹钟：静音当前闹钟 + 停止 TTS
+                last_ids = list(reminder._last_triggered.keys())
+                dismissed = False
+                for tid in reversed(last_ids):
+                    if tid.startswith("alarm_"):
+                        alarm_id = tid[6:]
+                        try:
+                            resp = client._http_post(f"/api/alarms/{alarm_id}/dismiss")
+                            if resp.status_code == 200:
+                                print(f"\n  🔕 闹钟 {alarm_id} 已静音")
+                                dismissed = True
+                                break
+                        except Exception:
+                            pass
+                if not dismissed:
+                    # 尝试静音最近一条闹钟（可能不在 _last_triggered 中）
+                    try:
+                        resp = client._http_get("/api/alarms/now")
+                        if resp.status_code == 200:
+                            nxt = resp.json().get("next_alarm")
+                            if nxt and nxt.get("fired"):
+                                resp2 = client._http_post(f"/api/alarms/{nxt['id']}/dismiss")
+                                if resp2.status_code == 200:
+                                    print(f"\n  🔕 闹钟 {nxt['id']} 已静音")
+                                    dismissed = True
+                    except Exception:
+                        pass
+                if not dismissed:
+                    print(f"\n  🔕 无活跃闹钟可静音")
+                client.stop_tts()
+
+            elif ch.lower() == "l":
+                try:
+                    resp = client._http_get("/api/alarms")
+                    if resp.status_code == 200:
+                        alarms = resp.json().get("alarms", [])
+                        print(f"\n  ⏰ Alarms: {len(alarms)} total")
+                        for a in alarms:
+                            wd = ",".join(a["days"]) if a["days"] else "每天"
+                            status = "✅" if a["enabled"] else "⛔"
+                            snd = f" 🔊{a['sound']}" if a.get("sound") else ""
+                            print(f"    {status} {a['id']} {a['time']} [{wd}] {a['message']}{snd}")
+                    resp2 = client._http_get("/api/alarms/now")
+                    if resp2.status_code == 200:
+                        nxt = resp2.json().get("next_alarm")
+                        if nxt:
+                            cd = nxt.get("countdown", "?")
+                            icon = "⚡" if nxt.get("fired") else "🔔"
+                            print(f"    {icon} 下次: {nxt['date']}({nxt['weekday']}) {nxt['time']} 剩{cd}")
+                        else:
+                            print(f"    ⏰ 无待触发闹钟")
+                    resp3 = client._http_get("/api/alarms/status")
+                    if resp3.status_code == 200:
+                        st = resp3.json()
+                        print(f"    📊 今日触发: {st.get('fired_today', 0)} 次")
+                except Exception as e:
+                    print(f"\n  Alarm status failed: {e}")
 
             elif ch.lower() == "t":
                 text = input("  Text Input: ").strip()
@@ -1377,10 +1474,6 @@ def main():
                     player.audio_set_volume(v)
                     _play_beep(client, 400)
                     print(f"\n  ♪ Vol: {v:.0%}")
-                else:
-                    client._volume = max(0.0, client._volume - 0.1)
-                    _play_beep(client, 400)
-                    print(f"\n  Volume: {client._volume:.0%}")
 
             elif ch.lower() == "m":
                 if _music_mode:
@@ -1388,10 +1481,6 @@ def main():
                     player.audio_set_volume(v)
                     _play_beep(client, 800)
                     print(f"\n  ♪ Vol: {v:.0%}")
-                else:
-                    client._volume = min(1.0, client._volume + 0.1)
-                    _play_beep(client, 800)
-                    print(f"\n  Volume: {client._volume:.0%}")
 
             elif _music_mode and ch.lower() == "d":
                 player.prev()
