@@ -45,7 +45,7 @@ LOG_DIR = HERE / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / f"minimal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 16000
 SILENCE_TIMEOUT = 2.0
 MAX_RECORD_SECS = 30
 RMS_THRESHOLD = 0.008
@@ -1303,21 +1303,26 @@ def main():
                 continue
 
             if ch in ("\r", "\n"):
-                if recorder.is_recording:
-                    print()
-                    recorder.stop_and_send()
-                    print()
-                    # 录音结束 → 恢复音乐（仅在录音前正在播放时才恢复）
-                    if _music_was_playing and player.state == "paused":
-                        player.toggle()
-                    _music_was_playing = False
-                else:
-                    # 录音开始 → 保存当前状态并暂停音乐
+                if not recorder.is_recording:
                     _music_was_playing = _music_mode and player.state == "playing"
                     if _music_was_playing:
                         player.toggle()
-                    print("\n  Speaking... (Press Enter to stop)")
+                    print("\n  Recording... (hold Enter, release to stop)")
                     recorder.start()
+                    # Hold-to-talk: 按住 Enter 持续录音，松开即发送
+                    _key_repeated = False
+                    while recorder.is_recording:
+                        poll_timeout = 0.12 if _key_repeated else 0.7
+                        next_ch = keyboard.get(timeout=poll_timeout)
+                        if next_ch is None:
+                            break
+                        _key_repeated = True
+                    print()
+                    recorder.stop_and_send()
+                    print()
+                    if _music_was_playing and player.state == "paused":
+                        player.toggle()
+                    _music_was_playing = False
 
             elif ch.lower() == "q":
                 if recorder.is_recording:

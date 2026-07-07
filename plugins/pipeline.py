@@ -107,6 +107,11 @@ def _desc_task(inner: str) -> str:
         return "执行了一项后台任务"
 
 
+def _log_stage_timing(stage: str, ms: float):
+    if _TIMER_ENABLED:
+        logger.info("  ⏱ %-15s %8.0fms", stage, ms)
+
+
 class ChatPipeline:
     """
     对话处理管道。
@@ -186,6 +191,7 @@ class ChatPipeline:
         t0 = time.perf_counter()
         ctx = await self.pm.dispatch(HookPoint.PRE_FILTER, ctx)
         timing["pre_filter"] = round((time.perf_counter() - t0) * 1000, 1)
+        _log_stage_timing("PRE_FILTER", timing["pre_filter"])
         if ctx.filtered:
             self._print_timing(timing, ctx)
             return ctx
@@ -199,6 +205,7 @@ class ChatPipeline:
         t0 = time.perf_counter()
         ctx = await self._dispatch_pre_process(ctx)
         timing["pre_process"] += round((time.perf_counter() - t0) * 1000, 1)
+        _log_stage_timing("PRE_PROCESS", timing["pre_process"])
         if ctx.filtered:
             self._print_timing(timing, ctx)
             return ctx
@@ -208,6 +215,7 @@ class ChatPipeline:
         if not ctx.skip_model:
             ctx = await self.pm.dispatch(HookPoint.MODEL_INVOKE, ctx)
         timing["model_invoke"] = round((time.perf_counter() - t0) * 1000, 1)
+        _log_stage_timing("MODEL_INVOKE", timing["model_invoke"])
         if ctx.filtered:
             self._print_timing(timing, ctx)
             return ctx
@@ -227,12 +235,14 @@ class ChatPipeline:
         t0 = time.perf_counter()
         ctx = await self._dispatch_post_process(ctx)
         timing["post_process"] = round((time.perf_counter() - t0) * 1000, 1)
+        _log_stage_timing("POST_PROCESS", timing["post_process"])
 
         # ── Agent 循环：标签结果回馈 LLM ──
         if ctx.agent_active and ctx.extra.get("_tag_results"):
             t0 = time.perf_counter()
             ctx = await self._run_agent_loop(ctx)
             timing["agent_loop"] = round((time.perf_counter() - t0) * 1000, 1)
+            _log_stage_timing("Agent Loop", timing["agent_loop"])
 
         # 排空动作旁白
         action_narratives = collector.drain()
@@ -255,6 +265,7 @@ class ChatPipeline:
         else:
             ctx = await self.pm.dispatch(HookPoint.POST_TTS, ctx)
         timing["post_tts"] = round((time.perf_counter() - t0) * 1000, 1)
+        _log_stage_timing("POST_TTS", timing["post_tts"])
 
         timing["total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
         self._print_timing(timing, ctx)
@@ -751,6 +762,8 @@ class ChatPipeline:
             pt = ctx.extra.get("_plugin_timings")
             if pt is not None:
                 pt.setdefault(hook.value, []).append((plugin.name, elapsed))
+            if _TIMER_ENABLED:
+                logger.info("  ⏱   └─ %-17s %8.0fms", plugin.name, elapsed)
             if ctx.filtered:
                 break
 
@@ -958,6 +971,7 @@ class ChatPipeline:
                     ctx = await self.pm.dispatch(hook, ctx)
                 if ctx.filtered:
                     timing[hook.value] = round((time.perf_counter() - t0) * 1000)
+                    _log_stage_timing(hook.value, timing[hook.value])
                     timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
                     self._print_timing(timing, ctx)
                     yield f"data: {json.dumps({'status': 'completed', 'reply': ctx.reply, 'chat_id': ctx.chat_id, 'filtered': True, 'timing': timing})}\n\n"
@@ -968,6 +982,7 @@ class ChatPipeline:
                     task_id = await self._run_async_background(ctx)
                     yield f"data: {json.dumps({'status': 'async_task', 'task_id': task_id, 'chat_id': ctx.chat_id})}\n\n"
                     timing[hook.value] = round((time.perf_counter() - t0) * 1000)
+                    _log_stage_timing(hook.value, timing[hook.value])
                     timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
                     self._print_timing(timing, ctx)
                     yield f"data: {json.dumps({'status': 'completed', 'reply': ctx.reply, 'chat_id': ctx.chat_id, 'filtered': True, 'task_id': task_id, 'timing': timing})}\n\n"
@@ -1234,6 +1249,7 @@ class ChatPipeline:
                     ctx = await self.pm.dispatch(hook, ctx)
 
             timing[hook.value] = round((time.perf_counter() - t0) * 1000)
+            _log_stage_timing(hook.value, timing[hook.value])
 
             if on_phase:
                 try:
