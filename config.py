@@ -28,6 +28,11 @@ def _env(key: str, default=None, required: bool = False):
 
 
 class Config:
+    # ==================== 性能模式 ====================
+    # "realtime" — 完整实时流程（World旁白/情绪分析/记忆摘要同步执行）
+    # "fastcache" — 快速缓存模式，旁白/情绪/记忆挂起到空闲队列执行
+    PERFORMANCE_MODE = _env("PERFORMANCE_MODE", "realtime")
+
     # ==================== 验证系统 ====================
     LITTLESKIN_CLIENT_ID = _env("LITTLESKIN_CLIENT_ID", "")
     LITTLESKIN_CLIENT_SECRET = _env("LITTLESKIN_CLIENT_SECRET", "")

@@ -10,6 +10,8 @@ from typing import Optional
 from plugins.base import Plugin, HookPoint, PluginContext
 from config import Config
 
+_PERFORMANCE_MODE = getattr(Config, "PERFORMANCE_MODE", "realtime")
+
 logger = logging.getLogger("WorldPlugin")
 
 # 预加载命运系统提示
@@ -143,6 +145,21 @@ class WorldPlugin(Plugin):
         # 注入 ActionNarrator 到 ctx，供 ToolPlugin / TaskPlugin 使用
         if self._action_narrator is not None:
             ctx.extra["_action_narrator"] = self._action_narrator
+
+        # ── fastcache 模式：旁白/tick/交互事件挂起到 HibernateManager ──
+        if _PERFORMANCE_MODE == "fastcache":
+            hibernate = ctx.extra.get("_hibernate_manager")
+            if hibernate:
+                mood_label = self._get_mood_label(ctx)
+                update = self._build_interaction_update(ctx)
+                snapshot = {
+                    "message": ctx.message,
+                    "reply": ctx.original_reply or ctx.reply or "",
+                    "mood_label": mood_label,
+                    "interaction_update": update,
+                }
+                hibernate.push("world_post_process", snapshot)
+            return ctx
 
         self._update_location_from_tools(ctx)
 
