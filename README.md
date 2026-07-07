@@ -20,6 +20,74 @@ It:  ……Cool.
 
 ---
 
+## 🏗️ System Architecture
+
+```mermaid
+graph TB
+    subgraph Clients["🎨 Clients"]
+        TUI["🖥️ psychoscope/minimal.py"]
+        WEB["🌐 psychoscope/server.py"]
+        AGT["🤖 agent_send.py"]
+    end
+
+    subgraph Server["🔌 Flask Server (boot.py)"]
+        API["REST API<br/>15 blueprints"]
+        REPL["⌨️ Console REPL<br/>main.py"]
+    end
+
+    subgraph Engine["🧠 DSNEngine"]
+        PL["🔄 ChatPipeline<br/>5 HookPoints"]
+        PM["📦 PluginManager"]
+        PE["📝 PromptEngine"]
+        ME["💾 MemorySystem"]
+        TM["⚡ TaskManager"]
+        WE["🌍 WorldEngine"]
+        SM["🛠️ SkillManager"]
+        WS["📁 Workspace"]
+    end
+
+    subgraph Pipeline["Pipeline Detail"]
+        direction LR
+        F["① PRE_FILTER<br/>ASRFilter, CacheCheck"]
+        SP["assemble_prompt()"]
+        P["② PRE_PROCESS<br/>Vision, MemoryInject<br/>Impression, Plan"]
+        M["③ MODEL_INVOKE<br/>ModelsPlugin"]
+        PO["④ POST_PROCESS<br/>Task, Tool, Todo<br/>Memory, Personality"]
+        T["⑤ POST_TTS<br/>TTSPlugin"]
+        F --> SP --> P --> M --> PO --> T
+    end
+
+    subgraph Models["🤖 Model Layer"]
+        OA["☁️ OpenAIChat"]
+        LS["🏠 LMStudioChat"]
+        SCH["📊 ModelScheduler"]
+    end
+
+    subgraph Storage["💾 Storage"]
+        DB["🗄️ SQLite"]
+        WK["📂 Workspace"]
+        AC["🎵 Audio"]
+    end
+
+    TUI & WEB & AGT --> Server
+    Server --> Engine
+    Engine --> PL
+    PL --> Pipeline
+    PM --> PL
+    M --> OA & LS
+    OA & LS --> SCH
+    ME --> DB
+    WS --> WK
+
+    subgraph Auth["🔐 Auth"]
+        direction LR
+        P0["Pairing"] --> S1["Session"] --> W2["WebAuthn"] --> T3["TOTP"] --> K4["API Key"]
+    end
+    API --> Auth
+```
+
+---
+
 ## 🎯 Core Features
 
 | Feature | Description |
@@ -194,73 +262,6 @@ python agent_send.py "analyze code complexity"
 
 ---
 
-## 🏗️ System Architecture
-
-```mermaid
-graph TB
-    subgraph Clients["🎨 Clients"]
-        TUI["🖥️ psychoscope/minimal.py"]
-        WEB["🌐 psychoscope/server.py"]
-        AGT["🤖 agent_send.py"]
-    end
-
-    subgraph Server["🔌 Flask Server (boot.py)"]
-        API["REST API<br/>15 blueprints"]
-        REPL["⌨️ Console REPL<br/>main.py"]
-    end
-
-    subgraph Engine["🧠 DSNEngine"]
-        PL["🔄 ChatPipeline<br/>5 HookPoints"]
-        PM["📦 PluginManager"]
-        PE["📝 PromptEngine"]
-        ME["💾 MemorySystem"]
-        TM["⚡ TaskManager"]
-        WE["🌍 WorldEngine"]
-        SM["🛠️ SkillManager"]
-        WS["📁 Workspace"]
-    end
-
-    subgraph Pipeline["Pipeline Detail"]
-        direction LR
-        F["① PRE_FILTER<br/>ASRFilter, CacheCheck"]
-        SP["assemble_prompt()"]
-        P["② PRE_PROCESS<br/>Vision, MemoryInject<br/>Impression, Plan"]
-        M["③ MODEL_INVOKE<br/>ModelsPlugin"]
-        PO["④ POST_PROCESS<br/>Task, Tool, Todo<br/>Memory, Personality"]
-        T["⑤ POST_TTS<br/>TTSPlugin"]
-        F --> SP --> P --> M --> PO --> T
-    end
-
-    subgraph Models["🤖 Model Layer"]
-        OA["☁️ OpenAIChat"]
-        LS["🏠 LMStudioChat"]
-        SCH["📊 ModelScheduler"]
-    end
-
-    subgraph Storage["💾 Storage"]
-        DB["🗄️ SQLite"]
-        WK["📂 Workspace"]
-        AC["🎵 Audio"]
-    end
-
-    TUI & WEB & AGT --> Server
-    Server --> Engine
-    Engine --> PL
-    PL --> Pipeline
-    PM --> PL
-    M --> OA & LS
-    OA & LS --> SCH
-    ME --> DB
-    WS --> WK
-
-    subgraph Auth["🔐 Auth"]
-        direction LR
-        P0["Pairing"] --> S1["Session"] --> W2["WebAuthn"] --> T3["TOTP"] --> K4["API Key"]
-    end
-    API --> Auth
-```
-
----
 
 ## 📂 Project Structure
 

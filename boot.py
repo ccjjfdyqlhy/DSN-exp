@@ -191,7 +191,16 @@ def process_task_completion():
             task_id, result = completion_queue.get()
             if task_id is None:
                 break
-            global app, db, task_manager
+            global app, db, task_manager, engine
+            # 如果有 AsyncTaskStore 关联到此 taskmgr_id，标记完成
+            if engine and engine.async_task_store:
+                reply = str(result) if result else "任务完成"
+                if isinstance(result, dict):
+                    reply = (result.get("reminder_text", "")
+                             or result.get("output", "")
+                             or result.get("conclusion", "")
+                             or str(result))
+                engine.async_task_store.complete_by_taskmgr_id(task_id, reply=reply)
             task = task_manager.get_task(task_id)
             if not task:
                 continue
