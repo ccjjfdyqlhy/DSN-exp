@@ -352,7 +352,7 @@ class DSNClient:
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
-        self._volume = 0.5
+        self._volume = 1.0
         self.async_poller = None
         self._player: MusicPlayer | None = None
         self._tts_stop = threading.Event()
@@ -394,7 +394,7 @@ class DSNClient:
                 tmp.close()
 
                 p = vlc.MediaPlayer(tmp_path)
-                p.audio_set_volume(int(self._volume * 100))
+                p.audio_set_volume(100)
                 media = p.get_media()
                 media.parse()
                 duration_ms = media.get_duration()
@@ -1075,14 +1075,10 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     host = cfg.get("host", f"{DEFAULT_HOST}:{DEFAULT_PORT}")
     print(f"  Backend : {host}")
     print(f"  User    : uid={uid} ({name})")
-    vol = int(client._volume * 100) if client else 50
-    print(f"  Volume  : {vol}%")
     if locked:
         print("  🔒 Panel locked")
     print("===========================================")
     print("  [Enter]  Start / Stop speaking           ")
-    print("  [Knob←]  Volume down (-10%)               ")
-    print("  [Knob→]  Volume up (+10%)                  ")
     print("  [a x2]   Lock / Unlock panel              ")
     print("  [b x2]   Music Player (d=prev e=toggle f=next)")
     print("  [p]      Show personality status         ")
@@ -1094,7 +1090,6 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [r]      Trigger heartbeat now            ")
     print("  [t]      Text input (sync)                 ")
     print("  [=]      Async task (long-running)          ")
-    print("  [n/m]    Volume -/+                         ")
     print("  [h]      Show help                         ")
     print("  [q/Ctrl+C] Quit                          ")
     print("===========================================")
@@ -1479,10 +1474,6 @@ def main():
                     player.audio_set_volume(v)
                     _play_beep(client, 400)
                     print(f"\n  ♪ Vol: {v:.0%}")
-                else:
-                    client._volume = max(0.0, client._volume - 0.1)
-                    _play_beep(client, 400)
-                    print(f"\n  Volume: {client._volume:.0%}")
 
             elif ch.lower() == "m":
                 if _music_mode:
@@ -1490,10 +1481,6 @@ def main():
                     player.audio_set_volume(v)
                     _play_beep(client, 800)
                     print(f"\n  ♪ Vol: {v:.0%}")
-                else:
-                    client._volume = min(1.0, client._volume + 0.1)
-                    _play_beep(client, 800)
-                    print(f"\n  Volume: {client._volume:.0%}")
 
             elif _music_mode and ch.lower() == "d":
                 player.prev()
