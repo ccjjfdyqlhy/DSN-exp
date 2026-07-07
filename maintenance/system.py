@@ -47,6 +47,7 @@ class MaintenanceSystem:
         self._on_maintenance_progress: list[Callable] = []
         self._shutdown_flag = threading.Event()
 
+        self._engine = engine
         self._register_builtin_tasks(db, v3, engine, card_id)
         self.clock = MaintenanceClock(self._on_tick)
 
@@ -84,11 +85,16 @@ class MaintenanceSystem:
     def _on_tick(self) -> None:
         if self.state.state == ServerState.READY:
             if self._should_start_maintenance():
+                self._drain_hibernate()
                 self._begin_maintenance()
                 return
+            if self._should_drain_hibernate():
+                self._drain_hibernate()
             idle_min = self.tracker.minutes_since_last_request()
             if config.IDLE_TIMEOUT_MINUTES > 0 and idle_min >= config.IDLE_TIMEOUT_MINUTES:
                 self._enter_standby()
+        elif self.state.state == ServerState.STANDBY:
+            self._drain_hibernate()
 
     # ── 调度决策 ──
 
@@ -125,6 +131,39 @@ class MaintenanceSystem:
             return in_window or prob > 0.85
 
         return False
+
+    def _should_drain_hibernate(self) -> bool:
+        """判断当前是否应该排空休眠队列（仅限预测的低负载窗口）。"""
+        hour = datetime.now().hour
+        # 非 READY 状态（STANDBY/MAINTENANCE）时全部排空
+        if self.state.state != ServerState.READY:
+            return True
+        # predictive 策略：结合历史预测
+        if config.SCHEDULE_STRATEGY == "predictive":
+            total = self.tracker.total_requests()
+            if total >= config.PREDICTIVE_MIN_DATA_SAMPLES:
+                window = self.tracker.best_idle_window(
+                    min_free_hours=config.PREDICTIVE_MIN_FREE_HOURS,
+                    max_hour=config.PREDICTIVE_MAX_HOUR,
+                )
+                in_window = window is not None and window[0] <= hour < window[1]
+                prob = self.tracker.idle_probability(hour, 0)
+                if in_window or prob > 0.85:
+                    return True
+        # 默认窗口：0:00 ~ FIXED_HOUR（凌晨 4:00）
+        return hour < config.FIXED_HOUR
+
+    def _drain_hibernate(self) -> int:
+        """排空休眠队列中的挂起任务。"""
+        if self._engine is None:
+            return 0
+        hibernate = getattr(self._engine, "_hibernate", None)
+        if hibernate is None or hibernate.size() == 0:
+            return 0
+        n = hibernate.drain(max_count=10)
+        if n:
+            logger.info("休眠队列排空 %d 个任务（空闲窗口）", n)
+        return n
 
     # ── 状态转换 ──
 

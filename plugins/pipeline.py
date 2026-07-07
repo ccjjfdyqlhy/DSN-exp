@@ -594,11 +594,6 @@ class ChatPipeline:
 
     async def _dispatch_pre_process(self, ctx: PluginContext) -> PluginContext:
         """PRE_PROCESS 阶段调度：若含图片则并行运行 VisionPlugin"""
-        # fastcache 模式：每次对话前排空挂起任务
-        hibernate = ctx.extra.get("_hibernate_manager")
-        if hibernate:
-            hibernate.drain(max_count=2)
-
         if not ctx.image_data:
             return await self.pm.dispatch(HookPoint.PRE_PROCESS, ctx)
 
@@ -687,7 +682,10 @@ class ChatPipeline:
 
         results = []
         total = len(lines)
+        logger.info("[TTS-DEBUG] ===== _synthesize_lines_sync 开始, total=%d 行, t=%.3f =====", total, time.perf_counter())
         for i, line in enumerate(lines):
+            logger.info("[TTS-DEBUG] TTS 行 %d/%d: 开始合成, 文本前40字=%r, t=%.3f", i + 1, total, line[:40], time.perf_counter())
+            t_tts_start = time.perf_counter()
             try:
                 processed_line = line
                 if self._tts_process_model is not None:
@@ -699,14 +697,18 @@ class ChatPipeline:
                     if fast_first and tts_q is not None and i == 0:
                         local = getattr(self._tts_process_model, "_local_preprocess", None)
                         processed_line = local(line) if callable(local) else line
+                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 local_preprocess 快路径, t=%.3f", i + 1, total, time.perf_counter())
                     else:
                         processed_line = self._tts_process_model.process_tts_text(line)
+                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 process_tts_text (可能 LLM), t=%.3f", i + 1, total, time.perf_counter())
                 params = self._tts_profile_mgr.build_params(processed_line) if self._tts_profile_mgr else {
                     "text": processed_line, "text_lang": "zh",
                     "ref_audio_path": "", "prompt_lang": "en", "prompt_text": "",
                     "media_type": "wav", "streaming_mode": False,
                 }
+                logger.info("[TTS-DEBUG] TTS 行 %d/%d: 调用 tts_client.tts(), t=%.3f", i + 1, total, time.perf_counter())
                 audio_bytes = self._tts_client.tts(**params)
+                logger.info("[TTS-DEBUG] TTS 行 %d/%d: tts_client 返回 (len=%d), 耗时 %.1fms, t=%.3f", i + 1, total, len(audio_bytes), (time.perf_counter() - t_tts_start) * 1000, time.perf_counter())
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
                 result = {
                     "index": i,
@@ -716,7 +718,7 @@ class ChatPipeline:
                     "audio_bytes": audio_bytes,
                 }
                 results.append(result)
-                logger.debug("TTS 行 %d/%d 合成完成 (len=%d)", i + 1, total, len(audio_b64))
+                logger.info("[TTS-DEBUG] TTS 行 %d/%d: base64 编码完成, t=%.3f", i + 1, total, time.perf_counter())
             except Exception as e:
                 logger.warning("TTS 行 %d 合成失败: %s", i + 1, e)
                 result = {
@@ -730,13 +732,15 @@ class ChatPipeline:
 
             # 流式推送：每行合完立即入队
             if tts_q is not None and loop is not None:
+                logger.info("[TTS-DEBUG] TTS 行 %d/%d: 推入 tts_q (asyncio.run_coroutine_threadsafe), t=%.3f", i + 1, total, time.perf_counter())
                 asyncio.run_coroutine_threadsafe(tts_q.put(result), loop)
 
         if tts_q is not None and loop is not None:
+            logger.info("[TTS-DEBUG] TTS 全部完成, 推入 None 哨兵到 tts_q, t=%.3f", time.perf_counter())
             asyncio.run_coroutine_threadsafe(tts_q.put(None), loop)
 
-        logger.info("按行 TTS 合成完成: %d/%d 行成功",
-                     sum(1 for r in results if r.get("audio_b64")), len(results))
+        logger.info("[TTS-DEBUG] ===== _synthesize_lines_sync 结束: %d/%d 行成功, t=%.3f =====",
+                     sum(1 for r in results if r.get("audio_b64")), len(results), time.perf_counter())
         return results
 
     @staticmethod
@@ -990,7 +994,7 @@ class ChatPipeline:
 
                 if ctx.original_reply:
                     if ctx.reply and ctx.reply != "…":
-                        logger.info("[text_ready:model_invoke] reply=%s", ctx.reply[:60])
+                        logger.info("[SSE-DEBUG] >>> YIELD text_ready (t=%.4f), reply[:60]=%r", time.perf_counter(), ctx.reply[:60])
                         yield f"data: {json.dumps({
                             'status': 'text_ready',
                             'reply': ctx.reply,
@@ -1057,8 +1061,10 @@ class ChatPipeline:
                                 line = tts_q.get_nowait()
                                 if line is None:
                                     tts_done = True
+                                    logger.info("[SSE-DEBUG] tts_q 收到 None 哨兵, tts_done=True, t=%.4f", time.perf_counter())
                                 else:
                                     tts_collected.append(line)
+                                    logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (t=%.4f), 文本=%r", line['index'] + 1, line['total'], time.perf_counter(), line['text'][:40])
                                     yield f"data: {json.dumps({
                                         'status': 'line',
                                         'index': line['index'],
@@ -1070,6 +1076,7 @@ class ChatPipeline:
                             pass
 
                     if plugins_done and tts_done:
+                        logger.info("[SSE-DEBUG] POST_PROCESS 循环退出: plugins_done=%s tts_done=%s, t=%.4f", plugins_done, tts_done, time.perf_counter())
                         break
 
                 await runner
@@ -1102,7 +1109,29 @@ class ChatPipeline:
                         _consume_agent_progress(agent_thread_q, agent_progress_q))
                     agent_task = asyncio.create_task(self._run_agent_loop(ctx))
 
-                    agent_tts_task = None
+                    agent_tts_q: asyncio.Queue | None = None
+
+                    async def _drain_q():
+                        """排空 TTS 队列，逐行 yield 到前端。"""
+                        nonlocal agent_tts_q
+                        if agent_tts_q is None:
+                            return
+                        try:
+                            while True:
+                                line = agent_tts_q.get_nowait()
+                                if line is None:
+                                    agent_tts_q = None
+                                else:
+                                    logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent stream), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
+                                    yield f"data: {json.dumps({
+                                        'status': 'line',
+                                        'index': line['index'],
+                                        'total': line['total'],
+                                        'text': line['text'],
+                                        'audio_b64': line['audio_b64'],
+                                    })}\n\n"
+                        except asyncio.QueueEmpty:
+                            pass
 
                     while True:
                         try:
@@ -1112,7 +1141,7 @@ class ChatPipeline:
                                 break
                             # 先 yield 进度文本（前端显示步骤信息）
                             yield f"data: {json.dumps(evt)}\n\n"
-                            # 如果本轮 LLM 有回复，立即 yield text_ready + 异步 TTS
+                            # 如果本轮 LLM 有回复，立即 yield text_ready + 异步 TTS（流式）
                             reply = evt.get("reply")
                             if reply and reply != "…":
                                 yield f"data: {json.dumps({
@@ -1121,20 +1150,18 @@ class ChatPipeline:
                                     'chat_id': ctx.chat_id,
                                 })}\n\n"
                                 if ctx.tts_enabled and self._tts_client:
-                                    tts_task = asyncio.create_task(
-                                        self._synthesize_lines(reply))
-                                    agent_tts_task = tts_task
-                            # 检查上一轮 TTS 是否已完成（避免等超时）
-                            if agent_tts_task and agent_tts_task.done():
-                                for line in agent_tts_task.result():
-                                    yield f"data: {json.dumps({
-                                        'status': 'line',
-                                        'index': line['index'],
-                                        'total': line['total'],
-                                        'text': line['text'],
-                                        'audio_b64': line['audio_b64'],
-                                    })}\n\n"
-                                agent_tts_task = None
+                                    # 排空旧 TTS 队列（如果有未完成的前一轮合成）
+                                    if agent_tts_q is not None:
+                                        async for ev in _drain_q():
+                                            yield ev
+                                    agent_tts_q = asyncio.Queue()
+                                    asyncio.create_task(
+                                        self._synthesize_lines_stream(reply, agent_tts_q))
+
+                            # 消费 TTS 流式队列：每行合完立即 yield
+                            async for ev in _drain_q():
+                                yield ev
+
                         except asyncio.TimeoutError:
                             if agent_task.done():
                                 break
@@ -1143,30 +1170,27 @@ class ChatPipeline:
                                 'status': 'thinking',
                                 'text': 'Agent 正在执行...',
                             })}\n\n"
-                            # 如果有 TTS 正在合成，检查是否有行 ready
-                            if agent_tts_task and agent_tts_task.done():
-                                agent_tts_lines = agent_tts_task.result()
-                                for line in agent_tts_lines:
-                                    yield f"data: {json.dumps({
-                                        'status': 'line',
-                                        'index': line['index'],
-                                        'total': line['total'],
-                                        'text': line['text'],
-                                        'audio_b64': line['audio_b64'],
-                                    })}\n\n"
-                                agent_tts_task = None
+                            # 消费 TTS 流式队列
+                            async for ev in _drain_q():
+                                yield ev
 
-                    # Agent 循环结束，收集最后一个 TTS 结果
-                    if agent_tts_task and not agent_tts_task.done():
-                        agent_tts_lines = await agent_tts_task
-                        for line in agent_tts_lines:
-                            yield f"data: {json.dumps({
-                                'status': 'line',
-                                'index': line['index'],
-                                'total': line['total'],
-                                'text': line['text'],
-                                'audio_b64': line['audio_b64'],
-                            })}\n\n"
+                    # Agent 循环结束，排空 TTS 队列
+                    if agent_tts_q is not None:
+                        try:
+                            while True:
+                                line = agent_tts_q.get_nowait()
+                                if line is None:
+                                    break
+                                logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent drain), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
+                                yield f"data: {json.dumps({
+                                    'status': 'line',
+                                    'index': line['index'],
+                                    'total': line['total'],
+                                    'text': line['text'],
+                                    'audio_b64': line['audio_b64'],
+                                })}\n\n"
+                        except asyncio.QueueEmpty:
+                            pass
 
                     ctx = await agent_task
                     await agent_bridge
@@ -1278,6 +1302,7 @@ class ChatPipeline:
             'tts_error': ctx.tts_error,
             'timing': timing,
         }
+        logger.info("[SSE-DEBUG] >>> YIELD completed (t=%.4f), total_ms=%.0f", time.perf_counter(), timing.get("total_ms", 0))
         if ctx.extra.get("confirm_requested"):
             completed["confirm_requested"] = True
         if ctx.extra.get("world_activated"):
