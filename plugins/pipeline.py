@@ -583,6 +583,11 @@ class ChatPipeline:
 
     async def _dispatch_pre_process(self, ctx: PluginContext) -> PluginContext:
         """PRE_PROCESS 阶段调度：若含图片则并行运行 VisionPlugin"""
+        # fastcache 模式：每次对话前排空挂起任务
+        hibernate = ctx.extra.get("_hibernate_manager")
+        if hibernate:
+            hibernate.drain(max_count=2)
+
         if not ctx.image_data:
             return await self.pm.dispatch(HookPoint.PRE_PROCESS, ctx)
 

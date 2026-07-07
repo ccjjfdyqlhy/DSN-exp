@@ -16,6 +16,7 @@ import yaml
 
 from utils.subapp_loader import SubAppConfig
 from config import Config
+from maintenance.hibernate import HibernateManager
 from db.chat import ChatDBManager
 from models import LMSummaryModel, EmbeddingClient
 from models.tts_process import TTSProcessModel
@@ -134,6 +135,8 @@ class DSNEngine:
         self._tts_available = False
         self._filter_model = None
         self.complexity_analyzer: Optional[ComplexityAnalyzer] = None
+
+        self._hibernate = HibernateManager(self)
 
         # Phase 2: 学习系统
         self.question_store = None
@@ -785,6 +788,7 @@ class DSNEngine:
             ctx.extra["_db"] = self.db
         if self._is_debug_mode():
             ctx.extra["_debug_mode"] = True
+        ctx.extra["_hibernate_manager"] = self._hibernate
         sensing_hint = kwargs.get("sensing_hint", "")
         if sensing_hint:
             ctx.extra["_sensing_hint"] = sensing_hint
