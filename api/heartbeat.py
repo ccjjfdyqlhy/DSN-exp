@@ -24,6 +24,8 @@ from datetime import datetime
 
 from flask import Blueprint, request, jsonify, g, current_app
 
+from api.alarm import check_and_trigger as check_alarms
+
 logger = logging.getLogger("Heartbeat")
 
 heartbeat_bp = Blueprint("heartbeat_api", __name__)
@@ -159,6 +161,51 @@ def heartbeat():
         return jsonify({"has_notification": False, "error": str(e)}), 200
 
     if not notifications:
+        # 2. 检查闹钟触发
+        try:
+            triggered_alarms = check_alarms()
+            if triggered_alarms:
+                alarm = triggered_alarms[0]
+                alarm_prompt = (
+                    f"[系统闹钟] 现在时间是 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}，"
+                    f"你之前设置的闹钟响了。\n"
+                    f"闹钟消息：{alarm['message']}\n\n"
+                    f"请用你自己的语气，简短地提醒用户这件事。一两句话即可。"
+                )
+                if _engine:
+                    try:
+                        result = _engine.chat(
+                            message=alarm_prompt,
+                            user_id=uid,
+                            chat_id=None,
+                            chat_name="闹钟",
+                            nickname=g.user.get("nickname", "用户"),
+                            tts_enabled=True,
+                        )
+                        reply = result.get("reply", alarm["message"])
+                        audio_b64 = result.get("audio_b64", "") or ""
+                        tts_error = result.get("tts_error", "")
+                        return jsonify({
+                            "has_notification": True,
+                            "reply": reply,
+                            "audio_b64": audio_b64,
+                            "tts_error": tts_error,
+                            "task_id": f"alarm_{alarm['id']}",
+                            "task_type": "alarm",
+                            "alarm": alarm,
+                        })
+                    except Exception as e:
+                        logger.error("闹钟 AI 回复失败: %s", e)
+                return jsonify({
+                    "has_notification": True,
+                    "reply": f"⏰ {alarm['message']}",
+                    "audio_b64": "",
+                    "task_id": f"alarm_{alarm['id']}",
+                    "task_type": "alarm",
+                    "alarm": alarm,
+                })
+        except Exception as e:
+            logger.error("闹钟检查失败: %s", e)
         return jsonify({"has_notification": False})
 
     notification = notifications[0]
