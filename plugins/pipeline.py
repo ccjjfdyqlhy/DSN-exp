@@ -146,14 +146,40 @@ class ChatPipeline:
 
     # ---- 管道子阶段（供调试模式等复用） ----
 
+    @staticmethod
+    def _concat_wav(wav_chunks: list[bytes]) -> bytes | None:
+        """正确拼接多个 WAV 文件（去除多余文件头，只保留首个 WAV 的文件头）。"""
+        if not wav_chunks:
+            return None
+        if len(wav_chunks) == 1:
+            return wav_chunks[0]
+        # 各 WAV 均为 44 字节 RIFF 头 + PCM 数据
+        pcm_parts = []
+        total_pcm = 0
+        for buf in wav_chunks:
+            if len(buf) > 44:
+                pcm = buf[44:]
+                pcm_parts.append(pcm)
+                total_pcm += len(pcm)
+        if not pcm_parts:
+            return wav_chunks[0]
+        # 复用第一个 WAV 的头部，更新数据尺寸
+        header = bytearray(wav_chunks[0][:44])
+        # data 子块大小 (bytes 40-43)
+        header[40:44] = total_pcm.to_bytes(4, 'little')
+        # RIFF 总大小 - 8 (bytes 4-7)
+        riff_size = 36 + total_pcm
+        header[4:8] = riff_size.to_bytes(4, 'little')
+        return bytes(header) + b"".join(pcm_parts)
+
     async def process_tts(self, ctx: PluginContext) -> PluginContext:
         """仅执行 TTS 合成"""
         if ctx.tts_enabled and ctx.reply:
             if self._tts_client:
                 tts_lines = await self._synthesize_lines(ctx.reply)
                 if tts_lines:
-                    all_audio = b"".join(
-                        line["audio_bytes"] for line in tts_lines if line.get("audio_bytes"))
+                    all_audio = self._concat_wav(
+                        [l["audio_bytes"] for l in tts_lines if l.get("audio_bytes")])
                     if all_audio:
                         import base64
                         ctx.audio = all_audio
@@ -254,8 +280,8 @@ class ChatPipeline:
         if ctx.tts_enabled and ctx.reply and self._tts_client:
             tts_lines = await self._synthesize_lines(ctx.reply)
             if tts_lines:
-                all_audio = b"".join(
-                    line["audio_bytes"] for line in tts_lines if line.get("audio_bytes")
+                all_audio = self._concat_wav(
+                    [l["audio_bytes"] for l in tts_lines if l.get("audio_bytes")]
                 )
                 if all_audio:
                     import base64
@@ -285,21 +311,36 @@ class ChatPipeline:
 
         from copy import deepcopy
 
-        _shared_keys = ('_db', '_task_manager', '_completion_queue')
+        # 弹出 deepcopy 不安全的键（_thread._local 等不可 pickle 的对象）
+        _safe_keys = ('_db', '_task_manager', '_completion_queue')
         _shared = {}
-        for _k in _shared_keys:
+        for _k in _safe_keys:
             try:
                 _shared[_k] = ctx.extra.pop(_k)
             except KeyError:
                 pass
+
+        _unpickleable = []
+        for _k in list(ctx.extra.keys()):
+            try:
+                deepcopy(ctx.extra[_k])
+            except Exception:
+                _unpickleable.append(_k)
+        _stashed = {}
+        for _k in _unpickleable:
+            _stashed[_k] = ctx.extra.pop(_k)
 
         try:
             _ctx = deepcopy(ctx)
         finally:
             for _k, _v in _shared.items():
                 ctx.extra[_k] = _v
+            for _k, _v in _stashed.items():
+                ctx.extra[_k] = _v
 
         for _k, _v in _shared.items():
+            _ctx.extra[_k] = _v
+        for _k, _v in _stashed.items():
             _ctx.extra[_k] = _v
 
         _pm = self.pm
@@ -334,9 +375,12 @@ class ChatPipeline:
                             logger.info("  → 已联动 async=%s -> taskmgr=%s", task_id, tm_id)
 
                 if not linked:
-                    logger.info("异步工具无 taskmgr 联动，立即完成 (async=%s)", task_id)
                     reply = _sctx.reply or "任务已完成"
                     store.complete(task_id, reply=reply)
+                    logger.info("异步工具无 taskmgr 联动，立即完成 (async=%s)", task_id)
+                else:
+                    logger.info("异步工具已联动 taskmgr，等待 taskmgr 完成时再标记 (async=%s, taskmgr=%s)",
+                                task_id, tm_id)
             except Exception as e:
                 logger.error("异步后台执行失败 %s: %s", task_id, e)
                 store.complete(task_id, error=str(e))
@@ -1260,10 +1304,10 @@ class ChatPipeline:
                                 'text': line['text'],
                                 'audio_b64': line['audio_b64'],
                             })}\n\n"
-                    # 组装完整的 ctx.audio
+                    # 组装完整的 ctx.audio（正确拼接多段 WAV）
                     if tts_lines:
-                        all_audio = b"".join(
-                            l["audio_bytes"] for l in tts_lines if l.get("audio_bytes")
+                        all_audio = self._concat_wav(
+                            [l["audio_bytes"] for l in tts_lines if l.get("audio_bytes")]
                         )
                         if all_audio:
                             import base64
