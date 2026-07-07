@@ -20,6 +20,7 @@ from api.todo import todo_bp
 from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
+from api.alarm import alarm_bp, init_alarm_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
 from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
@@ -393,6 +394,7 @@ def create_application():
     app.register_blueprint(reminder_bp)
     app.register_blueprint(plan_bp)
     app.register_blueprint(heartbeat_bp)
+    app.register_blueprint(alarm_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
     from api.agent import agent_bp
@@ -419,6 +421,7 @@ def create_application():
             task_manager = TaskManager(db=db, max_workers=app.config.get("TASK_MAX_WORKERS", 5))
             task_manager.completion_queue = completion_queue
             init_reminder_api(db, task_manager, _auth_manager)
+            init_alarm_api(db, _auth_manager)
             init_plan_api(db, _auth_manager)
             threading.Thread(target=process_task_completion, daemon=True).start()
         except Exception:
