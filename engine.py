@@ -1308,6 +1308,15 @@ def create_engine_with_defaults(
             skill_registry=skill_registry,
         ))
 
+    # ---- TTS 文本预处理（须在 TTSPlugin 注册之前初始化） ----
+    if Config.TTS_PROCESS_ENABLED and engine._tts_client:
+        try:
+            from models.tts_process import TTSProcessModel
+            engine._tts_process_model = TTSProcessModel()
+            engine._logger.info("TTSProcessModel 初始化完成")
+        except Exception as e:
+            engine._logger.warning("TTSProcessModel 初始化失败: %s", e)
+
     if engine._tts_client:
         from plugins.builtin.tts_plugin import TTSPlugin
         engine.plugin_manager.register(TTSPlugin(
@@ -1356,15 +1365,6 @@ def create_engine_with_defaults(
             ))
         except Exception as e:
             engine._logger.warning("DistillPlugin 加载失败: %s", e)
-
-    # ---- TTS 文本预处理 ----
-    if Config.TTS_PROCESS_ENABLED:
-        try:
-            from models.tts_process import TTSProcessModel
-            engine._tts_process_model = TTSProcessModel()
-            engine._logger.info("TTSProcessModel 初始化完成")
-        except Exception as e:
-            engine._logger.warning("TTSProcessModel 初始化失败: %s", e)
 
     # ---- Phase 2: 学习系统 ----
     engine.question_store = question_store

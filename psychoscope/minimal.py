@@ -327,7 +327,11 @@ def iter_sse_lines(response: requests.Response):
                 yield event, {}
                 continue
             try:
-                yield event, json.loads(data_str)
+                data = json.loads(data_str)
+                status = data.get("status", "?")
+                if status in ("line", "text_ready", "completed"):
+                    log.info("[DEBUG_SSE] iter_sse_lines: 收到 status=%s, t=%.4f", status, time.perf_counter())
+                yield event, data
             except json.JSONDecodeError:
                 yield event, {"raw": data_str}
         elif line == "":
@@ -378,6 +382,7 @@ class DSNClient:
                 self._tts_queue.task_done()
                 continue
             text, b64 = item
+            log.info("[DEBUG_CLI] _tts_worker: 开始播放, 文本[:40]=%r, queue_size=%d, t=%.4f", text[:40], self._tts_queue.qsize(), time.perf_counter())
             ducked = False
             tmp_path = None
             try:
@@ -400,19 +405,22 @@ class DSNClient:
                 duration_ms = media.get_duration()
                 if duration_ms > 0:
                     p.play()
+                    log.info("[DEBUG_CLI] _tts_worker: VLC 开始播放, duration=%.1fms, t=%.4f", duration_ms, time.perf_counter())
                     # 分段 sleep 以便响应停止信号
                     played = 0.0
                     step = 0.3
                     total = duration_ms / 1000.0 + 0.2
                     while played < total:
                         if self._tts_stop.is_set():
+                            log.info("[DEBUG_CLI] _tts_worker: 被 stop 信号中断, t=%.4f", time.perf_counter())
                             break
                         time.sleep(step)
                         played += step
                 p.stop()
                 p.release()
+                log.info("[DEBUG_CLI] _tts_worker: 播放结束, t=%.4f", time.perf_counter())
             except Exception as e:
-                log.error(f"TTS playback error: {e}")
+                log.error(f"[DEBUG_CLI] TTS playback error: {e}")
             finally:
                 if tmp_path:
                     try:
@@ -565,6 +573,7 @@ class DSNClient:
             return None
 
         t0 = time.perf_counter()
+        log.info("[DEBUG_CLI] send_audio: 开始 SSE 请求, t=%.4f", t0)
 
         try:
             resp = self._http_post_stream(
@@ -581,6 +590,7 @@ class DSNClient:
             # TTS 直接推入播放队列，不等 SSE 结束
             reply_text, t_first_audio = self._handle_sse_stream(resp, self._tts_queue, t0, async_poller=self.async_poller)
             elapsed = time.perf_counter() - t0
+            log.info("[DEBUG_CLI] send_audio: SSE 流结束, t=%.4f, 总耗时=%.1fs", time.perf_counter(), elapsed)
 
             # 显示首条音频耗时
             if t_first_audio is not None:
@@ -621,6 +631,7 @@ class DSNClient:
                 reply = data.get("reply", "")
                 got_text = True
                 self.chat_id = data.get("chat_id", self.chat_id)
+                log.info("[DEBUG_CLI] text_ready 收到, reply[:60]=%r, t=%.4f", reply[:60], time.perf_counter())
                 if reply:
                     print(f"\n  💬 {reply}")
 
@@ -637,6 +648,8 @@ class DSNClient:
                 total = data.get("total", 1)
                 text = data.get("text", "")
                 audio_b64 = data.get("audio_b64", "")
+                log.info("[DEBUG_CLI] line %d/%d 收到, 推入 tts_queue, queue_size=%d, t=%.4f",
+                         idx, total, tts_queue.qsize() if tts_queue else -1, time.perf_counter())
                 if audio_b64 and HAS_AUDIO and tts_queue is not None:
                     if t_first_audio is None:
                         t_first_audio = time.perf_counter()
@@ -644,6 +657,7 @@ class DSNClient:
                 print(f"\r  🎵 TTS [{idx}/{total}]", end="", flush=True)
 
             elif status == "completed":
+                log.info("[DEBUG_CLI] completed 收到, t=%.4f", time.perf_counter())
                 break
         return reply if got_text else None, t_first_audio
 
