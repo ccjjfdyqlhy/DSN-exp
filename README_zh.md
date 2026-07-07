@@ -20,6 +20,74 @@
 
 ---
 
+## 🏗️ 系统架构
+
+```mermaid
+graph TB
+    subgraph Clients["🎨 客户端"]
+        TUI["🖥️ psychoscope/minimal.py<br/>终端UI"]
+        WEB["🌐 psychoscope/server.py<br/>Web界面"]
+        AGT["🤖 agent_send.py<br/>Agent命令行"]
+    end
+
+    subgraph Server["🔌 Flask服务端 (boot.py)"]
+        API["REST API<br/>15个蓝图"]
+        REPL["⌨️ 控制台REPL<br/>main.py"]
+    end
+
+    subgraph Engine["🧠 DSNEngine 核心引擎"]
+        PL["🔄 ChatPipeline<br/>5个Hook点"]
+        PM["📦 PluginManager<br/>插件管理器"]
+        PE["📝 PromptEngine<br/>提示词引擎"]
+        ME["💾 MemorySystem<br/>记忆系统"]
+        TM["⚡ TaskManager<br/>任务管理器"]
+        WE["🌍 WorldEngine<br/>世界引擎"]
+        SM["🛠️ SkillManager<br/>技能管理器"]
+        WS["📁 Workspace<br/>工作区"]
+    end
+
+    subgraph Pipeline["管道执行流程"]
+        direction LR
+        F["① PRE_FILTER<br/>ASR过滤, 缓存检查"]
+        SP["assemble_prompt()<br/>组装提示词"]
+        P["② PRE_PROCESS<br/>视觉, 记忆注入<br/>印象, 计划"]
+        M["③ MODEL_INVOKE<br/>ModelsPlugin"]
+        PO["④ POST_PROCESS<br/>任务, 工具, 待办<br/>记忆, 人格"]
+        T["⑤ POST_TTS<br/>TTS合成"]
+        F --> SP --> P --> M --> PO --> T
+    end
+
+    subgraph Models["🤖 模型层"]
+        OA["☁️ OpenAIChat<br/>云API"]
+        LS["🏠 LMStudioChat<br/>本地模型"]
+        SCH["📊 ModelScheduler<br/>VRAM调度"]
+    end
+
+    subgraph Storage["💾 存储层"]
+        DB["🗄️ SQLite<br/>聊天数据库"]
+        WK["📂 工作区文件"]
+        AC["🎵 音频缓存"]
+    end
+
+    TUI & WEB & AGT --> Server
+    Server --> Engine
+    Engine --> PL
+    PL --> Pipeline
+    PM --> PL
+    M --> OA & LS
+    OA & LS --> SCH
+    ME --> DB
+    WS --> WK
+
+    subgraph Auth["🔐 认证系统"]
+        direction LR
+        P0["配对码"] --> S1["会话"] --> W2["WebAuthn"] --> T3["TOTP"] --> K4["API Key"]
+    end
+    API --> Auth
+```
+
+---
+
 ## 🎯 核心定位
 
 | 特性 | 说明 |
@@ -190,74 +258,6 @@ VISION_MODEL_NAME=glm-4.6v
 
 # 使用Agent发送消息
 python agent_send.py "分析代码复杂度"
-```
-
----
-
-## 🏗️ 系统架构
-
-```mermaid
-graph TB
-    subgraph Clients["🎨 客户端"]
-        TUI["🖥️ psychoscope/minimal.py<br/>终端UI"]
-        WEB["🌐 psychoscope/server.py<br/>Web界面"]
-        AGT["🤖 agent_send.py<br/>Agent命令行"]
-    end
-
-    subgraph Server["🔌 Flask服务端 (boot.py)"]
-        API["REST API<br/>15个蓝图"]
-        REPL["⌨️ 控制台REPL<br/>main.py"]
-    end
-
-    subgraph Engine["🧠 DSNEngine 核心引擎"]
-        PL["🔄 ChatPipeline<br/>5个Hook点"]
-        PM["📦 PluginManager<br/>插件管理器"]
-        PE["📝 PromptEngine<br/>提示词引擎"]
-        ME["💾 MemorySystem<br/>记忆系统"]
-        TM["⚡ TaskManager<br/>任务管理器"]
-        WE["🌍 WorldEngine<br/>世界引擎"]
-        SM["🛠️ SkillManager<br/>技能管理器"]
-        WS["📁 Workspace<br/>工作区"]
-    end
-
-    subgraph Pipeline["管道执行流程"]
-        direction LR
-        F["① PRE_FILTER<br/>ASR过滤, 缓存检查"]
-        SP["assemble_prompt()<br/>组装提示词"]
-        P["② PRE_PROCESS<br/>视觉, 记忆注入<br/>印象, 计划"]
-        M["③ MODEL_INVOKE<br/>ModelsPlugin"]
-        PO["④ POST_PROCESS<br/>任务, 工具, 待办<br/>记忆, 人格"]
-        T["⑤ POST_TTS<br/>TTS合成"]
-        F --> SP --> P --> M --> PO --> T
-    end
-
-    subgraph Models["🤖 模型层"]
-        OA["☁️ OpenAIChat<br/>云API"]
-        LS["🏠 LMStudioChat<br/>本地模型"]
-        SCH["📊 ModelScheduler<br/>VRAM调度"]
-    end
-
-    subgraph Storage["💾 存储层"]
-        DB["🗄️ SQLite<br/>聊天数据库"]
-        WK["📂 工作区文件"]
-        AC["🎵 音频缓存"]
-    end
-
-    TUI & WEB & AGT --> Server
-    Server --> Engine
-    Engine --> PL
-    PL --> Pipeline
-    PM --> PL
-    M --> OA & LS
-    OA & LS --> SCH
-    ME --> DB
-    WS --> WK
-
-    subgraph Auth["🔐 认证系统"]
-        direction LR
-        P0["配对码"] --> S1["会话"] --> W2["WebAuthn"] --> T3["TOTP"] --> K4["API Key"]
-    end
-    API --> Auth
 ```
 
 ---
