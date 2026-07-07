@@ -8,6 +8,8 @@ import queue
 import time
 from typing import TYPE_CHECKING
 
+from maintenance import config as maint_config
+
 if TYPE_CHECKING:
     from engine import DSNEngine
 
@@ -27,7 +29,7 @@ class HibernateManager:
       - 下轮对话 PRE_PROCESS
     """
 
-    MAX_QUEUE = 100
+    MAX_QUEUE = maint_config.HIBERNATE_MAX_QUEUE
 
     def __init__(self, engine: DSNEngine):
         self._engine = engine

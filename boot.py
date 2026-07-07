@@ -709,24 +709,29 @@ def create_application():
 
     # ── 维护模块 ──
     try:
-        from maintenance import MaintenanceSystem
-        from maintenance.api import maintenance_bp
-        from maintenance.frontend_bridge import broadcast as mb
-        maint_system = MaintenanceSystem(db=db, v3=personality_v3, engine=engine)
-        maint_system.on_maintenance_start(lambda: app.logger.info("维护流程开始"))
-        maint_system.on_maintenance_progress(
-            lambda task, prog: mb("maintenance_progress", {
-                "task": task.name, "current": prog.current,
-                "total": prog.total, "message": prog.message,
-            }))
-        maint_system.on_maintenance_done(
-            lambda results: mb("maintenance_complete", {
-                "results": results, "total": len(results),
-                "success": sum(1 for r in results if r.get("success")),
-            }))
-        maint_system.start()
-        app.config["MAINTENANCE_SYSTEM"] = maint_system
-        app.register_blueprint(maintenance_bp)
+        from maintenance import config as maint_config
+        if not maint_config.MAINTENANCE_ENABLED:
+            app.logger.info("维护模块已禁用 (MAINTENANCE_ENABLED=false)")
+            app.config["MAINTENANCE_SYSTEM"] = None
+        else:
+            from maintenance import MaintenanceSystem
+            from maintenance.api import maintenance_bp
+            from maintenance.frontend_bridge import broadcast as mb
+            maint_system = MaintenanceSystem(db=db, v3=personality_v3, engine=engine)
+            maint_system.on_maintenance_start(lambda: app.logger.info("维护流程开始"))
+            maint_system.on_maintenance_progress(
+                lambda task, prog: mb("maintenance_progress", {
+                    "task": task.name, "current": prog.current,
+                    "total": prog.total, "message": prog.message,
+                }))
+            maint_system.on_maintenance_done(
+                lambda results: mb("maintenance_complete", {
+                    "results": results, "total": len(results),
+                    "success": sum(1 for r in results if r.get("success")),
+                }))
+            maint_system.start()
+            app.config["MAINTENANCE_SYSTEM"] = maint_system
+            app.register_blueprint(maintenance_bp)
     except Exception:
         app.config["MAINTENANCE_SYSTEM"] = None
     _t("维护模块")
