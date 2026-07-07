@@ -25,7 +25,6 @@ from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
 from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
 from models import _load_lmstudio_model, _unload_lmstudio_model
-from models.tts_process import TTSProcessModel
 from memory import MemorySystem
 from tasks import TaskManager, TaskType
 from utils.workspace import init_workspace_manager
@@ -35,9 +34,6 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from audio.infer import VocalExp
 from plugins.builtin.tts_profile import TTSProfileManager
-from models.asr_filter import LMFilterModel
-if Config.ASR_ENABLED:
-    from funasr import AutoModel
 from utils.text_clean import clean_tts_text
 
 # ── 模块级全局变量 ──
@@ -347,15 +343,15 @@ _t_prev_time = 0.0
 _t_log: list[tuple[str, float]] = []
 
 
-def _t(name: str):
+def _t(name: str, disabled: bool = False):
     global _t_start_total, _t_prev_time
     now = time.time()
     if not _t_log:
         _t_start_total = now
         _t_prev_time = now
-        _t_log.append((name, 0.0))
+        _t_log.append((name, -1.0 if disabled else 0.0))
     else:
-        elapsed = now - _t_prev_time
+        elapsed = now - _t_prev_time if not disabled else -1.0
         _t_prev_time = now
         _t_log.append((name, elapsed))
     return now
@@ -416,7 +412,8 @@ def create_application():
     _t("工作区")
 
     # ── 任务管理器 ──
-    if app.config.get("TASK_MANAGER_ENABLED", True):
+    _task_mgr_enabled = app.config.get("TASK_MANAGER_ENABLED", True)
+    if _task_mgr_enabled:
         try:
             task_manager = TaskManager(db=db, max_workers=app.config.get("TASK_MAX_WORKERS", 5))
             task_manager.completion_queue = completion_queue
@@ -426,14 +423,15 @@ def create_application():
             threading.Thread(target=process_task_completion, daemon=True).start()
         except Exception:
             task_manager = None
-    _t("任务管理器")
+    _t("任务管理器", disabled=not _task_mgr_enabled)
 
     # ── 模型预加载（在记忆系统之前，避免 EmbeddingClient 加载时挤掉主模型）──
     _preload_models(app)
     _t("模型预加载")
 
     # ── 记忆与摘要 ──
-    if app.config.get("MEMORY_ENABLED", True):
+    _memory_enabled = app.config.get("MEMORY_ENABLED", True)
+    if _memory_enabled:
         summary_model = LMSummaryModel(
             backend=app.config.get("MEMORY_SUMMARY_BACKEND", "openai"),
             base_url=app.config.get("LMSTUDIO_BASE_URL"),
@@ -449,7 +447,7 @@ def create_application():
                 )
             except Exception:
                 pass
-    _t("记忆与摘要")
+    _t("记忆与摘要", disabled=not _memory_enabled)
 
     # ── TTS ──
     tts_client = VocalExp(app.config["TTS_BASE_URL"])
@@ -471,15 +469,23 @@ def create_application():
 
     if Config.TTS_PROCESS_ENABLED:
         try:
+            from models.tts_process import TTSProcessModel
             _tts_process_model = TTSProcessModel()
         except Exception:
             _tts_process_model = None
     _t("TTS")
 
     # ── ASR ──
-    filter_model = LMFilterModel() if app.config.get("ASR_FILTER_ENABLED", True) else None
+    filter_model = None
+    if app.config.get("ASR_FILTER_ENABLED", True):
+        try:
+            from models.asr_filter import LMFilterModel
+            filter_model = LMFilterModel()
+        except Exception:
+            pass
     asr_model = None
     if app.config.get("ASR_ENABLED", True):
+        from funasr import AutoModel
         _asr_device = app.config.get("ASR_DEVICE", "cuda")
         _asr_gpu_id = app.config.get("ASR_GPU_ID", "")
         if _asr_gpu_id:
@@ -514,13 +520,14 @@ def create_application():
     _world_engine = _world_state_manager = _narrative_model = None
     if Config.WORLD_ENABLED:
         try:
-            from world import WorldEngine, WorldStateManager, NarrativeModel
+            from world import WorldEngine, WorldStateManager
             wp = os.path.join(os.path.dirname(__file__), "world", "worlds", f"{Config.WORLD_PRESET}.yaml")
             _world_engine = WorldEngine()
             _world_engine.load_config_file(wp)
             _world_state_manager = WorldStateManager(_world_engine, Config.WORLD_UPDATE_INTERVAL)
             _world_state_manager.start()
             if Config.NARRATIVE_ENABLED:
+                from world import NarrativeModel
                 _narrative_model = NarrativeModel(
                     model_type=Config.NARRATIVE_MODEL_TYPE, model_name=Config.NARRATIVE_MODEL,
                     api_key=Config.OPENAI_API_KEY,
@@ -532,7 +539,7 @@ def create_application():
                     os.path.join(os.path.dirname(__file__), "prompt", "world", "narrative.md"))
         except Exception:
             pass
-    _t("世界")
+    _t("世界", disabled=not Config.WORLD_ENABLED)
 
     # ── 技能系统 ──
     try:
@@ -576,7 +583,7 @@ def create_application():
                 prompt_engine.personality_v2 = None
         except Exception:
             pass
-    _t("人格系统 V3")
+    _t("人格系统 V3", disabled=not Config.PERSONALITY_V3_ENABLED)
 
     # ── DSNEngine ──
     from engine import create_engine_with_defaults
@@ -634,7 +641,7 @@ def create_application():
                             Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD)
         except Exception as e:
             app.logger.warning("语义缓存系统初始化失败: %s", e)
-    _t("语义缓存系统")
+    _t("语义缓存系统", disabled=not Config.SEMANTIC_CACHE_ENABLED)
 
     # ── 剧本系统 ──
     script_engine = None
@@ -708,9 +715,11 @@ def create_application():
         pass
 
     # ── 维护模块 ──
+    _maint_disabled = True
     try:
         from maintenance import config as maint_config
-        if not maint_config.MAINTENANCE_ENABLED:
+        _maint_disabled = not maint_config.MAINTENANCE_ENABLED
+        if _maint_disabled:
             app.logger.info("维护模块已禁用 (MAINTENANCE_ENABLED=false)")
             app.config["MAINTENANCE_SYSTEM"] = None
         else:
@@ -734,7 +743,7 @@ def create_application():
             app.register_blueprint(maintenance_bp)
     except Exception:
         app.config["MAINTENANCE_SYSTEM"] = None
-    _t("维护模块")
+    _t("维护模块", disabled=_maint_disabled)
 
     # ── 打印启动耗时 ──
     app.logger.info("=" * 45)
@@ -744,7 +753,10 @@ def create_application():
     for name, elapsed in _t_log:
         if elapsed == 0:
             continue
-        app.logger.info("  %-24s %7.2fs", name, elapsed)
+        if elapsed < 0:
+            app.logger.info("  %-24s %s", name, "未加载")
+        else:
+            app.logger.info("  %-24s %7.2fs", name, elapsed)
     app.logger.info("  " + "-" * 31)
     app.logger.info("  %-24s %7.2fs", "总计", total)
     app.logger.info("=" * 45)
