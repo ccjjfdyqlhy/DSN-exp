@@ -1165,6 +1165,7 @@ class ChatPipeline:
                                 line = agent_tts_q.get_nowait()
                                 if line is None:
                                     agent_tts_q = None
+                                    break
                                 else:
                                     logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent stream), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
                                     yield f"data: {json.dumps({
