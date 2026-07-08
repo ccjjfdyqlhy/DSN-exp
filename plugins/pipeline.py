@@ -61,11 +61,11 @@ async def _call_llm_with_msgs(ctx, msgs: list[dict]) -> str | None:
         return None
 
     def _invoke():
-        # call llm with optional tool schemas
         try:
             tools = None
             if hasattr(models_plugin, '_build_tools_schema'):
-                tools = models_plugin._build_tools_schema()
+                activated = ctx.extra.get("_activated_tools", None) if ctx else None
+                tools = models_plugin._build_tools_schema(activated)
             return models_plugin.invoke(msgs, ctx, tools=tools)
         except Exception as e:
             logger.error("LLM 调用失败: %s", e)
@@ -299,6 +299,9 @@ class ChatPipeline:
         timing["post_tts"] = round((time.perf_counter() - t0) * 1000, 1)
         _log_stage_timing("POST_TTS", timing["post_tts"])
 
+        # 清理本轮工具箱激活状态
+        ctx.extra.pop("_activated_tools", None)
+
         timing["total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
         self._print_timing(timing, ctx)
 
@@ -482,7 +485,8 @@ class ChatPipeline:
 
                 tools_schema = None
                 if hasattr(models_plugin, '_build_tools_schema'):
-                    tools_schema = models_plugin._build_tools_schema()
+                    activated = ctx.extra.get("_activated_tools", None)
+                    tools_schema = models_plugin._build_tools_schema(activated)
 
                 self._report_agent_progress(ctx, step + 1, max_steps, tool_names)
 
