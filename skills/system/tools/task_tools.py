@@ -96,6 +96,48 @@ class TaskTools:
             priority=1, scheduled_time=next_time)
         return {"task_id": tid}
 
+    # ── 查询提醒 ──
+
+    def list_reminders(self, status: str = "pending") -> dict:
+        """查询当前用户的所有提醒/习惯/倒计时任务。"""
+        db = self._ctx.get("db")
+        uid = self._uid()
+        if not db:
+            return {"reminders": [], "error": "数据库不可用"}
+
+        from tasks import TaskType, TaskStatus
+        status_filter = status if status else TaskStatus.PENDING.value
+        try:
+            conn = db._get_connection()
+            rows = conn.execute(
+                "SELECT task_id, task_type, params, priority, scheduled_time, "
+                "interval_seconds, skip_count, status, created_at FROM tasks "
+                "WHERE user_id = ? AND task_type IN (?, ?, ?, ?, ?) AND status = ? "
+                "ORDER BY scheduled_time ASC",
+                (uid, TaskType.REMINDER.value, TaskType.HABIT.value,
+                 TaskType.COUNTDOWN.value, TaskType.DAILY_PLAN.value,
+                 TaskType.PERIODIC.value, status_filter),
+            ).fetchall()
+            reminders = []
+            for r in rows:
+                try:
+                    params = json.loads(r["params"]) if r["params"] else {}
+                except Exception:
+                    params = {}
+                reminders.append({
+                    "task_id": r["task_id"],
+                    "type": r["task_type"],
+                    "text": params.get("text", ""),
+                    "scheduled_time": r["scheduled_time"] or "",
+                    "interval": r["interval_seconds"] or 0,
+                    "status": r["status"],
+                    "skip_count": r["skip_count"],
+                })
+            return {"reminders": reminders, "count": len(reminders)}
+        except Exception as e:
+            logger.error("list_reminders 失败: %s", e)
+            return {"reminders": [], "error": str(e)}
+
     # ── 异步推理（走 TaskManager 持久化 + 立即执行） ──
 
     def create_reasoner(self, question: str, context: str = "") -> dict:

@@ -9,11 +9,14 @@ import logging
 import os
 import queue
 import re
+import select
 import signal
+import struct
 import sys
 import threading
 import time
 import wave
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,8 +27,12 @@ import requests
 try:
     import vlc
     HAS_AUDIO = True
+    # 全局 VLC 实例：哑界面 + 禁用键盘/鼠标抢占
+    VLC_INSTANCE = vlc.Instance("--intf", "dummy", "--no-keyboard-events",
+                                "--no-mouse-events", "--quiet")
 except ImportError:
     vlc = None
+    VLC_INSTANCE = None
     HAS_AUDIO = False
     print("[WARN] python-vlc not installed. pip install python-vlc")
 
@@ -51,6 +58,8 @@ SILENCE_TIMEOUT = 2.0
 MAX_RECORD_SECS = 30
 RMS_THRESHOLD = 0.008
 
+# ── 日志：只写文件，不写终端 ──
+
 def setup_logging():
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname).1s] %(name)s: %(message)s",
@@ -66,17 +75,143 @@ def setup_logging():
     fh.setFormatter(fmt)
     root.addHandler(fh)
 
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setLevel(logging.INFO)
-    sh.setFormatter(fmt)
-    root.addHandler(sh)
-
     return logging.getLogger("minimal")
 
 log = setup_logging()
 
 if HAS_AUDIO:
     log.info("VLC 就绪")
+
+
+# ════════════════════════════════════════════════════════════════
+# Terminal 管理：原始模式上下文管理器 + 按键读取 + 行输入
+# ════════════════════════════════════════════════════════════════
+
+class TerminalState:
+    """保存终端原始模式状态，保证退出时恢复。"""
+    def __init__(self):
+        self.fd = None
+        self.old_attr = None
+        self._is_windows = os.name == "nt"
+
+    def enter_raw(self):
+        if self._is_windows:
+            self._enter_windows()
+        else:
+            self._enter_unix()
+
+    def exit_raw(self):
+        if self._is_windows:
+            self._exit_windows()
+        else:
+            self._exit_unix()
+
+    def _enter_unix(self):
+        import termios, tty
+        self.fd = sys.stdin.fileno()
+        self.old_attr = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        self.raw_attr = termios.tcgetattr(self.fd)  # 保存 setcbreak 后的完整属性
+
+    def _exit_unix(self):
+        import termios
+        if self.old_attr is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_attr)
+            except Exception:
+                pass
+        self.old_attr = None
+
+    def _enter_windows(self):
+        import msvcrt
+        # Windows 下无需特殊设置，msvcrt.kbhit() + getch() 可用
+
+    def _exit_windows(self):
+        pass
+
+
+_RAW_ATTRS = None
+_RAW_FD = None
+
+@contextmanager
+def raw_mode():
+    """上下文管理器：进入原始模式 → yield → 保证恢复。"""
+    ts = TerminalState()
+    global _RAW_ATTRS, _RAW_FD
+    try:
+        ts.enter_raw()
+        _RAW_ATTRS = getattr(ts, 'raw_attr', None)
+        _RAW_FD = ts.fd
+        yield ts
+    finally:
+        _RAW_ATTRS = None
+        _RAW_FD = None
+        ts.exit_raw()
+
+
+def _ensure_raw_mode():
+    """完整恢复 setcbreak 后的终端属性（VLC 等可能破坏部分标志位）。"""
+    if _RAW_ATTRS is not None and _RAW_FD is not None:
+        try:
+            import termios
+            termios.tcsetattr(_RAW_FD, termios.TCSADRAIN, _RAW_ATTRS)
+        except Exception:
+            pass
+
+
+def read_key(timeout: float = 0.1) -> str | None:
+    """非阻塞读一个按键，超时返回 None。"""
+    if os.name == "nt":
+        import msvcrt
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch == b'\xe0':
+                ch = msvcrt.getch()
+                return None
+            try:
+                return ch.decode("utf-8", errors="replace")
+            except Exception:
+                return None
+        return None
+
+    try:
+        fd = sys.stdin.fileno()
+        r, _, _ = select.select([fd], [], [], timeout)
+        if r:
+            raw = os.read(fd, 1)
+            if not raw:
+                return None
+            return raw.decode("utf-8", errors="replace")
+        return None
+    except (OSError, ValueError, select.error):
+        return None
+
+
+def raw_input(prompt: str = "") -> str:
+    """在原始终端模式下读取一行输入（支持退格，Enter 确认）。"""
+    buf: list[str] = []
+    if prompt:
+        print(prompt, end="", flush=True)
+    while True:
+        ch = read_key(timeout=None)  # 阻塞读
+        if ch is None:
+            continue
+        if ch == "\r" or ch == "\n":
+            print()
+            return "".join(buf)
+        elif ch == "\x7f" or ch == "\b":  # 退格
+            if buf:
+                buf.pop()
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+        elif ch == "\x03":  # Ctrl+C
+            raise KeyboardInterrupt
+        elif ch == "\x04":  # Ctrl+D
+            return "".join(buf)
+        elif ch.isprintable() or ord(ch) >= 32:
+            buf.append(ch)
+            sys.stdout.write(ch)
+            sys.stdout.flush()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -96,8 +231,8 @@ class MusicPlayer:
         self._poll_thread: threading.Thread | None = None
         self._prev_volume = self._volume
         self._player = None
-        if HAS_AUDIO:
-            self._player = vlc.MediaPlayer()
+        if HAS_AUDIO and VLC_INSTANCE:
+            self._player = VLC_INSTANCE.media_player_new()
 
     def load_playlist(self):
         try:
@@ -226,7 +361,7 @@ class MusicPlayer:
         payload = {"state": self.state, "current": current, "volume": self._volume}
         try:
             requests.post(f"{self.client.base}/api/music/state",
-                         json=payload, timeout=2)
+                          json=payload, timeout=2)
         except Exception:
             pass
 
@@ -290,11 +425,14 @@ def _play_beep(client: DSNClient, freq: int = 600):
         tmp_path = tmp.name
         tmp.write(buf.getvalue())
         tmp.close()
-        p = vlc.MediaPlayer(tmp_path)
-        p.play()
-        time.sleep(dur + 0.1)
-        p.stop()
-        p.release()
+        p = VLC_INSTANCE.media_player_new() if VLC_INSTANCE else None
+        if p:
+            media = VLC_INSTANCE.media_new(tmp_path)
+            p.set_media(media)
+            p.play()
+            time.sleep(dur + 0.1)
+            p.stop()
+            p.release()
     except Exception:
         pass
     finally:
@@ -314,6 +452,7 @@ def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
         wf.setframerate(sr)
         wf.writeframes(int_samples.tobytes())
     return base64.b64encode(buf.getvalue()).decode("utf-8")
+
 
 def iter_sse_lines(response: requests.Response):
     event = ""
@@ -338,6 +477,7 @@ def iter_sse_lines(response: requests.Response):
         elif line == "":
             event = ""
 
+
 def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
@@ -346,8 +486,14 @@ def load_config() -> dict:
             return {}
     return {}
 
+
 def save_config(cfg: dict):
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ════════════════════════════════════════════════════════════════
+# DSNClient — API 客户端
+# ════════════════════════════════════════════════════════════════
 
 class DSNClient:
     def __init__(self, host: str, port: int):
@@ -357,16 +503,19 @@ class DSNClient:
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
+        self._send_queue: queue.Queue[str | None] = queue.Queue()
         self._volume = 1.0
         self.async_poller = None
         self._player: MusicPlayer | None = None
         self._tts_stop = threading.Event()
+        self._sending = threading.Event()
         if HAS_AUDIO:
             self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
             self._tts_thread.start()
+        self._send_thread = threading.Thread(target=self._send_worker, daemon=True)
+        self._send_thread.start()
 
     def stop_tts(self):
-        """停止当前 TTS 播放并清空队列。"""
         self._tts_stop.set()
         while not self._tts_queue.empty():
             try:
@@ -374,7 +523,6 @@ class DSNClient:
                 self._tts_queue.task_done()
             except queue.Empty:
                 break
-        # 清掉残留 TTS 临时文件
 
     def _tts_worker(self):
         while True:
@@ -399,7 +547,11 @@ class DSNClient:
                 tmp.write(raw)
                 tmp.close()
 
-                p = vlc.MediaPlayer(tmp_path)
+                p = VLC_INSTANCE.media_player_new() if VLC_INSTANCE else None
+                if not p:
+                    continue
+                media = VLC_INSTANCE.media_new(tmp_path)
+                p.set_media(media)
                 p.audio_set_volume(100)
                 media = p.get_media()
                 media.parse()
@@ -407,7 +559,6 @@ class DSNClient:
                 if duration_ms > 0:
                     p.play()
                     log.info("[DEBUG_CLI] _tts_worker: VLC 开始播放, duration=%.1fms, t=%.4f", duration_ms, time.perf_counter())
-                    # 分段 sleep 以便响应停止信号
                     played = 0.0
                     step = 0.3
                     total = duration_ms / 1000.0 + 0.2
@@ -552,7 +703,6 @@ class DSNClient:
                              stream=True, timeout=(10, 120), **kwargs)
 
     def send_async(self, message: str) -> Optional[str]:
-        """发送异步消息，返回 task_id 供 AsyncTaskPoller 轮询。"""
         if not self.api_key or not message.strip():
             return None
         try:
@@ -588,28 +738,47 @@ class DSNClient:
             if resp.status_code != 200:
                 return None
 
-            # TTS 直接推入播放队列，不等 SSE 结束
             reply_text, t_first_audio = self._handle_sse_stream(resp, self._tts_queue, t0, async_poller=self.async_poller)
             elapsed = time.perf_counter() - t0
             log.info("[DEBUG_CLI] send_audio: SSE 流结束, t=%.4f, 总耗时=%.1fs", time.perf_counter(), elapsed)
 
-            # 显示首条音频耗时
             if t_first_audio is not None:
                 first_audio_ms = (t_first_audio - t0) * 1000
-                print(f"\n  🔊 首条音频: {first_audio_ms:.0f}ms")
+                print(f"\n  \U0001f50a 首条音频: {first_audio_ms:.0f}ms")
 
-            # 显示总耗时
             minutes = int(elapsed) // 60
             seconds = int(elapsed) % 60
             if minutes > 0:
-                print(f"\n  ⏱  {minutes}分{seconds}秒")
+                print(f"\n  \u23f1  {minutes}分{seconds}秒")
             else:
-                print(f"\n  ⏱  {seconds}秒")
+                print(f"\n  \u23f1  {seconds}秒")
 
             return reply_text
         except Exception as e:
             log.error("Audio send failed: %s", e)
             return None
+
+    @property
+    def is_sending(self) -> bool:
+        return self._sending.is_set()
+
+    def send_audio_async(self, audio_b64: str):
+        self._send_queue.put(audio_b64)
+
+    def _send_worker(self):
+        while True:
+            b64 = self._send_queue.get()
+            if b64 is None:
+                self._send_queue.task_done()
+                continue
+            self._sending.set()
+            try:
+                self.send_audio(b64)
+            except Exception:
+                log.exception("Send worker error")
+            finally:
+                self._sending.clear()
+                self._send_queue.task_done()
 
     def _handle_sse_stream(self, resp: requests.Response,
                            tts_queue: queue.Queue | None = None,
@@ -618,8 +787,15 @@ class DSNClient:
         reply = ""
         got_text = False
         t_first_audio = None
+        _last_event = time.time()
+        _SSE_WATCHDOG = 60  # 秒，距上次事件超过此值强制退出
 
         for _evt_type, data in iter_sse_lines(resp):
+            # 看门狗：太久没收到事件 → 放弃
+            if time.time() - _last_event > _SSE_WATCHDOG:
+                log.warning("SSE 看门狗触发: %d 秒无事件，强制退出", _SSE_WATCHDOG)
+                break
+            _last_event = time.time()
             status = data.get("status", "")
 
             if status == "async_task":
@@ -634,7 +810,7 @@ class DSNClient:
                 self.chat_id = data.get("chat_id", self.chat_id)
                 log.info("[DEBUG_CLI] text_ready 收到, reply[:60]=%r, t=%.4f", reply[:60], time.perf_counter())
                 if reply:
-                    print(f"\n  💬 {reply}")
+                    print(f"\n  \U0001f4ac {reply}")
 
             elif status == "narrative_update":
                 text = data.get("text", "")
@@ -655,7 +831,7 @@ class DSNClient:
                     if t_first_audio is None:
                         t_first_audio = time.perf_counter()
                     tts_queue.put((text, audio_b64))
-                print(f"\r  🎵 TTS [{idx}/{total}]", end="", flush=True)
+                print(f"\r  \U0001f3b5 TTS [{idx}/{total}]", end="", flush=True)
 
             elif status == "completed":
                 log.info("[DEBUG_CLI] completed 收到, t=%.4f", time.perf_counter())
@@ -663,11 +839,13 @@ class DSNClient:
         return reply if got_text else None, t_first_audio
 
 
-class AsyncTaskPoller:
-    """后台线程: 每 N 秒轮询后端异步任务状态，完成时显示回复 + 播放 TTS。"""
+# ════════════════════════════════════════════════════════════════
+# AsyncTaskPoller — 异步任务轮询
+# ════════════════════════════════════════════════════════════════
 
-    ASYNC_POLL_INTERVAL = 8      # 每 8 秒轮询一次
-    ASYNC_POLL_TIMEOUT = 600     # 10 分钟超时
+class AsyncTaskPoller:
+    ASYNC_POLL_INTERVAL = 8
+    ASYNC_POLL_TIMEOUT = 600
 
     def __init__(self, client: DSNClient, tts_queue: queue.Queue):
         self._client = client
@@ -693,12 +871,11 @@ class AsyncTaskPoller:
             self._thread.join(timeout=2)
 
     def add_task(self, task_id: str):
-        """开始轮询一个异步任务"""
         with self._lock:
             if task_id not in self._tasks:
                 self._tasks[task_id] = {"created": time.time()}
                 log.info("AsyncTaskPoller: 开始轮询 %s", task_id)
-                print(f"\n  ⏳ 异步任务已创建 ({task_id[:10]}...)，后台执行中...")
+                print(f"\n  \u23f3 异步任务已创建 ({task_id[:10]}...)，后台执行中...")
         self._wake_event.set()
 
     def _loop(self):
@@ -721,32 +898,31 @@ class AsyncTaskPoller:
 
                     data = resp.json()
                     status = data.get("status", "running")
-                    log.info("AsyncTaskPoller: %s → status=%s", task_id, status)
+                    log.info("AsyncTaskPoller: %s \u2192 status=%s", task_id, status)
 
                     if status == "running":
                         with self._lock:
                             task = self._tasks.get(task_id)
                             if task and now - task.get("created", 0) > self.ASYNC_POLL_TIMEOUT:
-                                print(f"\n  ⚠️ 异步任务超时 ({task_id[:10]}...)")
+                                print(f"\n  \u26a0\ufe0f 异步任务超时 ({task_id[:10]}...)")
                                 to_remove.append(task_id)
                         continue
 
-                    # 完成
                     reply = data.get("reply", "")
                     audio_b64 = data.get("audio_b64", "")
                     error = data.get("error", "")
 
                     if status == "done":
                         if reply:
-                            print(f"\n  💬 {reply}")
+                            print(f"\n  \U0001f4ac {reply}")
                         if audio_b64 and HAS_AUDIO and self._tts_queue is not None:
                             self._tts_queue.put((reply, audio_b64))
                         self._client.chat_id = data.get("chat_id", self._client.chat_id)
-                        print(f"  ✅ 异步任务完成 ({task_id[:10]}...)")
+                        print(f"  \u2705 异步任务完成 ({task_id[:10]}...)")
 
                     elif status == "failed":
                         if error:
-                            print(f"\n  ❌ 异步任务失败: {error}")
+                            print(f"\n  \u274c 异步任务失败: {error}")
                         if reply:
                             print(f"  {reply}")
 
@@ -761,7 +937,6 @@ class AsyncTaskPoller:
                         if task and now - task.get("created", 0) > self.ASYNC_POLL_TIMEOUT:
                             to_remove.append(task_id)
 
-            # 清理已完成/超时任务
             with self._lock:
                 for tid in to_remove:
                     self._tasks.pop(tid, None)
@@ -770,29 +945,20 @@ class AsyncTaskPoller:
             self._wake_event.wait(timeout=self.ASYNC_POLL_INTERVAL)
 
 
+# ════════════════════════════════════════════════════════════════
+# HeartbeatPoller — 心跳 + 提醒轮询
+# ════════════════════════════════════════════════════════════════
+
 class HeartbeatPoller:
-    """后台线程: 每 N 秒向后端发心跳，检查是否有已完成的提醒任务。
-
-    工作流程（与 /api/heartbeat 配合）：
-      1. 每 HEARTBEAT_INTERVAL 秒发一次 GET /api/heartbeat
-      2. 如果返回 has_notification=false → 什么都不做
-      3. 如果返回 has_notification=true →
-         a. 立即显示 reply 文本
-         b. 把 audio_b64 推入 TTS 队列播放
-         c. 记录最近触发的提醒，供 'k' 键跳过
-      4. 前端不再主动判断提醒是否到期 —— 完全由后端 TaskManager 调度，
-         到期后写入 task_notifications 表，心跳拉取并触发 AI 通知 + TTS。
-    """
-
-    HEARTBEAT_INTERVAL = 5      # 每 5 秒发一次心跳
-    HEARTBEAT_TIMEOUT = 30      # 单次心跳请求超时
+    HEARTBEAT_INTERVAL = 5
+    HEARTBEAT_TIMEOUT = 30
 
     def __init__(self, client: "DSNClient", tts_queue: queue.Queue):
         self._client = client
         self._tts_queue = tts_queue
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_triggered: dict[str, dict] = {}  # task_id -> {text, type, notification_id}
+        self._last_triggered: dict[str, dict] = {}
         self._last_notification_id: Optional[int] = None
 
     def start(self):
@@ -809,11 +975,9 @@ class HeartbeatPoller:
             self._thread.join(timeout=2)
 
     def sync_now(self):
-        """手动触发一次心跳（兼容旧接口，'r' 键调用）。"""
         self._beat()
 
     def skip_latest(self) -> bool:
-        """跳过最近一条触发的提醒（调用 /api/reminder/skip）。"""
         if not self._last_triggered:
             return False
         task_id = list(self._last_triggered.keys())[-1]
@@ -826,28 +990,25 @@ class HeartbeatPoller:
                 timeout=10,
             )
             if resp.status_code == 200 and resp.json().get("success"):
-                print(f"\n  ⏭ 已跳过: {info.get('text', task_id[:8])}")
+                print(f"\n  \u23ed 已跳过: {info.get('text', task_id[:8])}")
                 return True
         except Exception:
             pass
         return False
 
     def _loop(self):
-        # 启动后稍等 2 秒再开始心跳，避免与服务端握手竞争
         time.sleep(2)
         while self._running:
             try:
                 self._beat()
             except Exception as e:
                 log.warning("HeartbeatPoller 心跳异常: %s", e)
-            # 分段 sleep，便于快速退出
             for _ in range(self.HEARTBEAT_INTERVAL):
                 if not self._running:
                     break
                 time.sleep(1)
 
     def _beat(self):
-        """发一次心跳请求并处理响应。"""
         try:
             resp = requests.get(
                 f"{self._client.base}/api/heartbeat",
@@ -870,7 +1031,6 @@ class HeartbeatPoller:
         if not data.get("has_notification"):
             return
 
-        # 有提醒通知
         reply = data.get("reply", "") or ""
         audio_b64 = data.get("audio_b64", "") or ""
         task_id = data.get("task_id", "")
@@ -881,24 +1041,19 @@ class HeartbeatPoller:
 
         tlabel = self._type_label(task_type)
 
-        # 更新 chat_id（后端可能新建了会话）
         if chat_id:
             self._client.chat_id = chat_id
 
-        # 显示文本
         if reply:
-            print(f"\n  ⏰ [{tlabel}] {reply}")
+            print(f"\n  \u23f0 [{tlabel}] {reply}")
 
-        # 播放提示音
         _play_beep(self._client, 880)
 
-        # 播放 TTS
         if audio_b64 and HAS_AUDIO and self._tts_queue is not None:
             self._tts_queue.put((reply, audio_b64))
         elif tts_error:
             print(f"  (TTS 不可用: {tts_error})")
 
-        # 记录最近触发的，供 'k' 键跳过
         if task_id:
             self._last_triggered[task_id] = {
                 "text": reply,
@@ -919,10 +1074,12 @@ class HeartbeatPoller:
         }
         return labels.get(task_type, task_type)
 
-
-# 兼容旧代码：ReminderWatcher 作为 HeartbeatPoller 的别名
 ReminderWatcher = HeartbeatPoller
 
+
+# ════════════════════════════════════════════════════════════════
+# VoiceRecorder — 录音器
+# ════════════════════════════════════════════════════════════════
 
 class VoiceRecorder:
     def __init__(self, client: DSNClient):
@@ -939,6 +1096,10 @@ class VoiceRecorder:
     @property
     def is_recording(self) -> bool:
         return self._recording
+
+    @property
+    def has_frames(self) -> bool:
+        return bool(self._frames) and self._sent_frames is not self._frames
 
     def start(self):
         if self._recording:
@@ -963,10 +1124,10 @@ class VoiceRecorder:
         self._thread.start()
 
     def stop_and_send(self):
-        if not self._recording:
+        self._recording = False
+        if not self._frames:
             return
 
-        self._recording = False
         self._stop_event.set()
 
         if self._recorder:
@@ -994,7 +1155,7 @@ class VoiceRecorder:
         audio = np.concatenate(self._frames)
         b64 = raw_pcm_to_wav_b64(audio)
         self._sent_frames = self._frames
-        self.client.send_audio(b64)
+        self.client.send_audio_async(b64)
 
     def _capture_loop(self):
         try:
@@ -1028,87 +1189,35 @@ class VoiceRecorder:
             except Exception:
                 pass
 
-class KeyboardHandler:
-    def __init__(self):
-        self._queue: queue.Queue[str] = queue.Queue()
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
 
-    def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=1)
-
-    def get(self, timeout: float = 0.1) -> Optional[str]:
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def _loop(self):
-        try:
-            import termios
-            import tty
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            tty.setcbreak(fd)
-            try:
-                while self._running:
-                    import select
-                    if select.select([sys.stdin], [], [], 0.1)[0]:
-                        ch = sys.stdin.read(1)
-                        if ch:
-                            self._queue.put(ch)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        except (ImportError, AttributeError):
-            try:
-                import msvcrt
-                while self._running:
-                    if msvcrt.kbhit():
-                        ch = msvcrt.getch().decode("utf-8", errors="replace")
-                        self._queue.put(ch)
-                    time.sleep(0.05)
-            except ImportError:
-                while self._running:
-                    time.sleep(0.1)
+# ════════════════════════════════════════════════════════════════
+# 界面输出函数
+# ════════════════════════════════════════════════════════════════
 
 def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
-    # os.system("cls" if os.name == "nt" else "clear")
-    print("===========================================")
-    print("        DSN-exp  Minimal Client            ")
-    print("===========================================")
+    print("=" * 43)
+    print("        DSN-exp  Minimal Client")
+    print("=" * 43)
     uid = cfg.get("uid", "?")
     name = cfg.get("display_name", "?")
     host = cfg.get("host", f"{DEFAULT_HOST}:{DEFAULT_PORT}")
     print(f"  Backend : {host}")
     print(f"  User    : uid={uid} ({name})")
     if locked:
-        print("  🔒 Panel locked")
-    print("===========================================")
-    print("  [Enter]  Start / Stop speaking           ")
-    print("  [a x2]   Lock / Unlock panel              ")
-    print("  [b x2]   Music Player (d=prev e=toggle f=next)")
-    print("  [p]      Show personality status         ")
-    print("  [s]      Toggle standby / wakeup         ")
-    print("  [i]      System info (server + plan)      ")
-    print("  [k]      Skip latest reminder             ")
-    print("  [l]      Show alarm status                ")
-    print("  [f]      Silence alarm (stop TTS + dismiss)")
-    print("  [r]      Trigger heartbeat now            ")
-    print("  [t]      Text input (sync)                 ")
-    print("  [=]      Async task (long-running)          ")
-    print("  [h]      Show help                         ")
-    print("  [q/Ctrl+C] Quit                          ")
-    print("===========================================")
+        print("  \U0001f512 Panel locked")
+    print("=" * 43)
+    print("  [Enter] hold-to-talk    [p] personality")
+    print("  [a x2]  lock panel      [i] system info")
+    print("  [b x2]  music mode      [h] help")
+    print("  [t]     text input      [s] standby")
+    print("  [=]     async task      [k] skip reminder")
+    print("  [r]     heartbeat       [f] silence alarm")
+    print("  [l]     alarm status    [q/Ctrl+C] quit")
+    print("  [n/m]   vol-/vol+ (music mode)")
+    print("  [d/e/f] prev/toggle/next (music mode)")
+    print("=" * 43)
     print()
+
 
 def print_personality(client: DSNClient):
     try:
@@ -1137,6 +1246,7 @@ def print_personality(client: DSNClient):
     except Exception as e:
         print(f"  Error: {e}")
 
+
 def toggle_standby(client: DSNClient):
     try:
         resp = requests.post(f"{client.base}/api/maintenance/toggle_standby", timeout=10)
@@ -1147,7 +1257,6 @@ def toggle_standby(client: DSNClient):
 
 
 def print_system_info(client: DSNClient):
-    """显示系统状态 + 服务器维护态 + 计划摘要"""
     print(f"\n  --- System Info ---")
     try:
         resp = client._http_get("/api/maintenance/status")
@@ -1176,13 +1285,18 @@ def print_system_info(client: DSNClient):
             if reminders:
                 print(f"  Reminders: {len(reminders)} pending")
                 for r in reminders[:5]:
-                    tlabel = ReminderWatcher._type_label(r.get("task_type", ""))
+                    tlabel = HeartbeatPoller._type_label(r.get("task_type", ""))
                     st = r.get("scheduled_time", "")[:16].replace("T", " ")
                     print(f"    [{tlabel}] {st}  {r.get('text', '')[:40]}")
     except Exception:
         pass
 
     print(f"  ---------------------\n")
+
+
+# ════════════════════════════════════════════════════════════════
+# main — 单线程事件循环，所有输入走原始键盘
+# ════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1212,13 +1326,19 @@ def main():
     display_name = cfg.get("display_name", "")
     pairing_code = args.pairing
 
+    # 预处理 --pairing：尝试自动认证，否则进入交互式注册
+    if not pairing_code:
+        cfg_file = load_config()
+        if cfg_file.get("api_key"):
+            pairing_code = "cached"
+
     while True:
         ok = client.authenticate(code=pairing_code, name=display_name)
         if ok:
             break
 
         print("\n  ========================================")
-        print("            DSN-exp Registration          ")
+        print("            DSN-exp Registration")
         print("  ========================================")
         pairing_code = input("  Pairing Code: ").strip()
         if not display_name:
@@ -1233,305 +1353,306 @@ def main():
         cfg["chat_id"] = client.chat_id
     save_config(cfg)
 
-    print_header(cfg, client)
-    print("  Ready! Press Enter to speak...\n")
-
+    # 初始化所有组件
     recorder = VoiceRecorder(client)
-    keyboard = KeyboardHandler()
-    keyboard.start()
     reminder = HeartbeatPoller(client, client._tts_queue)
     reminder.start()
     async_poller = AsyncTaskPoller(client, client._tts_queue)
     async_poller.start()
     client.async_poller = async_poller
 
-    def on_sigint(sig, frame):
-        if recorder.is_recording:
-            recorder.stop_and_send()
-        async_poller.stop()
-        reminder.stop()
-        keyboard.stop()
-        save_config(cfg)
-        print("\n  Goodbye")
-        sys.exit(0)
+    player = MusicPlayer(client, cfg.get("uid", 1))
+    player.start_poll()
+    client._player = player
 
-    signal.signal(signal.SIGINT, on_sigint)
-
-    buffer = ""
+    # 状态变量
+    running = True
     locked = False
     _music_mode = False
-    _music_was_playing = False  # 录音前的音乐状态，用于正确恢复
+    _music_was_playing = False
     _last_a_ts = 0.0
     _last_b_ts = 0.0
     _DOUBLE_CLICK_WINDOW = 0.5
 
-    # 初始化音乐播放器
-    player = MusicPlayer(client, cfg.get("uid", 1))
-    player.start_poll()
-    client._player = player  # 注入到 TTS worker 用于 ducking
+    print_header(cfg, client)
+    print("  Ready! Hold Enter to speak...\n")
 
-    try:
-        while True:
-            ch = keyboard.get(timeout=0.15)
-            if ch is None:
-                if recorder._frames and not recorder.is_recording and not recorder._sent_frames is recorder._frames:
-                    print()
-                    recorder.stop_and_send()
-                    print()
-                continue
+    def _sigint(sig, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGINT, _sigint)
 
-            # ── 双击 'a' 锁定/解锁 ──
-            if ch.lower() == "a":
-                now = time.time()
-                if now - _last_a_ts < _DOUBLE_CLICK_WINDOW:
-                    locked = not locked
-                    if locked:
-                        if recorder.is_recording:
-                            recorder.stop_and_send()
-                        print("\n  🔒 Panel locked")
-                    else:
-                        print("\n  🔓 Panel unlocked")
-                    _last_a_ts = 0.0
+    # ── 主事件循环 ──
+    with raw_mode():
+        try:
+            while running:
+                ch = read_key(timeout=0.1)
+
+                if ch is None:
                     continue
-                _last_a_ts = now
-                continue
 
-            # ── 双击 'b' 切换音乐模式 ──
-            if ch.lower() == "b":
-                now = time.time()
-                if now - _last_b_ts < _DOUBLE_CLICK_WINDOW:
-                    _music_mode = not _music_mode
-                    if _music_mode:
-                        player.load_playlist()
-                        _play_beep(client, 880)
-                        print("\n  ♪ Music Mode")
-                    else:
-                        print("\n  Exited Music Mode")
-                        _play_beep(client, 440)
-                    _last_b_ts = 0.0
+                # ── 双击 'a' 锁定/解锁 ──
+                if ch.lower() == "a":
+                    now = time.time()
+                    if now - _last_a_ts < _DOUBLE_CLICK_WINDOW:
+                        locked = not locked
+                        if locked:
+                            if recorder.is_recording:
+                                recorder.stop_and_send()
+                            print("\n  \U0001f512 Panel locked")
+                        else:
+                            print("\n  \U0001f513 Panel unlocked")
+                        _last_a_ts = 0.0
+                        continue
+                    _last_a_ts = now
                     continue
-                _last_b_ts = now
-                continue
 
-            # ── 锁定时忽略除 'a' 外所有输入 ──
-            if locked:
-                continue
+                # ── 双击 'b' 切换音乐模式 ──
+                if ch.lower() == "b":
+                    now = time.time()
+                    if now - _last_b_ts < _DOUBLE_CLICK_WINDOW:
+                        _music_mode = not _music_mode
+                        if _music_mode:
+                            player.load_playlist()
+                            _play_beep(client, 880)
+                            print("\n  \u266a Music Mode")
+                        else:
+                            print("\n  Exited Music Mode")
+                            _play_beep(client, 440)
+                        _last_b_ts = 0.0
+                        continue
+                    _last_b_ts = now
+                    continue
 
-            if ch in ("\r", "\n"):
-                if not recorder.is_recording:
-                    _music_was_playing = _music_mode and player.state == "playing"
-                    if _music_was_playing:
-                        player.toggle()
-                    print("\n  Recording... (hold Enter, release to stop)")
-                    recorder.start()
-                    # Hold-to-talk: 按住 Enter 持续录音，松开即发送
-                    _key_repeated = False
-                    while recorder.is_recording:
-                        poll_timeout = 0.12 if _key_repeated else 0.7
-                        next_ch = keyboard.get(timeout=poll_timeout)
-                        if next_ch is None:
-                            break
-                        _key_repeated = True
-                    print()
-                    recorder.stop_and_send()
-                    print()
-                    if _music_was_playing and player.state == "paused":
-                        player.toggle()
-                    _music_was_playing = False
+                # ── 锁定时忽略除 'a' 外所有输入 ──
+                if locked:
+                    continue
 
-            elif ch.lower() == "q":
-                if recorder.is_recording:
-                    recorder.stop_and_send()
-                player.cleanup()
-                break
-
-            elif ch.lower() == "p":
-                print_personality(client)
-
-            elif ch.lower() == "s":
-                toggle_standby(client)
-
-            elif ch.lower() == "i":
-                print_system_info(client)
-
-            elif ch.lower() == "k":
-                if not reminder.skip_latest():
-                    print("\n  No recent reminder to skip")
-
-            elif ch.lower() == "r":
-                # 手动触发一次心跳，并显示后端 PENDING 提醒 + 闹钟列表
-                reminder.sync_now()
-                try:
-                    resp = client._http_get("/api/reminder/list")
-                    if resp.status_code == 200:
-                        reminders = resp.json().get("reminders", [])
-                        now = datetime.now()
-                        upcoming = []
-                        for r in reminders:
-                            try:
-                                st = datetime.fromisoformat(r["scheduled_time"])
-                                if st > now:
-                                    upcoming.append(r)
-                            except Exception:
-                                continue
-                        upcoming.sort(key=lambda r: r.get("scheduled_time", ""))
-                        print(f"\n  Reminders: {len(reminders)} total, {len(upcoming)} upcoming")
-                        for r in upcoming[:5]:
-                            tlabel = reminder._type_label(r.get("task_type", ""))
-                            st = r.get("scheduled_time", "")[:16].replace("T", " ")
-                            print(f"    [{tlabel}] {st}  {r.get('text', '')[:50]}")
-                except Exception as e:
-                    log.warning("Reminder list failed: %s", e)
-
-                try:
-                    resp = client._http_get("/api/alarms")
-                    if resp.status_code == 200:
-                        alarms = resp.json().get("alarms", [])
-                        if alarms:
-                            print(f"  Alarms: {len(alarms)} total")
-                            for a in alarms:
-                                wd = ",".join(a["days"]) if a["days"] else "每天"
-                                status = "开" if a["enabled"] else "关"
-                                print(f"    ⏰ {a['time']} [{wd}] {a['message'][:40]} ({status})")
-                    resp2 = client._http_get("/api/alarms/now")
-                    if resp2.status_code == 200:
-                        nxt = resp2.json().get("next_alarm")
-                        if nxt:
-                            cd = nxt.get("countdown", "?")
-                            icon = "⚡已触发" if nxt.get("fired") else "🔔等待"
-                            print(f"    {icon} 下次: {nxt['date']}({nxt['weekday']}) {nxt['time']} 剩{cd}")
-                except Exception as e:
-                    log.warning("Alarm list failed: %s", e)
-
-            elif ch.lower() == "h":
-                print_header(cfg, client, locked)
-
-            elif ch.lower() == "f":
-                # 停止闹钟：静音当前闹钟 + 停止 TTS
-                last_ids = list(reminder._last_triggered.keys())
-                dismissed = False
-                for tid in reversed(last_ids):
-                    if tid.startswith("alarm_"):
-                        alarm_id = tid[6:]
-                        try:
-                            resp = client._http_post(f"/api/alarms/{alarm_id}/dismiss")
-                            if resp.status_code == 200:
-                                print(f"\n  🔕 闹钟 {alarm_id} 已静音")
-                                dismissed = True
+                # ── Enter: hold-to-talk ──
+                if ch in ("\r", "\n"):
+                    if client.is_sending:
+                        print("\n  \u23f3 上一轮对话还在发送中，请稍候...")
+                        continue
+                    if not recorder.is_recording:
+                        _music_was_playing = _music_mode and player.state == "playing"
+                        if _music_was_playing:
+                            player.toggle()
+                        print("\n  Recording... (hold Enter, release to stop)")
+                        recorder.start()
+                        _key_repeated = False
+                        while recorder.is_recording:
+                            poll_timeout = 0.12 if _key_repeated else 0.7
+                            next_ch = read_key(timeout=poll_timeout)
+                            if next_ch is None:
                                 break
+                            _key_repeated = True
+                        _ensure_raw_mode()
+                        print()
+                        recorder.stop_and_send()
+                        print()
+                        _ensure_raw_mode()
+                        if _music_was_playing and player.state == "paused":
+                            player.toggle()
+                        _music_was_playing = False
+
+                # ── q / Ctrl+C: 退出 ──
+                elif ch.lower() == "q":
+                    if recorder.is_recording:
+                        recorder.stop_and_send()
+                    break
+
+                # ── p: 人格状态 ──
+                elif ch.lower() == "p":
+                    print_personality(client)
+
+                # ── s: standby ──
+                elif ch.lower() == "s":
+                    toggle_standby(client)
+
+                # ── i: 系统信息 ──
+                elif ch.lower() == "i":
+                    print_system_info(client)
+
+                # ── k: 跳过提醒 ──
+                elif ch.lower() == "k":
+                    if not reminder.skip_latest():
+                        print("\n  No recent reminder to skip")
+
+                # ── r: 手动心跳 ──
+                elif ch.lower() == "r":
+                    reminder.sync_now()
+                    try:
+                        resp = client._http_get("/api/reminder/list")
+                        if resp.status_code == 200:
+                            reminders = resp.json().get("reminders", [])
+                            now = datetime.now()
+                            upcoming = []
+                            for r in reminders:
+                                try:
+                                    st = datetime.fromisoformat(r["scheduled_time"])
+                                    if st > now:
+                                        upcoming.append(r)
+                                except Exception:
+                                    continue
+                            upcoming.sort(key=lambda r: r.get("scheduled_time", ""))
+                            print(f"\n  Reminders: {len(reminders)} total, {len(upcoming)} upcoming")
+                            for r in upcoming[:5]:
+                                tlabel = reminder._type_label(r.get("task_type", ""))
+                                st = r.get("scheduled_time", "")[:16].replace("T", " ")
+                                print(f"    [{tlabel}] {st}  {r.get('text', '')[:50]}")
+                    except Exception as e:
+                        log.warning("Reminder list failed: %s", e)
+
+                    try:
+                        resp = client._http_get("/api/alarms")
+                        if resp.status_code == 200:
+                            alarms = resp.json().get("alarms", [])
+                            if alarms:
+                                print(f"  Alarms: {len(alarms)} total")
+                                for a in alarms:
+                                    wd = ",".join(a["days"]) if a["days"] else "每天"
+                                    status = "开" if a["enabled"] else "关"
+                                    print(f"    \u23f0 {a['time']} [{wd}] {a['message'][:40]} ({status})")
+                        resp2 = client._http_get("/api/alarms/now")
+                        if resp2.status_code == 200:
+                            nxt = resp2.json().get("next_alarm")
+                            if nxt:
+                                cd = nxt.get("countdown", "?")
+                                icon = "\u26a1已触发" if nxt.get("fired") else "\U0001f514等待"
+                                print(f"    {icon} 下次: {nxt['date']}({nxt['weekday']}) {nxt['time']} 剩{cd}")
+                    except Exception as e:
+                        log.warning("Alarm list failed: %s", e)
+
+                # ── h: 帮助 ──
+                elif ch.lower() == "h":
+                    print_header(cfg, client, locked)
+
+                # ── f: 静音闹钟 ──
+                elif ch.lower() == "f":
+                    last_ids = list(reminder._last_triggered.keys())
+                    dismissed = False
+                    for tid in reversed(last_ids):
+                        if tid.startswith("alarm_"):
+                            alarm_id = tid[6:]
+                            try:
+                                resp = client._http_post(f"/api/alarms/{alarm_id}/dismiss")
+                                if resp.status_code == 200:
+                                    print(f"\n  \U0001f515 闹钟 {alarm_id} 已静音")
+                                    dismissed = True
+                                    break
+                            except Exception:
+                                pass
+                    if not dismissed:
+                        try:
+                            resp = client._http_get("/api/alarms/now")
+                            if resp.status_code == 200:
+                                nxt = resp.json().get("next_alarm")
+                                if nxt and nxt.get("fired"):
+                                    resp2 = client._http_post(f"/api/alarms/{nxt['id']}/dismiss")
+                                    if resp2.status_code == 200:
+                                        print(f"\n  \U0001f515 闹钟 {nxt['id']} 已静音")
+                                        dismissed = True
                         except Exception:
                             pass
-                if not dismissed:
-                    # 尝试静音最近一条闹钟（可能不在 _last_triggered 中）
-                    try:
-                        resp = client._http_get("/api/alarms/now")
-                        if resp.status_code == 200:
-                            nxt = resp.json().get("next_alarm")
-                            if nxt and nxt.get("fired"):
-                                resp2 = client._http_post(f"/api/alarms/{nxt['id']}/dismiss")
-                                if resp2.status_code == 200:
-                                    print(f"\n  🔕 闹钟 {nxt['id']} 已静音")
-                                    dismissed = True
-                    except Exception:
-                        pass
-                if not dismissed:
-                    print(f"\n  🔕 无活跃闹钟可静音")
-                client.stop_tts()
+                    if not dismissed:
+                        print(f"\n  \U0001f515 无活跃闹钟可静音")
+                    client.stop_tts()
 
-            elif ch.lower() == "l":
-                try:
-                    resp = client._http_get("/api/alarms")
-                    if resp.status_code == 200:
-                        alarms = resp.json().get("alarms", [])
-                        print(f"\n  ⏰ Alarms: {len(alarms)} total")
-                        for a in alarms:
-                            wd = ",".join(a["days"]) if a["days"] else "每天"
-                            status = "✅" if a["enabled"] else "⛔"
-                            snd = f" 🔊{a['sound']}" if a.get("sound") else ""
-                            print(f"    {status} {a['id']} {a['time']} [{wd}] {a['message']}{snd}")
-                    resp2 = client._http_get("/api/alarms/now")
-                    if resp2.status_code == 200:
-                        nxt = resp2.json().get("next_alarm")
-                        if nxt:
-                            cd = nxt.get("countdown", "?")
-                            icon = "⚡" if nxt.get("fired") else "🔔"
-                            print(f"    {icon} 下次: {nxt['date']}({nxt['weekday']}) {nxt['time']} 剩{cd}")
-                        else:
-                            print(f"    ⏰ 无待触发闹钟")
-                    resp3 = client._http_get("/api/alarms/status")
-                    if resp3.status_code == 200:
-                        st = resp3.json()
-                        print(f"    📊 今日触发: {st.get('fired_today', 0)} 次")
-                except Exception as e:
-                    print(f"\n  Alarm status failed: {e}")
-
-            elif ch.lower() == "t":
-                text = input("  Text Input: ").strip()
-                if text:
+                # ── l: 闹钟状态 ──
+                elif ch.lower() == "l":
                     try:
-                        resp = client._http_post("/api/chat/send", json={
-                            "message": text,
-                            "chat_id": client.chat_id,
-                            "chat_name": "minimal",
-                            "tts_enabled": False,
-                        })
+                        resp = client._http_get("/api/alarms")
                         if resp.status_code == 200:
-                            reply = resp.json().get("reply", "")
-                            print(f"\n  {reply}")
+                            alarms = resp.json().get("alarms", [])
+                            print(f"\n  \u23f0 Alarms: {len(alarms)} total")
+                            for a in alarms:
+                                wd = ",".join(a["days"]) if a["days"] else "每天"
+                                status = "\u2705" if a["enabled"] else "\u26d4"
+                                snd = f" \U0001f50a{a['sound']}" if a.get("sound") else ""
+                                print(f"    {status} {a['id']} {a['time']} [{wd}] {a['message']}{snd}")
+                        resp2 = client._http_get("/api/alarms/now")
+                        if resp2.status_code == 200:
+                            nxt = resp2.json().get("next_alarm")
+                            if nxt:
+                                cd = nxt.get("countdown", "?")
+                                icon = "\u26a1" if nxt.get("fired") else "\U0001f514"
+                                print(f"    {icon} 下次: {nxt['date']}({nxt['weekday']}) {nxt['time']} 剩{cd}")
+                            else:
+                                print(f"    \u23f0 无待触发闹钟")
+                        resp3 = client._http_get("/api/alarms/status")
+                        if resp3.status_code == 200:
+                            st = resp3.json()
+                            print(f"    \U0001f4ca 今日触发: {st.get('fired_today', 0)} 次")
                     except Exception as e:
-                        pass
+                        print(f"\n  Alarm status failed: {e}")
 
-            elif ch == "=":
-                text = input("  Async Task: ").strip()
-                if text:
-                    task_id = client.send_async(text)
-                    if task_id:
-                        async_poller.add_task(task_id)
+                # ── t: 文本输入 ──
+                elif ch.lower() == "t":
+                    text = raw_input("  Text Input: ").strip()
+                    if text:
+                        try:
+                            resp = client._http_post("/api/chat/send", json={
+                                "message": text,
+                                "chat_id": client.chat_id,
+                                "chat_name": "minimal",
+                                "tts_enabled": False,
+                            })
+                            if resp.status_code == 200:
+                                reply = resp.json().get("reply", "")
+                                print(f"\n  {reply}")
+                        except Exception as e:
+                            pass
 
-            elif ch.lower() == "n":
-                if _music_mode:
-                    v = max(0.0, player._volume - 0.1)
-                    player.audio_set_volume(v)
-                    _play_beep(client, 400)
-                    print(f"\n  ♪ Vol: {v:.0%}")
+                # ── =: 异步任务 ──
+                elif ch == "=":
+                    text = raw_input("  Async Task: ").strip()
+                    if text:
+                        task_id = client.send_async(text)
+                        if task_id:
+                            async_poller.add_task(task_id)
 
-            elif ch.lower() == "m":
-                if _music_mode:
-                    v = min(1.0, player._volume + 0.1)
-                    player.audio_set_volume(v)
-                    _play_beep(client, 800)
-                    print(f"\n  ♪ Vol: {v:.0%}")
+                # ── 音乐模式音量 ──
+                elif ch.lower() == "n":
+                    if _music_mode:
+                        v = max(0.0, player._volume - 0.1)
+                        player.audio_set_volume(v)
+                        _play_beep(client, 400)
+                        print(f"\n  \u266a Vol: {v:.0%}")
 
-            elif _music_mode and ch.lower() == "d":
-                player.prev()
-                _play_beep(client, 600)
-                print(f"\n  ♪ Prev → {player.current_index + 1}/{len(player.playlist)}")
-            elif _music_mode and ch.lower() == "e":
-                player.toggle()
-                _play_beep(client, 800 if player.state == "playing" else 400)
-                print(f"\n  ♪ {'▶' if player.state == 'playing' else '⏸'} {player.state}")
-            elif _music_mode and ch.lower() == "f":
-                player.next()
-                _play_beep(client, 600)
-                print(f"\n  ♪ Next → {player.current_index + 1}/{len(player.playlist)}")
-            elif ch.lower() in ("b", "c", "d", "e", "f"):
-                pass
+                elif ch.lower() == "m":
+                    if _music_mode:
+                        v = min(1.0, player._volume + 0.1)
+                        player.audio_set_volume(v)
+                        _play_beep(client, 800)
+                        print(f"\n  \u266a Vol: {v:.0%}")
 
-            else:
-                buffer += ch
+                # ── 音乐模式控制 ──
+                elif _music_mode and ch.lower() == "d":
+                    player.prev()
+                    _play_beep(client, 600)
+                    print(f"\n  \u266a Prev \u2192 {player.current_index + 1}/{len(player.playlist)}")
+                elif _music_mode and ch.lower() == "e":
+                    player.toggle()
+                    _play_beep(client, 800 if player.state == "playing" else 400)
+                    print(f"\n  \u266a {'▶' if player.state == 'playing' else '⏸'} {player.state}")
+                elif _music_mode and ch.lower() == "f":
+                    player.next()
+                    _play_beep(client, 600)
+                    print(f"\n  \u266a Next \u2192 {player.current_index + 1}/{len(player.playlist)}")
+                elif ch.lower() in ("b", "c", "d", "e", "f"):
+                    pass
 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        player.cleanup()
-        async_poller.stop()
-        reminder.stop()
-        if recorder.is_recording:
-            recorder.stop_and_send()
-        keyboard.stop()
-        cfg["chat_id"] = client.chat_id
-        save_config(cfg)
-        print("\n  Goodbye")
+        except KeyboardInterrupt:
+            pass
+        finally:
+            player.cleanup()
+            async_poller.stop()
+            reminder.stop()
+            if recorder.is_recording:
+                recorder.stop_and_send()
+            cfg["chat_id"] = client.chat_id
+            save_config(cfg)
+            print("\n  Goodbye")
+
 
 if __name__ == "__main__":
     main()
