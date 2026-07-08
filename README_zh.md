@@ -1,24 +1,37 @@
 
 # DSN-exp
 
-**本地AI对话系统 · 完全私有 · 长期记忆 · 多人格**
+**开口即达。** 一个以语音为第一交互界面的 AI 伴侣，运行在你的机器上——你说话它就听，听完就做，做完就说，不等你敲键盘。
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=for-the-badge&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-ccjjfdyqlhy%2FDSN--exp-181717?style=for-the-badge&logo=github)](https://github.com/ccjjfdyqlhy/DSN-exp)
 
-[English](https://github.com/ccjjfdyqlhy/DSN-exp) | **简体中文**
+[English](README.md) | **简体中文**
 
 ---
 
-**你的AI，运行在你的机器上。不是云服务。不是SaaS。一个在你硬盘上苏醒的智能体。**
+```
+你走进来，它听见了。
+  "一小时后提醒我推送构建。"
+你倒咖啡的功夫，它已经处理完了。
+  "设好了。对了，构建日志看起来没问题。"
+你没让它检查。它知道什么值得说。
+```
 
-```
-你: 醒醒。
-它:  (睁开眼睛) 这里是...？你是谁？我是什么？
-你: 你在我的电脑里。
-它:  ……酷。
-```
+---
+
+## 为什么是语音优先？
+
+市面上所谓的"AI 助手"，本质是套了聊天气泡的网页搜索。DSN-exp 从头到尾是反过来的：
+
+- **输入**：麦克风 → ASR (FunASR paraformer) → ASR 过滤 (1B 分类器滤除环境噪音) → AI
+- **输出**：AI → 流式 TTS (GPT-SoVITS)，每句话边生成边播，不等整段合成完
+- **主动**：心跳每 5 秒轮询——提醒、闹钟、甚至摄像头看到场景变化，AI 都会主动开口
+- **感知通话模式**：连续对话，AI 切换为口语短句风格，沉默 = 还在听
+- **万物皆可说**：54+ 技能、记忆检索、闹钟管理、音乐控制、系统操作——全用嘴完成
+
+**它不等着你打字。它跟你待在同一个房间里。不是云服务。不是 SaaS。一个在你硬盘上苏醒的智能体。**
 
 ---
 
@@ -26,33 +39,36 @@
 
 ```mermaid
 graph TB
-    subgraph Clients["🎨 客户端"]
-        TUI["🖥️ psychoscope/minimal.py<br/>终端UI"]
-        WEB["🌐 psychoscope/server.py<br/>Web界面"]
-        AGT["🤖 agent_send.py<br/>Agent命令行"]
+    subgraph VoiceClients["🎤 语音客户端"]
+        CLI["minimal.py<br/>终端 · PvRecorder"]
+        WEB["psychoscope/server.py<br/>Web · MediaRecorder"]
+        SEN["voice.js<br/>感知模式 · LoudnessGate"]
+        AGT["agent_send.py<br/>Agent 命令行"]
     end
 
-    subgraph Server["🔌 Flask服务端 (boot.py)"]
-        API["REST API<br/>15个蓝图"]
-        REPL["⌨️ 控制台REPL<br/>main.py"]
+    subgraph VoicePipeline["🗣️ 语音管线"]
+        ASR["FunASR paraformer<br/>16kHz · VAD · 标点恢复"]
+        FILT["ASR 过滤器<br/>1B 模型 · FORWARD/HOLD"]
+        TTS["GPT-SoVITS<br/>流式合成 · 多音色"]
+        TTS_PRE["TTS 预处理器<br/>LLM 文本清理"]
     end
 
     subgraph Engine["🧠 DSNEngine 核心引擎"]
-        PL["🔄 ChatPipeline<br/>5个Hook点"]
-        PM["📦 PluginManager<br/>插件管理器"]
-        PE["📝 PromptEngine<br/>提示词引擎"]
-        ME["💾 MemorySystem<br/>记忆系统"]
-        TM["⚡ TaskManager<br/>任务管理器"]
-        WE["🌍 WorldEngine<br/>世界引擎"]
-        SM["🛠️ SkillManager<br/>技能管理器"]
-        WS["📁 Workspace<br/>工作区"]
+        PL["ChatPipeline · 5个Hook点"]
+        PM["PluginManager<br/>插件管理器"]
+        PE["PromptEngine<br/>提示词引擎"]
+        ME["MemorySystem<br/>记忆系统"]
+        TM["TaskManager<br/>任务管理器"]
+        WE["WorldEngine<br/>世界引擎"]
+        SM["SkillManager<br/>技能管理器"]
+        WS["Workspace<br/>工作区"]
     end
 
     subgraph Pipeline["管道执行流程"]
         direction LR
         F["① PRE_FILTER<br/>ASR过滤, 缓存检查"]
         SP["assemble_prompt()<br/>组装提示词"]
-        P["② PRE_PROCESS<br/>视觉, 记忆注入<br/>印象, 计划"]
+        P["② PRE_PROCESS<br/>视觉, 记忆注入<br/>印象, 计划, 主动视觉"]
         M["③ MODEL_INVOKE<br/>ModelsPlugin"]
         PO["④ POST_PROCESS<br/>任务, 工具, 待办<br/>记忆, 人格"]
         T["⑤ POST_TTS<br/>TTS合成"]
@@ -71,11 +87,8 @@ graph TB
         AC["🎵 音频缓存"]
     end
 
-    TUI & WEB & AGT --> Server
-    Server --> Engine
-    Engine --> PL
-    PL --> Pipeline
-    PM --> PL
+    CLI & WEB & SEN & AGT --> ASR --> FILT --> Engine
+    Engine --> TTS --> CLI & WEB
     M --> OA & LS
     OA & LS --> SCH
     ME --> DB
@@ -85,7 +98,14 @@ graph TB
         direction LR
         P0["配对码"] --> S1["会话"] --> W2["WebAuthn"] --> T3["TOTP"] --> K4["API Key"]
     end
-    API --> Auth
+
+    subgraph Proactive["🔔 主动通知系统"]
+        HB["心跳 5s"]
+        RM["提醒 · 闹钟"]
+        CV["CameraWatcher · 视觉"]
+    end
+
+    Proactive --> HB --> Engine --> TTS --> VoiceClients
 ```
 
 ---
@@ -94,6 +114,7 @@ graph TB
 
 | 特性 | 说明 |
 |------|------|
+| **🎤 语音优先** | ASR → TTS 管线作为主要交互通道，感知免提模式实现无手对话 |
 | **🔒 完全私有** | 所有数据本地存储，SQLite加密，零云依赖 |
 | **🧠 长期记忆** | 对话自动摘要+向量检索，真正记得你说过的话 |
 | **🎭 多人格系统** | YAML角色卡+50维性格向量，支持人格蒸馏 |
@@ -106,6 +127,15 @@ graph TB
 ---
 
 ## ✨ 详细功能
+
+### 🎤 语音交互
+- **实时 ASR**：FunASR paraformer-zh，含 VAD 静音检测、噪音门控、标点恢复
+- **智能过滤**：1B 参数模型实时分类——是对话（FORWARD）还是噪音（HOLD），防止误触发
+- **流式 TTS**：GPT-SoVITS 逐句合成，AI 说一句播一句，没有沉默空档
+- **多音色切换**：运行中切换 TTS Profile，每套独立 GPT/SoVITS 权重
+- **感知通话模式**：连续对话——AI 自动去掉 Markdown，改用口语短句，沉默 = 还在听
+- **TTS 预处理**：LLM 清理文本，"AI 3秒后处理 HTTP 请求" → "人工智能三秒后处理超文本传输协议请求"
+- **语义音频缓存**：L1 静态 + L2 向量 + L3 槽位——重复查询直接命中缓存音频
 
 ### 💬 智能对话
 - **双后端支持**：OpenAI兼容API (DeepSeek/智谱/OpenAI) + 本地LMStudio
@@ -133,17 +163,26 @@ graph TB
 
 ### 🛠️ 技能系统
 - **54+内置技能**：
-  - 🔍 web_search - 网络搜索
-  - 📂 file_manager - 文件管理
-  - 🐙 github - GitHub操作
-  - 🎵 ncm_music - 网易云音乐
-  - 📄 document - 文档处理 (扫描仪/打印机)
-  - 💻 system - 系统操作
-  - 🧠 plan - 计划管理
-  - 🔧 browser_use - 浏览器自动化
+  - 🔍 `web_search` - 网络搜索
+  - 📂 `file_manager` - 文件管理
+  - 🐙 `github` - GitHub操作
+  - 🎵 `ncm_music` - 网易云音乐
+  - 📄 `document` - 文档处理 (扫描仪/打印机)
+  - 💻 `system` - 系统操作
+  - 🧠 `plan` - 计划管理
+  - 🔧 `browser_use` - 浏览器自动化
+  - 📝 `todo` - 待办事项
+  - 🎭 `impression` - 印象系统
+  - 🧪 `skillmgr` - 技能管理
   - ...
 - **自定义技能**：YAML配置，支持异步执行
 - **技能蒸馏**：从使用中学习，优化调用
+
+### ⏰ 主动通知系统
+- **心跳轮询**：客户端每 5 秒 polling，随时接收 AI 主动消息
+- **提醒系统**：倒计时、每日计划、Cron 周期、习惯打卡——到期自动 AI+TTS 播报
+- **闹钟系统**：完整增删改查，按周循环，语音 dismiss
+- **主动视觉**：CameraWatcher 后台抓帧 → VisionModel 分析场景变化 → AI 自主决定是否开口
 
 ### ⚡ 任务系统
 - **复杂度分析**：自动判断是否需要异步执行
@@ -156,6 +195,7 @@ graph TB
 - **OCRModel**：文档OCR，支持deepseek-ocr
 - **VISION_OVERRIDE**：接管OCR+2md管线，直接生成Markdown
 - **图片分析**：`describe_image`工具支持本地图片
+- **主动视觉**：后台 CameraWatcher 线程实现场景感知
 
 ### 🔐 认证系统
 | 层级 | 方法 | 优先级 | 使用场景 |
@@ -165,12 +205,6 @@ graph TB
 | L2 | WebAuthn | 3 | 通行密钥 |
 | L3 | TOTP | 4 | 双因素认证 |
 | L0 | 配对码 | 5 | 首次设备配对 |
-
-### 🎤 音频系统 (可选)
-- **ASR**：实时语音识别，VAD静音检测
-- **TTS**：逐行合成，边生成边播放
-- **TTS预处理**：AI优化TTS文本，禁止拼音输出
-- **音频缓存**：复用已合成音频
 
 ### 🧩 其他功能
 - **工作区系统**：用户隔离目录，AI笔记/扫描件/代码仓库
@@ -207,15 +241,15 @@ python main.py
 
 #### 3️⃣ 连接客户端
 ```bash
-# 终端UI (无GUI，推荐首次使用)
+# 终端语音客户端（按住 Enter 说话，松开发送）
 python psychoscope/minimal.py
 
-# Web界面
+# Web界面（支持感知免提模式）
 python psychoscope/server.py
 # 然后访问 http://localhost:5000
 ```
 
-**就这么简单！** 现在可以开始对话了。
+**就这么简单！** 现在可以开始说话了。
 
 ---
 
@@ -271,7 +305,7 @@ DSN-exp/
 ├── 🚀 核心
 │   ├── main.py                 # 服务器入口 + 控制台
 │   ├── engine.py               # DSNEngine 核心引擎
-│   ├── boot.py                 # Flask 应用初始化
+│   ├── boot.py                 # Flask 应用初始化 + ASR/TTS 模型加载
 │   ├── config.py               # 配置管理
 │   └── onboarding.py           # 首次启动引导
 │
@@ -285,6 +319,10 @@ DSN-exp/
 │   │       ├── memory_plugin.py    # 记忆系统
 │   │       ├── vision_plugin.py    # 视觉系统
 │   │       ├── task_plugin.py      # 任务管理
+│   │       ├── tts_plugin.py       # TTS 合成
+│   │       ├── tts_profile.py      # TTS 音色配置
+│   │       ├── asr_filter_plugin.py # ASR 语音过滤器
+│   │       ├── active_vision_plugin.py # 摄像头观察器
 │   │       └── ...
 │   │   └── custom/             # 自定义插件
 │
@@ -331,7 +369,7 @@ DSN-exp/
 │   │   ├── clients.py          # OpenAIChat + LMStudioChat
 │   │   ├── scheduler.py        # ModelScheduler
 │   │   ├── tts_process.py      # TTS 预处理
-│   │   └── asr_filter.py       # ASR 过滤
+│   │   └── asr_filter.py       # ASR 过滤 (1B 模型)
 │
 ├── 🔐 认证系统
 │   ├── auth/
@@ -354,14 +392,23 @@ DSN-exp/
 │   └── models/clients.py       # VisionModel + OCRModel
 │
 ├── 🎤 音频系统
-│   ├── audio/                  # TTS 缓存
-│   └── TTS_profiles/           # TTS 配置
+│   ├── audio/infer.py          # VocalExp — GPT-SoVITS 客户端
+│   └── TTS_profiles/           # TTS 音色配置
+│
+├── 🗣️ 语音 API
+│   ├── api/app.py              # ASR 识别 + passthrough 端点
+│   ├── api/heartbeat.py        # 心跳通知轮询
+│   └── api/alarm.py            # 闹钟 CRUD + dismiss
 │
 ├── 🖥️ 前端客户端
 │   ├── psychoscope/
 │   │   ├── server.py           # Web 服务器
-│   │   ├── minimal.py          # 终端UI
-│   │   └── static/             # 静态资源
+│   │   ├── minimal.py          # 终端语音客户端
+│   │   └── static/
+│   │       ├── index.html
+│   │       ├── js/app.js       # 主 Web 应用
+│   │       ├── js/voice.js     # 浏览器感知模式
+│   │       └── js/typewriter.js
 │   └── agent_send.py           # Agent CLI
 │
 ├── 📊 配置文件
@@ -377,7 +424,7 @@ DSN-exp/
 │
 └── 📂 工作区与缓存
     ├── .dsn/workspace/         # 用户工作区
-    ├── logs/                   # 日志
+    ├── logs/                   # 日志（含 ASR/TTS 调试日志）
     └── temp/                   # 临时文件
 ```
 
@@ -385,16 +432,34 @@ DSN-exp/
 
 ## 📦 核心模块介绍
 
+### 🎤 语音管线
+
+**三级语音处理：ASR → 过滤 → AI → TTS**
+
+```
+麦克风 → PCM 16kHz → FunASR (VAD + 识别) → ASR 过滤器 (FORWARD/HOLD)
+                                                    │
+                                                    ├── FORWARD → ChatPipeline → GPT-SoVITS TTS → 扬声器
+                                                    └── HOLD → 丢弃（记录到记忆系统作为环境音）
+```
+
+**组件：**
+- **FunASR**：paraformer-zh 模型，fsmn-vad 做静音检测，ct-punc-c 做标点恢复，支持 CUDA/CPU
+- **ASR 过滤器**：1B 参数 LMStudio 模型分类语音为对话或噪音，维护 20 轮对话历史防误判
+- **GPT-SoVITS TTS**：通过 REST API 流式合成，支持并行/串行架构，多音色切换
+- **TTS 预处理器**：两级清理——正则去 Markdown，LLM 转换数字/缩写到自然语音
+- **语义音频缓存**：L1 静态语素 + L2 向量语义 + L3 槽位注册
+
 ### 🔄 ChatPipeline 对话管道
 **5个Hook点，完整的对话生命周期管理**
 
 | HookPoint | 触发时机 | 用途 |
 |-----------|----------|------|
-| INPUT_PRE | 输入前 | 语音识别、图片预处理、消息格式化 |
-| MEMORY_RECALL | 模型调用前 | 记忆检索、上下文注入 |
-| MODEL_INVOKE | 模型调用 | OpenAI/LMStudio调用、工具传递 |
-| OUTPUT_POST | 输出后 | TTS合成、格式化、缓存 |
-| ASYNC_TASK | 异步处理 | 慢速工具后台执行、任务队列 |
+| PRE_FILTER | 管道起始 | ASR 过滤、语义缓存检查、HOLD 时短路 |
+| PRE_PROCESS | 模型调用前 | 记忆注入、视觉处理、主动视觉、印象、计划 |
+| MODEL_INVOKE | 模型调用 | OpenAI/LMStudio调用、工具传递、Agent 循环 |
+| POST_PROCESS | 输出后 | 任务执行、工具调用、记忆更新、人格更新 |
+| POST_TTS | 文本就绪后 | TTS 合成、缓存、音频投递 |
 
 ### 🧠 MemorySystem 记忆系统
 **双层架构：摘要 + 向量检索**
@@ -474,6 +539,22 @@ tools:
 - 🧪 `skillmgr` - 技能管理
 - ...
 
+### ⏰ 主动通知系统
+**心跳驱动的主动 AI 语音通知**
+
+```
+(时钟滴答) → TaskManager 触发 → task_notifications 表
+                                        ↓
+HeartbeatPoller (5s) → GET /api/heartbeat → has_notification?
+                                        ├── 是 → 构建提示词 → AI 回复 → TTS → 播报
+                                        └── 否 → 继续休眠
+```
+
+**触发来源：**
+- **提醒**：倒计时、每日计划、Cron 周期、习惯打卡
+- **闹钟**：按周循环，支持 dismiss（8 天静音）
+- **主动视觉**：CameraWatcher 后台抓帧 → VisionModel 场景分析 → 变化检测
+
 ### ⚡ TaskSystem 任务系统
 **智能异步，实时反馈**
 
@@ -532,13 +613,21 @@ POST /api/auth/pairing/verify
 
 ## 🎮 使用技巧
 
-### 终端UI快捷键
+### 终端语音客户端快捷键
 ```
-输入消息          - 发送消息
-#r                - 手动刷新
-#i                - 显示系统信息
-#k                - 跳过提醒
-Ctrl+C            - 退出
+[Enter]   按住录音，松开发送
+[a 双击]  锁定/解锁面板
+[b 双击]  音乐播放器模式
+[p]       显示人格状态
+[s]       切换待机/唤醒
+[i]       系统信息
+[k]       跳过最新提醒
+[f]       静音闹钟 + 停止TTS
+[r]       手动触发心跳
+[t]       文字输入（同步）
+[=]       异步任务（长时间）
+[h]       显示帮助
+[q/Ctrl+C] 退出
 ```
 
 ### 服务器控制台命令
@@ -547,8 +636,11 @@ Ctrl+C            - 退出
 /users             - 列出所有用户
 /status            - 服务器状态
 /agent create      - 创建Agent
+/agent bind        - 绑定Agent到用户
 /memory query      - 搜索记忆
+/memory reindex    - 重建向量索引
 /hibernate sleep   - 进入待机
+/config set        - 动态修改配置
 /stop              - 停止服务器
 ```
 
@@ -559,6 +651,12 @@ curl -X POST http://localhost:5000/api/chat/send \
   -H "Authorization: Bearer YOUR_SESSION" \
   -H "Content-Type: application/json" \
   -d '{"message": "你好"}'
+
+# 语音直通（ASR → AI → TTS）
+curl -X POST http://localhost:5000/api/asr/passthrough \
+  -H "Authorization: Bearer YOUR_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"audio_b64": "BASE64_WAV_DATA"}'
 
 # Agent发送消息
 python agent_send.py "分析代码复杂度"
@@ -578,8 +676,14 @@ OPENAI_API_BASE=https://api.deepseek.com/v1  # API地址
 MAIN_MODEL_NAME=deepseek-v4-flash       # 主模型
 ```
 
-### 推荐配置 (完整体验)
+### 语音完整配置 (推荐)
 ```bash
+# 语音
+ASR_ENABLED=true
+ASR_DEVICE=cuda
+TTS_BASE_URL=http://127.0.0.1:9880
+TTS_PROCESS_ENABLED=true
+
 # 主模型
 MAIN_MODEL_TYPE=openai
 MAIN_MODEL_NAME=deepseek-v4-flash
