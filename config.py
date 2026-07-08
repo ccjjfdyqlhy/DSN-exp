@@ -158,6 +158,7 @@ class Config:
     ACTIVE_VISION_PROACTIVE_COOLDOWN = int(_env("ACTIVE_VISION_PROACTIVE_COOLDOWN", "600"))  # 秒，主动通知冷却
     ACTIVE_VISION_PERIODIC_NOTIFY_MIN = int(_env("ACTIVE_VISION_PERIODIC_NOTIFY_MIN", "30"))  # 分钟，周期性通知间隔
     CAMERA_DEVICE_ID = int(_env("CAMERA_DEVICE_ID", "0"))
+    CAMERA_ENABLED = _env("CAMERA_ENABLED", "true").lower() == "true"  # 总开关：关闭后禁用一切摄像头调用
 
 
     # ==================== OCR 文档处理 ====================

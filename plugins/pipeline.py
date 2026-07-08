@@ -1165,6 +1165,7 @@ class ChatPipeline:
                                 line = agent_tts_q.get_nowait()
                                 if line is None:
                                     agent_tts_q = None
+                                    break
                                 else:
                                     logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent stream), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
                                     yield f"data: {json.dumps({
@@ -1218,14 +1219,16 @@ class ChatPipeline:
                             async for ev in _drain_q():
                                 yield ev
 
-                    # Agent 循环结束，排空 TTS 队列
+                    # Agent 循环结束，阻塞等待 TTS 流式队列排空（TTS 可能仍在合成）
+                    agent_tts_collected: list[dict] = []
                     if agent_tts_q is not None:
-                        try:
-                            while True:
-                                line = agent_tts_q.get_nowait()
+                        while True:
+                            try:
+                                line = await asyncio.wait_for(agent_tts_q.get(), timeout=0.5)
                                 if line is None:
                                     break
-                                logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent drain), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
+                                agent_tts_collected.append(line)
+                                logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent post drain), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
                                 yield f"data: {json.dumps({
                                     'status': 'line',
                                     'index': line['index'],
@@ -1233,13 +1236,20 @@ class ChatPipeline:
                                     'text': line['text'],
                                     'audio_b64': line['audio_b64'],
                                 })}\n\n"
-                        except asyncio.QueueEmpty:
-                            pass
+                            except asyncio.TimeoutError:
+                                yield f"data: {json.dumps({
+                                    'status': 'thinking',
+                                    'text': '音频合成中...',
+                                })}\n\n"
 
                     ctx = await agent_task
                     await agent_bridge
                     ctx.extra["_agent_progress_queue"] = False  # 标记已 streamed
-                    # 清除队列引用（但保留标记供后续判断）
+                    # 将 Agent TTS 结果注入 tts_lines，阻止 POST_TTS 重复合成
+                    if agent_tts_collected:
+                        tts_collected = agent_tts_collected
+                        tts_streamed = True
+                        ctx.extra["_agent_tts_done"] = True
                     if ctx.reply and ctx.reply != "…":
                         ctx.extra["_agent_reply_dirty"] = True
 

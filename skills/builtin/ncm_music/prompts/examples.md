@@ -142,3 +142,161 @@ priority: 55
 }
 </tool>
 → "正在播放: 晴天.mp3"
+
+## 搜索歌手示例
+
+用户: "周杰伦有什么歌"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_artist_tracks",
+  "params": {"artist_id": 6452, "num": 5}
+}
+</tool>
+→ "周杰伦热门歌曲：1.七里香 2.晴天 3.夜曲 4.稻香 5.青花瓷"
+
+## 搜索专辑示例
+
+用户: "查一下周杰伦的专辑《叶惠美》"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "search",
+  "params": {"keyword": "叶惠美 周杰伦", "search_type": "album"}
+}
+</tool>
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_album",
+  "params": {"album_id": "上一步返回的ID"}
+}
+</tool>
+→ "《叶惠美》是周杰伦2003年的专辑，包含晴天、以父之名等10首歌"
+
+## 歌单管理示例
+
+用户: "看看我收藏的歌单"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_user_playlists",
+  "params": {}
+}
+</tool>
+→ "你有3个歌单：1.我喜欢的音乐(12首) 2.开车必备(25首) 3.深夜循环(8首)"
+
+用户: "把这周杰伦的歌加到我的歌单"
+→
+（先搜到歌曲 → 然后用:）
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "add_to_playlist",
+  "params": {"playlist_id": "歌单ID", "track_ids": [歌曲ID]}
+}
+</tool>
+→ "已添加到歌单"
+
+## 每日签到示例
+
+用户: "签到网易云"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "daily_signin",
+  "params": {"type": "mobile"}
+}
+</tool>
+→ "签到成功！手机端+4经验"
+
+## 每日推荐示例
+
+用户: "今天推荐什么歌"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_daily_recommend",
+  "params": {}
+}
+</tool>
+→ "今日推荐: 1.xxx 2.xxx ..."
+
+## 私人 FM 示例
+
+用户: "随便放点歌听听"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_personal_fm",
+  "params": {"limit": 3}
+}
+</tool>
+→ "FM推荐: 1.xxx 2.xxx 3.xxx 想听哪首？"
+
+## 歌曲评论示例
+
+用户: "看看七里香的评论"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_track_comments",
+  "params": {"track_id": 185709}
+}
+</tool>
+→ "热门评论：'前奏一响起，仿佛回到了那个夏天...'(赞 12345)"
+
+## 喜欢歌曲示例
+
+用户: "这首歌太好听了，点个喜欢"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "like_track",
+  "params": {"track_id": "歌曲ID", "like": true}
+}
+</tool>
+→ "已添加到我喜欢"
+
+## MV 示例
+
+用户: "看看七里香的MV"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_mv",
+  "params": {"mv_id": "MV ID"}
+}
+</tool>
+→ "七里香MV(4分58秒) - 播放地址: ..."
+
+## 歌手详情示例
+
+用户: "查一下 Taylor Swift 的资料"
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "search",
+  "params": {"keyword": "Taylor Swift", "search_type": "artist"}
+}
+</tool>
+→
+<tool>
+{
+  "skill": "ncm_music",
+  "tool": "get_artist",
+  "params": {"artist_id": "上一步的ID"}
+}
+</tool>
+→ "Taylor Swift · 美国歌手 · 专辑数: 10 · 歌曲数: 178"

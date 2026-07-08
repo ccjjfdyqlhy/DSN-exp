@@ -32,6 +32,13 @@ class VisualPerceptionTool:
         :param focus: 关注焦点 ("user" / "environment" / "" 全面)
         :return: dict with success, description, ... 
         """
+        from config import Config
+        if not Config.CAMERA_ENABLED:
+            return {
+                "success": False,
+                "error": "摄像头功能未启用 (CAMERA_ENABLED=false)",
+                "description": "（摄像头已关闭，无法获取画面）",
+            }
         try:
             frame, data_url = self._capture_frame()
         except Exception as e:

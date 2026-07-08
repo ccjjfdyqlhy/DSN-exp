@@ -157,8 +157,8 @@ def heartbeat():
     try:
         notifications = _task_manager.fetch_pending_notifications(uid, limit=1)
     except Exception as e:
-        logger.error("拉取待通知失败 uid=%d: %s", uid, e)
-        return jsonify({"has_notification": False, "error": str(e)}), 200
+        logger.error("拉取待通知失败 uid=%d: %s", uid, e, exc_info=True)
+        return jsonify({"has_notification": False, "error": "Internal error"}), 200
 
     if not notifications:
         # 2. 检查闹钟触发
@@ -263,20 +263,20 @@ def heartbeat():
             is_asr_input=False,
         )
     except Exception as e:
-        logger.error("心跳生成 AI 回复失败 uid=%d task=%s type=%s: %s", uid, task_id, task_type, e)
+        logger.error("心跳生成 AI 回复失败 uid=%d task=%s type=%s: %s", uid, task_id, task_type, e, exc_info=True)
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
             pass
         return jsonify({
             "has_notification": True,
-            "reply": parsed_result.get("description", "（通知）"),
+            "reply": "（通知生成失败）",
             "audio_b64": "",
             "task_id": task_id,
             "chat_id": chat_id,
             "notification_id": notification_id,
             "task_type": task_type,
-            "error": str(e),
+            "error": "Internal error",
         })
 
     reply = result.get("reply", "")
@@ -333,4 +333,5 @@ def dismiss_notification():
         conn.commit()
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.error("取消通知失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": "Internal error"}), 500
