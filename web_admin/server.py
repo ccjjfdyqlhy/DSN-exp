@@ -95,7 +95,7 @@ def start_admin_server(host: str = WEB_ADMIN_HOST, port: int = WEB_ADMIN_PORT,
     t = threading.Thread(target=server.serve_forever, daemon=daemon, name="web-admin")
     t.start()
     password = app.config.get("ADMIN_PASSWORD")
-    pw_info = f"  Password: {password}" if password else "  No authentication"
+    pw_info = "  Authentication: enabled" if password else "  No authentication"
     print(f"\n  Web Admin: http://{host if host != '0.0.0.0' else 'localhost'}:{port}/")
     print(f"  {pw_info}")
     logging.getLogger("web_admin").info("Admin server started on %s:%d", host, port)
