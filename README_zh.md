@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-ccjjfdyqlhy%2FDSN--exp-181717?style=for-the-badge&logo=github)](https://github.com/ccjjfdyqlhy/DSN-exp)
 
+[English](https://github.com/ccjjfdyqlhy/DSN-exp) | **简体中文**
+
 ---
 
 **你的AI，运行在你的机器上。不是云服务。不是SaaS。一个在你硬盘上苏醒的智能体。**

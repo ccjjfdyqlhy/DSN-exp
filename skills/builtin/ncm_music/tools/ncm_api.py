@@ -924,6 +924,10 @@ class NCMApi:
 
     # ── 标准化辅助 ──
 
+
+
+
+        # normalize album dict into standard format
     def _normalize_album(self, album: dict) -> dict:
         return {
             "id": album.get("id", 0),
@@ -934,6 +938,10 @@ class NCMApi:
             "cover": album.get("picUrl", album.get("coverImgUrl", "")),
         }
 
+
+
+
+        # normalize artist dict into standard format
     def _normalize_artist(self, artist: dict) -> dict:
         return {
             "id": artist.get("id", 0),
@@ -946,6 +954,10 @@ class NCMApi:
             "brief_desc": artist.get("briefDesc", ""),
         }
 
+
+
+
+        # normalize playlist dict into standard format
     def _normalize_playlist(self, pl: dict) -> dict:
         return {
             "id": pl.get("id", 0),
@@ -958,6 +970,10 @@ class NCMApi:
             "tags": pl.get("tags", []),
         }
 
+
+
+
+        # normalize user dict into standard format
     def _normalize_user(self, user: dict) -> dict:
         return {
             "id": user.get("userId", user.get("id", 0)),
@@ -968,6 +984,10 @@ class NCMApi:
             "gender": {0: "未知", 1: "男", 2: "女"}.get(user.get("gender", 0), "未知"),
         }
 
+
+
+
+        # normalize mv dict into standard format
     def _normalize_mv(self, mv: dict) -> dict:
         return {
             "id": mv.get("id", mv.get("mvId", 0)),
@@ -979,6 +999,10 @@ class NCMApi:
             "brief_desc": (mv.get("desc", "") or "")[:200],
         }
 
+
+
+
+        # normalize video dict into standard format
     def _normalize_video(self, video: dict) -> dict:
         return {
             "id": video.get("vid", video.get("id", 0)),
@@ -988,6 +1012,10 @@ class NCMApi:
             "cover": video.get("coverUrl", ""),
         }
 
+
+
+
+        # normalize dj radio dict into standard format
     def _normalize_dj(self, dj: dict) -> dict:
         return {
             "id": dj.get("id", 0),
@@ -1082,6 +1110,10 @@ class NCMApi:
     # 数据标准化
     # ================================================================
 
+
+
+
+        # normalize a raw song dict into a standard format
     def _normalize_song(self, item: dict) -> dict:
         artists = ", ".join(a.get("name", "") for a in item.get("artists", item.get("ar", [])))
         album = (item.get("album", item.get("al", {})) or {})
@@ -1135,6 +1167,10 @@ class NCMApi:
 
         return {"success": False, "error": "下载未完成"}
 
+
+
+
+        # save lrc and plain lyrics to files
     def _save_lyrics(self, song_id: int, lrc_text: str, plain_text: str,
                      music_dir: Path) -> dict:
         music_dir.mkdir(parents=True, exist_ok=True)
@@ -1158,6 +1194,9 @@ class NCMApi:
     def _strip_lrc_timestamps(lrc_text: str) -> str:
         lines = []
         for line in lrc_text.strip().split("\n"):
+
+
+        # strip timestamp markers from lrc text
             clean = re.sub(r"\[\d{2}:\d{2}(?:\.\d{2,3})?\]", "", line).strip()
             if clean and len(clean) > 1:
                 lines.append(clean)
@@ -1175,6 +1214,9 @@ class NCMApi:
     def _guess_ext(url: str) -> str:
         path = urlparse(url).path.lower()
         for ext in (".flac", ".mp3", ".ogg", ".m4a", ".aac", ".wav", ".wma"):
+
+
+        # sanitize a string for use as a filename
             if ext in path:
                 return ext
         return ".mp3"
@@ -1182,6 +1224,9 @@ class NCMApi:
     @staticmethod
     def _format_size(size: int) -> str:
         for unit in ("B", "KB", "MB", "GB"):
+
+
+        # format byte size into human-readable string
             if size < 1024:
                 return f"{size:.1f}{unit}"
             size /= 1024
