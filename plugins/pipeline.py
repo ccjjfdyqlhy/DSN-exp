@@ -1363,6 +1363,7 @@ class ChatPipeline:
                     'filtered': True,
                     'timing': timing,
                 })}\n\n"
+                logger.info("[SSE-DEBUG] >>> filter 路径 completed 已 yield, process_stream 即将 return, t=%.4f", time.perf_counter())
                 return
 
         # 完成
@@ -1383,3 +1384,4 @@ class ChatPipeline:
             completed['usage'] = ctx.usage
             completed['model_name'] = ctx.model_name
         yield f"data: {json.dumps(completed)}\n\n"
+        logger.info("[SSE-DEBUG] >>> YIELD completed 返回后, t=%.4f (若此日志与 yiled 差 > 1s 说明 yield 后有阻塞)", time.perf_counter())
