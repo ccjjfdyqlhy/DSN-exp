@@ -2,6 +2,7 @@
 # DSN-exp/app.py
 # 精简版 — 仅保留路由 + 中间件，初始化逻辑移至 boot.py
 
+import time
 from flask import Flask, request, jsonify, g, Response, stream_with_context
 from functools import wraps
 from datetime import datetime
@@ -284,6 +285,7 @@ def asr_passthrough():
 
     def generate():
         import asyncio
+        _t0_gen = time.perf_counter()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -299,9 +301,13 @@ def asr_passthrough():
                 try:
                     yield loop.run_until_complete(agen.__anext__())
                 except StopAsyncIteration:
+                    app.logger.info("[SSE-FLUSH] StopAsyncIteration 收到, t=%.4f, 距生成器启动 %.1fs",
+                                    time.perf_counter(), time.perf_counter() - _t0_gen)
                     break
         finally:
+            app.logger.info("[SSE-FLUSH] finally: loop.close() 开始, t=%.4f", time.perf_counter())
             loop.close()
+            app.logger.info("[SSE-FLUSH] finally: loop.close() 结束, t=%.4f", time.perf_counter())
 
     return Response(
         stream_with_context(generate()),
