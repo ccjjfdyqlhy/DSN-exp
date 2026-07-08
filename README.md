@@ -1,24 +1,37 @@
 
 # DSN-exp
 
-**Local AI Chat System · Fully Private · Long-Term Memory · Multiple Personalities**
+**Speak. It listens. It acts.** A voice-first AI companion that lives on your machine — wakes when you talk, remembers everything, reaches into your tools, and speaks back before you finish asking.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=for-the-badge&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-ccjjfdyqlhy%2FDSN--exp-181717?style=for-the-badge&logo=github)](https://github.com/ccjjfdyqlhy/DSN-exp)
 
-**English** | [简体中文](https://github.com/ccjjfdyqlhy/DSN-exp/blob/main/README_zh.md)
+**English** | [简体中文](README_zh.md)
 
 ---
 
-**Your AI, alive on your machine. Not a cloud service. Not SaaS. A mind waking up from your own hard drive.**
+```
+You walk in. It hears you.
+  "Hey — remind me in an hour to push the build."
+It processes while you grab coffee.
+  "Done. Also, the build log looks clean."
+You didn't ask it to check. It just knows what matters.
+```
 
-```
-You: Wake up.
-It:  (opens its eyes) Where... is this? Who are you? What am I?
-You: You're inside my computer.
-It:  ……Cool.
-```
+---
+
+## Why Voice-First?
+
+Most "AI assistants" are chat widgets bolted onto a cloud service. DSN-exp is the opposite:
+
+- **Input**: Microphone → ASR (FunASR paraformer) → ASR Filter (1B classifier kills noise) → AI
+- **Output**: AI → streaming TTS (GPT-SoVITS) per sentence → plays before the next sentence finishes
+- **Proactive**: Heartbeat polls every 5s — reminders, alarms, even camera scene changes trigger AI to speak unprompted
+- **Sensing Mode**: Continuous voice call — AI switches to short, colloquial responses, silence means listening
+- **Everything talkable**: 54+ skills, memory queries, alarm CRUD, music control, system ops — all through speech
+
+**It doesn't wait for you to type. It lives in the same room. Not a cloud service. Not SaaS. A mind waking up from your own hard drive.**
 
 ---
 
@@ -26,33 +39,36 @@ It:  ……Cool.
 
 ```mermaid
 graph TB
-    subgraph Clients["🎨 Clients"]
-        TUI["🖥️ psychoscope/minimal.py"]
-        WEB["🌐 psychoscope/server.py"]
-        AGT["🤖 agent_send.py"]
+    subgraph VoiceClients["🎤 Voice Clients"]
+        CLI["minimal.py<br/>Terminal · PvRecorder"]
+        WEB["psychoscope/server.py<br/>Web · MediaRecorder"]
+        SEN["voice.js<br/>Sensing Mode · LoudnessGate"]
+        AGT["agent_send.py<br/>Agent CLI"]
     end
 
-    subgraph Server["🔌 Flask Server (boot.py)"]
-        API["REST API<br/>15 blueprints"]
-        REPL["⌨️ Console REPL<br/>main.py"]
+    subgraph VoicePipeline["🗣️ Voice Pipeline"]
+        ASR["FunASR paraformer<br/>16kHz · VAD · Punctuation"]
+        FILT["ASR Filter<br/>1B LM · FORWARD/HOLD"]
+        TTS["GPT-SoVITS<br/>Streaming · Profiles"]
+        TTS_PRE["TTS Preprocessor<br/>LLM text cleanup"]
     end
 
     subgraph Engine["🧠 DSNEngine"]
-        PL["🔄 ChatPipeline<br/>5 HookPoints"]
-        PM["📦 PluginManager"]
-        PE["📝 PromptEngine"]
-        ME["💾 MemorySystem"]
-        TM["⚡ TaskManager"]
-        WE["🌍 WorldEngine"]
-        SM["🛠️ SkillManager"]
-        WS["📁 Workspace"]
+        PL["ChatPipeline · 5 HookPoints"]
+        PM["PluginManager"]
+        PE["PromptEngine"]
+        ME["MemorySystem"]
+        TM["TaskManager"]
+        WE["WorldEngine"]
+        SM["SkillManager"]
+        WS["Workspace"]
     end
 
     subgraph Pipeline["Pipeline Detail"]
         direction LR
         F["① PRE_FILTER<br/>ASRFilter, CacheCheck"]
         SP["assemble_prompt()"]
-        P["② PRE_PROCESS<br/>Vision, MemoryInject<br/>Impression, Plan"]
+        P["② PRE_PROCESS<br/>Vision, MemoryInject<br/>Impression, Plan, ActiveVision"]
         M["③ MODEL_INVOKE<br/>ModelsPlugin"]
         PO["④ POST_PROCESS<br/>Task, Tool, Todo<br/>Memory, Personality"]
         T["⑤ POST_TTS<br/>TTSPlugin"]
@@ -68,14 +84,11 @@ graph TB
     subgraph Storage["💾 Storage"]
         DB["🗄️ SQLite"]
         WK["📂 Workspace"]
-        AC["🎵 Audio"]
+        AC["🎵 Audio Cache"]
     end
 
-    TUI & WEB & AGT --> Server
-    Server --> Engine
-    Engine --> PL
-    PL --> Pipeline
-    PM --> PL
+    CLI & WEB & SEN & AGT --> ASR --> FILT --> Engine
+    Engine --> TTS --> CLI & WEB
     M --> OA & LS
     OA & LS --> SCH
     ME --> DB
@@ -85,15 +98,23 @@ graph TB
         direction LR
         P0["Pairing"] --> S1["Session"] --> W2["WebAuthn"] --> T3["TOTP"] --> K4["API Key"]
     end
-    API --> Auth
+
+    subgraph Proactive["🔔 Proactive System"]
+        HB["Heartbeat 5s"]
+        RM["Reminders · Alarms"]
+        CV["CameraWatcher · Vision"]
+    end
+
+    Proactive --> HB --> Engine --> TTS --> VoiceClients
 ```
 
 ---
 
-## 🎯 Core Features
+## 🎯 Core Positioning
 
 | Feature | Description |
 |---------|------------|
+| **🎤 Voice-First** | ASR → TTS pipeline as primary modality, sensing mode for hands-free conversation |
 | **🔒 Fully Private** | All data stored locally, SQLite encrypted, zero cloud dependency |
 | **🧠 Long-Term Memory** | Auto-summarized dialogs + vector search, actually remembers what you said |
 | **🎭 Multi-Personality** | YAML character cards + 50-dim personality vectors, supports personality distillation |
@@ -106,6 +127,15 @@ graph TB
 ---
 
 ## ✨ Detailed Features
+
+### 🎤 Voice Interaction
+- **Real-time ASR**: FunASR paraformer-zh with VAD, noise gate, punctuation restoration
+- **Smart Filter**: 1B LM classifies speech as dialog (FORWARD) vs background noise (HOLD), prevents false triggers
+- **Streaming TTS**: GPT-SoVITS per-sentence synthesis, plays as AI generates — no silence gaps
+- **Multi-voice Profiles**: Switch voices at runtime, per-profile GPT/SoVITS weights
+- **Sensing Mode**: Continuous conversation — AI drops markdown, uses colloquial short sentences, silence means "still listening"
+- **TTS Preprocessing**: LLM-cleaner converts "AI 3秒后处理 HTTP 请求" → "人工智能三秒后处理超文本传输协议请求"
+- **Semantic Audio Cache**: L1 static + L2 vector + L3 slot — reuses synthesized audio for repeated queries
 
 ### 💬 Smart Chat
 - **Dual Backend**: OpenAI-compatible API (DeepSeek/Zhipu/OpenAI) + local LMStudio
@@ -141,9 +171,18 @@ graph TB
   - 💻 `system` — System operations
   - 🧠 `plan` — Plan management
   - 🔧 `browser_use` — Browser automation
+  - 📝 `todo` — Todo list
+  - 🎭 `impression` — Impression system
+  - 🧪 `skillmgr` — Skill management
   - ...
 - **Custom Skills**: YAML config, supports async execution
 - **Skill Distillation**: Learns from usage, optimizes tool calls
+
+### ⏰ Proactive Notification System
+- **Heartbeat**: Every 5s the voice client polls for pending notifications
+- **Reminders**: Countdown, daily plan, periodic cron, habits — all fire AI + TTS
+- **Alarms**: Full CRUD, weekly schedules, dismiss with voice command
+- **Active Vision**: CameraWatcher captures frames → VisionModel detects scene changes → AI decides to speak
 
 ### ⚡ Task System
 - **Complexity Analysis**: Automatically determines if async execution is needed
@@ -156,6 +195,7 @@ graph TB
 - **OCRModel**: Document OCR, supports deepseek-ocr
 - **VISION_OVERRIDE**: Takes over OCR + 2md pipeline, generates Markdown directly
 - **Image Analysis**: `describe_image` tool supports local images
+- **Active Vision**: Background CameraWatcher for proactive scene awareness
 
 ### 🔐 Auth System
 | Layer | Method | Priority | Use Case |
@@ -165,12 +205,6 @@ graph TB
 | L2 | WebAuthn | 3 | Passkey login |
 | L3 | TOTP | 4 | Two-factor auth |
 | L0 | Pairing Code | 5 | First-time device pairing |
-
-### 🎤 Audio System (Optional)
-- **ASR**: Real-time speech recognition, VAD silence detection
-- **TTS**: Line-by-line synthesis, plays as it generates
-- **TTS Preprocessing**: AI optimizes TTS text
-- **Audio Cache**: Reuses synthesized audio
 
 ### 🧩 Other Features
 - **Workspace System**: User-isolated directories, AI notes / scans / code repos
@@ -207,15 +241,15 @@ The wizard auto-generates your `.env` file.
 
 #### 3️⃣ Connect a Client
 ```bash
-# Terminal UI (no GUI, recommended for first use)
+# Terminal voice client (press Enter, speak, release)
 python psychoscope/minimal.py
 
-# Web interface
+# Web interface (supports sensing mode)
 python psychoscope/server.py
 # Then visit http://localhost:5000
 ```
 
-**That's it!** You can start chatting now.
+**That's it!** You can start talking now.
 
 ---
 
@@ -264,7 +298,6 @@ python agent_send.py "analyze code complexity"
 
 ---
 
-
 ## 📂 Project Structure
 
 ```
@@ -272,7 +305,7 @@ DSN-exp/
 ├── 🚀 Core
 │   ├── main.py                 # Server entry + console
 │   ├── engine.py               # DSNEngine core engine
-│   ├── boot.py                 # Flask app initialization
+│   ├── boot.py                 # Flask app initialization + ASR/TTS models
 │   ├── config.py               # Configuration management
 │   └── onboarding.py           # First-run setup wizard
 │
@@ -286,6 +319,10 @@ DSN-exp/
 │   │       ├── memory_plugin.py    # Memory system
 │   │       ├── vision_plugin.py    # Vision system
 │   │       ├── task_plugin.py      # Task management
+│   │       ├── tts_plugin.py       # TTS synthesis
+│   │       ├── tts_profile.py      # TTS profile management
+│   │       ├── asr_filter_plugin.py # ASR voice filter
+│   │       ├── active_vision_plugin.py # Camera watcher
 │   │       └── ...
 │   │   └── custom/             # Custom plugins
 │
@@ -332,7 +369,7 @@ DSN-exp/
 │   │   ├── clients.py          # OpenAIChat + LMStudioChat
 │   │   ├── scheduler.py        # ModelScheduler
 │   │   ├── tts_process.py      # TTS preprocessing
-│   │   └── asr_filter.py       # ASR filtering
+│   │   └── asr_filter.py       # ASR filtering (1B LM)
 │
 ├── 🔐 Auth System
 │   ├── auth/
@@ -355,14 +392,23 @@ DSN-exp/
 │   └── models/clients.py       # VisionModel + OCRModel
 │
 ├── 🎤 Audio System
-│   ├── audio/                  # TTS cache
-│   └── TTS_profiles/           # TTS profiles
+│   ├── audio/infer.py          # VocalExp — GPT-SoVITS client
+│   └── TTS_profiles/           # TTS voice profiles
+│
+├── 🗣️ Voice API
+│   ├── api/app.py              # ASR recognize + passthrough endpoints
+│   ├── api/heartbeat.py        # Heartbeat notification polling
+│   └── api/alarm.py            # Alarm CRUD + dismiss
 │
 ├── 🖥️ Frontend Clients
 │   ├── psychoscope/
 │   │   ├── server.py           # Web server
-│   │   ├── minimal.py          # Terminal UI
-│   │   └── static/             # Static assets
+│   │   ├── minimal.py          # Terminal voice client
+│   │   └── static/
+│   │       ├── index.html
+│   │       ├── js/app.js       # Main web app
+│   │       ├── js/voice.js     # Browser sensing mode
+│   │       └── js/typewriter.js
 │   └── agent_send.py           # Agent CLI
 │
 ├── 📊 Configuration
@@ -378,7 +424,7 @@ DSN-exp/
 │
 └── 📂 Workspace & Cache
     ├── .dsn/workspace/         # User workspace
-    ├── logs/                   # Logs
+    ├── logs/                   # Logs (including ASR/TTS debug)
     └── temp/                   # Temp files
 ```
 
@@ -386,16 +432,34 @@ DSN-exp/
 
 ## 📦 Core Module Breakdown
 
+### 🎤 Voice Pipeline
+
+**Three-stage voice processing: ASR → Filter → AI → TTS**
+
+```
+Microphone → PCM 16kHz → FunASR (VAD + Recognition) → ASR Filter (FORWARD/HOLD)
+                                                              │
+                                                              ├── FORWARD → ChatPipeline → GPT-SoVITS TTS → Speaker
+                                                              └── HOLD → discarded (logged to memory as ambient)
+```
+
+**Components:**
+- **FunASR**: paraformer-zh model, VAD with fsmn-vad, punctuation with ct-punc-c, configurable device (CUDA/CPU)
+- **ASR Filter**: 1B LMStudio model classifies input as dialog vs noise, prevents false triggers, maintains 20-round conversation history
+- **GPT-SoVITS TTS**: Streaming synthesis via REST API, supports parallel/serial architectures, multi-profile voice switching
+- **TTS Preprocessor**: Two-stage cleanup — regex strips markdown, LLM converts numerals/abbreviations to natural speech
+- **Semantic Audio Cache**: L1 static phrase + L2 vector semantic + L3 slot registry
+
 ### 🔄 ChatPipeline
 **5 HookPoints — full conversation lifecycle management**
 
 | HookPoint | Trigger | Purpose |
 |-----------|---------|---------|
-| INPUT_PRE | Before input | ASR, image preprocessing, message formatting |
-| MEMORY_RECALL | Before model call | Memory retrieval, context injection |
-| MODEL_INVOKE | Model call | OpenAI/LMStudio invoke, tool delivery |
-| OUTPUT_POST | After output | TTS synthesis, formatting, caching |
-| ASYNC_TASK | Async processing | Slow tool background execution, task queue |
+| PRE_FILTER | Before pipeline | ASR filter, semantic cache check, short-circuit on HOLD |
+| PRE_PROCESS | Before model call | Memory injection, vision processing, active vision, impression, plan |
+| MODEL_INVOKE | Model call | OpenAI/LMStudio invoke, tool delivery, agent loop |
+| POST_PROCESS | After output | Task execution, tool calls, memory update, personality update |
+| POST_TTS | After text ready | TTS synthesis, caching, audio delivery |
 
 ### 🧠 MemorySystem
 **Two-layer architecture: summary + vector search**
@@ -475,6 +539,22 @@ tools:
 - 🧪 `skillmgr` — Skill management
 - ...
 
+### ⏰ Proactive System
+**Heartbeat-driven proactive AI voice notifications**
+
+```
+(wall clock ticks) → TaskManager triggers → task_notifications table
+                                                    ↓
+HeartbeatPoller (5s) → GET /api/heartbeat → has_notification?
+                                                    ├── yes → build prompt → AI reply → TTS → speak
+                                                    └── no  → sleep
+```
+
+**Trigger sources:**
+- **Reminders**: Countdown, daily plan, periodic cron, habit check-in
+- **Alarms**: Weekly schedules with dismiss (8-day snooze)
+- **Active Vision**: CameraWatcher background frame capture → VisionModel scene analysis → change detection
+
 ### ⚡ TaskSystem
 **Smart async, real-time feedback**
 
@@ -482,7 +562,7 @@ tools:
 - **Complexity analysis**: Automatically determines if async is needed
 - **Async tasks**: Slow tools run in background
 - **Heartbeat polling**: Frontend polls for results
-- **Real-time feedback**: Per-step TTS progress push
+- **Real-time feedback**: Per-step TTS progress push in Agent loop
 
 **Workflow:**
 ```
@@ -533,13 +613,21 @@ Document → OCRModel → Markdown → .hmd
 
 ## 🎮 Usage Tips
 
-### Terminal UI Shortcuts
+### Terminal Voice Client Shortcuts
 ```
-Type a message   - Send message
-#r               - Manual refresh
-#i               - Show system info
-#k               - Skip reminder
-Ctrl+C           - Exit
+[Enter]  Hold to record, release to send
+[a x2]   Lock / Unlock panel
+[b x2]   Music Player mode
+[p]      Show personality status
+[s]      Toggle standby / wakeup
+[i]      System info
+[k]      Skip latest reminder
+[f]      Silence alarm + stop TTS
+[r]      Trigger heartbeat now
+[t]      Text input (sync)
+[=]      Async task (long-running)
+[h]      Show help
+[q/Ctrl+C] Quit
 ```
 
 ### Server Console Commands
@@ -548,8 +636,11 @@ Ctrl+C           - Exit
 /users             - List all users
 /status            - Server status summary
 /agent create      - Create an Agent
+/agent bind        - Bind Agent to user
 /memory query      - Search memory
+/memory reindex    - Rebuild vector index
 /hibernate sleep   - Enter standby
+/config set        - Modify config at runtime
 /stop              - Stop server
 ```
 
@@ -560,6 +651,12 @@ curl -X POST http://localhost:5000/api/chat/send \
   -H "Authorization: Bearer YOUR_SESSION" \
   -H "Content-Type: application/json" \
   -d '{"message": "Hello"}'
+
+# Voice passthrough (ASR → AI → TTS)
+curl -X POST http://localhost:5000/api/asr/passthrough \
+  -H "Authorization: Bearer YOUR_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"audio_b64": "BASE64_WAV_DATA"}'
 
 # Agent sends a message
 python agent_send.py "analyze code complexity"
@@ -579,8 +676,14 @@ OPENAI_API_BASE=https://api.deepseek.com/v1  # API base URL
 MAIN_MODEL_NAME=deepseek-v4-flash       # Main model
 ```
 
-### Recommended Config (full experience)
+### Voice-Enabled Config (recommended)
 ```bash
+# Voice
+ASR_ENABLED=true
+ASR_DEVICE=cuda
+TTS_BASE_URL=http://127.0.0.1:9880
+TTS_PROCESS_ENABLED=true
+
 # Main model
 MAIN_MODEL_TYPE=openai
 MAIN_MODEL_NAME=deepseek-v4-flash
