@@ -73,6 +73,9 @@ class ActiveVisionPlugin(Plugin):
 
     def on_load(self) -> None:
         from config import Config
+        if not Config.CAMERA_ENABLED:
+            logger.info("主动视觉感知未启用 (CAMERA_ENABLED=false)")
+            return
         if not Config.ACTIVE_VISION_ENABLED:
             logger.info("主动视觉感知未启用 (ACTIVE_VISION_ENABLED=false)")
             return
