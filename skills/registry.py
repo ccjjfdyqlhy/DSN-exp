@@ -17,6 +17,7 @@ class SkillRegistry:
         self._tool_specs: dict[str, dict] = {}
         self._skill_prompts: dict[str, str] = {}
         self._active_skills: dict[str, "Skill"] = {}
+        self._tool_class_cache: dict[str, Any] = {}
 
     def register_skill(self, skill: "Skill", deps: dict = None) -> None:
         self._active_skills[skill.name] = skill
@@ -165,6 +166,10 @@ class SkillRegistry:
                       or tool_spec.get("class", ""))
         if not module_path or not class_name:
             return None
+        cache_key = f"{module_path}.{class_name}"
+        if cache_key in self._tool_class_cache:
+            return self._tool_class_cache[cache_key]
+
         parts = module_path.split(".")
         file_name = parts[-1] + ".py"
         sub = "/".join(parts[:-1])
@@ -190,4 +195,6 @@ class SkillRegistry:
 
         if hasattr(cls, "set_context") and deps:
             cls.set_context(**deps)
+
+        self._tool_class_cache[cache_key] = instance
         return instance
