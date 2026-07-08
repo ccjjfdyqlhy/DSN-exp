@@ -44,6 +44,11 @@ _engine_loop_lock = threading.Lock()
 def _get_event_loop() -> asyncio.AbstractEventLoop:
     global _engine_loop
     if _engine_loop is None or _engine_loop.is_closed():
+
+
+
+
+    # get or create the asyncio event loop
         with _engine_loop_lock:
             if _engine_loop is None or _engine_loop.is_closed():
                 _engine_loop = asyncio.new_event_loop()
@@ -76,6 +81,9 @@ class EngineConfig:
     debug_play_as_model_port: int = Config.DEBUG_PLAY_AS_MODEL_PORT
 
     @staticmethod
+
+
+        # create engine from a subapp context
     def from_subapp(cfg: SubAppConfig) -> EngineConfig:
         return EngineConfig(
             openai_api_key=cfg.model_api_key or Config.OPENAI_API_KEY,
@@ -146,6 +154,10 @@ class DSNEngine:
     # ── 初始化 ──
 
     def _init_from_subapp(self):
+
+
+
+        # initialize engine from a subapp context
         from utils.subapp_loader import load_subapp_config
         self._cfg = load_subapp_config(str(self._subapp_path))
         self._engine_cfg = EngineConfig.from_subapp(self._cfg)
@@ -163,6 +175,10 @@ class DSNEngine:
         self._logger.info("DSNEngine 初始化完成: %s", self._cfg.name)
 
     def _init_database(self):
+
+
+
+        # initialize the database connection
         db_path = self._engine_cfg.database_path
         abs_path = self._cfg.resolve_path(db_path) if self._cfg else db_path
         self.db = ChatDBManager(db_path=abs_path)
@@ -172,6 +188,10 @@ class DSNEngine:
         self.async_task_store = AsyncTaskStore(db=self.db)
 
     def _init_tasks(self):
+
+
+
+        # initialize the task manager
         if not self._engine_cfg.task_manager_enabled:
             return
         try:
@@ -195,6 +215,10 @@ class DSNEngine:
     _TASK_MAX_RETRY_DEPTH = 3
 
     def _process_task_completion(self):
+
+
+
+        # handle task completion event
         from tasks import TaskType
         while not self._task_completion_stop.is_set():
             try:
@@ -247,6 +271,10 @@ class DSNEngine:
             self._logger.error("处理动作完成失败: %s", e)
 
     def _handle_reminder_completion(self, task, result):
+
+
+
+        # handle reminder completion event
         """提醒任务到期：只写一条 system 消息到聊天历史。
         AI 回复 + TTS 的生成改由前端心跳接口 /api/heartbeat 触发，
         避免后端无法主动通知前端的问题。
@@ -263,6 +291,10 @@ class DSNEngine:
             self._logger.error("保存提醒消息失败: %s", e)
 
     def _handle_reasoner_completion(self, task, result):
+
+
+
+        # handle reasoner completion event
         self._logger.info("推理任务完成: task_id=%s", task.task_id)
         short_id = task.task_id[:8]
         conclusion = result.get("conclusion", "")
@@ -276,6 +308,10 @@ class DSNEngine:
         except Exception as e:
             self._logger.error("保存推理结果失败: %s", e)
 
+
+
+
+        # generate a result message from engine output
     def _generate_result_message(self, task, result) -> str | None:
         try:
             from datetime import datetime
@@ -330,6 +366,10 @@ class DSNEngine:
             return None
 
     def _retry_engine_action(self, ai_message: str, task, retry_depth: int):
+
+
+
+        # retry a failed engine action
         from plugins.builtin.task_plugin import TaskPlugin
         from tasks import TaskType
         tasks = TaskPlugin._parse_tasks(ai_message)
@@ -353,6 +393,10 @@ class DSNEngine:
                 self.task_manager._retry_depths[new_id] = retry_depth + 1
 
     def _init_memory(self):
+
+
+
+        # initialize the memory system
         if not self._engine_cfg.memory_enabled:
             return
         try:
@@ -383,6 +427,10 @@ class DSNEngine:
             self._logger.warning("Memory 初始化失败: %s", e)
 
     def _init_world(self):
+
+
+
+        # initialize the world system
         if not Config.WORLD_ENABLED:
             return
         try:
@@ -410,6 +458,10 @@ class DSNEngine:
             self._logger.warning("World/Narrative 初始化失败: %s", e)
 
     def _init_tts(self):
+
+
+
+        # initialize the tts client
         try:
             from audio.infer import VocalExp
             from plugins.builtin.tts_profile import TTSProfileManager
@@ -428,6 +480,10 @@ class DSNEngine:
             self._tts_available = False
 
     def _init_skills(self):
+
+
+
+        # initialize the skill manager and load skills
         skill_dirs = []
         if self._cfg and self._cfg.skills_dirs:
             for d in self._cfg.skills_dirs:
@@ -483,6 +539,10 @@ class DSNEngine:
             self._logger.warning("系统技能依赖注入失败: %s", e)
 
     def _inject_v3_to_exa_evolution(self):
+
+
+
+        # inject personality v3 data into subapp evolution
         """将 V3 引用注入到 SkillRegistry 中的 personality_materials 工具实例"""
         try:
             v3 = self.prompt_engine.personality_v3 if self.prompt_engine else None
@@ -497,6 +557,10 @@ class DSNEngine:
             self._logger.warning("PersonalityMaterials: 注入 V3 失败: %s", e)
 
     def _init_prompt(self):
+
+
+
+        # initialize the prompt engine
         lib = PromptLibrary()
         peers = PersonalitySystemV2(db=self.db)
 
@@ -546,6 +610,10 @@ class DSNEngine:
         self.prompt_cache = PromptCache(db=self.db, embedding_client=embedding_client)
 
     def _init_plugins(self):
+
+
+
+        # initialize the plugin manager
         ec = self._engine_cfg
         self._enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
         self._disable_set = set(self._cfg.plugins_disable) if self._cfg else set()
@@ -572,6 +640,14 @@ class DSNEngine:
         return True
 
     def _register_filter_plugins(self):
+
+
+
+
+
+
+        # check if a plugin is enabled
+        # register filter-phase plugins
         if not self._plugin_enabled("asr_filter"):
             return
         from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
@@ -581,6 +657,10 @@ class DSNEngine:
         ))
 
     def _register_model_plugin(self):
+
+
+
+        # register the model plugin
         if not self._plugin_enabled("models"):
             self._models_plugin = None
             return
@@ -598,6 +678,10 @@ class DSNEngine:
         self.plugin_manager.register(self._models_plugin)
 
     def _register_context_plugins(self):
+
+
+
+        # register context-phase plugins
         if self._plugin_enabled("memory"):
             from plugins.builtin.memory_plugin import MemoryPlugin
             self.plugin_manager.register(MemoryPlugin(
@@ -629,6 +713,10 @@ class DSNEngine:
             ))
 
     def _register_personality_plugins(self):
+
+
+
+        # register personality-related plugins
         if self._plugin_enabled("personality"):
             pe = self.prompt_engine
             if pe and pe.personality_v3 and pe.personality_v3.enabled:
@@ -648,6 +736,10 @@ class DSNEngine:
             ))
 
     def _register_execution_plugins(self):
+
+
+
+        # register execution-phase plugins
         if self._plugin_enabled("recall") and self.memory_system:
             try:
                 from plugins.builtin.recall_plugin import RecallPlugin
@@ -678,6 +770,9 @@ class DSNEngine:
             from plugins.builtin.plan_plugin import PlanPlugin
             self.plugin_manager.register(PlanPlugin(db=self.db))
     def _register_output_plugins(self):
+
+
+        # register output-phase plugins
         if self._plugin_enabled("tts") and self._tts_client:
             from plugins.builtin.tts_plugin import TTSPlugin
             self.plugin_manager.register(TTSPlugin(
@@ -707,6 +802,10 @@ class DSNEngine:
                 self._logger.warning("DistillPlugin 加载失败: %s", e)
 
     def _init_pipeline(self):
+
+
+
+        # initialize the pipeline
         self.pipeline = ChatPipeline(
             plugin_manager=self.plugin_manager,
             prompt_engine=self.prompt_engine,
@@ -765,6 +864,10 @@ class DSNEngine:
         skills = []
         if self.skill_registry:
             for spec in self.skill_registry.get_all_tool_specs():
+
+
+
+        # get info about loaded skills
                 skills.append({
                     "skill": spec.get("skill", ""),
                     "name": spec.get("name", ""),
@@ -775,6 +878,10 @@ class DSNEngine:
                 })
         return skills
 
+
+
+
+        # get parameters for a specific tool
     def _get_tool_parameters(self, spec: dict) -> dict:
         schema = {}
         try:
@@ -959,6 +1066,10 @@ class DSNEngine:
         """将上下文的可序列化部分导出为 session 存储格式"""
         clean_extra = {}
         for k, v in ctx.extra.items():
+
+
+
+        # dump context for session persistence
             if k in ("_task_manager", "_completion_queue", "_db", "_plugin_manager"):
                 continue
             try:
@@ -1069,6 +1180,10 @@ class DSNEngine:
 
     # ── 实用方法 ──
 
+
+
+
+        # get engine info summary
     def get_info(self) -> dict:
         return {
             "name": self._cfg.name if self._cfg else "bare",
@@ -1091,6 +1206,11 @@ def create_engine(subapp_path: str | None = None) -> DSNEngine:
     return DSNEngine(subapp_path=subapp_path)
 
 
+
+
+
+
+    # factory that creates a fully wired engine
 def create_engine_with_defaults(
     db: ChatDBManager = None,
      memory_system: MemorySystem = None,

@@ -51,6 +51,10 @@ MAX_RECORD_SECS = 30
 RMS_THRESHOLD = 0.008
 
 def setup_logging():
+
+
+
+    # configure logging format and level
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname).1s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
@@ -99,6 +103,10 @@ class MusicPlayer:
             self._player = vlc.MediaPlayer()
 
     def load_playlist(self):
+
+
+
+        # load playlist from a file
         try:
             resp = requests.get(
                 f"{self.client.base}/api/music/list?uid={self.uid}", timeout=5
@@ -109,6 +117,10 @@ class MusicPlayer:
             log.warning("MusicPlayer: 刷新歌单失败 %s", e)
 
     def play_index(self, idx: int):
+
+
+
+        # play a song from the playlist by index
         if not (0 <= idx < len(self.playlist)):
             return
         self.stop()
@@ -137,6 +149,10 @@ class MusicPlayer:
             log.warning("MusicPlayer: 播放失败 %s", e)
 
     def toggle(self):
+
+
+
+        # toggle play/pause
         try:
             if self.state == "playing" and self._player:
                 self._player.pause()
@@ -151,6 +167,10 @@ class MusicPlayer:
         self._report_state()
 
     def stop(self):
+
+
+
+        # stop a worker thread
         try:
             if self._player:
                 self._player.stop()
@@ -160,18 +180,30 @@ class MusicPlayer:
         self._report_state()
 
     def next(self):
+
+
+
+        # play next track
         if not self.playlist:
             return
         idx = (self.current_index + 1) % len(self.playlist) if self.current_index >= 0 else 0
         self.play_index(idx)
 
     def prev(self):
+
+
+
+        # play previous track
         if not self.playlist:
             return
         idx = (self.current_index - 1) % len(self.playlist) if self.current_index >= 0 else len(self.playlist) - 1
         self.play_index(idx)
 
     def audio_set_volume(self, v: float):
+
+
+
+        # set volume level 0.0 to 1.0
         self._volume = max(0.0, min(1.0, v))
         try:
             if self._player:
@@ -181,6 +213,10 @@ class MusicPlayer:
         self._report_state()
 
     def duck(self):
+
+
+
+        # lower volume temporarily for notifications
         if self.state == "playing" and self._player:
             self._prev_volume = self._volume
             try:
@@ -189,6 +225,10 @@ class MusicPlayer:
                 pass
 
     def unduck(self):
+
+
+
+        # restore volume after ducking
         if self.state == "playing" and self._player:
             try:
                 self._player.audio_set_volume(int(self._prev_volume * 100))
@@ -196,16 +236,28 @@ class MusicPlayer:
                 pass
 
     def start_poll(self):
+
+
+
+        # start the polling loop
         self._running = True
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._poll_thread.start()
 
     def stop_poll(self):
+
+
+
+        # stop the polling loop
         self._running = False
         if self._poll_thread:
             self._poll_thread.join(timeout=2)
 
     def cleanup(self):
+
+
+
+        # clean up resources on shutdown
         self.stop()
         self.stop_poll()
         if self._player:
@@ -219,6 +271,10 @@ class MusicPlayer:
         self._temp_files.clear()
 
     def _report_state(self):
+
+
+
+        # send current player state to the server
         current = None
         if 0 <= self.current_index < len(self.playlist):
             current = {"filename": self.playlist[self.current_index]["filename"]}
@@ -230,6 +286,10 @@ class MusicPlayer:
             pass
 
     def _poll_loop(self):
+
+
+
+        # poll server for music playback commands
         import time as _time
         while self._running:
             _time.sleep(1.5)
@@ -269,6 +329,11 @@ class MusicPlayer:
 
 
 def _play_beep(client: DSNClient, freq: int = 600):
+
+
+
+
+    # play a short beep sound for notification
     if not HAS_AUDIO:
         return
     sr = 44100
@@ -315,6 +380,15 @@ def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def iter_sse_lines(response: requests.Response):
+
+
+
+
+
+
+
+    # convert raw pcm bytes to base64 wav
+    # iterate over lines in an sse response
     event = ""
     for line in response.iter_lines(decode_unicode=True):
         if line is None:
@@ -339,6 +413,10 @@ def iter_sse_lines(response: requests.Response):
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
+
+
+
+    # load config from file
         try:
             return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
@@ -346,6 +424,10 @@ def load_config() -> dict:
     return {}
 
 def save_config(cfg: dict):
+
+
+
+    # save config to file
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 class DSNClient:
@@ -365,6 +447,10 @@ class DSNClient:
             self._tts_thread.start()
 
     def stop_tts(self):
+
+
+
+        # stop tts playback and clear queue
         """停止当前 TTS 播放并清空队列。"""
         self._tts_stop.set()
         while not self._tts_queue.empty():
@@ -376,6 +462,10 @@ class DSNClient:
         # 清掉残留 TTS 临时文件
 
     def _tts_worker(self):
+
+
+
+        # background worker that plays tts audio chunks
         while True:
             item = self._tts_queue.get()
             if item is None:
@@ -442,6 +532,10 @@ class DSNClient:
             print(f"  Checking local API Key (User: {self.display_name})...")
             self.api_key = api_key
             if self._verify_api_key():
+
+
+
+        # log in to server and get a session
                 self.uid = cfg.get("uid", 0)
                 self.display_name = cfg.get("display_name", "")
                 print(f"  API Key OK (uid={self.uid})")
@@ -514,6 +608,10 @@ class DSNClient:
             print(f"  Error creating API Key: {e}")
             return False
 
+
+
+
+        # check if the stored api key is valid
     def _verify_api_key(self) -> bool:
         if not self.api_key:
             return False
@@ -568,6 +666,10 @@ class DSNClient:
             log.error("Async send failed: %s", e)
             return None
 
+
+
+
+        # send recorded audio to the server for asr
     def send_audio(self, audio_b64: str) -> Optional[str]:
         if not self.api_key:
             return None
@@ -619,6 +721,10 @@ class DSNClient:
         t_first_audio = None
 
         for _evt_type, data in iter_sse_lines(resp):
+
+
+
+        # read sse stream line by line and dispatch events
             status = data.get("status", "")
 
             if status == "async_task":
@@ -678,6 +784,10 @@ class AsyncTaskPoller:
         self._wake_event = threading.Event()
 
     def start(self):
+
+
+
+        # start a worker thread
         if self._running:
             return
         self._running = True
@@ -692,6 +802,10 @@ class AsyncTaskPoller:
             self._thread.join(timeout=2)
 
     def add_task(self, task_id: str):
+
+
+
+        # add a new background task to the queue
         """开始轮询一个异步任务"""
         with self._lock:
             if task_id not in self._tasks:
@@ -701,6 +815,10 @@ class AsyncTaskPoller:
         self._wake_event.set()
 
     def _loop(self):
+
+
+
+        # main event loop, process audio and input
         while self._running:
             to_remove = []
             with self._lock:
@@ -808,9 +926,17 @@ class HeartbeatPoller:
             self._thread.join(timeout=2)
 
     def sync_now(self):
+
+
+
+        # sync pending data to server immediately
         """手动触发一次心跳（兼容旧接口，'r' 键调用）。"""
         self._beat()
 
+
+
+
+        # skip the latest pending notification
     def skip_latest(self) -> bool:
         """跳过最近一条触发的提醒（调用 /api/reminder/skip）。"""
         if not self._last_triggered:
@@ -940,6 +1066,9 @@ class VoiceRecorder:
         return self._recording
 
     def start(self):
+
+
+        # check if the recorder is actively capturing
         if self._recording:
             return
         if not HAS_PVRECORDER:
@@ -962,6 +1091,10 @@ class VoiceRecorder:
         self._thread.start()
 
     def stop_and_send(self):
+
+
+
+        # stop current recording and send the audio to server
         if not self._recording:
             return
 
@@ -996,6 +1129,10 @@ class VoiceRecorder:
         self.client.send_audio(b64)
 
     def _capture_loop(self):
+
+
+
+        # capture microphone audio in a loop
         try:
             self._recorder.start()
             while self._recording and not self._stop_event.is_set():
@@ -1052,6 +1189,10 @@ class KeyboardHandler:
             return None
 
     def _loop(self):
+
+
+
+        # get current value from the state holder
         try:
             import termios
             import tty
@@ -1110,6 +1251,10 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print()
 
 def print_personality(client: DSNClient):
+
+
+
+    # print personality info to the console
     try:
         resp = client._http_get("/api/personality/status")
         if resp.status_code != 200:
@@ -1137,6 +1282,10 @@ def print_personality(client: DSNClient):
         print(f"  Error: {e}")
 
 def toggle_standby(client: DSNClient):
+
+
+
+    # toggle standby mode on or off
     try:
         resp = requests.post(f"{client.base}/api/maintenance/toggle_standby", timeout=10)
         state = resp.json().get("state", "?")
@@ -1146,6 +1295,11 @@ def toggle_standby(client: DSNClient):
 
 
 def print_system_info(client: DSNClient):
+
+
+
+
+    # print system information to the console
     """显示系统状态 + 服务器维护态 + 计划摘要"""
     print(f"\n  --- System Info ---")
     try:
@@ -1184,6 +1338,10 @@ def print_system_info(client: DSNClient):
     print(f"  ---------------------\n")
 
 def main():
+
+
+
+    # cli entry point, parse args and run the app
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -1245,6 +1403,10 @@ def main():
     client.async_poller = async_poller
 
     def on_sigint(sig, frame):
+
+
+
+        # handle ctrl-c gracefully
         if recorder.is_recording:
             recorder.stop_and_send()
         async_poller.stop()

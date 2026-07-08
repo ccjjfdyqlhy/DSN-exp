@@ -23,6 +23,7 @@ _TIMER_ENABLED = False
 
 
 def timer_enabled() -> bool:
+    # check if stage timer is running
     return _TIMER_ENABLED
 
 
@@ -37,6 +38,7 @@ def disable_timer():
 
 
 def toggle_timer() -> bool:
+    # flip timer state and return new state
     global _TIMER_ENABLED
     _TIMER_ENABLED = not _TIMER_ENABLED
     return _TIMER_ENABLED
@@ -59,6 +61,7 @@ async def _call_llm_with_msgs(ctx, msgs: list[dict]) -> str | None:
         return None
 
     def _invoke():
+        # call llm with optional tool schemas
         try:
             tools = None
             if hasattr(models_plugin, '_build_tools_schema'):
@@ -108,6 +111,7 @@ def _desc_task(inner: str) -> str:
 
 
 def _log_stage_timing(stage: str, ms: float):
+    # log per-stage timing if timer is on
     if _TIMER_ENABLED:
         logger.info("  ⏱ %-15s %8.0fms", stage, ms)
 
@@ -136,6 +140,7 @@ class ChatPipeline:
         async_task_store=None,
         skill_registry=None,
     ):
+        # wire up pipeline dependencies
         self.pm = plugin_manager
         self._prompt_engine = prompt_engine
         self._tts_client = tts_client
@@ -208,6 +213,7 @@ class ChatPipeline:
     # ---- 完整管道 ----
 
     async def process(self, ctx: PluginContext) -> PluginContext:
+        # run full pipeline: pre-filter, pre-process, model invoke, post-process, tts
         timing: dict[str, float] = {}
         t_total = time.perf_counter()
         if _TIMER_ENABLED:
@@ -299,9 +305,11 @@ class ChatPipeline:
         return ctx
 
     async def _dispatch_post_process(self, ctx: PluginContext) -> PluginContext:
+        # run post-process hook, no agent loop
         return await self.pm.dispatch(HookPoint.POST_PROCESS, ctx)
 
     async def _run_async_background(self, ctx: PluginContext) -> str:
+        # kick off a non-blocking background pipeline
         import threading
         import uuid
 
@@ -560,6 +568,7 @@ class ChatPipeline:
         return ctx
 
     def _print_timing(self, timing: dict[str, float], ctx: PluginContext | None = None):
+        # log timing breakdown for each pipeline stage
         if not _TIMER_ENABLED:
             return
         total = timing.get("total_ms", 0)
@@ -587,6 +596,7 @@ class ChatPipeline:
         logger.info("═══════════════════════════════")
 
     def _print_plugin_timing(self, timing: dict[str, float]):
+        # log per-plugin timing breakdown
         pt = timing.get("_plugin_timings", {})
         if not pt:
             return
@@ -611,6 +621,7 @@ class ChatPipeline:
                 summary = r.get("summary", "")
                 lines.append(f"{success} {tag} {summary}")
             if not r.get("success") and r.get("error"):
+        # format tool tag execution results into a string
                 lines.append(f"  错误: {r['error']}")
         return "\n".join(lines)
 
@@ -789,6 +800,7 @@ class ChatPipeline:
 
     @staticmethod
     async def _bridge_progress(thread_q: queue.Queue, progress_q: asyncio.Queue):
+        # bridge progress events from thread queue to async queue
         loop = asyncio.get_event_loop()
         while True:
             evt = await loop.run_in_executor(None, thread_q.get)
@@ -798,6 +810,7 @@ class ChatPipeline:
 
     async def _run_all_plugins(self, enabled: list, hook: HookPoint,
                                 ctx: PluginContext, progress_q: asyncio.Queue):
+        # run all enabled plugins for a given hook with progress reporting
         for plugin in enabled:
             desc = getattr(plugin, 'description', plugin.name)
             await progress_q.put({"status": "thinking", "text": desc, "plugin": plugin.name})
@@ -1141,6 +1154,7 @@ class ChatPipeline:
 
                     async def _consume_agent_progress(tq: queue.Queue,
                                                        apq: asyncio.Queue):
+                        # bridge agent progress from thread queue to async queue
                         loop = asyncio.get_event_loop()
                         while True:
                             evt = await loop.run_in_executor(None, tq.get)
