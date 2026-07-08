@@ -125,6 +125,7 @@ def _check_port_available(host: str, port: int):
     import socket
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind((host, port))
         s.close()
@@ -2261,6 +2262,18 @@ def main():
         except Exception as e:
             console.print(f"[red]DEBUG_PLAY_AS_MODEL 启动失败: {e}[/]")
 
+    # ── Web Admin 面板 ──
+    admin_server = None
+    if getattr(Config, "WEB_ADMIN_ENABLED", True):
+        try:
+            admin_host = getattr(Config, "WEB_ADMIN_HOST", "0.0.0.0")
+            admin_port = getattr(Config, "WEB_ADMIN_PORT", 4500)
+            from web_admin.server import start_admin_server
+            admin_srv, _ = start_admin_server(host=admin_host, port=admin_port, daemon=True)
+            admin_server = admin_srv
+        except Exception as e:
+            console.print(f"[yellow]Web Admin 面板启动失败: {e}[/]")
+
     # ── 驻守模型 ──
     steward = None
     if getattr(Config, "STEWARD_ENABLED", True):
@@ -2339,6 +2352,11 @@ def main():
         try:
             if debug_server:
                 debug_server.shutdown()
+        except Exception:
+            pass
+        try:
+            if admin_server:
+                admin_server.shutdown()
         except Exception:
             pass
         console.print("\n[yellow]Shutting down...[/]")
