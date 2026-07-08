@@ -15,6 +15,12 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger("NCMApi")
 
+# pyncm 搜索类型常量
+SEARCH_TYPE: dict[str, int] = {
+    "song": 1, "album": 10, "artist": 100, "playlist": 1000,
+    "user": 1002, "mv": 1004, "lyrics": 1006, "dj": 1009, "video": 1014,
+}
+
 # pyncm 品质级别 → (level 字符串, 显示名)
 PYNCM_QUALITY: dict[int, tuple[str, str]] = {
     1: ("standard", "标准 128kbps"),
@@ -421,7 +427,579 @@ class NCMApi:
         }
 
     # ================================================================
-    # pyncm API 调用
+    # 新增 pyncm 工具方法
+    # ================================================================
+
+    def search(
+        self,
+        keyword: str,
+        search_type: str = "song",
+        page: int = 1,
+        num: int = 10,
+    ) -> dict:
+        """
+        通用搜索（歌曲/专辑/歌手/歌单/用户/MV/歌词/DJ/视频）。
+
+        :param keyword: 搜索关键词
+        :param search_type: 类型: song / album / artist / playlist / user / mv / lyrics / dj / video
+        :param page: 页数，默认 1
+        :param num: 每页数量，默认 10
+        """
+        if not keyword or not keyword.strip():
+            return {"success": False, "error": "关键词不能为空"}
+        stype = SEARCH_TYPE.get(search_type, SEARCH_TYPE["song"])
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.cloudsearch.getSearchResult(
+                keyword.strip(), stype=stype, limit=num, offset=(page - 1) * num
+            )
+        except Exception as e:
+            logger.error("搜索异常: %s", e)
+            return {"success": False, "error": f"搜索失败: {e}"}
+
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "搜索失败")}
+
+        result = raw.get("result", {})
+        items = []
+        if search_type == "song":
+            for s in result.get("songs", []):
+                items.append(self._normalize_song(s))
+        elif search_type == "album":
+            for a in result.get("albums", []):
+                items.append(self._normalize_album(a))
+        elif search_type == "artist":
+            for a in result.get("artists", []):
+                items.append(self._normalize_artist(a))
+        elif search_type == "playlist":
+            for p in result.get("playlists", []):
+                items.append(self._normalize_playlist(p))
+        elif search_type == "user":
+            for u in result.get("users", []):
+                items.append(self._normalize_user(u))
+        elif search_type == "mv":
+            for m in result.get("mvs", []):
+                items.append(self._normalize_mv(m))
+        elif search_type == "video":
+            for v in result.get("videos", []):
+                items.append(self._normalize_video(v))
+        elif search_type == "dj":
+            for d in result.get("djRadios", []):
+                items.append(self._normalize_dj(d))
+        elif search_type == "lyrics":
+            for lr in result.get("lyrics", []):
+                items.append({"id": lr.get("id", 0), "name": lr.get("name", "")})
+
+        return {
+            "success": True,
+            "type": search_type,
+            "items": items,
+            "total": len(items),
+            "page": page,
+            "has_more": result.get("hasMore", False),
+        }
+
+    def get_album(self, album_id: int) -> dict:
+        """获取专辑详情（含曲目列表）。
+
+        :param album_id: 专辑 ID
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.album.getAlbumInfo(str(album_id))
+        except Exception as e:
+            return {"success": False, "error": f"获取专辑失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取专辑失败")}
+        album = raw.get("album", {}) or {}
+        songs = [self._normalize_song(s) for s in album.get("songs", [])]
+        return {
+            "success": True,
+            "album": self._normalize_album(album),
+            "songs": songs,
+            "total_songs": len(songs),
+        }
+
+    def get_artist(self, artist_id: int) -> dict:
+        """获取歌手详情。
+
+        :param artist_id: 歌手 ID
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.artist.getArtistDetails(str(artist_id))
+        except Exception as e:
+            return {"success": False, "error": f"获取歌手信息失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取歌手信息失败")}
+        data = raw.get("data", {}) or {}
+        return {
+            "success": True,
+            "artist": self._normalize_artist(data),
+        }
+
+    def get_artist_albums(self, artist_id: int, page: int = 1, num: int = 50) -> dict:
+        """获取歌手的专辑列表。
+
+        :param artist_id: 歌手 ID
+        :param page: 页数，默认 1
+        :param num: 每页数量，默认 50
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.artist.getArtistAlbums(str(artist_id), offset=(page - 1) * num, limit=num)
+        except Exception as e:
+            return {"success": False, "error": f"获取专辑列表失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取专辑列表失败")}
+        albums = [self._normalize_album(a) for a in (raw.get("hotAlbums", []) or raw.get("albums", []))]
+        return {
+            "success": True,
+            "albums": albums,
+            "total": len(albums),
+        }
+
+    def get_artist_tracks(
+        self, artist_id: int, page: int = 1, num: int = 50, order: str = "hot"
+    ) -> dict:
+        """获取歌手的热门/最新歌曲。
+
+        :param artist_id: 歌手 ID
+        :param page: 页数，默认 1
+        :param num: 每页数量，默认 50
+        :param order: 'hot' 热门 / 'time' 最新，默认 hot
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.artist.getArtistTracks(str(artist_id), offset=(page - 1) * num, limit=num, order=order)
+        except Exception as e:
+            return {"success": False, "error": f"获取歌曲列表失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取歌曲列表失败")}
+        songs = [self._normalize_song(s) for s in (raw.get("songs", []) or raw.get("hotSongs", []))]
+        return {
+            "success": True,
+            "songs": songs,
+            "total": len(songs),
+            "order": order,
+        }
+
+    def get_playlist(self, playlist_id: int) -> dict:
+        """获取歌单详情。
+
+        :param playlist_id: 歌单 ID
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.playlist.getPlaylistInfo(str(playlist_id))
+        except Exception as e:
+            return {"success": False, "error": f"获取歌单失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取歌单失败")}
+        pl = raw.get("playlist", {}) or {}
+        return {
+            "success": True,
+            "playlist": self._normalize_playlist(pl),
+        }
+
+    def get_playlist_tracks(
+        self, playlist_id: int, offset: int = 0, limit: int = 200
+    ) -> dict:
+        """获取歌单内的所有歌曲。
+
+        :param playlist_id: 歌单 ID
+        :param offset: 偏移，默认 0
+        :param limit: 获取数量，默认 200
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.playlist.getPlaylistAllTracks(str(playlist_id), offset=offset, limit=limit)
+        except Exception as e:
+            return {"success": False, "error": f"获取歌单歌曲失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取歌单歌曲失败")}
+        songs = [self._normalize_song(s) for s in (raw.get("songs", []))]
+        return {
+            "success": True,
+            "songs": songs,
+            "total": len(songs),
+        }
+
+    def create_playlist(self, name: str, private: bool = False) -> dict:
+        """创建新歌单。
+
+        :param name: 歌单名称
+        :param private: 是否设为隐私歌单，默认 false
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.playlist.setCreatePlaylist(name, privacy=private)
+        except Exception as e:
+            return {"success": False, "error": f"创建歌单失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "创建歌单失败")}
+        pl = raw.get("playlist", {}) or {}
+        return {
+            "success": True,
+            "playlist": {"id": pl.get("id", 0), "name": pl.get("name", name)},
+        }
+
+    def add_to_playlist(self, playlist_id: int, track_ids: list) -> dict:
+        """向歌单添加歌曲。
+
+        :param playlist_id: 歌单 ID
+        :param track_ids: 歌曲 ID 列表
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.playlist.setManipulatePlaylistTracks(track_ids, str(playlist_id), op="add")
+        except Exception as e:
+            return {"success": False, "error": f"添加歌曲失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "添加歌曲失败")}
+        return {
+            "success": True,
+            "playlist_id": playlist_id,
+            "track_ids": track_ids,
+            "count": len(track_ids),
+        }
+
+    def remove_from_playlist(self, playlist_id: int, track_ids: list) -> dict:
+        """从歌单移除歌曲。
+
+        :param playlist_id: 歌单 ID
+        :param track_ids: 歌曲 ID 列表
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.playlist.setManipulatePlaylistTracks(track_ids, str(playlist_id), op="del")
+        except Exception as e:
+            return {"success": False, "error": f"移除歌曲失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "移除歌曲失败")}
+        return {
+            "success": True,
+            "playlist_id": playlist_id,
+            "track_ids": track_ids,
+        }
+
+    def get_user_playlists(self, user_id: int = 0, page: int = 1, num: int = 50) -> dict:
+        """获取用户的歌单列表。
+
+        :param user_id: 用户 ID，默认当前登录用户
+        :param page: 页数，默认 1
+        :param num: 每页数量，默认 50
+        """
+        uid = user_id or self._uid
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.user.getUserPlaylists(uid, offset=(page - 1) * num, limit=num)
+        except Exception as e:
+            return {"success": False, "error": f"获取用户歌单失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取用户歌单失败")}
+        playlists = [self._normalize_playlist(p) for p in (raw.get("playlist", []))]
+        return {
+            "success": True,
+            "playlists": playlists,
+            "total": len(playlists),
+            "uid": uid,
+        }
+
+    def get_daily_recommend(self) -> dict:
+        """获取每日推荐歌曲。"""
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.user.getDailyRecommend()
+        except Exception as e:
+            return {"success": False, "error": f"获取每日推荐失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取每日推荐失败")}
+        songs = [self._normalize_song(s) for s in (raw.get("data", []) or raw.get("recommend", []))]
+        return {
+            "success": True,
+            "songs": songs,
+            "total": len(songs),
+            "date": time.strftime("%Y-%m-%d"),
+        }
+
+    def get_user_detail(self, user_id: int = 0) -> dict:
+        """获取用户资料详情。
+
+        :param user_id: 用户 ID，默认当前登录用户
+        """
+        uid = user_id or self._uid
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.user.getUserDetail(uid)
+        except Exception as e:
+            return {"success": False, "error": f"获取用户信息失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取用户信息失败")}
+        profile = raw.get("profile", {}) or {}
+        return {
+            "success": True,
+            "user": self._normalize_user(profile),
+        }
+
+    def like_track(self, track_id: int, like: bool = True) -> dict:
+        """喜欢/取消喜欢歌曲。
+
+        :param track_id: 歌曲 ID
+        :param like: true=喜欢，false=取消喜欢，默认 true
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.track.setLikeTrack(track_id, like=like, userid=self._uid)
+        except Exception as e:
+            return {"success": False, "error": f"操作失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "操作失败")}
+        return {
+            "success": True,
+            "track_id": track_id,
+            "liked": like,
+        }
+
+    def get_track_comments(self, track_id: int, page: int = 1, num: int = 20) -> dict:
+        """获取歌曲评论。
+
+        :param track_id: 歌曲 ID
+        :param page: 页数，默认 1
+        :param num: 每页数量，默认 20
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.track.getTrackComments(track_id, offset=(page - 1) * num, limit=num)
+        except Exception as e:
+            return {"success": False, "error": f"获取评论失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取评论失败")}
+        comments = []
+        for c in raw.get("comments", []):
+            comments.append({
+                "id": c.get("commentId", 0),
+                "user": c.get("user", {}).get("nickname", "?"),
+                "content": c.get("content", ""),
+                "liked_count": c.get("likedCount", 0),
+                "time": c.get("time", 0),
+                "time_str": time.strftime("%Y-%m-%d %H:%M", time.localtime(c.get("time", 0) / 1000)) if c.get("time") else "",
+            })
+        return {
+            "success": True,
+            "comments": comments,
+            "total": raw.get("total", len(comments)),
+            "hot_comments": [{
+                "id": c.get("commentId", 0),
+                "user": c.get("user", {}).get("nickname", "?"),
+                "content": c.get("content", ""),
+                "liked_count": c.get("likedCount", 0),
+            } for c in raw.get("hotComments", [])],
+        }
+
+    def get_personal_fm(self, limit: int = 3) -> dict:
+        """获取私人 FM 推荐歌曲。
+
+        :param limit: 获取数量，默认 3
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm.apis.miniprograms import radio
+            raw = radio.getMoreRadioContent(limit=limit)
+        except Exception as e:
+            return {"success": False, "error": f"获取私人 FM 失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "获取私人 FM 失败")}
+        songs = [self._normalize_song(s) for s in (raw.get("data", []))]
+        return {
+            "success": True,
+            "songs": songs,
+            "total": len(songs),
+        }
+
+    def skip_fm_track(self, track_id: int) -> dict:
+        """跳过私人 FM 当前歌曲。
+
+        :param track_id: 要跳过的歌曲 ID
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm.apis.miniprograms import radio
+            raw = radio.setSkipRadioContent(track_id)
+        except Exception as e:
+            return {"success": False, "error": f"跳过失败: {e}"}
+        return {"success": raw.get("code") == 200, "track_id": track_id}
+
+    def like_fm_track(self, track_id: int, like: bool = True) -> dict:
+        """喜欢/取消喜欢私人 FM 歌曲。
+
+        :param track_id: 歌曲 ID
+        :param like: true=喜欢，false=取消喜欢，默认 true
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm.apis.miniprograms import radio
+            raw = radio.setLikeRadioContent(track_id, like=like)
+        except Exception as e:
+            return {"success": False, "error": f"操作失败: {e}"}
+        return {"success": raw.get("code") == 200, "track_id": track_id, "liked": like}
+
+    def get_mv(self, mv_id: int, resolution: int = 1080) -> dict:
+        """获取 MV 详情和播放地址。
+
+        :param mv_id: MV ID
+        :param resolution: 分辨率 240/480/720/1080，默认 1080
+        """
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            detail_raw = apis.video.getMVDetail(str(mv_id))
+            url_raw = apis.video.getMVResource(str(mv_id), res=resolution)
+        except Exception as e:
+            return {"success": False, "error": f"获取 MV 失败: {e}"}
+        if detail_raw.get("code") != 200:
+            return {"success": False, "error": detail_raw.get("message", "获取 MV 详情失败")}
+        data = detail_raw.get("data", {}) or {}
+        mv_url = url_raw.get("data", {}) or {}
+        return {
+            "success": True,
+            "mv": self._normalize_mv(data),
+            "url": mv_url.get("url", ""),
+            "resolution": resolution,
+        }
+
+    def daily_signin(self, type: str = "mobile") -> dict:
+        """每日签到。
+
+        :param type: 'mobile' 手机端(+4经验) / 'web' 网页端(+1经验)，默认 mobile
+        """
+        self._ensure_logged_in()
+        dtype = 0 if type == "mobile" else 1
+        try:
+            from pyncm import apis
+            raw = apis.user.setSignin(dtype=dtype)
+        except Exception as e:
+            return {"success": False, "error": f"签到失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "签到失败")}
+        return {
+            "success": True,
+            "type": type,
+        }
+
+    def login_logout(self) -> dict:
+        """退出当前网易云音乐登录。"""
+        self._ensure_logged_in()
+        try:
+            from pyncm import apis
+            raw = apis.login.loginLogout()
+        except Exception as e:
+            return {"success": False, "error": f"退出登录失败: {e}"}
+        if raw.get("code") != 200:
+            return {"success": False, "error": raw.get("message", "退出登录失败")}
+        # 删除本地 session 文件
+        for p in [self._session_path(), self._session_path(self._uid)]:
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+        self._session_loaded = False
+        return {"success": True}
+
+    # ── 标准化辅助 ──
+
+    def _normalize_album(self, album: dict) -> dict:
+        return {
+            "id": album.get("id", 0),
+            "name": album.get("name", "未知专辑"),
+            "artist": album.get("artist", {}).get("name", "") or album.get("company", ""),
+            "publish_time": album.get("publishTime", 0),
+            "size": album.get("size", 0),
+            "cover": album.get("picUrl", album.get("coverImgUrl", "")),
+        }
+
+    def _normalize_artist(self, artist: dict) -> dict:
+        return {
+            "id": artist.get("id", 0),
+            "name": artist.get("name", "未知歌手"),
+            "alias": ", ".join(artist.get("alias", []) or []),
+            "pic_url": artist.get("picUrl", artist.get("img1v1Url", "")),
+            "music_size": artist.get("musicSize", 0),
+            "album_size": artist.get("albumSize", 0),
+            "mv_size": artist.get("mvSize", 0),
+            "brief_desc": artist.get("briefDesc", ""),
+        }
+
+    def _normalize_playlist(self, pl: dict) -> dict:
+        return {
+            "id": pl.get("id", 0),
+            "name": pl.get("name", "未知歌单"),
+            "creator": pl.get("creator", {}).get("nickname", ""),
+            "track_count": pl.get("trackCount", pl.get("total", 0)),
+            "play_count": pl.get("playCount", 0),
+            "cover": pl.get("coverImgUrl", ""),
+            "description": (pl.get("description", "") or "")[:200],
+            "tags": pl.get("tags", []),
+        }
+
+    def _normalize_user(self, user: dict) -> dict:
+        return {
+            "id": user.get("userId", user.get("id", 0)),
+            "nickname": user.get("nickname", "?"),
+            "avatar": user.get("avatarUrl", ""),
+            "signature": (user.get("signature", "") or "")[:200],
+            "level": user.get("level", 0),
+            "gender": {0: "未知", 1: "男", 2: "女"}.get(user.get("gender", 0), "未知"),
+        }
+
+    def _normalize_mv(self, mv: dict) -> dict:
+        return {
+            "id": mv.get("id", mv.get("mvId", 0)),
+            "name": mv.get("name", mv.get("mvName", "未知 MV")),
+            "artist": mv.get("artistName", mv.get("artist", {}).get("name", "")),
+            "duration": mv.get("duration", mv.get("dt", 0)) // 1000,
+            "cover": mv.get("cover", mv.get("imgurl", mv.get("picUrl", ""))),
+            "play_count": mv.get("playCount", 0),
+            "brief_desc": (mv.get("desc", "") or "")[:200],
+        }
+
+    def _normalize_video(self, video: dict) -> dict:
+        return {
+            "id": video.get("vid", video.get("id", 0)),
+            "title": video.get("title", "未知视频"),
+            "creator": video.get("creator", [{}])[0].get("userName", "") if video.get("creator") else "",
+            "duration": video.get("durationms", 0) // 1000,
+            "cover": video.get("coverUrl", ""),
+        }
+
+    def _normalize_dj(self, dj: dict) -> dict:
+        return {
+            "id": dj.get("id", 0),
+            "name": dj.get("name", "未知电台"),
+            "dj": dj.get("dj", {}).get("nickname", ""),
+            "category": dj.get("category", ""),
+            "desc": (dj.get("desc", "") or "")[:200],
+            "cover": dj.get("picUrl", ""),
+        }
+
+    # ================================================================
+    # pyncm API 调用（内部）
     # ================================================================
 
     def _do_search(self, keyword: str, page: int, num: int) -> list[dict] | None:
