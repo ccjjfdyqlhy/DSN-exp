@@ -192,7 +192,9 @@
                 }
             }
         }
-        text = text.replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+        var tempDiv = document.createElement('div');
+        tempDiv.innerHTML = text;
+        text = (tempDiv.textContent || tempDiv.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
         return { text: text, narrations: narrations };
     }
 
@@ -1394,9 +1396,20 @@
         svg.setAttribute('height', '18');
         svg.setAttribute('viewBox', '0 0 24 18');
         svg.classList.add('key-cap-svg');
-        svg.innerHTML =
-            '<rect x="1" y="1" width="22" height="16" rx="3"/>' +
-            '<text x="12" y="12" text-anchor="middle" font-size="9">' + label + '</text>';
+        var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', '1');
+        rect.setAttribute('y', '1');
+        rect.setAttribute('width', '22');
+        rect.setAttribute('height', '16');
+        rect.setAttribute('rx', '3');
+        svg.appendChild(rect);
+        var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        text.setAttribute('x', '12');
+        text.setAttribute('y', '12');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('font-size', '9');
+        text.textContent = label;
+        svg.appendChild(text);
         return svg;
     }
 

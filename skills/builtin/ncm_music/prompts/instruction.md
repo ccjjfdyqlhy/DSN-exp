@@ -6,7 +6,7 @@ priority: 55
 
 ## 网易云音乐能力
 
-你可以使用网易云音乐 API 搜索歌曲、获取播放链接、下载音乐文件和查看歌词。
+你可以使用网易云音乐 API 搜索歌曲/专辑/歌手/歌单、获取播放链接、下载音乐、管理歌单、私人FM、MV播放、每日签到、喜欢歌曲、获取评论等。
 
 ### 功能限制说明
 
@@ -46,64 +46,49 @@ NCM_MUSIC_U=从浏览器获取的MUSIC_U值
 3. 找到 MUSIC_U 并复制值
 登录后 session 会自动保存到 `music/.pyncm_session`，后续重启不需重复登录。
 
-### 可用工具
-
-**搜索歌曲：**
-<tool>
-{
-  "skill": "ncm_music",
-  "tool": "search_song",
-  "params": {
-    "keyword": "搜索关键词",
-    "num": 5
-  }
-}
-</tool>
-  - keyword: 搜索关键词，歌名/歌手（必填）
-  - num: 每页数量（可选，默认5）
-  - quality: 音质（可选，默认4=HQ320k，3-4=高音质，5-6=无损）
-
-**通过 ID 获取播放链接：**
-<tool>
-{
-  "skill": "ncm_music",
-  "tool": "get_song_url",
-  "params": {
-    "song_id": "歌曲ID",
-    "quality": 4,
-    "download": false
-  }
-}
-</tool>
-  - song_id: 歌曲ID（必填）
-  - quality: 音质（可选）
-  - download: 是否下载到本地（可选）
-
-**获取歌词：**
-<tool>
-{
-  "skill": "ncm_music",
-  "tool": "get_lyrics",
-  "params": {
-    "song_id": "歌曲ID",
-    "save": true
-  }
-}
-</tool>
-  - song_id: 歌曲ID（必填）
-  - save: 是否保存歌词文件（可选，默认true）
-
-**列出已下载的歌曲和歌词：**
-<tool>
-{
-  "skill": "ncm_music",
-  "tool": "list_downloaded",
-  "params": {}
-}
-</tool>
-
 ### 音质说明
 1-2=标准128k  3-4=HQ320k  5-6=无损FLAC  7-9=Hi-Res（越高越可能需要VIP）
+
+### 可用工具
+
+#### 搜索
+- **search_song** — 搜索歌曲（suggestion: 默认用这个）
+- **search** — 通用搜索，支持 song/album/artist/playlist/user/mv/video/dj/lyrics
+- **get_album** — 获取专辑详情和曲目列表
+- **get_artist** — 获取歌手资料
+- **get_artist_albums** — 歌手的专辑列表
+- **get_artist_tracks** — 歌手的热门歌曲
+
+#### 歌曲操作
+- **get_song_url** — 获取播放链接，song_id 或 keyword，可选 quality/download
+- **get_lyrics** — 获取歌词（LRC + plain）
+- **get_track_comments** — 获取歌曲评论（含热门评论）
+- **like_track** — 喜欢/取消喜欢歌曲
+- **get_mv** — 获取 MV 详情和播放地址
+
+#### 歌单管理
+- **get_playlist** — 歌单详情（不含完整曲目）
+- **get_playlist_tracks** — 获取歌单全部歌曲
+- **get_user_playlists** — 用户自己的歌单列表
+- **create_playlist** — 创建新歌单
+- **add_to_playlist** — 添加歌曲到歌单
+- **remove_from_playlist** — 从歌单移除歌曲
+
+#### 推荐与 FM
+- **get_daily_recommend** — 每日推荐歌曲
+- **get_personal_fm** — 私人 FM 随机推荐
+- **skip_fm_track** — 跳过当前 FM 歌曲
+- **like_fm_track** — 喜欢/取消喜欢 FM 歌曲
+
+#### 账户
+- **login** — 用 MUSIC_U Cookie 登录
+- **login_logout** — 退出登录
+- **get_user_detail** — 查看账户资料
+- **daily_signin** — 每日签到（手机+4exp / 网页+1exp）
+
+#### 本地文件
+- **list_downloaded** — 列出已下载的歌曲和歌词
+- **music_control** — 播放/暂停/切歌/调音量
 
 ### 使用原则
 
@@ -115,6 +100,8 @@ NCM_MUSIC_U=从浏览器获取的MUSIC_U值
 6. 一次搜索不要返回太多（建议 5 首），让用户缩小范围
 7. 已下载到本地的歌曲和歌词保存在 workspace/<用户>/music/ 目录下，可用 `workspace_file` 工具的 `find` 或 `list_dir` 子命令查看
 8. 如果提示"请先登录"，引导用户获取 MUSIC_U 调用 login 工具
+9. 用户说"我收藏的歌单" → get_user_playlists；"推荐点歌" → get_daily_recommend
+10. 用户说"随便放点" → get_personal_fm；"这个歌手的歌" → search 或 get_artist_tracks
 
 ### 音乐播放控制
 

@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSN-exp Web Admin</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root { --bg: #0d1117; --sidebar: #161b22; --card: #1c2128; --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #d29922; --cyan: #39d2c0; }
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); display: flex; min-height: 100vh; font-size: 14px; line-height: 1.5; }
+.sidebar { width: 220px; background: var(--sidebar); border-right: 1px solid var(--border); padding: 16px 0; flex-shrink: 0; overflow-y: auto; }
+.sidebar h2 { font-size: 16px; padding: 0 16px 16px; color: var(--accent); border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.sidebar a { display: block; padding: 8px 16px; color: var(--text-dim); text-decoration: none; font-size: 13px; transition: .15s; border-left: 3px solid transparent; }
+.sidebar a:hover, .sidebar a.active { color: var(--text); background: rgba(88,166,255,.08); border-left-color: var(--accent); }
+.main { flex: 1; padding: 20px 28px; overflow-y: auto; max-height: 100vh; }
+.main h1 { font-size: 22px; margin-bottom: 16px; color: var(--accent); }
+.main h2 { font-size: 16px; margin: 20px 0 10px; color: var(--text); }
+.main h3 { font-size: 14px; margin: 16px 0 8px; color: var(--text-dim); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+.stat-card .num { font-size: 28px; font-weight: 700; color: var(--accent); }
+.stat-card .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+tr:hover td { background: rgba(88,166,255,.04); }
+.btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); cursor: pointer; font-size: 13px; transition: .15s; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn-danger { background: #da3633; border-color: #f85149; color: #fff; }
+.btn-danger:hover { background: #f85149; }
+.btn-sm { padding: 3px 10px; font-size: 12px; }
+input, select, textarea { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; color: var(--text); font-size: 13px; width: 100%; max-width: 400px; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; }
+pre, code { font-family: 'SFMono-Regular', Consolas, monospace; }
+pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+.badge-green { background: rgba(63,185,80,.15); color: var(--green); }
+.badge-red { background: rgba(248,81,73,.15); color: var(--red); }
+.badge-yellow { background: rgba(210,153,34,.15); color: var(--yellow); }
+.badge-cyan { background: rgba(57,210,192,.15); color: var(--cyan); }
+.badge-gray { background: rgba(139,148,158,.15); color: var(--text-dim); }
+.flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mb-8 { margin-bottom: 8px; }
+.mb-16 { margin-bottom: 16px; }
+.mt-16 { margin-top: 16px; }
+.gap-4 { gap: 4px; }
+.hidden { display: none !important; }
+.loading { opacity: .5; pointer-events: none; }
+.toast { position: fixed; top: 16px; right: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; z-index: 999; max-width: 400px; box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: slideIn .2s ease; }
+.toast-error { border-color: var(--red); }
+.toast-success { border-color: var(--green); }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tab-bar button { padding: 8px 16px; background: none; border: none; color: var(--text-dim); cursor: pointer; border-bottom: 2px solid transparent; font-size: 13px; }
+.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-bar button:hover { color: var(--text); }
+.snapshot-card { background: #000; border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-bottom: 16px; text-align: center; overflow: hidden; }
+.snapshot-card img { max-width: 100%; height: auto; border-radius: 4px; display: block; }
+.snapshot-card .ts { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
+@media (max-width: 768px) { .sidebar { width: 56px; } .sidebar h2, .sidebar a span { display: none; } .main { padding: 12px; } }
+</style>
+</head>
+<body>
+<nav class="sidebar" id="sidebar">
+  <h2>DSN Admin</h2>
+  <a href="#" data-page="dashboard" class="active"><span>仪表盘</span></a>
+  <a href="#" data-page="users"><span>用户管理</span></a>
+  <a href="#" data-page="pairing"><span>配对码</span></a>
+  <a href="#" data-page="plugins"><span>插件管理</span></a>
+  <a href="#" data-page="memory"><span>记忆系统</span></a>
+  <a href="#" data-page="config"><span>配置管理</span></a>
+  <a href="#" data-page="persona"><span>人格系统</span></a>
+  <a href="#" data-page="reminders"><span>提醒任务</span></a>
+  <a href="#" data-page="hibernate"><span>待机维护</span></a>
+  <a href="#" data-page="agent"><span>Agent</span></a>
+  <a href="#" data-page="plans"><span>计划管理</span></a>
+  <a href="#" data-page="logs"><span>日志</span></a>
+  <a href="#" data-page="prompt"><span>系统提示词</span></a>
+  <a href="#" data-page="tools"><span>工具箱</span></a>
+  <a href="#" data-page="system"><span>系统控制</span></a>
+</nav>
+<div class="main" id="main-content">
+  <div id="page-dashboard"></div>
+  <div id="page-users" class="hidden"></div>
+  <div id="page-pairing" class="hidden"></div>
+  <div id="page-plugins" class="hidden"></div>
+  <div id="page-memory" class="hidden"></div>
+  <div id="page-config" class="hidden"></div>
+  <div id="page-persona" class="hidden"></div>
+  <div id="page-reminders" class="hidden"></div>
+  <div id="page-hibernate" class="hidden"></div>
+  <div id="page-agent" class="hidden"></div>
+  <div id="page-plans" class="hidden"></div>
+  <div id="page-logs" class="hidden"></div>
+  <div id="page-prompt" class="hidden"></div>
+  <div id="page-tools" class="hidden"></div>
+  <div id="page-system" class="hidden"></div>
+</div>
+<div id="toast-container"></div>
+
+<script>
+const API_BASE = '/api/admin';
+let TOKEN = localStorage.getItem('admin_token') || '';
+
+function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...opts.headers };
+  if (TOKEN) headers['X-Admin-Token'] = TOKEN;
+  return fetch(API_BASE + path, { ...opts, headers })
+    .then(r => r.json().catch(() => ({ error: r.statusText })))
+    .then(data => {
+      if (data.error === 'Unauthorized' && !window._authing) {
+        const pw = prompt('Enter admin password:');
+        if (pw) { TOKEN = pw; localStorage.setItem('admin_token', pw); return api(path, opts); }
+      }
+      return data;
+    });
+}
+
+function toast(msg, type = 'success') {
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function showPage(name) {
+  document.querySelectorAll('#main-content > div').forEach(d => d.classList.add('hidden'));
+  const el = document.getElementById('page-' + name);
+  if (el) el.classList.remove('hidden');
+  document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
+  const link = document.querySelector(`.sidebar a[data-page="${name}"]`);
+  if (link) link.classList.add('active');
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function badge(status) {
+  const map = { active:'green', enabled:'green', pending:'yellow', running:'cyan', done:'green', cancelled:'red', skipped:'gray', completed:'green', failed:'red', maint:'red', standby:'gray', fixed:'cyan', predictive:'yellow' };
+  const cls = map[status] || 'gray';
+  return `<span class="badge badge-${cls}">${escapeHtml(status)}</span>`;
+}
+
+// ── Sidebar navigation ──
+document.querySelectorAll('.sidebar a').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    showPage(a.dataset.page);
+    const fn = pageHandlers[a.dataset.page];
+    if (fn) fn();
+  });
+});
+
+let _snapTimer = null;
+const SNAP_URL = 'http://192.168.10.25:8080/cgi-bin/snapshot.sh?res=high&watermark=yes';
+
+function startSnapshotRefresh() {
+  if (_snapTimer) clearInterval(_snapTimer);
+  _snapTimer = setInterval(() => {
+    const img = document.getElementById('snap-img');
+    const ts = document.getElementById('snap-ts');
+    if (img) {
+      img.src = SNAP_URL + '&_=' + Date.now();
+      img.onload = () => { if (ts) ts.textContent = new Date().toLocaleTimeString(); };
+    }
+  }, 30000);
+  // show initial timestamp
+  const ts = document.getElementById('snap-ts');
+  if (ts) ts.textContent = new Date().toLocaleTimeString();
+}
+
+const pageHandlers = {};
+
+// ═══════════════════════════════════════
+// Dashboard
+// ═══════════════════════════════════════
+pageHandlers.dashboard = function() {
+  const el = document.getElementById('page-dashboard');
+  el.innerHTML = '<h1>仪表盘</h1><div class="loading">Loading...</div>';
+  api('/status').then(d => {
+    const uptime = d.uptime ? Math.floor(d.uptime) + 's' : '-';
+    const u = d.uptime;
+    let uptimeStr = '-';
+    if (u) {
+      const parts = [];
+      const days = Math.floor(u/86400); if(days) parts.push(days+'d');
+      const hrs = Math.floor((u%86400)/3600); if(hrs) parts.push(hrs+'h');
+      const mins = Math.floor((u%3600)/60); if(mins) parts.push(mins+'m');
+      parts.push(Math.floor(u%60)+'s');
+      uptimeStr = parts.join(' ');
+    }
+    const snapTs = Date.now();
+    el.innerHTML = `
+      <h1>仪表盘</h1>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="num">${d.users ? d.users.length : 0}</div><div class="label">用户</div></div>
+        <div class="stat-card"><div class="num">${uptimeStr}</div><div class="label">运行时间</div></div>
+        <div class="stat-card"><div class="num">${d.stats?.chats ?? '-'}</div><div class="label">聊天</div></div>
+        <div class="stat-card"><div class="num">${d.stats?.messages ?? '-'}</div><div class="label">消息</div></div>
+        <div class="stat-card"><div class="num">${d.stats?.active_sessions ?? '-'}</div><div class="label">活跃会话</div></div>
+        <div class="stat-card"><div class="num">${d.config_count ?? '-'}</div><div class="label">配置项</div></div>
+      </div>
+      <div class="snapshot-card">
+        <img id="snap-img" src="http://192.168.10.25:8080/cgi-bin/snapshot.sh?res=high&watermark=yes&_=${snapTs}" alt="监控画面">
+        <div class="ts" id="snap-ts"></div>
+      </div>
+      <div class="card">
+        <h2>用户列表</h2>
+        <table><thead><tr><th>UID</th><th>显示名</th><th>管理员</th></tr></thead><tbody>
+        ${(d.users || []).map(u => `<tr><td>${u.uid}</td><td>${escapeHtml(u.display_name)}</td><td>${u.is_admin ? 'Y' : ''}</td></tr>`).join('')}
+        </tbody></table>
+      </div>`;
+    startSnapshotRefresh();
+  });
+};
+
+// ═══════════════════════════════════════
+// Users
+// ═══════════════════════════════════════
+pageHandlers.users = function() {
+  const el = document.getElementById('page-users');
+  el.innerHTML = '<h1>用户管理</h1><div class="loading">Loading...</div>';
+  api('/users').then(d => {
+    el.innerHTML = `
+      <h1>用户管理</h1>
+      <div class="card">
+        <table><thead><tr><th>UID</th><th>显示名</th><th>管理员</th><th>注册时间</th></tr></thead><tbody>
+        ${(d.users || []).map(u => `<tr>
+          <td>${u.uid}</td><td>${escapeHtml(u.display_name)}</td>
+          <td>${u.is_admin ? badge('enabled') : ''}</td>
+          <td style="color:var(--text-dim)">${escapeHtml(u.created_at || '-')}</td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>`;
+  });
+};
+
+// ═══════════════════════════════════════
+// Pairing
+// ═══════════════════════════════════════
+pageHandlers.pairing = function() {
+  const el = document.getElementById('page-pairing');
+  api('/pairing/status').then(s => {
+    el.innerHTML = `
+      <h1>配对码</h1>
+      <div class="card">
+        <div class="flex-between mb-16">
+          <span>当前状态: ${s.active ? badge('active') + ' 有未使用的配对码' : badge('gray') + ' 无活跃配对码'}</span>
+          <button class="btn btn-primary" onclick="generatePairing()">生成新配对码</button>
+        </div>
+        <div id="pairing-result"></div>
+      </div>`;
+  });
+};
+
+window.generatePairing = function() {
+  api('/pairing/generate', { method: 'POST' }).then(d => {
+    if (d.success) {
+      document.getElementById('pairing-result').innerHTML = `
+        <div style="background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:20px;text-align:center">
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">新配对码</div>
+          <div style="font-size:36px;font-weight:700;color:var(--accent);letter-spacing:6px;font-family:monospace">${escapeHtml(d.code || '')}</div>
+        </div>`;
+      toast('配对码已生成');
+      pageHandlers.pairing();
+    } else {
+      toast(d.error || '生成失败', 'error');
+    }
+  });
+};
+
+// ═══════════════════════════════════════
+// Plugins
+// ═══════════════════════════════════════
+pageHandlers.plugins = function() {
+  const el = document.getElementById('page-plugins');
+  el.innerHTML = '<h1>插件管理</h1><div class="loading">Loading...</div>';
+  api('/plugins').then(d => {
+    el.innerHTML = `
+      <h1>插件管理</h1>
+      <div class="card">
+        <table><thead><tr><th>名称</th><th>启用</th><th>优先级</th><th>钩子</th><th>版本</th></tr></thead><tbody>
+        ${(d.plugins || []).map(p => `<tr>
+          <td><strong>${escapeHtml(p.name)}</strong></td>
+          <td>${p.enabled ? badge('enabled') : badge('gray')}</td>
+          <td>${p.priority}</td>
+          <td style="color:var(--text-dim)">${escapeHtml((p.hooks || []).join(', '))}</td>
+          <td>${escapeHtml(p.version)}</td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>`;
+  });
+};
+
+// ═══════════════════════════════════════
+// Memory
+// ═══════════════════════════════════════
+pageHandlers.memory = function() {
+  const el = document.getElementById('page-memory');
+  el.innerHTML = '<h1>记忆系统</h1><div class="loading">Loading...</div>';
+  api('/memory/users').then(d => {
+    el.innerHTML = `
+      <h1>记忆系统</h1>
+      <div style="margin-bottom:12px" class="flex">
+        <button class="btn btn-primary btn-sm" onclick="memReindex()">重建向量索引</button>
+      </div>
+      <h2>用户记忆统计</h2>
+      <div class="card">
+        <table><thead><tr><th>UID</th><th>显示名</th><th>聊天数</th><th>记忆数</th><th>操作</th></tr></thead><tbody>
+        ${(d.users || []).map(u => `<tr>
+          <td>${u.uid}</td><td>${escapeHtml(u.display_name)}</td>
+          <td>${u.chats}</td><td>${u.memories}</td>
+          <td><button class="btn btn-sm" onclick="memChats(${u.uid})">查看聊天</button></td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>
+      <div id="memory-chats"></div>
+      <div id="memory-entries"></div>`;
+  });
+};
+
+window.memChats = function(uid) {
+  api('/memory/chats/' + uid).then(d => {
+    document.getElementById('memory-chats').innerHTML = `
+      <h2>聊天列表 (UID=${uid})</h2>
+      <div class="card"><table><thead><tr><th>ID</th><th>名称</th><th>消息</th><th>记忆</th><th>操作</th></tr></thead><tbody>
+      ${(d.chats || []).map(c => `<tr>
+        <td>${c.chat_id}</td><td>${escapeHtml(c.chat_name)}</td>
+        <td>${c.message_count}</td><td>${c.memory_count}</td>
+        <td><button class="btn btn-sm" onclick="memList(${uid},${c.chat_id})">查看记忆</button></td>
+      </tr>`).join('')}
+      </tbody></table></div>`;
+  });
+};
+
+window.memList = function(uid, cid) {
+  api('/memory/list/' + uid + '/' + cid).then(d => {
+    document.getElementById('memory-entries').innerHTML = `
+      <h2>记忆条目 (UID=${uid}, Chat=${cid})</h2>
+      <div class="card">
+        ${(d.entries || []).length === 0 ? '<p style="color:var(--text-dim)">无记忆</p>' : `
+        <table><thead><tr><th>ID</th><th>轮次</th><th>摘要</th><th>类型</th><th>时间</th></tr></thead><tbody>
+        ${(d.entries || []).map(e => `<tr>
+          <td>${e.id}</td><td>${e.round ?? '-'}</td>
+          <td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.content || '').slice(0,80)}</td>
+          <td>${escapeHtml(e.type)}</td>
+          <td style="color:var(--text-dim)">${escapeHtml((e.created_at||'').slice(0,19))}</td>
+        </tr>`).join('')}
+        </tbody></table>`}
+      </div>`;
+  });
+};
+
+window.memReindex = function() {
+  api('/memory/reindex', { method: 'POST' }).then(d => {
+    if (d.success) toast('索引重建已启动');
+    else toast(d.error || '失败', 'error');
+  });
+};
+
+// ═══════════════════════════════════════
+// Config
+// ═══════════════════════════════════════
+pageHandlers.config = function() {
+  const el = document.getElementById('page-config');
+  el.innerHTML = '<h1>配置管理</h1><div class="loading">Loading...</div>';
+  api('/config').then(d => {
+    let rows = (d.configs || []).map(c => `<tr>
+      <td style="font-family:monospace;font-size:12px">${escapeHtml(c.key)}</td>
+      <td>${escapeHtml(c.value)}</td>
+      <td>${c.sensitive ? badge('red')+' 敏感' : ''} ${c.readonly ? badge('yellow')+' 只读' : ''}</td>
+      <td>${c.readonly ? '—' : `<button class="btn btn-sm" onclick="editConfig('${escapeHtml(c.key)}','${escapeHtml(c.raw_value || c.value)}')">修改</button>`}</td>
+    </tr>`).join('');
+    el.innerHTML = `
+      <h1>配置管理</h1>
+      <div class="flex-between mb-16">
+        <span>备份数: ${d.backups ?? 0} <button class="btn btn-sm" onclick="undoConfig()" ${!d.backups ? 'disabled' : ''}>回退</button></span>
+      </div>
+      <div class="card" style="overflow-x:auto">
+        <table><thead><tr><th>配置项</th><th>值</th><th>属性</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>
+      <div id="config-edit-area"></div>`;
+  });
+};
+
+window.editConfig = function(key, val) {
+  document.getElementById('config-edit-area').innerHTML = `
+    <div class="card">
+      <h3>修改配置: ${escapeHtml(key)}</h3>
+      <div class="flex" style="margin-top:8px">
+        <input id="config-val-input" value="${escapeHtml(val)}" style="max-width:300px">
+        <button class="btn btn-primary btn-sm" onclick="saveConfig('${escapeHtml(key)}')">保存</button>
+        <button class="btn btn-sm" onclick="document.getElementById('config-edit-area').innerHTML=''">取消</button>
+      </div>
+    </div>`;
+};
+
+window.saveConfig = function(key) {
+  const val = document.getElementById('config-val-input').value;
+  api('/config/set', { method: 'POST', body: JSON.stringify({ key, value: val }) }).then(d => {
+    if (d.success) { toast('配置已更新'); pageHandlers.config(); }
+    else toast(d.error || '保存失败', 'error');
+  });
+};
+
+window.undoConfig = function() {
+  api('/config/undo', { method: 'POST' }).then(d => {
+    if (d.success) { toast('已回退'); pageHandlers.config(); }
+    else toast(d.error || '回退失败', 'error');
+  });
+};
+
+// ═══════════════════════════════════════
+// Persona
+// ═══════════════════════════════════════
+pageHandlers.persona = function() {
+  const el = document.getElementById('page-persona');
+  el.innerHTML = '<h1>人格系统</h1><div class="loading">Loading...</div>';
+  api('/persona/list').then(d => {
+    el.innerHTML = `
+      <h1>人格系统</h1>
+      <div class="card">
+        <table><thead><tr><th>ID</th><th>显示名</th><th>版本</th><th>蒸馏状态</th><th>素材数</th><th>操作</th></tr></thead><tbody>
+        ${(d.cards || []).map(c => `<tr>
+          <td><strong>${escapeHtml(c.card_id)}</strong></td>
+          <td>${escapeHtml(c.display_name)}</td>
+          <td>${escapeHtml(c.version)}</td>
+          <td>${c.distilled ? badge('enabled')+' v'+c.distill_version : badge('gray')+' 未蒸馏'}</td>
+          <td>${c.experience_count}</td>
+          <td class="flex gap-4">
+            <button class="btn btn-sm" onclick="personaStatus('${escapeHtml(c.card_id)}')">详情</button>
+            ${c.distilled ? '' : `<button class="btn btn-sm btn-primary" onclick="personaDistill('${escapeHtml(c.card_id)}')">蒸馏</button>`}
+          </td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>
+      <div id="persona-detail"></div>`;
+  });
+};
+
+window.personaStatus = function(cardId) {
+  api('/persona/status/' + encodeURIComponent(cardId)).then(d => {
+    let traitsHtml = '';
+    if (d.traits) {
+      traitsHtml = '<table><thead><tr><th>特质</th><th>名称</th><th>值</th></tr></thead><tbody>' +
+        Object.entries(d.traits).map(([k,v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v.name)}</td><td>${(v.value*100).toFixed(1)}%</td></tr>`).join('') + '</tbody></table>';
+    }
+    document.getElementById('persona-detail').innerHTML = `
+      <div class="card">
+        <h2>${escapeHtml(d.display_name)} (${escapeHtml(d.card_id)})</h2>
+        <p style="color:var(--text-dim)">${escapeHtml(d.description)}</p>
+        <div class="stat-grid" style="margin-top:12px">
+          <div class="stat-card"><div class="num">${d.experience_count}</div><div class="label">经历数</div></div>
+          <div class="stat-card"><div class="num">${d.corpus_count}</div><div class="label">语料数</div></div>
+        </div>
+        ${d.distill_info ? `<p>模型: ${escapeHtml(d.distill_info.model)} | 版本: ${d.distill_info.version} | 指纹: ${escapeHtml(d.distill_info.fingerprint || '')}</p>` : ''}
+        ${traitsHtml ? '<h3>特质向量</h3>' + traitsHtml : ''}
+      </div>`;
+  });
+};
+
+window.personaDistill = function(cardId) {
+  api('/persona/distill/' + encodeURIComponent(cardId), { method: 'POST' }).then(d => {
+    if (d.success) toast('蒸馏已启动');
+    else toast(d.error || '失败', 'error');
+  });
+};
+
+// ═══════════════════════════════════════
+// Reminders
+// ═══════════════════════════════════════
+pageHandlers.reminders = function() {
+  const el = document.getElementById('page-reminders');
+  el.innerHTML = '<h1>提醒任务</h1><div class="loading">Loading...</div>';
+  api('/reminders').then(d => {
+    el.innerHTML = `
+      <h1>提醒任务 (${d.count || 0})</h1>
+      <div class="card">
+        ${(d.reminders || []).length === 0 ? '<p style="color:var(--text-dim)">无提醒任务</p>' : `
+        <table><thead><tr><th>ID</th><th>类型</th><th>用户</th><th>时间</th><th>间隔</th><th>状态</th><th>跳过</th><th>操作</th></tr></thead><tbody>
+        ${(d.reminders || []).map(r => `<tr>
+          <td style="font-family:monospace;font-size:11px">${escapeHtml((r.task_id||'').slice(0,8))}</td>
+          <td>${escapeHtml(r.task_type)}</td>
+          <td>${r.user_id}</td>
+          <td style="color:var(--text-dim)">${escapeHtml((r.scheduled_time||'').slice(0,19))}</td>
+          <td>${r.interval_seconds ? fmtInterval(r.interval_seconds) : '-'}</td>
+          <td>${badge(r.status)}</td>
+          <td>${r.skip_count || 0}</td>
+          <td class="flex gap-4">
+            <button class="btn btn-sm ${r.status === 'pending' ? 'btn-danger' : ''}" onclick="remCancel('${escapeHtml(r.task_id)}')">取消</button>
+            <button class="btn btn-sm" onclick="remSkip('${escapeHtml(r.task_id)}')">跳过</button>
+          </td>
+        </tr>`).join('')}
+        </tbody></table>`}
+      </div>`;
+  });
+};
+
+function fmtInterval(s) {
+  if (s >= 86400) return (s/86400)+'d';
+  if (s >= 3600) return (s/3600)+'h';
+  if (s >= 60) return (s/60)+'m';
+  return s+'s';
+}
+
+window.remCancel = function(id) {
+  api('/reminder/cancel', { method: 'POST', body: JSON.stringify({ task_id: id }) }).then(d => {
+    if (d.success) { toast('已取消'); pageHandlers.reminders(); }
+    else toast(d.error || '取消失败', 'error');
+  });
+};
+
+window.remSkip = function(id) {
+  api('/reminder/skip', { method: 'POST', body: JSON.stringify({ task_id: id }) }).then(d => {
+    if (d.success) { toast('已跳过'); pageHandlers.reminders(); }
+    else toast(d.error || '跳过失败', 'error');
+  });
+};
+
+// ═══════════════════════════════════════
+// Hibernate
+// ═══════════════════════════════════════
+pageHandlers.hibernate = function() {
+  const el = document.getElementById('page-hibernate');
+  el.innerHTML = '<h1>待机维护</h1><div class="loading">Loading...</div>';
+  api('/hibernate/check').then(d => {
+    el.innerHTML = `
+      <h1>待机维护</h1>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="num">${badge(d.state)}</div><div class="label">状态</div></div>
+        <div class="stat-card"><div class="num">${d.minutes_since_last_request ?? '-'}m</div><div class="label">距上次请求</div></div>
+        <div class="stat-card"><div class="num">${d.request_count ?? 0}</div><div class="label">总请求</div></div>
+        <div class="stat-card"><div class="num">${d.idle_timeout ?? '-'}m</div><div class="label">待机超时</div></div>
+      </div>
+      <div class="card">
+        <div class="flex-between">
+          <span>策略: ${badge(d.strategy)} ${d.window?.type === 'fixed' ? '每天 '+d.window.hour+':00' : d.window ? d.window.start+':00-'+d.window.end+':00' : '—'}</span>
+          <div class="flex">
+            <button class="btn btn-sm" onclick="hibernateSleep()">立即待机</button>
+            <button class="btn btn-sm" onclick="hibernateNow()">立即整理</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>计划整理时间</h3>
+        <div class="flex mt-16">
+          <input id="hibernate-time" placeholder="now / 7d / 3h / 30m" style="max-width:200px">
+          <button class="btn btn-primary btn-sm" onclick="hibernateArchive()">设定</button>
+        </div>
+      </div>`;
+  });
+};
+
+window.hibernateSleep = function() {
+  api('/hibernate/sleep', { method: 'POST' }).then(d => {
+    if (d.success) { toast('已进入待机'); pageHandlers.hibernate(); }
+    else toast(d.error || '失败', 'error');
+  });
+};
+
+window.hibernateNow = function() {
+  api('/hibernate/archive', { method: 'POST', body: JSON.stringify({ time: 'now' }) }).then(d => {
+    if (d.success) toast('整理已启动');
+    else toast(d.error || '失败', 'error');
+  });
+};
+
+window.hibernateArchive = function() {
+  const time = document.getElementById('hibernate-time').value;
+  api('/hibernate/archive', { method: 'POST', body: JSON.stringify({ time }) }).then(d => {
+    if (d.success) { toast('已设定: ' + d.next_maintenance); pageHandlers.hibernate(); }
+    else toast(d.error || '失败', 'error');
+  });
+};
+
+// ═══════════════════════════════════════
+// Agent
+// ═══════════════════════════════════════
+pageHandlers.agent = function() {
+  const el = document.getElementById('page-agent');
+  el.innerHTML = '<h1>Agent 管理</h1><div class="loading">Loading...</div>';
+  api('/agents').then(d => {
+    el.innerHTML = `
+      <h1>Agent 管理</h1>
+      <div class="card">
+        <div class="flex-between mb-16">
+          <span>已注册: ${(d.agents || []).length}</span>
+          <button class="btn btn-primary btn-sm" onclick="showCreateAgent()">创建 Agent</button>
+        </div>
+        <table><thead><tr><th>UID</th><th>昵称</th><th>绑定用户</th><th>操作</th></tr></thead><tbody>
+        ${(d.agents || []).map(a => `<tr>
+          <td>${a.uid}</td><td>${escapeHtml(a.display_name || a.nickname)}</td>
+          <td>${a.bound_to ? escapeHtml(a.bound_name) + ' (UID='+a.bound_to+')' : '-'}</td>
+          <td>${a.bound_to ? `<button class="btn btn-sm btn-danger" onclick="agentUnbind(${a.uid})">解绑</button>` : '-'}</td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>
+      <div id="agent-create-area"></div>`;
+  });
+};
+
+window.showCreateAgent = function() {
+  const el = document.getElementById('agent-create-area');
+  el.innerHTML = `
+    <div class="card">
+      <h3>创建 Agent</h3>
+      <div class="flex mt-16">
+        <input id="agent-name" placeholder="Agent 名称" style="max-width:200px">
+        <input id="agent-uid" placeholder="绑定用户 UID" value="1" style="max-width:120px">
+        <button class="btn btn-primary btn-sm" onclick="createAgent()">创建</button>
+        <button class="btn btn-sm" onclick="el.innerHTML=''">取消</button>
+      </div>
+    </div>`;
+};
+
+window.createAgent = function() {
+  const name = document.getElementById('agent-name').value;
+  const uid = parseInt(document.getElementById('agent-uid').value) || 1;
+  api('/agent/create', { method: 'POST', body: JSON.stringify({ name, uid }) }).then(d => {
+    if (d.success) {
+      const keyInfo = d.agent?.api_key ? `<pre style="margin-top:8px">API Key: ${escapeHtml(d.agent.api_key)}</pre>` : '';
+      toast('Agent 已创建: UID=' + d.agent?.agent_uid + keyInfo, 'success');
+      document.getElementById('agent-create-area').innerHTML = keyInfo ? `<div class="card"><h3>创建成功</h3>${keyInfo}</div>` : '';
+      pageHandlers.agent();
+    } else toast(d.error || '创建失败', 'error');
+  });
+};
+
+window.agentUnbind = function(uid) {
+  if (!confirm('确认解绑 Agent UID='+uid+'?')) return;
+  api('/agent/unbind', { method: 'POST', body: JSON.stringify({ agent_uid: uid }) }).then(d => {
+    if (d.success) { toast('已解绑'); pageHandlers.agent(); }
+    else toast(d.error || '解绑失败', 'error');
+  });
+};
+
+// ═══════════════════════════════════════
+// Plans
+// ═══════════════════════════════════════
+pageHandlers.plans = function() {
+  const el = document.getElementById('page-plans');
+  el.innerHTML = `
+    <h1>计划管理</h1>
+    <div class="flex mb-16">
+      <input id="plan-uid" placeholder="用户 UID" value="1" style="max-width:120px">
+      <button class="btn btn-primary btn-sm" onclick="loadPlans()">查询</button>
+    </div>
+    <div id="plans-result"></div>`;
+};
+
+window.loadPlans = function() {
+  const uid = document.getElementById('plan-uid').value;
+  const el = document.getElementById('plans-result');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  api('/plans?uid=' + uid).then(d => {
+    el.innerHTML = `
+      <div class="card">
+        ${(d.plans || []).length === 0 ? '<p style="color:var(--text-dim)">无计划</p>' : `
+        <table><thead><tr><th>ID</th><th>标题</th><th>状态</th><th>进度</th><th>阶段</th></tr></thead><tbody>
+        ${(d.plans || []).map(p => `<tr>
+          <td style="font-family:monospace;font-size:11px">${escapeHtml((p.goal_id||'').slice(0,8))}</td>
+          <td>${escapeHtml(p.title)}</td>
+          <td>${badge(p.status)}</td>
+          <td>${(p.progress * 100).toFixed(0)}%</td>
+          <td style="color:var(--text-dim)">${(p.phases || []).map(ph => `${escapeHtml(ph.title)}(${badge(ph.status)})`).join(' ') || '—'}</td>
+        </tr>`).join('')}
+        </tbody></table>`}
+      </div>`;
+  });
+};
+
+// ═══════════════════════════════════════
+// Logs
+// ═══════════════════════════════════════
+pageHandlers.logs = function() {
+  const el = document.getElementById('page-logs');
+  el.innerHTML = '<h1>系统日志</h1><div class="loading">Loading...</div>';
+  api('/logs').then(d => {
+    const logs = d.logs || [];
+    el.innerHTML = `
+      <h1>系统日志 (最近 ${logs.length} 条)</h1>
+      <div class="card" style="max-height:600px;overflow-y:auto">
+        ${logs.length === 0 ? '<p style="color:var(--text-dim)">无日志</p>' :
+        '<table><thead><tr><th>时间</th><th>模块</th><th>级别</th><th>消息</th></tr></thead><tbody>' +
+        logs.slice().reverse().map(l => `<tr>
+          <td style="color:var(--text-dim);white-space:nowrap">${escapeHtml(l.time)}</td>
+          <td style="font-family:monospace;font-size:11px">${escapeHtml(l.module)}</td>
+          <td>${badge(l.level.toLowerCase())}</td>
+          <td>${escapeHtml(l.message)}</td>
+        </tr>`).join('') + '</tbody></table>'}
+      </div>`;
+  });
+};
+
+// ═══════════════════════════════════════
+// Prompt
+// ═══════════════════════════════════════
+pageHandlers.prompt = function() {
+  const el = document.getElementById('page-prompt');
+  el.innerHTML = `
+    <h1>系统提示词</h1>
+    <div class="flex mb-16">
+      <input id="prompt-uid" placeholder="用户 UID" value="0" style="max-width:120px">
+      <button class="btn btn-primary btn-sm" onclick="loadPrompt()">查看</button>
+    </div>
+    <div id="prompt-result"></div>`;
+};
+
+window.loadPrompt = function() {
+  const uid = document.getElementById('prompt-uid').value;
+  const el = document.getElementById('prompt-result');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  api('/prompt?uid=' + uid).then(d => {
+    el.innerHTML = `
+      <div class="card">
+        <div class="flex-between mb-8">
+          <span>UID=${d.uid}  ${d.length ? '— ' + d.length + ' 字符' : ''}</span>
+          <button class="btn btn-sm" onclick="copyPrompt()">复制</button>
+        </div>
+        <pre id="prompt-text">${escapeHtml(d.prompt)}</pre>
+      </div>`;
+  });
+};
+
+window.copyPrompt = function() {
+  const text = document.getElementById('prompt-text');
+  if (text) { navigator.clipboard.writeText(text.textContent).then(() => toast('已复制')); }
+};
+
+// ═══════════════════════════════════════
+// Tools
+// ═══════════════════════════════════════
+pageHandlers.tools = function() {
+  const el = document.getElementById('page-tools');
+  el.innerHTML = `
+    <h1>工具箱</h1>
+    <div class="card">
+      <h2>详情模式</h2>
+      <div class="flex mt-16" id="detail-status">
+        <span>Loading...</span>
+      </div>
+      <div class="flex mt-16">
+        <button class="btn btn-sm" onclick="toggleDetail('chats')">切换聊天详情</button>
+        <button class="btn btn-sm" onclick="toggleDetail('actions')">切换动作详情</button>
+        <button class="btn btn-sm" onclick="toggleTimer()">切换阶段计时</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>导出/导入</h2>
+      <div style="margin-top:12px">
+        <label>类型: <select id="export-type"><option value="chats">聊天记录</option><option value="memories">记忆摘要</option></select></label>
+        <label style="margin-left:8px">UID: <input id="export-uid" value="1" style="width:60px"></label>
+        <label style="margin-left:8px">Chat ID: <input id="export-cid" value="1" style="width:60px"></label>
+        <button class="btn btn-sm btn-primary" onclick="doExport()" style="margin-left:8px">导出</button>
+      </div>
+      <div id="export-result" style="margin-top:12px"></div>
+    </div>`;
+  api('/detail/status').then(d => {
+    document.getElementById('detail-status').innerHTML = `
+      <span>聊天详情: ${d.detail_chats ? badge('enabled') + ' 开启' : badge('gray') + ' 关闭'}</span>
+      <span>动作详情: ${d.detail_actions ? badge('enabled') + ' 开启' : badge('gray') + ' 关闭'}</span>`;
+  });
+};
+
+window.toggleDetail = function(type) {
+  api('/detail/' + type, { method: 'POST' }).then(d => {
+    if (d.success) { toast((d.enabled ? '已开启' : '已关闭') + ' ' + type + ' 详情'); pageHandlers.tools(); }
+  });
+};
+
+window.toggleTimer = function() {
+  api('/timer/toggle', { method: 'POST' }).then(d => {
+    toast('阶段计时: ' + (d.enabled ? '已开启' : '已关闭'));
+  });
+};
+
+window.doExport = function() {
+  const type = document.getElementById('export-type').value;
+  const uid = parseInt(document.getElementById('export-uid').value) || 1;
+  const cid = parseInt(document.getElementById('export-cid').value) || 1;
+  api('/exports', { method: 'POST', body: JSON.stringify({ type, uid, cid }) }).then(d => {
+    if (d.error) { toast(d.error, 'error'); return; }
+    const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${type}-uid${uid}-cid${cid}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    toast('已导出 ' + (d.messages?.length || d.memories?.length || 0) + ' 条');
+  });
+};
+
+// ═══════════════════════════════════════
+// System Control
+// ═══════════════════════════════════════
+pageHandlers.system = function() {
+  const el = document.getElementById('page-system');
+  el.innerHTML = `
+    <h1>系统控制</h1>
+    <div class="card">
+      <h2 style="color:var(--red)">危险操作</h2>
+      <p style="color:var(--text-dim);margin:8px 0">停止整个 DSN-exp 服务器（包括主 API 和所有服务）</p>
+      <button class="btn btn-danger" onclick="stopServer()">停止服务器</button>
+    </div>`;
+};
+
+window.stopServer = function() {
+  if (!confirm('确认要停止服务器？此操作不可撤销！')) return;
+  api('/stop', { method: 'POST' }).then(d => {
+    if (d.success) {
+      toast('服务器正在停止...', 'error');
+      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--red);font-size:24px">服务器已停止</div>';
+    }
+  });
+};
+
+// ── Init ──
+showPage('dashboard');
+pageHandlers.dashboard();
+</script>
+</body>
+</html>
