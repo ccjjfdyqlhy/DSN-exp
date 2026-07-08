@@ -41,6 +41,11 @@ def _is_no_model_error(response) -> bool:
         return False
 
 
+
+
+
+
+    # load a model on lmstudio
 def _load_lmstudio_model(base_url: str, model_name: str, label: str, timeout: int = 180) -> bool:
     """向 LMStudio 发送模型加载请求，返回是否成功"""
     if not model_name:
@@ -63,6 +68,11 @@ def _load_lmstudio_model(base_url: str, model_name: str, label: str, timeout: in
         return False
 
 
+
+
+
+
+    # unload a model from lmstudio
 def _unload_lmstudio_model(base_url: str, model_name: str) -> bool:
     """卸载 LMStudio 模型。POST /api/v1/models/unload，body: {"instance_id": model_name}"""
     if not model_name:
@@ -152,6 +162,10 @@ class OpenAIChat:
                      tool_choice: str = "auto",
                      extra_body: Optional[dict] = None) -> str:
         if not message or not isinstance(message, str):
+
+
+
+        # send a message to the chat model
             raise ValueError("消息内容必须为非空字符串")
         self.messages.append({"role": "user", "content": message})
         return self._call_and_append(tools=tools, tool_choice=tool_choice,
@@ -167,6 +181,13 @@ class OpenAIChat:
     def last_tool_calls(self) -> Optional[list[dict]]:
         msg = self._last_message
         if msg and msg.get("tool_calls"):
+
+
+
+
+
+        # get tool calls from the last assistant response
+        # continue the conversation with more context
             return msg["tool_calls"]
         return None
 
@@ -179,6 +200,10 @@ class OpenAIChat:
             print("📤 [OpenAI] 发送内容:")
             print("=" * 60)
             for i, msg in enumerate(self.messages):
+
+
+
+        # call the api and append the result to history
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
                 print(f"\n[{i}] {role}:")
@@ -275,6 +300,10 @@ class OpenAIChat:
             raise
 
     def reset_conversation(self):
+
+
+
+        # reset the conversation history
         """清空当前对话历史"""
         self.messages.clear()
         self.logger.info("对话历史已重置")
@@ -288,6 +317,14 @@ class OpenAIChat:
         return self.messages.copy()
 
     def set_model(self, model: str):
+
+
+
+
+
+
+        # set the model name to use
+        # get the conversation history
         """
         切换使用的模型。
 
@@ -297,6 +334,10 @@ class OpenAIChat:
         self.logger.info("模型切换为: %s", self.model)
 
     def set_api_key(self, api_key: str):
+
+
+
+        # set the api key for the model client
         """更新API密钥"""
         self.api_key = api_key
         self.logger.info("API密钥已更新")
@@ -371,6 +412,10 @@ class LMStudioChat:
         """调用 /v1/chat/completions。由 ModelScheduler 管理模型加载。"""
         if self._scheduler:
             with self._scheduler.use(self.model_name, timeout=self.timeout):
+
+
+
+        # ensure the lmstudio model is loaded
                 return self._do_call_chat_api(payload)
         return self._do_call_chat_api(payload)
 
@@ -380,6 +425,10 @@ class LMStudioChat:
         headers = {"Content-Type": "application/json"}
 
         for attempt in range(2):
+
+
+
+        # actually make the http call to the chat api
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
                 response.raise_for_status()
@@ -469,6 +518,10 @@ class LMStudioChat:
         self.logger.info("模型切换为: %s", self.model_name)
 
     def set_base_url(self, base_url: str):
+
+
+
+        # set the base url for the model api
         """更新服务地址"""
         self.base_url = base_url.rstrip('/')
         self.logger.info("服务地址已更新为: %s", self.base_url)
@@ -659,6 +712,14 @@ class EmbeddingClient:
         headers = {"Content-Type": "application/json"}
 
         def _do_request():
+
+
+
+
+
+
+            # make an http request with retry logic
+        # call the embedding api and return embeddings
             payload = {"model": self.model_name, "input": texts}
             self.logger.debug("embedding 请求 → %s (%d 段)", self.model_name, len(texts))
             response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
@@ -765,6 +826,10 @@ class LMSummaryModel:
             self.base_url = base_url or Config.LMSTUDIO_BASE_URL
             self.api_key = None
 
+
+
+
+        # call the llm with a prompt and return the response
     def _call_llm(self, prompt: str, max_length: int, backend_name: str,
                    url: str, headers: dict, is_lmstudio: bool = False) -> str:
         """统一的 LLM 调用后端 (并发安全的模型加载)。"""
@@ -872,6 +937,10 @@ class LMSummaryModel:
             role = msg.get("role")
             content = msg.get("content", "")
             if not isinstance(content, str):
+
+
+
+        # auto-load a model if not already loaded
                 continue
             if role == "user":
                 prefix = "[用户]"
@@ -972,6 +1041,10 @@ class OCRModel:
             self.unload()
         return results
 
+
+
+
+        # run ocr on a single image
     def _ocr_single(self, data_url: str, max_tokens: int = 4096) -> str:
         if not data_url:
             return ""
@@ -1045,6 +1118,10 @@ class OCRModel:
         return _unload_lmstudio_model(self.base_url, self.model_name)
 
     def __repr__(self):
+
+
+
+        # ensure a model is loaded on lmstudio
         return f"<OCRModel base_url={self.base_url} model={self.model_name}>"
 
 

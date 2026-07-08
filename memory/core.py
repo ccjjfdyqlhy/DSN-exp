@@ -42,6 +42,10 @@ class MemorySystem:
         self._init_table()
 
     def _init_table(self):
+
+
+
+        # initialize the memory database table
         conn = self.db._get_connection()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_v2 (
@@ -77,9 +81,17 @@ class MemorySystem:
 
     # ---- crypto ----
 
+
+
+
+        # encrypt a value using the message cipher
     def _encrypt(self, user_id: int, text: str) -> str:
         return self.db._cipher.encrypt(user_id, text)
 
+
+
+
+        # decrypt a value using the message cipher
     def _decrypt(self, user_id: int, text: str) -> str:
         if not text:
             return ""
@@ -117,6 +129,10 @@ class MemorySystem:
         return self._do_summarize(user_id, chat_id, round_idx, user_msg, assistant_reply)
 
     def _do_summarize(self, user_id, chat_id, round_idx, user_msg, assistant_reply):
+
+
+
+        # run the summarization llm call
         try:
             summary = self.summary_model.summarize_dialog(
                 [
@@ -147,6 +163,10 @@ class MemorySystem:
             logger.exception("Summarize failed uid=%d chat=%d round=%d", user_id, chat_id, round_idx)
             return None
 
+
+
+
+        # get memories with embedding vectors for search
     def _get_exp_memories(self, user_id: int) -> list[dict]:
         conn = self.db._get_connection()
         rows = conn.execute(
@@ -168,6 +188,10 @@ class MemorySystem:
     # 向量嵌入
     # =================================================================
 
+
+
+
+        # embed a raw conversation round
     def _embed_raw_round(self, user_id: int, chat_id: int, round_idx: int,
                          user_msg: str, assistant_reply: str) -> None:
         """对原始对话文本生成 embedding，写入 memory_embeds 表。"""
@@ -200,6 +224,9 @@ class MemorySystem:
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         if not a or not b or len(a) != len(b):
+
+
+        # pack a float embedding into binary for storage
             return 0.0
         dot = sum(x * y for x, y in zip(a, b))
         na = math.sqrt(sum(x * x for x in a))
@@ -212,6 +239,10 @@ class MemorySystem:
     # 上下文组装 (被动回忆)
     # =================================================================
 
+
+
+
+        # build context string from recent memories
     def assemble_context(
         self, user_id: int, history: list[dict], cross_user_id: Optional[int] = None
     ) -> list[dict]:
@@ -548,6 +579,10 @@ class MemorySystem:
                 processed += 1
                 yield (processed, total, f"[错误]", str(e))
 
+
+
+
+        # build a round text from a memory entry
     def _build_round_text(self, user_id: int, chat_id: int, round_: int) -> str:
         """从 messages 表读取指定轮次的原始对话，拼接为文本。"""
         msgs = self._build_round_messages(user_id, chat_id, round_)
@@ -564,6 +599,10 @@ class MemorySystem:
             parts.append(f"{role}: {m['content']}")
         return "\n".join(parts)
 
+
+
+
+        # build openai-style messages from a memory entry
     def _build_round_messages(self, user_id: int, chat_id: int, round_: int) -> list[dict]:
         """从 messages 表读取指定轮次的消息，返回 [{role, content}, ...]。
         memory_v2.round 与 messages.round_index 对齐。"""
@@ -589,6 +628,10 @@ class MemorySystem:
     # 标签处理 (<recall> + <memo>)
     # =================================================================
 
+
+
+
+        # process xml tags in the reply for memory ops
     def handle_tags(self, user_id: int, chat_id: int, text: str) -> str:
         if not text:
             return text
@@ -619,6 +662,10 @@ class MemorySystem:
         return text
 
     def _handle_recall(self, user_id, chat_id, payload):
+
+
+
+        # handle a recall tag to fetch relevant memories
         keywords = payload.get("keywords", [])
         detail_indices = payload.get("detail", [])
         auto_detail = payload.get("detail") is True
@@ -649,6 +696,10 @@ class MemorySystem:
     # 备忘录 CRUD
     # =================================================================
 
+
+
+
+        # add a manual memo to the memory store
     def add_memo(self, user_id: int, chat_id: int, text: str) -> int:
         encrypted = self._encrypt(user_id, text)
         conn = self.db._get_connection()
@@ -661,6 +712,10 @@ class MemorySystem:
             conn.commit()
         return cursor.lastrowid
 
+
+
+
+        # get all memos for a user
     def _get_memos(self, user_id: int) -> list[dict]:
         conn = self.db._get_connection()
         rows = conn.execute(
@@ -680,12 +735,20 @@ class MemorySystem:
     def _get_bound_agent(self, user_id: int) -> Optional[int]:
         """查询用户绑定的 AI Agent 的 uid，无绑定返回 None。"""
         if self.db is None or not hasattr(self.db, "get_bound_agent"):
+
+
+
+        # get the bound agent for a user if any
             return None
         return self.db.get_bound_agent(user_id)
 
     def _inject_unsynced_agent_chat(self, result: list, user_id: int, agent_uid: int) -> None:
         """查询并注入未同步的 Agent 原始聊天消息到上下文中。"""
         if not hasattr(self.db, "get_unsynced_agent_messages"):
+
+
+
+        # inject unsynced agent chat into context
             return
         msgs = self.db.get_unsynced_agent_messages(user_id, agent_uid, limit=20)
         if not msgs:
@@ -704,6 +767,10 @@ class MemorySystem:
         if hasattr(self.db, "set_agent_sync_time"):
             self.db.set_agent_sync_time(user_id, timestamp=max_ts)
 
+
+
+
+        # delete a memo by id
     def delete_memo(self, memo_id: int) -> bool:
         conn = self.db._get_connection()
         with self._lock:
@@ -719,6 +786,9 @@ class MemorySystem:
 
     @staticmethod
     def _format_timedelta(ts_str):
+
+
+        # format a timedelta into human-readable string
         if not ts_str:
             return ""
         try:
@@ -744,6 +814,9 @@ class MemorySystem:
 
     @classmethod
     def _format_search_results(cls, hits, search_keywords):
+
+
+        # format search results for llm injection
         if not hits:
             kw_str = ", ".join(search_keywords) if search_keywords else ""
             return f'[记忆检索结果] 未找到与 "{kw_str}" 相关的记忆。'
@@ -777,6 +850,9 @@ class MemorySystem:
 
     @classmethod
     def _format_detail_results(cls, detail):
+
+
+        # format detail results for llm injection
         if not detail:
             return "[记忆细节还原] 未找到对应轮次的对话记录。"
 

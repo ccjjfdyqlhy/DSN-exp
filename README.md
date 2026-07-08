@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-ccjjfdyqlhy%2FDSN--exp-181717?style=for-the-badge&logo=github)](https://github.com/ccjjfdyqlhy/DSN-exp)
 
+**English** | [简体中文](https://github.com/ccjjfdyqlhy/DSN-exp/blob/main/README_zh.md)
+
 ---
 
 **Your AI, alive on your machine. Not a cloud service. Not SaaS. A mind waking up from your own hard drive.**

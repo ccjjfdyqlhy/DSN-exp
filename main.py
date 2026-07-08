@@ -23,6 +23,11 @@ _ENV_PATH = Path(__file__).parent / ".env"
 
 def _is_env_configured() -> bool:
     if not _ENV_PATH.exists():
+
+
+
+
+    # check if required environment vars are set
         return False
     try:
         with open(_ENV_PATH, "r", encoding="utf-8") as f:
@@ -83,6 +88,11 @@ _MAX_ENV_BACKUPS = 3
 
 
 def _env_backup_rotate():
+
+
+
+
+    # rotate old env backups
     """轮转备份: .env → .env.bak.0, .env.bak.0 → .env.bak.1, ..."""
     for i in range(_MAX_ENV_BACKUPS - 1, -1, -1):
         src = _ENV_PATH.parent / f".env.bak.{i}"
@@ -96,6 +106,11 @@ def _env_backup_rotate():
 
 
 def _env_backup_restore():
+
+
+
+
+    # restore env from a backup file
     """恢复最近备份: .env.bak.0 → .env，其余前移"""
     bak0 = _ENV_PATH.parent / ".env.bak.0"
     if not bak0.exists():
@@ -115,12 +130,22 @@ def _env_backup_restore():
 def _env_backup_count() -> int:
     n = 0
     for i in range(_MAX_ENV_BACKUPS):
+
+
+
+
+    # count existing env backups
         if (_ENV_PATH.parent / f".env.bak.{i}").exists():
             n += 1
     return n
 
 
 def _check_port_available(host: str, port: int):
+
+
+
+
+    # check if a tcp port is free to use
     import subprocess
     import socket
 
@@ -173,6 +198,11 @@ def _check_port_available(host: str, port: int):
 
 
 def _env_write(key: str, value: str):
+
+
+
+
+    # write a key=value pair to the env file
     """将 key=value 写入 .env 文件（更新已有行或追加）"""
     env_key = key.upper()
     lines: list[str] = []
@@ -214,6 +244,11 @@ def get_logs_snapshot() -> list:
 
 
 def _install_log_handler():
+
+
+
+
+    # install a log handler for the log buffer
     global _LOG_HANDLER_INSTALLED
     if _LOG_HANDLER_INSTALLED:
         return
@@ -234,6 +269,11 @@ _console_handler_lock = threading.Lock()
 
 
 def _enable_console_logging():
+
+
+
+
+    # add a console log handler
     global _console_handler
     with _console_handler_lock:
         if _console_handler is not None:
@@ -250,6 +290,11 @@ def _enable_console_logging():
 
 
 def _disable_console_logging():
+
+
+
+
+    # remove the console log handler
     global _console_handler
     with _console_handler_lock:
         if _console_handler is not None:
@@ -389,6 +434,11 @@ def _mask_value(key: str, val) -> str:
 
 
 def _try_convert(value_str: str, target_type):
+
+
+
+
+    # mask sensitive values for display
     """尝试将字符串转换为目标类型，失败返回 None"""
     if target_type is bool:
         lowered = value_str.lower()
@@ -1045,6 +1095,10 @@ def _cmd_memory_reindex(parts: list[str]):
     cid = int(parts[3]) if len(parts) > 3 else None
 
     def _run_index():
+
+
+
+        # run a reindex operation
         print("  开始索引旧记忆...")
         try:
             for processed, total, preview, skipped in ms.reindex_embeddings(
@@ -1573,6 +1627,11 @@ def _cmd_detail(arg: str = ""):
 
 
 def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, config_cls=None, shutdown_event=None, personality_v3=None, maint_system=None):
+
+
+
+
+    # route a command string to the right handler
     parts = line.split(maxsplit=1)
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1720,6 +1779,11 @@ def _cmd_persona(personality_v3, args: str):
 
 
 def _persona_status(v3, card_id: str):
+
+
+
+
+    # print persona system status
     card = v3.get_card(card_id)
     d = v3.get_distillation(card_id)
     if not card:
@@ -1932,6 +1996,12 @@ def _cmd_agent(auth_manager, db, args: str):
 
 
 def _persona_list(v3):
+
+
+
+
+
+    # list all personality cards
     cards = v3.list_cards()
     if not cards:
         print("  无角色卡")
@@ -1966,6 +2036,11 @@ def _persona_list(v3):
 
 
 def _persona_materials(v3, card_id: str):
+
+
+
+
+    # print persona materials summary
     card = v3.get_card(card_id)
     if not card:
         print(f"  角色卡 '{card_id}' 不存在")
@@ -1994,6 +2069,11 @@ def _persona_materials(v3, card_id: str):
 
 
 def _persona_rollback(v3, card_id: str):
+
+
+
+
+    # rollback persona to a previous state
     backups = v3.list_backups(card_id)
     if not backups:
         print(f"  角色卡 '{card_id}' 无备份快照")
@@ -2045,6 +2125,11 @@ def _persona_do_rollback(v3, args: str):
 
 
 def _cmd_hibernate(ms, args: str):
+
+
+
+
+    # run a hibernate-related command
     parts = args.split(maxsplit=1)
     sub = parts[0].lower() if parts else ""
 
@@ -2076,6 +2161,11 @@ def _cmd_hibernate(ms, args: str):
 
 
 def _cmd_hibernate_check(ms):
+
+
+
+
+    # check hibernate queue status
     from maintenance import config as mc
     from datetime import datetime
 
@@ -2145,6 +2235,11 @@ def _cmd_hibernate_check(ms):
 
 
 def _cmd_hibernate_archive(ms, arg: str):
+
+
+
+
+    # archive old hibernate tasks
     if not arg:
         console.print("  用法: /hibernate archive <now | 7d | 3h | 30m | 600>")
         return
@@ -2176,6 +2271,11 @@ def _cmd_hibernate_archive(ms, arg: str):
 
 
 def _cmd_hibernate_sleep(ms):
+
+
+
+
+    # enter standby mode immediately
     if not ms.trigger_standby():
         console.print(f"  无法进入待机（当前状态: {ms.state.state.value}）")
     else:
@@ -2183,6 +2283,11 @@ def _cmd_hibernate_sleep(ms):
 
 
 def main():
+
+
+
+
+    # main entry point, init everything and run the repl
     global _server_start_time
     _server_start_time = datetime.now()
 
@@ -2307,6 +2412,10 @@ def main():
     print("-" * 70)
 
     def _handle_steward_chat(text):
+
+
+
+        # handle a steward chat message
         if steward is None or not steward.enabled:
             print("[驻守模型未启用，输入 /help 查看可用命令]")
             return
