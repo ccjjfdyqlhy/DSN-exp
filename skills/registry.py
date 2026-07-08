@@ -112,6 +112,17 @@ class SkillRegistry:
     def get_skill(self, name: str) -> "Skill | None":
         return self._active_skills.get(name)
 
+    def get_tools_index(self) -> list[dict]:
+        index = []
+        for key, spec in self._tool_specs.items():
+            index.append({
+                "id": key,
+                "skill": spec.get("_skill_name", ""),
+                "name": spec["name"],
+                "description": spec.get("description", ""),
+            })
+        return index
+
     def get_tools_schema(self) -> list[dict]:
         from skills.loader import SkillLoader
         loader = SkillLoader()

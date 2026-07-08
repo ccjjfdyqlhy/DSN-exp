@@ -204,6 +204,7 @@ class Config:
     # ==================== 工具调用模式 ====================
     TOOL_CALL_MODE = _env("TOOL_CALL_MODE", "native")  # "native" | "xml" | "auto"
     TOOL_CALL_MODEL = _env("TOOL_CALL_MODEL", "deepseek-v4-pro")
+    TOOLBOX_ENABLED = _env("TOOLBOX_ENABLED", "true") == "true"  # 动态工具箱
 
     # ==================== 调试模式 ====================
     DEBUG_PLAY_AS_MODEL = _env("DEBUG_PLAY_AS_MODEL", "false").lower() == "true"
