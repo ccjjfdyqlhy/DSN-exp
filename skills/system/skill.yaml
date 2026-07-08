@@ -105,6 +105,21 @@ tools:
             description: "任务内容"
             required: true
 
+  - name: list_reminders
+    display_name: "查询提醒"
+    description: "查询当前用户的所有待办提醒/习惯/倒计时任务。当用户问「我有什么提醒」「查看提醒」「还有多少提醒」「我的习惯」等时使用此工具。返回 pending/completed/skipped 状态的提醒列表。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: list_reminders
+        description: "查询提醒列表"
+        parameters:
+          status:
+            type: string
+            description: "任务状态筛选: pending (待办), completed (已完成), skipped (已跳过), missed (已错过)"
+            required: false
+            default: "pending"
+
   - name: create_reasoner
     display_name: "推理任务"
     description: "创建后台推理/分析/计算任务，自动调用 LLM 处理。用户说「分析一下」「推理」「算一下」「总结」等可用此工具提交后台运算。后台执行，完成后自动通知用户。"
