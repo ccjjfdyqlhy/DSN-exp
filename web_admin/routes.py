@@ -808,7 +808,8 @@ def api_prompt():
     try:
         prompt = prompt_engine.build_system_prompt(user_info)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error("Failed to build system prompt: %s", e, exc_info=True)
+        return jsonify({"error": "Internal error"}), 500
     return jsonify({"uid": uid, "prompt": prompt, "length": len(prompt) if prompt else 0})
 
 @admin_bp.route("/plans", methods=["GET"])
