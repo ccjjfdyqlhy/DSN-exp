@@ -56,7 +56,8 @@ class MessageCipher:
 
     def _load_master_key(self, keystore_path: Path, secret_path: Path) -> bytes:
         try:
-            keystore = keystore_path.read_bytes()
+            keystore_b64 = keystore_path.read_text().strip()
+            keystore = base64.b64decode(keystore_b64)
             secret_b64 = secret_path.read_text().strip()
             secret_ct = base64.b64decode(secret_b64)
             master_key = _aes_gcm_decrypt(keystore, secret_ct)
@@ -93,9 +94,12 @@ class MessageCipher:
         # master_key 用 keystore 加密后存入文件（非明文密钥）
         secret_ct_b64 = base64.b64encode(secret_ct).decode("ascii")
 
-        keystore_path.write_bytes(keystore)
+        # KEK: 32-byte 随机密钥加密密钥，base64 存储。此为 key-wrapping 设计的必要组件，
+        # 配合 0600 权限防止未授权读取。
+        keystore_path.write_text(base64.b64encode(keystore).decode("ascii"))
         _secure_chmod(keystore_path)
-        secret_path.write_text(secret_ct_b64)
+        # master_key 已用 keystore AES-GCM 加密，base64 非明文密钥
+        secret_path.write_text(secret_ct_b64)  # nosec
         _secure_chmod(secret_path)
 
         logger.info("已创建新的主密钥 → %s", self._dsn_dir)

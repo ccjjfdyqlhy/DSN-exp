@@ -102,8 +102,8 @@ def agent_send():
             cross_user_id=bound_uid,
         )
     except Exception as e:
-        logger.error("Agent 对话失败 uid=%d: %s", uid, e)
-        return jsonify({"error": str(e)}), 500
+        logger.error("Agent 对话失败 uid=%d: %s", uid, e, exc_info=True)
+        return jsonify({"error": "Internal error"}), 500
 
     reply = result.get("reply", "") or result.get("original_reply", "")
 
