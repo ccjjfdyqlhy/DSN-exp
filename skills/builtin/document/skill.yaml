@@ -153,6 +153,33 @@ tools:
             description: "自定义分析提示词，留空则默认描述图片内容"
             required: false
 
+  # ---- 扫描件智能入库 ----
+  - name: question_from_png
+    display_name: "扫描试卷智能入库"
+    description: "从扫描试卷PNG提取题目并入库：OCR识别文本 → VisionModel结合图片+文本合成题库标准JSON → 自动入库。自动补全题图描述，识别手写备注，生成答案和解析。"
+    async: true
+    estimated_duration: "60-300s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: question_from_png
+        description: "OCR→VisionModel合成→入库的完整管线，支持单张或多张PNG"
+        parameters:
+          scanned_files:
+            type: array
+            description: "扫描文件路径列表，如 [\"/path/to/page1.png\", \"/path/to/page2.png\"]"
+            required: true
+            items:
+              type: string
+          subject:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese/biology)"
+            default: "math"
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+
   # ---- 已作答试卷批改 ----
   - name: process_answered_scan
     display_name: "批改已作答试卷"
@@ -182,7 +209,7 @@ tools:
 
 activation:
   keywords: ["扫描", "打印", "scan", "print", "扫一下", "录入", "印出来", "图片", "照片", "截图",
-             "image", "批改", "判分", "批卷", "阅卷", "已作答"]
+             "image", "批改", "判分", "批卷", "阅卷", "已作答", "入库", "导入题库"]
   auto_activate: false
 
 dependencies:

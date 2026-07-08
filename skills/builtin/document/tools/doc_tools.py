@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import json as json_mod
 import logging
+import os
+from datetime import datetime
 
 logger = logging.getLogger("skill.document")
 
@@ -300,3 +303,331 @@ class DocTools:
                 "unmatched": matching["unmatched"],
             },
         }
+
+    # ════════════════════════════════════════════════════════════════
+    # question_from_png — 全新管线: OCR → VisionModel 合成 → 入库
+    # ════════════════════════════════════════════════════════════════
+
+    def question_from_png(self, scanned_files: list,
+                          subject: str = "math",
+                          user_id: int = 0) -> dict:
+        """
+        处理扫描试卷 PNG → OCR → VisionModel 合成题目 JSON → 入库。
+
+        流程:
+          1. OCRModel (deepseek-ocr/glm-ocr) 对每张 PNG 做 OCR → Markdown
+          2. 将 PNG + MD 成对保存到 workspace/<user>/documents/question_from_png/<session>/
+          3. VisionModel 结合 PNG 图片 + OCR 文本，按题库标准合成 JSON
+             - 补全题图描述（如图、如图所示）
+             - 提取手写内容为备注
+             - 生成参考答案和解析
+          4. 解析 JSON → 批量入库到 question_bank
+          5. 返回反馈给 LLM
+
+        :param scanned_files: 文件路径列表 ["/path/page1.png", ...] 或对象列表
+        :param subject: 学科代码 (math/physics/chemistry/english/chinese/biology)
+        :param user_id: 用户 ID
+        :return: {
+            success, questions_found, questions_imported,
+            questions: [{id, preview}],
+            session_dir, page_errors, import_errors, feedback_text
+        }
+        """
+        uid = user_id or 1
+
+        # ── Step 0: 规范化输入 ──
+        normalized = []
+        for img in scanned_files:
+            if isinstance(img, str):
+                fp = os.path.expanduser(img)
+                if not os.path.isfile(fp):
+                    return {"success": False, "error": f"文件不存在: {fp}"}
+                normalized.append({
+                    "filename": os.path.basename(fp),
+                    "filepath": fp,
+                })
+            elif isinstance(img, dict):
+                fp = os.path.expanduser(img.get("filepath", img.get("path", "")))
+                if not os.path.isfile(fp):
+                    continue
+                normalized.append({
+                    "filename": img.get("filename", os.path.basename(fp)),
+                    "filepath": fp,
+                })
+        if not normalized:
+            return {"success": False, "error": "没有有效的扫描文件"}
+
+        logger.info("question_from_png 开始: %d 文件, subject=%s, user_id=%d",
+                     len(normalized), subject, uid)
+
+        # ── Step 1: OCR 每张 PNG → Markdown ──
+        from config import Config
+        from models import OCRModel, VisionModel
+
+        ocr = OCRModel()
+        ocr_pages = []
+        for item in normalized:
+            fp = item["filepath"]
+            data_url = VisionModel.encode_image(fp)
+            try:
+                md = ocr.ocr(data_url)
+            except Exception as e:
+                logger.warning("OCR 失败 %s: %s", item["filename"], e)
+                md = ""
+            ocr_pages.append({
+                "filename": item["filename"],
+                "filepath": fp,
+                "data_url": data_url,
+                "markdown": md,
+            })
+            logger.info("OCR 完成 %s: %d chars", item["filename"], len(md))
+
+        # ── Step 2: 保存 PNG+MD 成对到工作区 ──
+        from utils.workspace import get_workspace_manager
+        wm = get_workspace_manager()
+        session = datetime.now().strftime("scan_%Y%m%d_%H%M%S")
+        session_dir = wm.user_subdir(uid, "documents") / "question_from_png" / session
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_pairs = []
+        for r in ocr_pages:
+            base = os.path.splitext(r["filename"])[0]
+            md_path = session_dir / f"{base}.md"
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(r["markdown"])
+            saved_pairs.append({"png": r["filepath"], "md": str(md_path)})
+            logger.info("保存 PNG+MD 对: %s ↔ %s", r["filename"], md_path)
+
+        # ── Step 3: VisionModel 合成题库 JSON ──
+        if not Config.VISION_API_KEY:
+            return {
+                "success": False,
+                "error": "VISION_API_KEY 未配置，请先设置视觉模型 API 密钥才能使用 question_from_png",
+                "session_dir": str(session_dir),
+            }
+
+        vm = VisionModel()
+        all_questions = []
+        page_errors = []
+
+        for r in ocr_pages:
+            prompt = self._build_question_prompt(r["markdown"], subject)
+            try:
+                response = vm.ask(r["data_url"], prompt,
+                                  max_tokens=4096, temperature=0.1)
+            except Exception as e:
+                page_errors.append(f"{r['filename']}: VisionModel 失败 - {e}")
+                logger.error("VisionModel 提取失败 %s: %s", r["filename"], e)
+                continue
+
+            try:
+                qs = self._parse_vision_json(response)
+            except Exception as e:
+                page_errors.append(f"{r['filename']}: JSON 解析失败 - {e}")
+                logger.error("JSON 解析失败 %s: %s", r["filename"], e)
+                continue
+
+            for q in qs:
+                q["_source_page"] = r["filename"]
+            all_questions.extend(qs)
+            logger.info("VisionModel 提取 %s: %d 道题", r["filename"], len(qs))
+
+        if not all_questions:
+            return {
+                "success": False,
+                "error": "未能从扫描件中提取任何题目",
+                "page_errors": page_errors,
+                "session_dir": str(session_dir),
+            }
+
+        # ── Step 4: 入库 ──
+        store = self._question_store
+        if store is None:
+            from question_bank.store import QuestionStore
+            from db.question_bank import QuestionBankDBManager
+            store = QuestionStore(db=QuestionBankDBManager())
+
+        subject_id = self._resolve_subject_id(subject, store)
+        subject_name_map = {
+            "math": "数学", "physics": "物理", "chemistry": "化学",
+            "english": "英语", "chinese": "语文", "biology": "生物",
+        }
+        subject_name = subject_name_map.get(subject, subject)
+
+        imported = []
+        import_errors = []
+        for q in all_questions:
+            try:
+                type_id = self._resolve_type_id(
+                    q.get("type_name", "解答题"),
+                    q.get("subtype", ""),
+                    store,
+                )
+                metadata = {
+                    "source": "question_from_png",
+                    "source_page": q.get("_source_page", ""),
+                    "session": session,
+                }
+                notes = q.get("notes", "").strip()
+                if notes:
+                    metadata["handwritten_notes"] = notes
+
+                qid = store.create_question({
+                    "subject_id": subject_id,
+                    "type_id": type_id,
+                    "source": "scan_png",
+                    "difficulty": q.get("difficulty", 3),
+                    "content": q.get("content", ""),
+                    "options": q.get("options", []),
+                    "answer": q.get("answer", ""),
+                    "explanation": q.get("explanation", ""),
+                    "tags": q.get("tags", []),
+                    "knowledge_points": q.get("knowledge_points", []),
+                    "metadata": metadata,
+                })
+                preview = q.get("content", "")[:60].replace("\n", " ")
+                imported.append({"question_id": qid, "preview": preview})
+            except Exception as e:
+                import_errors.append(str(e))
+                logger.error("题目入库失败: %s", e)
+
+        # ── Step 5: 反馈 ──
+        feedback_parts = [
+            f"导入了一道题, 科目: {subject_name}",
+            f"共识别 {len(all_questions)} 道题，成功导入 {len(imported)} 道",
+        ]
+        if page_errors:
+            feedback_parts.append(
+                f"部分页面处理异常: {'; '.join(page_errors[:3])}"
+            )
+        if import_errors:
+            feedback_parts.append(
+                f"部分题目入库失败: {'; '.join(import_errors[:3])}"
+            )
+        if saved_pairs:
+            feedback_parts.append(
+                f"扫描件与OCR文本已保存至: {session_dir}"
+            )
+
+        logger.info("question_from_png 完成: 识别 %d 题, 入库 %d 题",
+                     len(all_questions), len(imported))
+
+        return {
+            "success": True,
+            "questions_found": len(all_questions),
+            "questions_imported": len(imported),
+            "questions": imported,
+            "session_dir": str(session_dir),
+            "page_errors": page_errors,
+            "import_errors": import_errors,
+            "feedback_text": "\n".join(feedback_parts),
+        }
+
+    # ── 辅助方法 ──
+
+    @staticmethod
+    def _build_question_prompt(ocr_md: str, subject: str) -> str:
+        """
+        构建发给 VisionModel 的提示词。
+        要求其结合图片（图表、手写）和 OCR 文本，按题库标准输出 JSON。
+        """
+        subject_hint = {
+            "math": "数学", "physics": "物理", "chemistry": "化学",
+            "english": "英语", "chinese": "语文", "biology": "生物",
+        }.get(subject, subject)
+
+        # 用 replace 而非 f-string，避免 OCR 文本中的 { } 导致崩溃
+        template = (
+            "你是一个__SUBJECT__试卷题目提取专家。\n"
+            "\n"
+            "我正在将一份扫描试卷导入题库。以下是 OCR 从当前页面提取的文本：\n"
+            "\n"
+            "--- OCR 文本开始 ---\n"
+            "__OCR_MD__\n"
+            "--- OCR 文本结束 ---\n"
+            "\n"
+            "同时你也能看到这一页的扫描图片。\n"
+            "\n"
+            "请综合图片和 OCR 文本，完成以下任务：\n"
+            "1. 提取这一页中的所有题目\n"
+            "2. 如果题目包含\u201c如图\u201d\u201c如图所示\u201d等，根据图片补充图表/图形的文字描述到题目内容中（用括号标注）\n"
+            "3. 如果图片中有手写内容（OCR可能遗漏），提取为 notes 字段\n"
+            "4. 为每道题生成参考答案(answer)和解析(explanation)\n"
+            "\n"
+            "每道题输出一个 JSON 对象，字段如下：\n"
+            "- content: 题目内容（如有图表，在括号中补充描述）\n"
+            "- options: 选项列表，如[\"A. xxx\", \"B. xxx\"]；非选择题填 []\n"
+            "- answer: 参考答案\n"
+            "- explanation: 详细解析\n"
+            "- type_name: \"选择题\"/\"填空题\"/\"解答题\"/\"判断题\"\n"
+            "- subtype: \"单选\"/\"多选\"/\"填空\"/\"计算\"/\"证明\"/\"简答\"/\"判断\"\n"
+            "- difficulty: 1-5 整数\n"
+            "- tags: 字符串数组，如[\"代数\",\"函数\"]\n"
+            "- knowledge_points: 知识点字符串数组\n"
+            "- notes: 图片中的手写备注（无则填\"\"）\n"
+            "\n"
+            "只返回 JSON 数组，不要包含其他任何内容。"
+        )
+        return template.replace("__SUBJECT__", subject_hint).replace("__OCR_MD__", ocr_md)
+
+    @staticmethod
+    def _parse_vision_json(text: str) -> list[dict]:
+        """从 VisionModel 回复中提取 JSON，确保返回列表。"""
+        text = text.strip()
+        if "```" in text:
+            lines = text.split("\n")
+            json_lines = []
+            in_block = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if in_block:
+                        break
+                    in_block = True
+                    continue
+                if in_block:
+                    json_lines.append(line)
+            text = "\n".join(json_lines)
+            text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+        result = json_mod.loads(text)
+        if isinstance(result, dict):
+            return [result]
+        return result
+
+    @staticmethod
+    def _resolve_subject_id(code: str, store) -> int:
+        """根据学科代码查找 subject_id。"""
+        conn = store._db._get_connection()
+        row = conn.execute(
+            "SELECT subject_id FROM subjects WHERE code = ?", (code,)
+        ).fetchone()
+        if row:
+            return row["subject_id"]
+        row = conn.execute("SELECT subject_id FROM subjects LIMIT 1").fetchone()
+        return row["subject_id"] if row else 1
+
+    @staticmethod
+    def _resolve_type_id(name: str, subtype: str, store) -> int:
+        """根据题型名称和子类型查找或创建 type_id。"""
+        conn = store._db._get_connection()
+        row = conn.execute(
+            "SELECT type_id FROM question_types WHERE name = ? AND subtype = ?",
+            (name, subtype),
+        ).fetchone()
+        if row:
+            return row["type_id"]
+        if not subtype:
+            row = conn.execute(
+                "SELECT type_id FROM question_types WHERE name = ? LIMIT 1",
+                (name,),
+            ).fetchone()
+            if row:
+                return row["type_id"]
+        cursor = conn.execute(
+            "INSERT INTO question_types (name, subtype, scoring_mode) VALUES (?, ?, 'exact')",
+            (name, subtype),
+        )
+        conn.commit()
+        return cursor.lastrowid
