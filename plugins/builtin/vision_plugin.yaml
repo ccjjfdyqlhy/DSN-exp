@@ -1,0 +1,9 @@
+name: vision
+description: 图片→文字描述
+enabled: true
+class: "plugins.builtin.vision_plugin:VisionPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 28
+dependencies:
+  models_plugin: required

@@ -1,0 +1,11 @@
+name: tool
+description: 工具调用执行引擎
+enabled: true
+class: "plugins.builtin.tool_plugin:ToolPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 35
+dependencies:
+  skill_registry: required
+condition:
+  dependency_exists: skill_registry

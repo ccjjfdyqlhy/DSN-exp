@@ -1,0 +1,13 @@
+name: distill
+description: 双引擎蒸馏触发 — V3 人格 + 技能模式
+enabled: true
+class: "plugins.builtin.distill_plugin:DistillPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 100
+dependencies:
+  distillation_engine: optional
+  v3_system: optional
+  card_id: optional
+condition:
+  dependency_exists: skill_manager
