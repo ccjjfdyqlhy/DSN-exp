@@ -1,0 +1,11 @@
+name: recall
+description: 动态记忆召回 — <recall>/<memo> 标签处理
+enabled: true
+class: "plugins.builtin.recall_plugin:RecallPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 33
+dependencies:
+  memory_system: required
+condition:
+  dependency_exists: memory_system

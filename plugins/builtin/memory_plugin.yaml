@@ -1,0 +1,14 @@
+name: memory
+description: 记忆注入与对话摘要
+enabled: true
+class: "plugins.builtin.memory_plugin:MemoryPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 30
+  - hook: POST_PROCESS
+    priority: 30
+dependencies:
+  memory_system: required
+  db: required
+condition:
+  dependency_exists: memory_system
