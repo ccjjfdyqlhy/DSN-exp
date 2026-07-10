@@ -73,7 +73,7 @@ def pairing_verify():
     if network_level == "external":
         return jsonify({"error": "配对码仅在内网可用"}), 403
 
-    uid = auth.pairing.verify(code)
+    uid = auth.pairing.verify(code, display_name=display_name, is_admin=is_admin)
     if uid is None:
         return jsonify({"error": "配对码无效或已过期"}), 401
 
