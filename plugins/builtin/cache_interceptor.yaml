@@ -1,0 +1,14 @@
+name: cache_interceptor
+description: 语义缓存拦截器 — L1/L2/L3 缓存命中/写入
+enabled: true
+class: "plugins.builtin.cache_interceptor:CacheInterceptorPlugin"
+hooks:
+  - hook: PRE_FILTER
+    priority: 0
+  - hook: POST_TTS
+    priority: 0
+dependencies:
+  cache_engine: required
+  tts_client: optional
+condition:
+  dependency_exists: cache_engine

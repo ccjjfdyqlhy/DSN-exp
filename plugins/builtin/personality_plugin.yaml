@@ -1,0 +1,12 @@
+name: personality
+description: 人格系统 V2 — 情绪/亲密度更新
+enabled: true
+class: "plugins.builtin.personality_plugin:PersonalityPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 25
+dependencies:
+  personality_v2: required
+condition:
+  dependency_exists: personality_v2
+  dependency_missing: personality_v3

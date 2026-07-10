@@ -1,0 +1,13 @@
+name: impression
+description: 用户印象系统 — 注入/提取印象
+enabled: true
+class: "plugins.builtin.impression_plugin:ImpressionPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 22
+  - hook: POST_PROCESS
+    priority: 22
+dependencies:
+  impression_manager: required
+condition:
+  dependency_exists: impression_manager
