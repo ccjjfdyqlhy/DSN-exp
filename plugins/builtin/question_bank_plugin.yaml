@@ -1,0 +1,13 @@
+name: question_bank
+description: 题库系统 - 上下文注入
+enabled: true
+class: "plugins.builtin.question_bank_plugin:QuestionBankPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 20
+dependencies:
+  question_store: optional
+  models_plugin: optional
+  exam_composer: optional
+  error_analyzer: optional
+  scanner_pipeline: optional

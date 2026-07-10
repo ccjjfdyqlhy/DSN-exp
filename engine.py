@@ -648,6 +648,7 @@ class DSNEngine:
             ),
             personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
             prompt_engine=self.prompt_engine,
+            prompt_cache=self.prompt_cache,
             cache_engine=getattr(self, '_cache_engine', None),
             model_type=ec.model_type if ec else None,
             openai_api_key=ec.openai_api_key if ec else None,
@@ -659,6 +660,18 @@ class DSNEngine:
             lmstudio_max_tokens=ec.lmstudio_max_tokens if ec else None,
             lmstudio_timeout=ec.lmstudio_timeout if ec else None,
             complexity_analyzer=self.complexity_analyzer,
+            # Phase 2: 学习系统
+            question_store=self.question_store,
+            template_manager=self.template_manager,
+            exam_composer=self.exam_composer,
+            error_analyzer=self.error_analyzer,
+            scanner_pipeline=self.scanner_pipeline,
+            graph_store=self.graph_store,
+            graph_engine=self.graph_engine,
+            knowledge_matcher=self.knowledge_matcher,
+            graph_builder=self.graph_builder,
+            exam_engine=self.exam_engine,
+            exam_scorer=self.exam_scorer,
         )
         action_narrator = None
         if self.world_engine:
@@ -714,6 +727,9 @@ class DSNEngine:
                     loaded.add(manifest.name)
 
         self._models_plugin = PluginDIContainer.get("models")
+        _models = PluginDIContainer.get("models")
+        if _models:
+            PluginDIContainer.register("models_plugin", _models)
         failed = set(m.name for m in all_manifests) - loaded
         if failed:
             self._logger.warning("以下插件未能加载: %s", sorted(failed))
@@ -1225,6 +1241,18 @@ def create_engine_with_defaults(
     from plugins.loader import PluginLoader
     from config import Config
 
+    # PromptCache
+    try:
+        from prompt.prompt_cache import PromptCache
+        from models import EmbeddingClient
+        _embedding_client = None
+        if Config.MEMORY_EMBEDDING_ENABLED:
+            _embedding_client = EmbeddingClient()
+        engine.prompt_cache = PromptCache(db=db, embedding_client=_embedding_client)
+    except Exception as e:
+        engine._logger.warning("PromptCache 初始化失败: %s", e)
+        engine.prompt_cache = None
+
     # 收集全局组件到 DI 容器
     PluginDIContainer.register_all(
         db=db,
@@ -1248,6 +1276,7 @@ def create_engine_with_defaults(
         ),
         personality_v2=pers_v2,
         prompt_engine=engine.prompt_engine,
+        prompt_cache=engine.prompt_cache,
         # Config 参数（供 ModelsPlugin 等使用）
         model_type=Config.MAIN_MODEL_TYPE,
         openai_api_key=Config.OPENAI_API_KEY,
@@ -1258,6 +1287,18 @@ def create_engine_with_defaults(
         lmstudio_temperature=Config.LMSTUDIO_TEMPERATURE,
         lmstudio_max_tokens=Config.LMSTUDIO_MAX_TOKENS,
         lmstudio_timeout=Config.LMSTUDIO_TIMEOUT,
+        # Phase 2: 学习系统
+        question_store=question_store,
+        template_manager=template_manager,
+        exam_composer=exam_composer,
+        error_analyzer=error_analyzer,
+        scanner_pipeline=scanner_pipeline,
+        graph_store=graph_store,
+        graph_engine=graph_engine,
+        knowledge_matcher=knowledge_matcher,
+        graph_builder=graph_builder,
+        exam_engine=exam_engine,
+        exam_scorer=exam_scorer,
     )
 
 
@@ -1330,6 +1371,10 @@ def create_engine_with_defaults(
                     except Exception:
                         pass
                 loaded_plugins.add(manifest.name)
+
+    _models = PluginDIContainer.get("models")
+    if _models:
+        PluginDIContainer.register("models_plugin", _models)
 
     failed = set(m.name for m in all_manifests) - loaded_plugins
     if failed:

@@ -1,0 +1,12 @@
+name: ssp
+description: 自维持管线 — 无干预连续工具调用
+enabled: true
+class: "plugins.builtin.ssp_plugin:SSPPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 50
+dependencies:
+  db: optional
+  impression_manager: optional
+  models_plugin: optional
+  skill_registry: optional

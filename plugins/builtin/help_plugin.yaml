@@ -1,0 +1,9 @@
+name: help
+description: <help> 标签检测与检索
+enabled: true
+class: "plugins.builtin.help_plugin:HelpPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 5
+dependencies:
+  prompt_cache: optional

@@ -1,0 +1,12 @@
+name: exam_sim
+description: 考试模拟 - 超时检测 + 关键字触发标记
+enabled: true
+class: "plugins.builtin.exam_sim_plugin:ExamSimPlugin"
+hooks:
+  - hook: PRE_FILTER
+    priority: 18
+  - hook: PRE_PROCESS
+    priority: 18
+dependencies:
+  exam_engine: optional
+  scorer: optional

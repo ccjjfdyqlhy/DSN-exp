@@ -1,0 +1,12 @@
+name: knowledge_graph
+description: 知识图谱 - 上下文注入
+enabled: true
+class: "plugins.builtin.knowledge_graph_plugin:KnowledgeGraphPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 22
+dependencies:
+  graph_store: optional
+  graph_engine: optional
+  knowledge_matcher: optional
+  question_store: optional
