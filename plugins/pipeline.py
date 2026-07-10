@@ -1371,7 +1371,6 @@ class ChatPipeline:
         self._print_timing(timing, ctx)
         completed = {
             'status': 'completed',
-            'audio': ctx.audio_b64,
             'tts_error': ctx.tts_error,
             'timing': timing,
         }
