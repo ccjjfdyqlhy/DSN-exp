@@ -1,0 +1,15 @@
+name: todo
+description: 复杂任务分解
+enabled: true
+class: "plugins.builtin.todo_plugin:TodoPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 33
+dependencies:
+  models_plugin: optional
+  complexity_analyzer: optional
+  skill_registry: optional
+  db: optional
+  task_manager: optional
+condition:
+  dependency_exists: models

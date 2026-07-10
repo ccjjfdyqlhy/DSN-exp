@@ -1,0 +1,11 @@
+name: plan
+description: 每日计划系统
+enabled: true
+class: "plugins.builtin.plan_plugin:PlanPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 42
+  - hook: POST_PROCESS
+    priority: 42
+dependencies:
+  db: required

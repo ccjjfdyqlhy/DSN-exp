@@ -1,0 +1,13 @@
+name: tts
+description: TTS 语音合成（后备，管线内联优先）
+enabled: true
+class: "plugins.builtin.tts_plugin:TTSPlugin"
+hooks:
+  - hook: POST_TTS
+    priority: 60
+dependencies:
+  tts_client: required
+  profile_manager: optional
+  tts_process_model: optional
+condition:
+  dependency_exists: tts_client

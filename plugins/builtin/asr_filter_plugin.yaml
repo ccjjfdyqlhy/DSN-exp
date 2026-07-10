@@ -1,0 +1,12 @@
+name: asr_filter
+description: ASR 语音输入过滤
+enabled: true
+class: "plugins.builtin.asr_filter_plugin:ASRFilterPlugin"
+hooks:
+  - hook: PRE_FILTER
+    priority: 10
+dependencies:
+  filter_model: required
+  db: optional
+condition:
+  dependency_exists: filter_model

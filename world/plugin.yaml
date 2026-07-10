@@ -1,0 +1,17 @@
+name: world
+description: 世界模型叙事引擎
+enabled: true
+class: "world.plugin:WorldPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 15
+  - hook: POST_PROCESS
+    priority: 15
+dependencies:
+  world_engine: optional
+  world_state_manager: optional
+  narrative_model: optional
+  personality_v2: optional
+  action_narrator: optional
+condition:
+  dependency_exists: world_engine

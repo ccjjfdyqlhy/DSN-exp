@@ -1,0 +1,11 @@
+name: personality_v3
+description: 人格系统 V3 — 情绪/亲密度分析（后台线程）
+enabled: true
+class: "plugins.builtin.personality_v3_plugin:PersonalityV3Plugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 24
+dependencies:
+  personality_v3: required
+condition:
+  dependency_exists: personality_v3
