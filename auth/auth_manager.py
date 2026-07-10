@@ -234,7 +234,7 @@ class AuthManager:
 
     def verify_pairing(self, code: str, display_name: str, is_admin: bool = False) -> dict | None:
         """配对码验证快捷入口"""
-        uid = self.pairing.verify(code)
+        uid = self.pairing.verify(code, display_name=display_name, is_admin=is_admin)
         if uid is None:
             return None
         if display_name:
