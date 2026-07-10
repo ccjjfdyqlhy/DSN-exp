@@ -636,12 +636,16 @@ def create_application():
                 similarity_threshold=Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD,
             )
 
-            from plugins.builtin.cache_interceptor import CacheInterceptorPlugin
-            _cache_plugin = CacheInterceptorPlugin(
-                cache_engine=cache_engine,
-                tts_client=tts_client,
-            )
-            engine.plugin_manager.register(_cache_plugin)
+            from plugins.container import PluginDIContainer
+            from plugins.loader import PluginLoader
+            PluginDIContainer.register("cache_engine", cache_engine)
+            PluginDIContainer.register("tts_client", tts_client)
+            _cache_loader = PluginLoader(["plugins/builtin"])
+            for m in _cache_loader.scan():
+                if m.name == "cache_interceptor" and m.meets_condition():
+                    plugin = _cache_loader.instantiate(m)
+                    if plugin:
+                        engine.plugin_manager.register(plugin)
             engine._cache_engine = cache_engine
             engine._l2_cache = cache_engine.l2
             engine._l3_registry = cache_engine.l3
@@ -657,7 +661,7 @@ def create_application():
     script_plugin = None
     try:
         from scripts import ScriptEngine, ScriptState, OOCDetector
-        from scripts import ScriptRecorder, ScriptPlayer, ScriptPlugin
+        from scripts import ScriptRecorder, ScriptPlayer
         _script_state = ScriptState(db)
         script_engine = ScriptEngine(state=_script_state)
         _scripts_dir = os.path.join(os.path.dirname(__file__), "scripts")
@@ -668,11 +672,20 @@ def create_application():
         _ooc = OOCDetector()
         _recorder = ScriptRecorder(state=_script_state)
         _player = ScriptPlayer(state=_script_state)
-        script_plugin = ScriptPlugin(
-            engine=script_engine, ooc=_ooc,
-            recorder=_recorder, player=_player,
-        )
-        engine.plugin_manager.register(script_plugin)
+        # 通过 PluginLoader 自动注入 ScriptPlugin
+        from plugins.loader import PluginLoader
+        from plugins.container import PluginDIContainer
+        PluginDIContainer.register("engine", script_engine)
+        PluginDIContainer.register("ooc", _ooc)
+        PluginDIContainer.register("recorder", _recorder)
+        PluginDIContainer.register("player", _player)
+        _script_loader = PluginLoader(["scripts"])
+        for m in _script_loader.scan():
+            if m.name == "script" and m.meets_condition():
+                plugin = _script_loader.instantiate(m)
+                if plugin:
+                    engine.plugin_manager.register(plugin)
+                    script_plugin = plugin
         engine._script_engine = script_engine
         engine._script_plugin = script_plugin
         app.logger.info("剧本系统初始化完成: %d 个剧本",

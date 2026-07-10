@@ -608,203 +608,103 @@ class DSNEngine:
         if Config.MEMORY_EMBEDDING_ENABLED:
             embedding_client = EmbeddingClient()
         self.prompt_cache = PromptCache(db=self.db, embedding_client=embedding_client)
-
     def _init_plugins(self):
+        """通过 PluginLoader 自动发现并注册插件。"""
+        self._init_plugins_via_loader()
 
+    def _init_plugins_via_loader(self):
+        """通过 PluginLoader 自动发现并注册插件（替代手动 _register_*_plugins）。"""
+        from plugins.container import PluginDIContainer
+        from plugins.loader import PluginLoader
 
-
-        # initialize the plugin manager
         ec = self._engine_cfg
-        self._enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
-        self._disable_set = set(self._cfg.plugins_disable) if self._cfg else set()
 
-        self._register_filter_plugins()
-        self._register_model_plugin()
-        self._register_context_plugins()
-        self._register_personality_plugins()
-        self._register_execution_plugins()
-        self._register_output_plugins()
-
-        # 注入 skill_registry 到 ModelsPlugin (供 tool call schema 生成)
-        if self._models_plugin and self.skill_registry:
-            self._models_plugin.set_skill_registry(self.skill_registry)
-
-        # 补注入 prompt_cache (此时 _init_prompt 已完成)
-        self._inject_system_skill_deps()
-
-    def _plugin_enabled(self, name: str) -> bool:
-        if self._enable_set:
-            return name in self._enable_set
-        if self._disable_set:
-            return name not in self._disable_set
-        return True
-
-    def _register_filter_plugins(self):
-
-
-
-
-
-
-        # check if a plugin is enabled
-        # register filter-phase plugins
-        if not self._plugin_enabled("asr_filter"):
-            return
-        from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
-        self.plugin_manager.register(ASRFilterPlugin(
-            filter_model=self._filter_model,
-            db=self.db,
-        ))
-
-    def _register_model_plugin(self):
-
-
-
-        # register the model plugin
-        if not self._plugin_enabled("models"):
-            self._models_plugin = None
-            return
-        from plugins.builtin.models_plugin import ModelsPlugin
-        self._models_plugin = ModelsPlugin(
-            model_type=self._engine_cfg.model_type,
-            openai_api_key=self._engine_cfg.openai_api_key,
-            lmstudio_base_url=self._engine_cfg.lmstudio_base_url,
-            lmstudio_model_name=self._engine_cfg.model_name,
-            lmstudio_temperature=self._engine_cfg.lmstudio_temperature,
-            lmstudio_max_tokens=self._engine_cfg.lmstudio_max_tokens,
-            lmstudio_timeout=self._engine_cfg.lmstudio_timeout,
-            db=self.db,
+        PluginDIContainer.register_all(
+            db=self.db, memory_system=self.memory_system,
+            skill_registry=self.skill_registry, skill_manager=self.skill_manager,
+            impression_manager=self.impression_manager,
+            tts_client=self._tts_client, tts_profile_mgr=self._tts_profile_mgr,
+            tts_process_model=self._tts_process_model, filter_model=self._filter_model,
+            world_engine=self.world_engine, world_state_manager=self.world_state_manager,
+            narrative_model=self.narrative_model, task_manager=self.task_manager,
+            personality_v3=(
+                self.prompt_engine.personality_v3
+                if self.prompt_engine and self.prompt_engine.personality_v3
+                   and self.prompt_engine.personality_v3.enabled
+                else None
+            ),
+            personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
+            prompt_engine=self.prompt_engine,
+            cache_engine=getattr(self, '_cache_engine', None),
+            model_type=ec.model_type if ec else None,
+            openai_api_key=ec.openai_api_key if ec else None,
+            openai_api_base=Config.OPENAI_API_BASE,
+            openai_model_name=ec.model_name if ec else None,
+            lmstudio_base_url=ec.lmstudio_base_url if ec else None,
+            lmstudio_model_name=ec.model_name if ec else None,
+            lmstudio_temperature=ec.lmstudio_temperature if ec else None,
+            lmstudio_max_tokens=ec.lmstudio_max_tokens if ec else None,
+            lmstudio_timeout=ec.lmstudio_timeout if ec else None,
+            complexity_analyzer=self.complexity_analyzer,
         )
-        self.plugin_manager.register(self._models_plugin)
-
-    def _register_context_plugins(self):
-
-
-
-        # register context-phase plugins
-        if self._plugin_enabled("memory"):
-            from plugins.builtin.memory_plugin import MemoryPlugin
-            self.plugin_manager.register(MemoryPlugin(
-                memory_system=self.memory_system, db=self.db,
-            ))
-        if self._plugin_enabled("notebook"):
-            from plugins.builtin.notebook import NotebookPlugin
-            self.plugin_manager.register(NotebookPlugin())
-        if self._plugin_enabled("vision") and self._models_plugin:
-            from plugins.builtin.vision_plugin import VisionPlugin
-            self.plugin_manager.register(VisionPlugin(models_plugin=self._models_plugin))
-        if self._plugin_enabled("active_vision"):
-            from plugins.builtin.active_vision_plugin import ActiveVisionPlugin
-            avp = ActiveVisionPlugin(db=self.db)
-            self.plugin_manager.register(avp)
-        if self._plugin_enabled("world") and self.world_engine:
-            from world import WorldPlugin
+        action_narrator = None
+        if self.world_engine:
             from world.action_narrator import ActionNarrator
             action_narrator = ActionNarrator(
-                narrative_model=self.narrative_model,
-                world_engine=self.world_engine,
-            )
-            self.plugin_manager.register(WorldPlugin(
-                world_engine=self.world_engine,
-                world_state_manager=self.world_state_manager,
-                narrative_model=self.narrative_model,
-                personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
-                action_narrator=action_narrator,
-            ))
-
-    def _register_personality_plugins(self):
-
-
-
-        # register personality-related plugins
-        if self._plugin_enabled("personality"):
-            pe = self.prompt_engine
-            if pe and pe.personality_v3 and pe.personality_v3.enabled:
-                from plugins.builtin.personality_v3_plugin import PersonalityV3Plugin
-                self.plugin_manager.register(PersonalityV3Plugin(
-                    personality_v3=pe.personality_v3,
-                ))
-            elif pe and pe.personality_v2:
-                from plugins.builtin.personality_plugin import PersonalityPlugin
-                self.plugin_manager.register(PersonalityPlugin(
-                    personality_v2=pe.personality_v2,
-                ))
-        if self._plugin_enabled("impression"):
-            from plugins.builtin.impression_plugin import ImpressionPlugin
-            self.plugin_manager.register(ImpressionPlugin(
-                impression_manager=self.impression_manager,
-            ))
-
-    def _register_execution_plugins(self):
-
-
-
-        # register execution-phase plugins
-        if self._plugin_enabled("recall") and self.memory_system:
+                narrative_model=self.narrative_model, world_engine=self.world_engine)
+        PluginDIContainer.register("action_narrator", action_narrator)
+        if self.skill_manager:
             try:
-                from plugins.builtin.recall_plugin import RecallPlugin
-                self.plugin_manager.register(RecallPlugin(
-                    memory_system=self.memory_system,
-                ))
-            except Exception as e:
-                self._logger.warning("RecallPlugin 加载失败: %s", e)
-        if self._plugin_enabled("tool") or self._plugin_enabled("skills") or self._plugin_enabled("agent"):
-            from plugins.builtin.tool_plugin import ToolPlugin
-            self.plugin_manager.register(ToolPlugin(
-                skill_registry=self.skill_registry,
-            ))
-        if self._plugin_enabled("task") and self.task_manager:
-            from plugins.builtin.task_plugin import TaskPlugin
-            self.plugin_manager.register(TaskPlugin(
-                task_manager=self.task_manager, db=self.db,
-                skill_registry=self.skill_registry,
-            ))
-        if self._plugin_enabled("todo") and self._models_plugin:
-            from plugins.builtin.todo_plugin import TodoPlugin
-            self.plugin_manager.register(TodoPlugin(
-                models_plugin=self._models_plugin,
-                complexity_analyzer=self.complexity_analyzer,
-                skill_registry=self.skill_registry, db=self.db,
-            ))
-        if self._plugin_enabled("plan"):
-            from plugins.builtin.plan_plugin import PlanPlugin
-            self.plugin_manager.register(PlanPlugin(db=self.db))
-    def _register_output_plugins(self):
-
-
-        # register output-phase plugins
-        if self._plugin_enabled("tts") and self._tts_client:
-            from plugins.builtin.tts_plugin import TTSPlugin
-            self.plugin_manager.register(TTSPlugin(
-                tts_client=self._tts_client,
-                profile_manager=self._tts_profile_mgr,
-                tts_process_model=self._tts_process_model,
-            ))
-        if self._plugin_enabled("distill") and self.skill_manager and self._models_plugin:
-            try:
-                from plugins.builtin.distill_plugin import DistillPlugin
                 from skills.distill import DistillationEngine
                 from models import OpenAIChat
-                _skill_distill_llm = OpenAIChat(
-                    api_key=self._engine_cfg.openai_api_key,
-                    model=self._engine_cfg.model_name,
-                    api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
+                _llm = OpenAIChat(
+                    api_key=ec.openai_api_key if ec else Config.OPENAI_API_KEY,
+                    model=ec.model_name if ec else Config.MAIN_MODEL_NAME,
+                    api_url=f"{Config.OPENAI_API_BASE}/chat/completions",
                 )
-                self.plugin_manager.register(DistillPlugin(
-                    distillation_engine=DistillationEngine(
-                        db=self.db, skill_manager=self.skill_manager,
-                        llm_client=_skill_distill_llm,
-                    ),
-                    v3_system=self.prompt_engine.personality_v3 if self.prompt_engine else None,
-                    card_id=self._cfg.card_id if self._cfg else "exa",
-                ))
-            except Exception as e:
-                self._logger.warning("DistillPlugin 加载失败: %s", e)
+                PluginDIContainer.register("distillation_engine",
+                    DistillationEngine(db=self.db, skill_manager=self.skill_manager, llm_client=_llm))
+            except Exception:
+                pass
+        PluginDIContainer.register("v3_system",
+            self.prompt_engine.personality_v3 if self.prompt_engine else None)
+        PluginDIContainer.register("card_id", self._cfg.card_id if self._cfg else "exa")
 
+        loader = PluginLoader(["plugins/builtin", "world"])
+        all_manifests = loader.scan()
+        loaded: set[str] = set()
+        enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
+        disable_set = set(self._cfg.plugins_disable) if self._cfg else set()
+
+        for _attempt in range(4):
+            for manifest in all_manifests:
+                if manifest.name in loaded:
+                    continue
+                if not manifest.meets_condition():
+                    loaded.add(manifest.name)
+                    continue
+                if enable_set and manifest.name not in enable_set:
+                    loaded.add(manifest.name)
+                    continue
+                if disable_set and manifest.name in disable_set:
+                    loaded.add(manifest.name)
+                    continue
+                plugin = loader.instantiate(manifest)
+                if plugin:
+                    self.plugin_manager.register(plugin)
+                    PluginDIContainer.register(manifest.name, plugin)
+                    if self.skill_registry and hasattr(plugin, 'set_skill_registry'):
+                        try:
+                            plugin.set_skill_registry(self.skill_registry)
+                        except Exception:
+                            pass
+                    loaded.add(manifest.name)
+
+        self._models_plugin = PluginDIContainer.get("models")
+        failed = set(m.name for m in all_manifests) - loaded
+        if failed:
+            self._logger.warning("以下插件未能加载: %s", sorted(failed))
     def _init_pipeline(self):
-
-
-
         # initialize the pipeline
         self.pipeline = ChatPipeline(
             plugin_manager=self.plugin_manager,
@@ -1296,11 +1196,35 @@ def create_engine_with_defaults(
     if skill_registry:
         engine.prompt_engine.set_skill_registry(skill_registry)
 
-    # 注册核心插件
-    from plugins.builtin.models_plugin import ModelsPlugin
+    # ── 自动发现并注册插件 ──
+    from plugins.container import PluginDIContainer
+    from plugins.loader import PluginLoader
     from config import Config
 
-    models_plugin = ModelsPlugin(
+    # 收集全局组件到 DI 容器
+    PluginDIContainer.register_all(
+        db=db,
+        memory_system=memory_system,
+        skill_registry=skill_registry,
+        skill_manager=skill_manager,
+        impression_manager=engine.impression_manager,
+        tts_client=engine._tts_client,
+        tts_profile_mgr=engine._tts_profile_mgr,
+        tts_process_model=engine._tts_process_model,
+        filter_model=engine._filter_model,
+        world_engine=engine.world_engine,
+        world_state_manager=engine.world_state_manager,
+        narrative_model=engine.narrative_model,
+        task_manager=engine.task_manager,
+        personality_v3=(
+            engine.prompt_engine.personality_v3
+            if engine.prompt_engine and engine.prompt_engine.personality_v3
+               and engine.prompt_engine.personality_v3.enabled
+            else None
+        ),
+        personality_v2=pers_v2,
+        prompt_engine=engine.prompt_engine,
+        # Config 参数（供 ModelsPlugin 等使用）
         model_type=Config.MAIN_MODEL_TYPE,
         openai_api_key=Config.OPENAI_API_KEY,
         openai_api_base=Config.OPENAI_API_BASE,
@@ -1310,114 +1234,32 @@ def create_engine_with_defaults(
         lmstudio_temperature=Config.LMSTUDIO_TEMPERATURE,
         lmstudio_max_tokens=Config.LMSTUDIO_MAX_TOKENS,
         lmstudio_timeout=Config.LMSTUDIO_TIMEOUT,
-        db=db,
     )
-    engine.plugin_manager.register(models_plugin)
-    if skill_registry:
-        models_plugin.set_skill_registry(skill_registry)
-        logging.getLogger("DSNEngine").info("ModelsPlugin: skill_registry 已注入")
 
-    if memory_system and db:
-        from plugins.builtin.memory_plugin import MemoryPlugin
-        engine.plugin_manager.register(MemoryPlugin(memory_system=memory_system, db=db))
 
-    # 用户观察日记
-    from plugins.builtin.notebook import NotebookPlugin
-    engine.plugin_manager.register(NotebookPlugin())
-
-    from plugins.builtin.vision_plugin import VisionPlugin
-    engine.plugin_manager.register(VisionPlugin(models_plugin=models_plugin))
-
-    from plugins.builtin.active_vision_plugin import ActiveVisionPlugin
-    avp = ActiveVisionPlugin(db=db)
-    engine.plugin_manager.register(avp)
-
+    # 构造 action_narrator（WorldPlugin 依赖）
+    action_narrator = None
     if engine.world_engine:
-        from world import WorldPlugin
         from world.action_narrator import ActionNarrator
         action_narrator = ActionNarrator(
             narrative_model=engine.narrative_model,
             world_engine=engine.world_engine,
         )
-        engine.plugin_manager.register(WorldPlugin(
-            world_engine=engine.world_engine,
-            world_state_manager=engine.world_state_manager,
-            narrative_model=engine.narrative_model,
-            personality_v2=pers_v2,
-            action_narrator=action_narrator,
-        ))
+    PluginDIContainer.register("action_narrator", action_narrator)
 
-    pe = engine.prompt_engine
-    if pe and pe.personality_v3 and pe.personality_v3.enabled:
-        from plugins.builtin.personality_v3_plugin import PersonalityV3Plugin
-        engine.plugin_manager.register(PersonalityV3Plugin(
-            personality_v3=pe.personality_v3,
-        ))
-        logging.getLogger("DSNEngine").info("PersonalityV3Plugin 已注册")
-    elif pe and pe.personality_v2:
-        from plugins.builtin.personality_plugin import PersonalityPlugin
-        engine.plugin_manager.register(PersonalityPlugin(
-            personality_v2=pe.personality_v2,
-        ))
-        logging.getLogger("DSNEngine").info("PersonalityPlugin (V2) 已注册")
-
-    if engine.impression_manager:
-        from plugins.builtin.impression_plugin import ImpressionPlugin
-        engine.plugin_manager.register(ImpressionPlugin(
-            impression_manager=engine.impression_manager,
-        ))
-
-    if skill_registry:
-        from plugins.builtin.tool_plugin import ToolPlugin
-        engine.plugin_manager.register(ToolPlugin(
-            skill_registry=skill_registry,
-        ))
-
-    if engine.task_manager:
-        from plugins.builtin.task_plugin import TaskPlugin
-        engine.plugin_manager.register(TaskPlugin(
-            task_manager=engine.task_manager,
-            db=db,
-            skill_registry=skill_registry,
-        ))
-
-    # ---- TTS 文本预处理（须在 TTSPlugin 注册之前初始化） ----
+    # TTS 文本预处理
     if Config.TTS_PROCESS_ENABLED and engine._tts_client:
         try:
             from models.tts_process import TTSProcessModel
             engine._tts_process_model = TTSProcessModel()
+            PluginDIContainer.register("tts_process_model", engine._tts_process_model)
             engine._logger.info("TTSProcessModel 初始化完成")
         except Exception as e:
             engine._logger.warning("TTSProcessModel 初始化失败: %s", e)
 
-    if engine._tts_client:
-        from plugins.builtin.tts_plugin import TTSPlugin
-        engine.plugin_manager.register(TTSPlugin(
-            tts_client=engine._tts_client,
-            profile_manager=engine._tts_profile_mgr,
-            tts_process_model=engine._tts_process_model,
-        ))
-
-    if engine._filter_model:
-        from plugins.builtin.asr_filter_plugin import ASRFilterPlugin
-        engine.plugin_manager.register(ASRFilterPlugin(
-            filter_model=engine._filter_model,
-            db=db,
-        ))
-
-    # ---- 补充注册：RecallPlugin ----
-
-    if memory_system and db:
+    # DistillationEngine（DistillPlugin 依赖）
+    if engine.skill_manager:
         try:
-            from plugins.builtin.recall_plugin import RecallPlugin
-            engine.plugin_manager.register(RecallPlugin(memory_system=memory_system))
-        except Exception as e:
-            engine._logger.warning("RecallPlugin 加载失败: %s", e)
-
-    # DistillPlugin — 双引擎蒸馏（V3 性格 + 技能模式）
-    if engine.skill_manager and models_plugin:
-        try:
-            from plugins.builtin.distill_plugin import DistillPlugin
             from skills.distill import DistillationEngine
             from models import OpenAIChat
             _skill_distill_llm = OpenAIChat(
@@ -1430,14 +1272,44 @@ def create_engine_with_defaults(
                 skill_manager=engine.skill_manager,
                 llm_client=_skill_distill_llm,
             )
-            _v3_sys = engine.prompt_engine.personality_v3 if engine.prompt_engine else None
-            engine.plugin_manager.register(DistillPlugin(
-                distillation_engine=_distill_engine,
-                v3_system=_v3_sys,
-                card_id="exa",
-            ))
+            PluginDIContainer.register("distillation_engine", _distill_engine)
         except Exception as e:
-            engine._logger.warning("DistillPlugin 加载失败: %s", e)
+            engine._logger.warning("DistillationEngine 初始化失败: %s", e)
+
+    _v3_sys = engine.prompt_engine.personality_v3 if engine.prompt_engine else None
+    PluginDIContainer.register("v3_system", _v3_sys)
+    PluginDIContainer.register("card_id", "exa")
+
+    # 多遍加载插件（处理插件间依赖）
+    loader = PluginLoader([
+        "plugins/builtin",
+        "world",
+    ])
+    all_manifests = loader.scan()
+    loaded_plugins: set[str] = set()
+
+    for _attempt in range(4):
+        for manifest in all_manifests:
+            if manifest.name in loaded_plugins:
+                continue
+            if not manifest.meets_condition():
+                loaded_plugins.add(manifest.name)
+                continue
+            plugin = loader.instantiate(manifest)
+            if plugin is not None:
+                engine.plugin_manager.register(plugin)
+                PluginDIContainer.register(manifest.name, plugin)
+                # 后置注入：skill_registry
+                if skill_registry and hasattr(plugin, 'set_skill_registry'):
+                    try:
+                        plugin.set_skill_registry(skill_registry)
+                    except Exception:
+                        pass
+                loaded_plugins.add(manifest.name)
+
+    failed = set(m.name for m in all_manifests) - loaded_plugins
+    if failed:
+        engine._logger.warning("以下插件未能加载（可能缺少依赖）: %s", sorted(failed))
 
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")

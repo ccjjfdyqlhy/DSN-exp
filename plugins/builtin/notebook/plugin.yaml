@@ -1,0 +1,10 @@
+name: notebook
+description: 用户观察日记
+enabled: true
+class: "plugins.builtin.notebook.notebook_plugin:NotebookPlugin"
+hooks:
+  - hook: PRE_PROCESS
+    priority: 39
+  - hook: POST_PROCESS
+    priority: 39
+dependencies: {}

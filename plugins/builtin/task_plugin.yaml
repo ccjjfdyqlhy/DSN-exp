@@ -1,0 +1,13 @@
+name: task
+description: 任务解析与执行 — <task> 标签
+enabled: true
+class: "plugins.builtin.task_plugin:TaskPlugin"
+hooks:
+  - hook: POST_PROCESS
+    priority: 40
+dependencies:
+  task_manager: required
+  db: optional
+  skill_registry: optional
+condition:
+  dependency_exists: task_manager

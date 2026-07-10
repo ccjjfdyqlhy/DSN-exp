@@ -1,0 +1,19 @@
+name: models
+description: 主 LLM 模型调用 — OpenAI / LMStudio
+enabled: true
+class: "plugins.builtin.models_plugin:ModelsPlugin"
+hooks:
+  - hook: MODEL_INVOKE
+    priority: 50
+dependencies:
+  model_type: required
+  openai_api_key: required
+  openai_api_base: required
+  openai_model_name: required
+  lmstudio_base_url: required
+  lmstudio_model_name: required
+  lmstudio_temperature: required
+  lmstudio_max_tokens: required
+  lmstudio_timeout: required
+  complexity_analyzer: optional
+  db: optional
