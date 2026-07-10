@@ -330,6 +330,77 @@ def _cmd_newbind(auth_manager):
     print(f"  {'='*50}\n")
 
 
+def _cmd_cleanup_users(auth_manager, db):
+    """清理重名用户 — 仅保留每个 display_name 下有聊天记录的那个"""
+    if not auth_manager or not db:
+        print("  错误: AuthManager/DB 不可用")
+        return
+    try:
+        conn = db._get_connection()
+        dups = conn.execute(
+            "SELECT display_name, COUNT(*) AS cnt FROM users "
+            "WHERE display_name != '' AND display_name IS NOT NULL "
+            "GROUP BY display_name HAVING cnt > 1"
+        ).fetchall()
+    except Exception as e:
+        print(f"  查询失败: {e}")
+        return
+
+    if not dups:
+        print("  没有检测到重名用户")
+        return
+
+    to_delete = []
+    to_keep = []
+    for row in dups:
+        name = row["display_name"]
+        rows = conn.execute(
+            "SELECT uid, display_name FROM users WHERE display_name = ? ORDER BY uid", (name,)
+        ).fetchall()
+        uids = [r["uid"] for r in rows]
+        best_uid = None
+        best_cnt = -1
+        for uid in uids:
+            chat_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM messages m "
+                "JOIN chats c ON m.chat_id = c.chat_id WHERE c.user_id = ?", (uid,)
+            ).fetchone()
+            cnt = chat_row["cnt"] if chat_row else 0
+            if cnt > best_cnt:
+                best_cnt = cnt
+                best_uid = uid
+        for uid in uids:
+            if uid == best_uid:
+                to_keep.append((uid, name, best_cnt))
+            else:
+                to_delete.append((uid, name))
+
+    if not to_delete:
+        print("  每个重名组均已唯一（无需清理）")
+        return
+
+    print(f"  {'UID':>5}  {'显示名':<16} {'消息数':>6}")
+    print("  " + "-" * 31)
+    for uid, name, cnt in to_keep:
+        print(f"  {uid:>5}  {name:<16} {cnt:>6}  ← 保留")
+    for uid, name in to_delete:
+        print(f"  {uid:>5}  {name:<16}       -  将删除")
+
+    confirm = input(f"  将删除 {len(to_delete)} 个重名用户 (uid={[u for u,_ in to_delete]}), 确认? (y/N): ").strip().lower()
+    if confirm != "y":
+        print("  已取消")
+        return
+
+    for uid, name in to_delete:
+        try:
+            conn.execute("DELETE FROM users WHERE uid = ?", (uid,))
+            print(f"  已删除 uid={uid} (display_name={name})")
+        except Exception as e:
+            print(f"  删除 uid={uid} 失败: {e}")
+    conn.commit()
+    print(f"  完成，共清理 {len(to_delete)} 个重名用户")
+
+
 def _cmd_users(auth_manager, db):
     """列出所有注册用户"""
     if not auth_manager:
@@ -932,6 +1003,7 @@ def _cmd_help():
   可用命令 (必须以 / 开头):
     /newbind    生成新的设备配对码
     /users      列出所有注册用户
+    /cleanup_users  清理重名用户（保留有聊天记录的那个）
     /status     显示服务器状态摘要
     /plugin     列出所有插件及运行状态
     /plugin <名称>  查询指定插件的详细信息
@@ -1656,6 +1728,9 @@ def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, conf
 def _h_newbind(am, db, pm, pe, cc, pv, arg):
     _cmd_newbind(am)
 
+def _h_cleanup_users(am, db, pm, pe, cc, pv, arg):
+    _cmd_cleanup_users(am, db)
+
 def _h_users(am, db, pm, pe, cc, pv, arg):
     _cmd_users(am, db)
 
@@ -1717,6 +1792,7 @@ def _h_timer(am, db, pm, pe, cc, pv, arg):
 
 _CMD_TABLE = {
     "/newbind": _h_newbind,
+    "/cleanup_users": _h_cleanup_users,
     "/users": _h_users,
     "/status": _h_status,
     "/plugin": _h_plugin,
