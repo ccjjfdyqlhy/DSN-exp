@@ -107,7 +107,8 @@ def add_phase():
         return jsonify({"error": "Plan system unavailable"}), 503
     phase = engine.add_phase(
         goal_id, title, data.get("description", ""),
-        data.get("start_date", ""), data.get("end_date", "")
+        data.get("start_date", ""), data.get("end_date", ""),
+        position=data.get("position", -1),
     )
     return jsonify({"phase_id": phase.phase_id, "title": phase.title})
 

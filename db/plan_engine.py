@@ -36,7 +36,10 @@ class PlanEngine:
     # ── Phase 创建 ──
 
     def add_phase(self, goal_id: str, title: str, description: str = "",
-                  start_date: str = "", end_date: str = "") -> Phase:
+                  start_date: str = "", end_date: str = "", position: int = -1) -> Phase:
+        if position < 0:
+            existing = self._store.get_phases(goal_id)
+            position = max((p.position for p in existing), default=-1) + 1
         phase = Phase(
             phase_id=str(uuid.uuid4()),
             goal_id=goal_id,
@@ -44,6 +47,7 @@ class PlanEngine:
             description=description,
             start_date=start_date,
             end_date=end_date,
+            position=position,
         )
         self._store.create_phase(phase)
         return phase

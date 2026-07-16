@@ -21,7 +21,9 @@ from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from api.alarm import alarm_bp, init_alarm_api
+from api.study_timetable import study_bp, init_study_timetable_api
 from db.plan_store import set_plan_db
+from db.study_timetable import set_study_db
 from db.chat import ChatDBManager
 from db.question_bank import QuestionBankDBManager
 from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
@@ -401,6 +403,7 @@ def create_application():
     app.register_blueprint(plan_bp)
     app.register_blueprint(heartbeat_bp)
     app.register_blueprint(alarm_bp)
+    app.register_blueprint(study_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
     from api.agent import agent_bp
@@ -413,6 +416,7 @@ def create_application():
     db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
     app.config["DB"] = db
     set_plan_db(db)
+    set_study_db(db)
     _auth_manager.db = db
     if _auth_manager._user_count() == 0:
         print("  首次启动提示: 在服务器控制台输入 /newbind 生成配对码")
@@ -430,6 +434,7 @@ def create_application():
             init_reminder_api(db, task_manager, _auth_manager)
             init_alarm_api(db, _auth_manager)
             init_plan_api(db, _auth_manager)
+            init_study_timetable_api(db, _auth_manager)
             threading.Thread(target=process_task_completion, daemon=True).start()
         except Exception:
             task_manager = None
