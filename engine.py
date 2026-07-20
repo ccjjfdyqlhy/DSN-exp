@@ -461,6 +461,13 @@ class DSNEngine:
 
 
 
+        if not Config.TTS_ENABLED:
+            self._tts_client = None
+            self._tts_profile_mgr = None
+            self._tts_available = False
+            self._logger.info("TTS 已禁用 (TTS_ENABLED=false)")
+            return
+
         # initialize the tts client
         try:
             from audio.infer import VocalExp
@@ -522,18 +529,19 @@ class DSNEngine:
                 pass
 
             for key, instance in list(self.skill_registry._tool_instances.items()):
-                if not key.startswith("system."):
+                if not key.startswith("system.") and not key.startswith("batch."):
                     continue
                 cls = type(instance)
                 if not hasattr(cls, '_ctx'):
                     continue
                 cls._ctx["task_manager"] = self.task_manager
                 cls._ctx["db"] = self.db
-                cls._ctx["memory_system"] = self.memory_system
-                cls._ctx["notebook_store"] = nb_store
-                cls._ctx["plan_engine"] = plan_engine
-                cls._ctx["prompt_cache"] = self.prompt_cache
-                cls._ctx["impression_manager"] = self.impression_manager
+                if key.startswith("system."):
+                    cls._ctx["memory_system"] = self.memory_system
+                    cls._ctx["notebook_store"] = nb_store
+                    cls._ctx["plan_engine"] = plan_engine
+                    cls._ctx["prompt_cache"] = self.prompt_cache
+                    cls._ctx["impression_manager"] = self.impression_manager
             self._logger.info("系统技能依赖注入完成")
         except Exception as e:
             self._logger.warning("系统技能依赖注入失败: %s", e)
