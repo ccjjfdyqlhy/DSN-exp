@@ -142,14 +142,12 @@ tools:
 
   - name: execute_action
     display_name: "执行操作"
-    description: "在用户电脑终端执行任意 shell 命令或 Python 脚本，也可读写编辑文件。用户说「跑一下」「执行」「终端」「命令行」「nvidia-smi」「ls」「cd」等均使用此工具。shell 时 content 放命令，python 时 content 放代码，write_file/edit_file 时配合 file_path 使用。"
-    async: true
-    estimated_duration: "1-300s"
+    description: "在用户电脑终端同步执行 shell 命令或 Python 脚本，也可读写编辑文件。阻塞等待结果。用户说「跑一下」「执行」「终端」「命令行」「nvidia-smi」「ls」「cd」等均使用此工具。shell 时 content 放命令，python 时 content 放代码，write_file/edit_file 时配合 file_path 使用。"
     module: "tools.task_tools"
     class: "TaskTools"
     methods:
       - name: execute_action
-        description: "执行代码或文件操作"
+        description: "同步执行代码或文件操作"
         parameters:
           action_type:
             type: string
@@ -174,6 +172,44 @@ tools:
           replacement:
             type: string
             description: "替换内容"
+            required: false
+
+  - name: execute_action_async
+    display_name: "异步执行操作"
+    description: "异步执行 shell/python/文件操作，提交到后台线程池后立即返回 task_id，不阻塞对话。适合耗时操作（编译、下载、批量处理等）。结果通过心跳通知或后续查询获取。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: execute_action_async
+        description: "异步执行操作，立即返回 task_id"
+        parameters:
+          action_type:
+            type: string
+            description: "操作类型: shell/python/write_file/edit_file"
+            required: true
+          content:
+            type: string
+            description: "代码/命令内容"
+            required: true
+          file_path:
+            type: string
+            description: "文件路径"
+            required: false
+          overwrite:
+            type: boolean
+            description: "是否覆盖"
+            default: false
+          pattern:
+            type: string
+            description: "匹配模式"
+            required: false
+          replacement:
+            type: string
+            description: "替换内容"
+            required: false
+          label:
+            type: string
+            description: "任务标签/描述（便于识别）"
             required: false
 
   - name: recall
