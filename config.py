@@ -55,7 +55,9 @@ class Config:
     REASONER_TIMEOUT = int(_env("REASONER_TIMEOUT", "1200"))
 
     # ==================== 本地服务 API ====================
+    LMSTUDIO_ENABLED = _env("LMSTUDIO_ENABLED", "true").lower() == "true"
     LMSTUDIO_BASE_URL = _env("LMSTUDIO_BASE_URL", "http://localhost:4501")
+    TTS_ENABLED = _env("TTS_ENABLED", "true").lower() == "true"
     TTS_BASE_URL = _env("TTS_BASE_URL", "http://127.0.0.1:9880")
 
     # ==================== 主模型配置 ====================

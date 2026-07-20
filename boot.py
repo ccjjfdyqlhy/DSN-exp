@@ -441,20 +441,22 @@ def create_application():
     _t("任务管理器", disabled=not _task_mgr_enabled)
 
     # ── 模型预加载（在记忆系统之前，避免 EmbeddingClient 加载时挤掉主模型）──
-    _preload_models(app)
-    _t("模型预加载")
+    _lmstudio_enabled = Config.LMSTUDIO_ENABLED
+    if _lmstudio_enabled:
+        _preload_models(app)
+    _t("模型预加载", disabled=not _lmstudio_enabled)
 
     # ── 记忆与摘要 ──
     _memory_enabled = app.config.get("MEMORY_ENABLED", True)
     if _memory_enabled:
         summary_model = LMSummaryModel(
             backend=app.config.get("MEMORY_SUMMARY_BACKEND", "openai"),
-            base_url=app.config.get("LMSTUDIO_BASE_URL"),
+            base_url=app.config.get("LMSTUDIO_BASE_URL") if _lmstudio_enabled else None,
             model_name=app.config.get("MEMORY_MODEL"),
             summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),
         )
         memory_system = MemorySystem(db=db, summary_model=summary_model)
-        if Config.MEMORY_EMBEDDING_ENABLED:
+        if _lmstudio_enabled and Config.MEMORY_EMBEDDING_ENABLED:
             try:
                 memory_system = MemorySystem(
                     db=db, summary_model=summary_model,
@@ -465,30 +467,32 @@ def create_application():
     _t("记忆与摘要", disabled=not _memory_enabled)
 
     # ── TTS ──
-    tts_client = VocalExp(app.config["TTS_BASE_URL"])
-    tts_profile_mgr = TTSProfileManager()
+    _tts_enabled = Config.TTS_ENABLED
+    if _tts_enabled:
+        tts_client = VocalExp(app.config["TTS_BASE_URL"])
+        tts_profile_mgr = TTSProfileManager()
 
-    # TTS 启动探测：等待服务就绪（最多重试3次，指数退避）
-    tts_probe_ok = False
-    for _tts_attempt in range(4):
-        if tts_client.probe(timeout=3.0):
-            tts_probe_ok = True
-            app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
-            break
-        if _tts_attempt < 3:
-            _tts_wait = min(2.0 * (2 ** _tts_attempt), 8.0)
-            app.logger.warning("TTS 服务未就绪，%.1fs 后重试 (%d/3)...", _tts_wait, _tts_attempt + 1)
-            time.sleep(_tts_wait)
-    if not tts_probe_ok:
-        app.logger.warning("TTS 服务 (端口 9880) 启动探测失败，TTS 功能可能不可用")
+        # TTS 启动探测：等待服务就绪（最多重试3次，指数退避）
+        tts_probe_ok = False
+        for _tts_attempt in range(4):
+            if tts_client.probe(timeout=3.0):
+                tts_probe_ok = True
+                app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
+                break
+            if _tts_attempt < 3:
+                _tts_wait = min(2.0 * (2 ** _tts_attempt), 8.0)
+                app.logger.warning("TTS 服务未就绪，%.1fs 后重试 (%d/3)...", _tts_wait, _tts_attempt + 1)
+                time.sleep(_tts_wait)
+        if not tts_probe_ok:
+            app.logger.warning("TTS 服务 (端口 9880) 启动探测失败，TTS 功能可能不可用")
 
-    if Config.TTS_PROCESS_ENABLED:
-        try:
-            from models.tts_process import TTSProcessModel
-            _tts_process_model = TTSProcessModel()
-        except Exception:
-            _tts_process_model = None
-    _t("TTS")
+        if Config.TTS_PROCESS_ENABLED:
+            try:
+                from models.tts_process import TTSProcessModel
+                _tts_process_model = TTSProcessModel()
+            except Exception:
+                _tts_process_model = None
+    _t("TTS", disabled=not _tts_enabled)
 
     # ── ASR ──
     filter_model = None

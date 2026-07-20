@@ -1,5 +1,6 @@
 # skills/system/tools/task_tools.py
 
+import json
 import locale
 import logging
 import subprocess
@@ -154,7 +155,7 @@ class TaskTools:
     def execute_action(self, action_type: str, content: str,
                         file_path: str = "", overwrite: bool = False,
                         pattern: str = "", replacement: str = "") -> dict:
-        """直接执行 shell/python/文件操作，不走 TaskManager 持久化。"""
+        """同步执行 shell/python/文件操作，阻塞等待结果。"""
         try:
             if action_type == "shell":
                 return self._run_shell(content)
@@ -169,6 +170,33 @@ class TaskTools:
         except Exception as e:
             logger.error("execute_action 失败 (%s): %s", action_type, e)
             return {"success": False, "error": str(e), "action_type": action_type}
+
+    def execute_action_async(self, action_type: str, content: str,
+                              file_path: str = "", overwrite: bool = False,
+                              pattern: str = "", replacement: str = "",
+                              label: str = "") -> dict:
+        """异步执行操作，提交到 TaskManager 线程池，立即返回 task_id。
+        结果通过心跳通知或后续查询获取。"""
+        mgr = self._mgr()
+        params = {
+            "action_type": action_type,
+            "content": content,
+            "file_path": file_path,
+            "overwrite": overwrite,
+            "pattern": pattern,
+            "replacement": replacement,
+        }
+        if label:
+            params["label"] = label
+        tid = mgr.create_task(
+            task_type=TaskType.ACTION,
+            user_id=self._uid(), chat_id=self._cid(),
+            params=params, priority=1)
+        mgr.execute_task(tid)
+        logger.info("execute_action_async: task_id=%s type=%s label=%s",
+                     tid, action_type, label or content[:40])
+        return {"task_id": tid, "action_type": action_type, "async": True,
+                "label": label or content[:60]}
 
     @staticmethod
     def _run_shell(cmd: str) -> dict:
