@@ -9,7 +9,7 @@ import json
 import queue
 import time
 import logging
-from copy import copy
+from copy import copy, deepcopy
 from typing import AsyncGenerator, Callable, Awaitable, Optional
 
 from .base import HookPoint, PluginContext
@@ -659,8 +659,8 @@ class ChatPipeline:
         logger.info("检测到图片输入，启用 Vision/Memory 并行路径")
 
         # 并行：Vision 单独跑，其余插件一起跑
-        vision_ctx = copy(ctx)
-        other_ctx = copy(ctx)
+        vision_ctx = self._clone_pre_process_context(ctx)
+        other_ctx = self._clone_pre_process_context(ctx)
 
         vision_task = asyncio.create_task(
             self.pm.dispatch_only(HookPoint.PRE_PROCESS, vision_ctx, {"vision"})
@@ -677,18 +677,51 @@ class ChatPipeline:
         if isinstance(vision_result, Exception):
             logger.exception("PRE_PROCESS 并行(vision)异常: %s", vision_result)
 
-        # 合并：vision 修改 ctx.message，other 修改 ctx.full_history / ctx.system_prompt
-        if not isinstance(vision_result, Exception) and vision_result is not None:
-            ctx.message = vision_result.message
-            ctx.image_data = vision_result.image_data
-            ctx.extra.update(vision_result.extra)
+        return self._merge_pre_process_results(
+            ctx,
+            vision_result if not isinstance(vision_result, Exception) else None,
+            other_result if not isinstance(other_result, Exception) else other_ctx,
+        )
 
-        result_ctx = other_result if not isinstance(other_result, Exception) else other_ctx
-        ctx.full_history = result_ctx.full_history
-        ctx.system_prompt = result_ctx.system_prompt
-        ctx.filtered = result_ctx.filtered
+    @staticmethod
+    def _merge_pre_process_results(
+        original: PluginContext,
+        vision_result: PluginContext | None,
+        other_result: PluginContext,
+    ) -> PluginContext:
+        """Merge the explicitly independent image and non-image preprocess results."""
+        if vision_result is not None:
+            original.message = vision_result.message
+            original.image_data = vision_result.image_data
+            original.extra.update(vision_result.extra)
 
-        return ctx
+        original.full_history = other_result.full_history
+        original.system_prompt = other_result.system_prompt
+        original.filtered = other_result.filtered
+        original.extra.update(other_result.extra)
+        return original
+
+    @staticmethod
+    def _clone_pre_process_context(ctx: PluginContext) -> PluginContext:
+        """Clone mutable request fields so concurrent preprocess plugins stay isolated."""
+        cloned = copy(ctx)
+        try:
+            cloned.history = deepcopy(ctx.history)
+        except Exception:
+            cloned.history = list(ctx.history)
+        try:
+            cloned.full_history = deepcopy(ctx.full_history)
+        except Exception:
+            cloned.full_history = list(ctx.full_history)
+
+        cloned.extra = {}
+        for key, value in ctx.extra.items():
+            try:
+                cloned.extra[key] = deepcopy(value)
+            except Exception:
+                # Runtime services such as database connections stay shared and read-only.
+                cloned.extra[key] = value
+        return cloned
 
     # ---- 按行 TTS 合成 ----
 

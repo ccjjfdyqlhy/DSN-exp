@@ -241,7 +241,7 @@ class SkillMgrTool:
     # ═══════════ internals ═══════════
 
     def _find_skill_yaml(self, name: str) -> Path | None:
-        for src in ["builtin", "custom"]:
+        for src in ["builtin", "custom", "batch"]:
             p = self._project_root / "skills" / src / name / "skill.yaml"
             if p.exists():
                 return p
@@ -253,8 +253,9 @@ class SkillMgrTool:
             from skills.registry import SkillRegistry
             builtin = str(self._project_root / "skills" / "builtin")
             custom = str(self._project_root / "skills" / "custom")
+            batch = str(self._project_root / "skills" / "batch")
             registry = SkillRegistry()
-            mgr = SkillManager(skill_dirs=[builtin, custom], registry=registry)
+            mgr = SkillManager(skill_dirs=[builtin, custom, batch], registry=registry)
             mgr.scan_and_load()
             return mgr
         except Exception:
