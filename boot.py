@@ -563,7 +563,8 @@ def create_application():
         skill_manager = SkillManager(
             skill_dirs=[os.path.join(os.path.dirname(__file__), "skills", "builtin"),
                         os.path.join(os.path.dirname(__file__), "skills", "custom"),
-                        os.path.join(os.path.dirname(__file__), "skills", "system")],
+                        os.path.join(os.path.dirname(__file__), "skills", "system"),
+                        os.path.join(os.path.dirname(__file__), "skills", "batch")],
             registry=skill_registry,
         )
         skill_manager.scan_and_load()

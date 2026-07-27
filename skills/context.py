@@ -12,4 +12,12 @@ def set_call_context(user_id: int = 0, chat_id: int = 0, extra: dict = None):
     _local.extra = extra or {}
 
 
+def get_call_context() -> dict:
+    """Return the current thread's skill invocation metadata."""
+    return {
+        "user_id": getattr(_local, "uid", 0),
+        "chat_id": getattr(_local, "cid", 0),
+        "extra": getattr(_local, "extra", {}),
+    }
+
 
