@@ -41,6 +41,14 @@ def _is_no_model_error(response) -> bool:
         return False
 
 
+def _post_json(session: requests.Session, url: str, headers: dict,
+               payload: dict, timeout: int | float) -> dict:
+    """Submit a JSON request through a reusable session and decode its response."""
+    response = session.post(url, headers=headers, json=payload, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
 
 
 
@@ -146,6 +154,7 @@ class OpenAIChat:
         self.last_usage = None
         self.last_model = self.model
         self._last_message: Optional[dict] = None
+        self._http_session = requests.Session()
 
         if logger is not None:
             self.logger = logger
@@ -242,10 +251,9 @@ class OpenAIChat:
 
         try:
             self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False)[:500])
-            response = requests.post(
-                self.api_url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            result = response.json()
+            result = _post_json(
+                self._http_session, self.api_url, headers, payload, self.timeout,
+            )
             self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False)[:500])
 
             self.last_usage = result.get("usage")
@@ -382,6 +390,7 @@ class LMStudioChat:
         self.messages: List[Dict[str, str]] = []
         self.last_usage = None
         self.last_model = self.model_name or "lmstudio"
+        self._http_session = requests.Session()
 
         if logger is not None:
             self.logger = logger
@@ -430,9 +439,9 @@ class LMStudioChat:
 
         # actually make the http call to the chat api
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-                response.raise_for_status()
-                result = response.json()
+                result = _post_json(
+                    self._http_session, url, headers, payload, self.timeout,
+                )
                 self.last_usage = result.get("usage")
                 self.last_model = result.get("model", self.model_name)
                 return result
@@ -1066,9 +1075,7 @@ class OCRModel:
         headers = {"Content-Type": "application/json"}
 
         def _do_request():
-            resp = self._http_session.post(url, headers=headers, json=payload, timeout=300)
-            resp.raise_for_status()
-            result = resp.json()
+            result = _post_json(self._http_session, url, headers, payload, 300)
             if "choices" in result and result["choices"]:
                 return result["choices"][0]["message"]["content"].strip()
             return ""
@@ -1149,6 +1156,7 @@ class VisionModel:
         self.model_name = model_name or Config.VISION_MODEL_NAME
         self.timeout = timeout
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._http_session = requests.Session()
 
         if not self.api_key:
             self.logger.warning("VISION_API_KEY 未配置，视觉模型请求将无法通过需要认证的 API")
@@ -1156,12 +1164,8 @@ class VisionModel:
     @staticmethod
     def encode_image(image_path: str, mime_type: str = "image/png") -> str:
         """读取本地图片并转为 Base64 data URL"""
-        import base64
-        if not os.path.isfile(image_path):
-            raise FileNotFoundError(f"图片文件不存在: {image_path}")
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-        return f"data:{mime_type};base64,{image_data}"
+        from utils.media import image_file_data_url
+        return image_file_data_url(image_path, mime_type)
 
     def ask(self, data_url: str, prompt: str = "请详细描述这张图片的内容",
             max_tokens: int = 2048, temperature: float = 0.1,
@@ -1206,9 +1210,9 @@ class VisionModel:
                          self.model_name, prompt[:60] + ("..." if len(prompt) > 60 else ""))
 
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-            result = resp.json()
+            result = _post_json(
+                self._http_session, url, headers, payload, self.timeout,
+            )
         except requests.exceptions.Timeout:
             self.logger.error("VisionModel 请求超时 (%ds)", self.timeout)
             raise
@@ -1253,9 +1257,7 @@ class VisionModel:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         self.logger.debug("VisionModel ask_raw: %s", str(payload)[:200])
-        resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        return _post_json(self._http_session, url, headers, payload, self.timeout)
 
     # ----- OCR / 文档分类（用于 VISION_OVERRIDE 模式） -----
 

@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
-import tempfile
 
 from config import Config
+from .inputs import load_document_image, normalize_document_inputs
 
 logger = logging.getLogger("DocProcessor")
 
@@ -86,19 +85,7 @@ class DocProcessor:
         doc_images = []
         photo_images = []
 
-        # 统一 scanned_images 格式：接受字符串路径或 dict
-        normalized = []
-        for img in scanned_images:
-            if isinstance(img, str):
-                fp = img
-                normalized.append({
-                    "filename": os.path.basename(fp),
-                    "filepath": fp,
-                    "size": os.path.getsize(fp) if os.path.isfile(fp) else 0,
-                })
-            elif isinstance(img, dict):
-                normalized.append(img)
-        scanned_images = normalized
+        scanned_images = normalize_document_inputs(scanned_images)
 
         if not scanned_images:
             logger.warning("process_scan: scanned_images 为空或格式全部错误")
@@ -111,15 +98,12 @@ class DocProcessor:
         for img in scanned_images:
             filepath = img.get("filepath", "")
             filename = img.get("filename", "")
-            if not filepath or not os.path.exists(filepath):
+            try:
+                filename, filepath, data_url = load_document_image(img)
+            except FileNotFoundError:
                 logger.warning("文件不存在，跳过: %s", filepath)
                 photo_images.append({"filename": filename, "filepath": filepath, "data_url": "", "category": "photo"})
                 continue
-            with open(filepath, "rb") as f:
-                raw = f.read()
-            ext = os.path.splitext(filename)[-1].lower().lstrip(".")
-            mime = "png" if ext == "png" else "jpeg" if ext in ("jpg", "jpeg") else ext
-            data_url = f"data:image/{mime};base64,{base64.b64encode(raw).decode()}"
 
             category = self._classify_image(data_url)
             logger.info("分类 %s → %s (user_id=%d)", filename, category, user_id)
