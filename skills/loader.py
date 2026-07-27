@@ -62,6 +62,7 @@ class SkillLoader:
         "integer": "integer", "int": "integer",
         "boolean": "boolean", "bool": "boolean",
         "array": "array", "list": "array",
+        "object": "object", "dict": "object",
         "number": "number", "float": "number",
     }
 

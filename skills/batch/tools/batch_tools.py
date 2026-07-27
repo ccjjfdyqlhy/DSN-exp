@@ -9,6 +9,7 @@ logger = logging.getLogger("skill.batch")
 
 class BatchTools:
     _ctx = {}
+    _ACTION_TYPES = frozenset({"shell", "python", "write_file", "edit_file"})
 
     @classmethod
     def set_context(cls, task_manager=None, db=None):
@@ -25,10 +26,12 @@ class BatchTools:
         return mgr
 
     def _uid(self):
-        return self._ctx.get("_uid", 0)
+        from skills.context import get_call_context
+        return get_call_context()["user_id"] or self._ctx.get("_uid", 0)
 
     def _cid(self):
-        return self._ctx.get("_cid", 0)
+        from skills.context import get_call_context
+        return get_call_context()["chat_id"] or self._ctx.get("_cid", 0)
 
     def batch_execute(self, actions: list) -> dict:
         """一次性提交多个操作到线程池并行执行。
@@ -55,6 +58,9 @@ class BatchTools:
         failed = []
 
         for i, action in enumerate(actions):
+            if not isinstance(action, dict):
+                failed.append({"index": i, "error": "操作必须是对象", "label": f"batch_{i}"})
+                continue
             action_type = action.get("action_type", "")
             content = action.get("content", "")
             label = action.get("label", f"batch_{i}")
@@ -62,6 +68,13 @@ class BatchTools:
             if not action_type or not content:
                 failed.append({"index": i, "error": "缺少 action_type 或 content",
                                "label": label})
+                continue
+            if action_type not in self._ACTION_TYPES:
+                failed.append({
+                    "index": i,
+                    "error": f"不支持的 action_type: {action_type}",
+                    "label": label,
+                })
                 continue
 
             params = {
