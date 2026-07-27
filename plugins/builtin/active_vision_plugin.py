@@ -20,7 +20,6 @@ import json
 import logging
 import threading
 import time
-import base64
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -295,8 +294,8 @@ class ActiveVisionPlugin(Plugin):
         if not success:
             return {"success": False, "error": "JPEG 编码失败"}
 
-        b64 = base64.b64encode(buf).decode("utf-8")
-        data_url = f"data:image/jpeg;base64,{b64}"
+        from utils.media import image_data_url
+        data_url = image_data_url(buf.tobytes(), "image/jpeg")
 
         # VisionModel 分析
         vm = self._get_vision_model()
