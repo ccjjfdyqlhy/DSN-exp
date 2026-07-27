@@ -3,11 +3,9 @@
 
 from __future__ import annotations
 
-import base64
 import logging
-import io
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("skill.visual_perception")
 
@@ -100,8 +98,8 @@ class VisualPerceptionTool:
         if not success:
             raise RuntimeError("JPEG 编码失败")
 
-        b64 = base64.b64encode(buf).decode("utf-8")
-        data_url = f"data:image/jpeg;base64,{b64}"
+        from utils.media import image_data_url
+        data_url = image_data_url(buf.tobytes(), "image/jpeg")
         return frame, data_url
 
     def _build_vision_prompt(self, focus: str) -> str:
