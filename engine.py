@@ -75,8 +75,8 @@ class EngineConfig:
     task_max_workers: int = Config.TASK_MAX_WORKERS
     agent_active: bool = True
     agent_max_steps: int = Config.AGENT_MAX_STEPS
-    agent_token_budget: int = 1000000
-    agent_timeout: float = 120.0
+    agent_token_budget: int = Config.AGENT_TOKEN_BUDGET
+    agent_timeout: float = Config.AGENT_TIMEOUT_SECONDS
     debug_play_as_model: bool = Config.DEBUG_PLAY_AS_MODEL
     debug_play_as_model_port: int = Config.DEBUG_PLAY_AS_MODEL_PORT
 

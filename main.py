@@ -64,6 +64,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.table import Table
 from rich import box
+from config import Config
 
 try:
     from prompt.personality_v3.traits import TRAIT_MAP
@@ -78,7 +79,7 @@ except ImportError:
 
 console = Console()
 
-LOG_BUFFER: deque = deque(maxlen=200)
+LOG_BUFFER: deque = deque(maxlen=Config.LOG_BUFFER_SIZE)
 LOG_LOCK = threading.Lock()
 _LOG_HANDLER_INSTALLED = False
 
@@ -831,8 +832,8 @@ def _cmd_reminder(db, args: str):
         rows = conn.execute(
             f"SELECT task_id, task_type, user_id, chat_id, priority, scheduled_time, "
             f"status, interval_seconds, skip_count, created_at FROM tasks {w} "
-            f"ORDER BY priority DESC, scheduled_time ASC LIMIT 50",
-            params,
+            f"ORDER BY priority DESC, scheduled_time ASC LIMIT ?",
+            (*params, Config.REMINDER_LIST_LIMIT),
         ).fetchall()
 
         if not rows:
@@ -1277,7 +1278,7 @@ def _cmd_memory_query(db, parts: list[str]):
         sql += " AND created_at < ?"
         params.append(date_before)
 
-    sql += " ORDER BY id DESC LIMIT 50"
+    sql += f" ORDER BY id DESC LIMIT {Config.MEMORY_QUERY_LIMIT}"
 
     rows = conn.execute(sql, params).fetchall()
     if not rows:

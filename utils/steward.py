@@ -37,8 +37,10 @@ STEWARD_SYSTEM_HEADER = """你是一台DSN-exp服务器的驻守AI（代号：GU
 def _create_steward_client(config):
     """根据配置创建模型客户端（DeepSeek 或 LMStudio）"""
     model_type = getattr(config, "STEWARD_MODEL_TYPE", "openai")
-    model_name = getattr(config, "STEWARD_MODEL_NAME", "deepseek-v4-flash")
+    model_name = getattr(config, "STEWARD_MODEL_NAME", getattr(config, "MAIN_MODEL_NAME", "deepseek-v4-flash"))
     timeout = getattr(config, "STEWARD_TIMEOUT", 300)
+    temperature = getattr(config, "STEWARD_TEMPERATURE", 0.5)
+    max_tokens = getattr(config, "STEWARD_MAX_TOKENS", 2048)
 
     if model_type == "lmstudio":
         from models import LMStudioChat
@@ -47,8 +49,8 @@ def _create_steward_client(config):
             base_url=base_url,
             model_name=model_name,
             timeout=timeout,
-            temperature=0.5,
-            max_tokens=2048,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
     else:
         from models import OpenAIChat
@@ -73,7 +75,7 @@ class StewardModel:
         self._start_time = time.time()
         self._config = config
 
-        logger.info("驻守模型初始化完成 (model=%s)", getattr(config, "STEWARD_MODEL_NAME", "deepseek-v4-flash"))
+        logger.info("驻守模型初始化完成 (model=%s)", getattr(config, "STEWARD_MODEL_NAME", getattr(config, "MAIN_MODEL_NAME", "unknown")))
 
     def _get_or_create_chat(self, db) -> int:
         if self._chat_id is not None:
@@ -191,7 +193,8 @@ class StewardModel:
                 "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
                 (chat_id,),
             ).fetchall()
-            return [{"role": r["role"], "content": r["content"]} for r in rows[-40:]]  # 最近 40 条
+            history_limit = getattr(self._config, "STEWARD_HISTORY_LIMIT", 40)
+            return [{"role": r["role"], "content": r["content"]} for r in rows[-history_limit:]]
         except Exception as e:
             logger.warning("加载驻守模型历史失败: %s", e)
             return []

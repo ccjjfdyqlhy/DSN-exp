@@ -148,13 +148,6 @@ class TaskManager:
         "edit_file": "_action_edit_file",
     }
 
-    @staticmethod
-    def _migrate_add_column(conn, table: str, column: str, col_def: str):
-        try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
-        except Exception:
-            logging.getLogger(__name__).warning("迁移列失败: ALTER TABLE %s ADD COLUMN %s", table, column, exc_info=True)
-
     def _init_db(self):
         """初始化任务相关的数据库表"""
         conn = self.db._get_connection()
@@ -200,6 +193,8 @@ class TaskManager:
                     user_id INTEGER NOT NULL,
                     chat_id INTEGER NOT NULL,
                     result TEXT,
+                    delivered INTEGER DEFAULT 0,
+                    dismissed INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE,
                     FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
@@ -207,12 +202,6 @@ class TaskManager:
             """)
             
             conn.commit()
-            # 迁移：为旧表补充新列
-            self._migrate_add_column(conn, "tasks", "interval_seconds", "INTEGER DEFAULT 0")
-            self._migrate_add_column(conn, "tasks", "skip_count", "INTEGER DEFAULT 0")
-            # task_notifications 补充 deliver 状态列
-            self._migrate_add_column(conn, "task_notifications", "delivered", "INTEGER DEFAULT 0")
-            self._migrate_add_column(conn, "task_notifications", "dismissed", "INTEGER DEFAULT 0")
             self.logger.info("任务数据库表初始化完成")
         except Exception as e:
             self.logger.error("初始化任务数据库表失败: %s", e)
@@ -694,7 +683,7 @@ class TaskManager:
         cwd = str(get_workspace_manager().user_dir(uid=getattr(task, 'user_id', 0)))
         process = subprocess.run(
             content, shell=True, capture_output=True,
-            encoding=encoding, errors='replace', timeout=300,
+            encoding=encoding, errors='replace', timeout=Config.ACTION_TIMEOUT,
             cwd=cwd,
         )
         output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
@@ -716,7 +705,7 @@ class TaskManager:
             cwd = str(get_workspace_manager().user_dir(uid=getattr(task, 'user_id', 0)))
             process = subprocess.run(
                 ["python", temp_file], capture_output=True,
-                encoding=encoding, errors='replace', timeout=300,
+                encoding=encoding, errors='replace', timeout=Config.ACTION_TIMEOUT,
                 cwd=cwd,
             )
             output = f"STDOUT:\n{process.stdout}\n\nSTDERR:\n{process.stderr}"
@@ -1008,7 +997,7 @@ class ComplexityAnalyzer:
         score = max(0, min(1, score))
         
         # 判断是否复杂
-        is_complex = score >= 0.4  # 阈值可配置
+        is_complex = score >= Config.TASK_COMPLEXITY_THRESHOLD
         
         suggestion = "使用reasoner模型进行深入分析" if is_complex else "使用chat模型直接回复"
         

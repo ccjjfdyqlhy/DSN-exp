@@ -228,7 +228,12 @@ def asr_recognize():
         _save_debug_audio(audio_bytes)
     audio_bytes = _convert_audio_to_wav(audio_bytes)
     try:
-        res = asr_model.generate(input=audio_bytes, use_itn=True, batch_size_s=60, language="zh")
+        res = asr_model.generate(
+            input=audio_bytes,
+            use_itn=True,
+            batch_size_s=Config.ASR_BATCH_SIZE_SECONDS,
+            language="zh",
+        )
         text = res[0].get("text", "").strip() if res else ""
         return jsonify({"text": text})
     except Exception as e:
@@ -273,7 +278,12 @@ def asr_passthrough():
     audio_bytes = _convert_audio_to_wav(audio_bytes)
 
     try:
-        res = asr_model.generate(input=audio_bytes, use_itn=True, batch_size_s=60, language="zh")
+        res = asr_model.generate(
+            input=audio_bytes,
+            use_itn=True,
+            batch_size_s=Config.ASR_BATCH_SIZE_SECONDS,
+            language="zh",
+        )
         recognized_text = res[0].get("text", "").strip() if res else ""
     except Exception as e:
         return jsonify({"error": "ASR processing failed"}), 500
