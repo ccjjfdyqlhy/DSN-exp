@@ -25,12 +25,13 @@ def init_reminder_api(db, task_manager, auth_manager):
 
 @reminder_bp.before_request
 def _require_auth():
-    """复用全局认证"""
-    if _auth_manager:
-        user = _auth_manager.authenticate(request)
-        g.user = user
-    else:
-        g.user = {"uid": 0}
+    """复用全局认证，未认证直接拒绝"""
+    if not _auth_manager:
+        return jsonify({"error": "Auth unavailable"}), 503
+    user = _auth_manager.authenticate(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    g.user = user
 
 
 @reminder_bp.route("/api/reminder/list")

@@ -123,6 +123,14 @@ class AsyncTaskStore:
                 "error": record.get("error", ""),
             }
 
+    def owner_of(self, task_id: str) -> Optional[int]:
+        """返回异步任务的创建者 uid，不存在则 None（用于归属校验）。"""
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if not record:
+                return None
+            return record.get("user_id", 0)
+
     def cleanup_stale(self, max_age_hours: int = 24) -> int:
         cutoff = datetime.now()
         removed = 0

@@ -67,11 +67,13 @@ def pairing_verify():
 
     code = str(data["code"]).strip()
     display_name = str(data.get("display_name", "")).strip()
-    is_admin = bool(data.get("is_admin", True))
 
     network_level = auth.network.get_network_level(_get_ip())
     if network_level == "external":
         return jsonify({"error": "配对码仅在内网可用"}), 403
+
+    # is_admin 由服务端决定：仅首个用户自动成为管理员，忽略客户端传入值
+    is_admin = auth._user_count() == 0
 
     uid = auth.pairing.verify(code, display_name=display_name, is_admin=is_admin)
     if uid is None:

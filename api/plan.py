@@ -25,11 +25,13 @@ def init_plan_api(db, auth_manager):
 
 @plan_bp.before_request
 def _require_auth():
-    """复用全局认证，确保 g.user 可用。"""
-    if _auth_manager:
-        g.user = _auth_manager.authenticate(request)
-    else:
-        g.user = {"uid": 0}
+    """复用全局认证，未认证直接拒绝。"""
+    if not _auth_manager:
+        return jsonify({"error": "Auth unavailable"}), 503
+    user = _auth_manager.authenticate(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    g.user = user
 
 
 def _get_engine():
@@ -38,6 +40,26 @@ def _get_engine():
 
 def _uid() -> int:
     return g.user.get("uid", 0) if g.user else 0
+
+
+def _goal_owned_by(goal_id: str, uid: int) -> bool:
+    """校验目标属于指定用户。"""
+    if not _db or not goal_id:
+        return False
+    row = _db._get_connection().execute(
+        "SELECT user_id FROM goals WHERE goal_id=?", (goal_id,)
+    ).fetchone()
+    return bool(row) and row["user_id"] == uid
+
+
+def _task_owned_by(task_id: str, uid: int) -> bool:
+    """校验日常任务属于指定用户。"""
+    if not _db or not task_id:
+        return False
+    row = _db._get_connection().execute(
+        "SELECT user_id FROM daily_tasks WHERE task_id=?", (task_id,)
+    ).fetchone()
+    return bool(row) and row["user_id"] == uid
 
 
 # ── Goal ──
@@ -81,6 +103,8 @@ def list_phases(goal_id):
     uid = _uid()
     if not uid:
         return jsonify({"error": "Unauthorized"}), 401
+    if not _goal_owned_by(goal_id, uid):
+        return jsonify({"error": "Not found"}), 404
     engine = _get_engine()
     if not engine:
         return jsonify({"error": "Plan system unavailable"}), 503
@@ -102,6 +126,8 @@ def add_phase():
     title = data.get("title", "")
     if not goal_id or not title:
         return jsonify({"error": "Missing goal_id or title"}), 400
+    if not _goal_owned_by(goal_id, uid):
+        return jsonify({"error": "Not found"}), 404
     engine = _get_engine()
     if not engine:
         return jsonify({"error": "Plan system unavailable"}), 503
@@ -163,6 +189,8 @@ def check_off():
     task_id = data.get("task_id", "")
     if not task_id:
         return jsonify({"error": "Missing task_id"}), 400
+    if not _task_owned_by(task_id, uid):
+        return jsonify({"error": "Not found"}), 404
     engine = _get_engine()
     if not engine:
         return jsonify({"error": "Plan system unavailable"}), 503
@@ -180,6 +208,8 @@ def skip_task():
     task_id = data.get("task_id", "")
     if not task_id:
         return jsonify({"error": "Missing task_id"}), 400
+    if not _task_owned_by(task_id, uid):
+        return jsonify({"error": "Not found"}), 404
     engine = _get_engine()
     if not engine:
         return jsonify({"error": "Plan system unavailable"}), 503
