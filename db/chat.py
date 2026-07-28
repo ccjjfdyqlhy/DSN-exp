@@ -109,6 +109,10 @@ class ChatDBManager:
                         FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
                     )
                 """)
+                # 迁移: 为旧表补充 msg_type 列
+                _msg_cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+                if "msg_type" not in _msg_cols:
+                    conn.execute("ALTER TABLE messages ADD COLUMN msg_type TEXT NOT NULL DEFAULT 'main'")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_round ON messages(chat_id, round_index)")
@@ -654,8 +658,12 @@ class ChatDBManager:
             conn.rollback()
             raise
 
-    def get_chat_history(self, user_id: int, chat_id: int) -> List[Dict[str, str]]:
-        """获取指定聊天会话的所有消息（需验证用户所有权，系统内部聊天拒绝）"""
+    def get_chat_history(self, user_id: int, chat_id: int,
+                         exclude_types: list[str] = None) -> List[Dict[str, str]]:
+        """获取指定聊天会话的所有消息（需验证用户所有权，系统内部聊天拒绝）
+
+        :param exclude_types: 排除的消息类型列表，如 ['instant'] 可过滤掉 Instant 模型的消息
+        """
         conn = self._get_connection()
         try:
             # 先验证该聊天属于该用户且非系统聊天
@@ -667,10 +675,14 @@ class ChatDBManager:
                 self.logger.warning("用户 %d 无权访问聊天 %d", user_id, chat_id)
                 return []
 
-            rows = conn.execute(
-                "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
-                (chat_id,),
-            ).fetchall()
+            query = "SELECT role, content FROM messages WHERE chat_id = ?"
+            params: list = [chat_id]
+            if exclude_types:
+                placeholders = ",".join("?" * len(exclude_types))
+                query += f" AND msg_type NOT IN ({placeholders})"
+                params.extend(exclude_types)
+            query += " ORDER BY timestamp ASC"
+            rows = conn.execute(query, params).fetchall()
             return [{"role": r["role"], "content": self._cipher.decrypt(user_id, r["content"])} for r in rows]
         except sqlite3.Error as e:
             self.logger.error("获取聊天历史失败: %s", e)
@@ -773,16 +785,17 @@ class ChatDBManager:
                 role = msg.get("role")
                 content = msg.get("content")
                 skip_memory = msg.get("skip_memory", False) or skip_memory_check
+                msg_type = msg.get("msg_type", "main")
 
                 if role not in ("user", "assistant", "system") or not isinstance(content, str):
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
 
-                # 加密内容后插入数据库，含 round_index
+                # 加密内容后插入数据库，含 round_index 和 msg_type
                 encrypted = self._cipher.encrypt(user_id, content)
                 conn.execute(
-                    "INSERT INTO messages (chat_id, role, content, round_index) VALUES (?, ?, ?, ?)",
-                    (chat_id, role, encrypted, round_index),
+                    "INSERT INTO messages (chat_id, role, content, round_index, msg_type) VALUES (?, ?, ?, ?, ?)",
+                    (chat_id, role, encrypted, round_index, msg_type),
                 )
 
                 # 如果消息标记为跳过记忆化，记录日志

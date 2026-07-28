@@ -248,6 +248,17 @@ class Config:
     AGENT_TOKEN_BUDGET = max(1, int(_env("AGENT_TOKEN_BUDGET", "1000000")))
     AGENT_TIMEOUT_SECONDS = max(1.0, float(_env("AGENT_TIMEOUT_SECONDS", "120")))
 
+    # ── 双模协同 ──
+    DUAL_ENABLED = _env_bool("DUAL_ENABLED", "false")
+    INSTANT_MODEL = _env("INSTANT_MODEL", "google/gemma-3-4b")
+    INSTANT_MODEL_URL = _env("INSTANT_MODEL_URL", None) or _env("LMSTUDIO_BASE_URL", "http://localhost:4501")
+    INSTANT_TEMPERATURE = float(_env("INSTANT_TEMPERATURE", "0.6"))
+    INSTANT_MAX_TOKENS = int(_env("INSTANT_MAX_TOKENS", "512"))
+    INSTANT_TIMEOUT = max(1, int(_env("INSTANT_TIMEOUT", "15")))
+    DUAL_MAIN_WORKERS = max(1, int(_env("DUAL_MAIN_WORKERS", "3")))
+    INSTANT_CONTEXT_MAX_MESSAGES = max(4, int(_env("INSTANT_CONTEXT_MAX_MESSAGES", "30")))
+    INSTANT_CONTEXT_COMPRESS_THRESHOLD = max(6, int(_env("INSTANT_CONTEXT_COMPRESS_THRESHOLD", "40")))
+
     # ── 售后维护 ──
     MAINTENANCE_ENABLED = _env("MAINTENANCE_ENABLED", "true").lower() == "true"
     MAINTENANCE_IDLE_TIMEOUT_MINUTES = int(_env("MAINTENANCE_IDLE_TIMEOUT_MINUTES", "60"))

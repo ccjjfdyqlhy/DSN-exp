@@ -847,6 +847,60 @@ def create_application():
         app.config["MAINTENANCE_SYSTEM"] = None
     _t("维护模块", disabled=_maint_disabled)
 
+    # ── 双模协同 ──
+    _dual_disabled = True
+    try:
+        if Config.DUAL_ENABLED:
+            from dual import (
+                RequestPool, StreamRegistry, InstantContextRegistry,
+                TTSSynthesizer, InstantModelService,
+                MainModelDispatcher, DualCoordinator,
+            )
+
+            request_pool = RequestPool.get_instance()
+            stream_registry = StreamRegistry.get_instance()
+            instant_registry = InstantContextRegistry.get_instance()
+
+            tts_synth = TTSSynthesizer(
+                tts_client=tts_client,
+                tts_profile_mgr=tts_profile_mgr,
+                tts_process_model=_tts_process_model,
+            )
+
+            instant_service = InstantModelService(
+                prompt_engine=prompt_engine,
+                memory_system=memory_system,
+                tts_synth=tts_synth,
+                request_pool=request_pool,
+                instant_registry=instant_registry,
+                db=db,
+            )
+
+            main_dispatcher = MainModelDispatcher(
+                engine=engine,
+                request_pool=request_pool,
+                max_workers=Config.DUAL_MAIN_WORKERS,
+            )
+
+            dual_coordinator = DualCoordinator(
+                instant_service=instant_service,
+                main_dispatcher=main_dispatcher,
+                stream_registry=stream_registry,
+                request_pool=request_pool,
+                tts_synth=tts_synth,
+            )
+
+            app.config["DUAL_COORDINATOR"] = dual_coordinator
+            _dual_disabled = False
+            app.logger.info("双模协同已启用 (Instant=%s, workers=%d)",
+                            Config.INSTANT_MODEL, Config.DUAL_MAIN_WORKERS)
+        else:
+            app.logger.info("双模协同已禁用 (DUAL_ENABLED=false)")
+    except Exception:
+        app.config["DUAL_COORDINATOR"] = None
+        app.logger.warning("双模协同初始化失败", exc_info=True)
+    _t("双模协同", disabled=_dual_disabled)
+
     # ── 打印启动耗时 ──
     app.logger.info("=" * 45)
     app.logger.info("  启动耗时汇总")
