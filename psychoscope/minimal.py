@@ -236,8 +236,8 @@ class MusicPlayer:
 
     def load_playlist(self):
         try:
-            resp = requests.get(
-                f"{self.client.base}/api/music/list?uid={self.uid}", timeout=5
+            resp = self.client._http_get(
+                f"/api/music/list?uid={self.uid}", timeout=5
             )
             if resp.status_code == 200:
                 self.playlist = resp.json().get("files", [])
@@ -252,7 +252,8 @@ class MusicPlayer:
         song = self.playlist[idx]
         url = f"{self.client.base}/api/music/play/{song['filename']}?uid={self.uid}"
         try:
-            resp = requests.get(url, stream=True, timeout=10)
+            resp = requests.get(url, stream=True, timeout=10,
+                                headers=self.client._headers())
             if resp.status_code != 200:
                 log.warning("MusicPlayer: 下载失败 %d", resp.status_code)
                 return
@@ -360,8 +361,7 @@ class MusicPlayer:
             current = {"filename": self.playlist[self.current_index]["filename"]}
         payload = {"state": self.state, "current": current, "volume": self._volume}
         try:
-            requests.post(f"{self.client.base}/api/music/state",
-                          json=payload, timeout=2)
+            self.client._http_post("/api/music/state", json=payload, timeout=2)
         except Exception:
             logging.getLogger(__name__).warning("Load/read operation failed", exc_info=True)
 
@@ -370,8 +370,8 @@ class MusicPlayer:
         while self._running:
             _time.sleep(1.5)
             try:
-                resp = requests.get(
-                    f"{self.client.base}/api/music/status?consume=1", timeout=3)
+                resp = self.client._http_get(
+                    "/api/music/status?consume=1", timeout=3)
                 if resp.status_code != 200:
                     continue
                 data = resp.json()
@@ -1292,7 +1292,7 @@ def print_personality(client: DSNClient):
 
 def toggle_standby(client: DSNClient):
     try:
-        resp = requests.post(f"{client.base}/api/maintenance/toggle_standby", timeout=10)
+        resp = client._http_post("/api/maintenance/toggle_standby", timeout=10)
         state = resp.json().get("state", "?")
         print(f"  Server State: {state}")
     except Exception as e:
