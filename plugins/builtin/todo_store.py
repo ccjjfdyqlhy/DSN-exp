@@ -265,7 +265,7 @@ class TodoStore:
         cutoff = time.time() - max_age_seconds
         removed = 0
         with self._lock:
-            for todo_id in list(self._plans.keys()):
+            for todo_id in list(self._plans):
                 plan = self._plans[todo_id]
                 if plan.status in ("completed", "failed") and plan.created_at < cutoff:
                     del self._plans[todo_id]

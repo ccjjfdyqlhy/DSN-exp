@@ -3,10 +3,7 @@
 # UPD v1_260326
 
 import requests
-import json
-import os
 import logging
-from typing import List, Dict, Optional, Union
 
 class LMFilterModel:
     """本地 LMStudio 过滤模型，用于判断用户输入是否应该转发给主AI系统。"""

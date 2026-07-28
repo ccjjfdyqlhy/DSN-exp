@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any, Optional
 
-from semantic_cache.models import ActionGraph, ActionNode, ActionEdge, L2Entry, L2Result
+from semantic_cache.models import ActionGraph, ActionNode, ActionEdge
 
 logger = logging.getLogger("L2Cache")
 

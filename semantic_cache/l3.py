@@ -4,8 +4,6 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from semantic_cache.models import SlotEntry
-
 logger = logging.getLogger("L3Cache")
 
 EXTRACTION_PATTERNS = {

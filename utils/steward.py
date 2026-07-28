@@ -133,7 +133,7 @@ class StewardModel:
                 mem_count = conn.execute("SELECT COUNT(*) FROM memory_v2 WHERE type = 'exp'").fetchone()[0]
                 lines.append(f"总聊天数: {chat_count}  总消息数: {msg_count}  记忆条数: {mem_count}")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
         # 各用户统计
         if users:
@@ -154,7 +154,7 @@ class StewardModel:
                         if u_chats > 0 or u_msgs > 0:
                             lines.append(f"  {u['display_name']}: {u_chats} 聊天, {u_msgs} 消息")
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
 
         # 会话统计
         try:
@@ -165,7 +165,7 @@ class StewardModel:
                 ).fetchone()[0]
                 lines.append(f"活跃会话数: {active_sessions}")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
         # 运行时配置 (非敏感项)
         lines.append("\n[运行时配置]")

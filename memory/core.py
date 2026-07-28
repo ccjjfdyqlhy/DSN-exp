@@ -35,6 +35,7 @@ class MemorySystem:
         self.db = db
         self.summary_model = summary_model or LMSummaryModel()
         self._ec = embedding_client
+        self.embedding_client = embedding_client
         self._embedding_enabled = (
             embedding_client is not None and Config.MEMORY_EMBEDDING_ENABLED
         )
@@ -462,27 +463,45 @@ class MemorySystem:
             where += " AND c.user_id = ?"
             params.append(user_id)
 
+        # 批量获取所有轮次的完整消息，避免 N+1
         rows = conn.execute(
-            f"SELECT DISTINCT c.user_id, m.chat_id, m.round_index "
+            f"SELECT c.user_id, m.chat_id, m.round_index, m.role, m.content "
             f"FROM messages m "
             f"JOIN chats c ON m.chat_id = c.chat_id "
-            f"{where} ORDER BY m.chat_id, m.round_index",
+            f"{where} ORDER BY m.chat_id, m.round_index, m.message_id",
             params,
         ).fetchall()
 
-        total = len(rows)
+        from collections import OrderedDict
+        round_msgs: OrderedDict = OrderedDict()
+        for r in rows:
+            key = (r["user_id"], r["chat_id"], r["round_index"])
+            if key not in round_msgs:
+                round_msgs[key] = []
+            round_msgs[key].append(r)
+
+        total = len(round_msgs)
         if total == 0:
             logger.info("没有需要索引的原始消息")
             return
 
         processed = 0
         skipped = 0
-        for r in rows:
-            uid = r["user_id"]
-            cid = r["chat_id"]
-            round_ = r["round_index"]
+        for (uid, cid, round_), msgs in round_msgs.items():
             try:
-                text = self._build_round_text(uid, cid, round_)
+                parts = []
+                for m in msgs:
+                    try:
+                        content = self._decrypt(uid, m["content"])
+                    except Exception:
+                        content = m["content"] or ""
+                    role = m["role"]
+                    if role == "user":
+                        role = "[用户]"
+                    elif role == "assistant":
+                        role = "[助手]"
+                    parts.append(f"{role}: {content}")
+                text = "\n".join(parts)
                 if not text:
                     skipped += 1
                     processed += 1
@@ -860,7 +879,7 @@ class MemorySystem:
         total_chars = 0
         truncated = False
 
-        for round_idx in sorted(detail.keys()):
+        for round_idx in sorted(detail):
             messages = detail[round_idx]
             if not messages:
                 continue

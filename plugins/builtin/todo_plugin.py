@@ -119,7 +119,6 @@ class TodoPlugin(Plugin):
         # 复杂度分析
         if self._complexity:
             try:
-                import json as _json
                 context_len = len(ctx.history) if ctx.history else 0
                 result = self._complexity.analyze_complexity(message, context_len)
                 if not result.get("is_complex", False):

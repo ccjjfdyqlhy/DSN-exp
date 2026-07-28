@@ -195,4 +195,4 @@ def _secure_chmod(path: Path) -> None:
         else:
             os.chmod(path, stat.S_IREAD | stat.S_IWRITE)  # 0600
     except Exception:
-        pass
+        logger.warning("Load/read operation failed", exc_info=True)

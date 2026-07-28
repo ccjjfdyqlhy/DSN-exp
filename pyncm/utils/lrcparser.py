@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import logging
+_log = logging.getLogger(__name__)
 """Another lrc file parser"""
 
 import re
@@ -183,7 +185,7 @@ class LrcParser:
                                     (_IDTag, Lyrics)
                                 )  # Ignore empty lines
                 except Exception:
-                    pass
+                    _log.warning("Operation failed", exc_info=True)
         self.lyrics = self.lyrics_sorted  # sort stuff once loaded
 
     def addLyrics(self, timestamp, value):
