@@ -21,10 +21,6 @@ logger = logging.getLogger("MemorySystem")
 _RECALL_RE = re.compile(r"<recall>\s*(.*?)\s*</recall>", re.DOTALL)
 _MEMO_RE = re.compile(r"<memo>(.*?)</memo>", re.DOTALL)
 
-MAX_DETAIL_CHARS_PER_ROUND = 4000
-MAX_TOTAL_DETAIL_CHARS = 16000
-
-
 class MemorySystem:
     def __init__(
         self,
@@ -305,7 +301,7 @@ class MemorySystem:
         user_id: int,
         keywords: list[str],
         limit: int = 5,
-        threshold: float = 0.5,
+        threshold: Optional[float] = None,
         embedding_query: Optional[str | list[float]] = None,
         embedding_weight: Optional[float] = None,
     ) -> list[dict]:
@@ -317,6 +313,7 @@ class MemorySystem:
         - list[float]: 直接作为向量相似度查询
         - None: 仅做 keyword 搜索 (原有行为)
         """
+        threshold = Config.MEMORY_SEARCH_THRESHOLD if threshold is None else threshold
         use_vector = (
             self._embedding_enabled
             and embedding_query is not None
@@ -698,6 +695,7 @@ class MemorySystem:
             embedding_query = " ".join(keywords) if isinstance(keywords, list) else keywords
             hits = self.search(
                 user_id, keywords, count,
+                threshold=Config.MEMORY_SEARCH_THRESHOLD,
                 embedding_query=embedding_query if self._embedding_enabled else None,
             )
             search_text = self._format_search_results(hits, keywords)
@@ -894,15 +892,29 @@ class MemorySystem:
             time_label = f"{ts} ({ago})" if ago else ts
             lines.append(f"第{round_idx}轮 ({time_label}):")
             lines.append("─" * 56)
+            round_chars = 0
             for msg in messages:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
                 role_label = "User" if role == "user" else "Agent"
                 line = f"{role_label}: {content}"
+                remaining_round = Config.MEMORY_DETAIL_CHARS_PER_ROUND - round_chars
+                remaining_total = Config.MEMORY_TOTAL_DETAIL_CHARS - total_chars
+                remaining = min(remaining_round, remaining_total)
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if len(line) > remaining:
+                    line = (
+                        line[:remaining]
+                        if remaining <= 3
+                        else line[:remaining - 3].rstrip() + "..."
+                    )
+                    truncated = True
                 lines.append(line)
                 total_chars += len(line)
-                if total_chars > MAX_TOTAL_DETAIL_CHARS:
-                    truncated = True
+                round_chars += len(line)
+                if truncated:
                     break
             if truncated:
                 lines.append("...(内容截断)")
