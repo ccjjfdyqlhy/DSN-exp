@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .character_card import ExperienceEntry
 

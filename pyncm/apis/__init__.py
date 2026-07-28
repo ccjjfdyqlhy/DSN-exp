@@ -13,6 +13,8 @@ from ..utils.crypto import _eapi_decrypt, _eapi_encrypt, _weapi_encrypt, _abroad
 from .exception import LoginRequiredException
 
 
+import logging
+_log = logging.getLogger(__name__)
 LOGIN_REQUIRED = LoginRequiredException('login required')
 
 
@@ -32,7 +34,7 @@ def _parse_response(rsp):
             content = rsp.content if isinstance(rsp, Response) else rsp
             return json.loads(content.decode())
         except Exception:
-            pass
+            _log.warning("Load/read operation failed", exc_info=True)
         logger.error('response is not valid json: %s', e)
         logger.error('response: %s', rsp)
         return rsp
@@ -83,7 +85,7 @@ def eapi(url, data, session=None, method='POST') -> Any:
         try:
             return json.loads(content.decode())
         except Exception:
-            pass
+            _log.warning("Load/read operation failed", exc_info=True)
         return content
 
 

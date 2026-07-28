@@ -135,7 +135,7 @@ class WorkspaceManager:
                 if name:
                     return self._sanitize_name(name)
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         return f"user_{uid}" if uid else "default"
 
     @staticmethod

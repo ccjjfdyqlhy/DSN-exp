@@ -8,7 +8,6 @@ import logging
 import time
 import re
 from datetime import datetime, timezone
-from typing import Optional
 
 from .character_card import CharacterCard
 from .traits import ALL_DIMENSIONS, TRAIT_IDS
@@ -253,7 +252,7 @@ class DistillationEngine:
             reply_path.write_text(reply, encoding="utf-8")
             logger.info("蒸馏日志已保存: %s", prompt_path.name)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
     @staticmethod
     def _send_with_temp(chat, prompt: str, temperature: float, max_tokens: int) -> str:

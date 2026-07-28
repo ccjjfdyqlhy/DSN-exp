@@ -1,8 +1,6 @@
 # prompt/engine.py
 # PromptEngine — 组装最终 system prompt
 
-from __future__ import annotations
-
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -94,7 +92,7 @@ class PromptEngine:
             if _mode in ("native",) and _type == "openai":
                 _inject_skill_prompts = False
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
         # 3. capabilities/ — 原生 mode 下跳过（工具/标签语法已在 API tools 中）
         if _inject_skill_prompts:
@@ -133,7 +131,7 @@ class PromptEngine:
                 user_context += f"\n扫描文件存放目录：{uploads_dir}"
                 user_context += f"\n文档输出目录：{documents_dir}"
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
         sections.append(user_context)
 

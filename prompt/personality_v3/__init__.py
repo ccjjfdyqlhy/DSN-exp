@@ -483,7 +483,7 @@ class PersonalitySystemV3:
             6: "习惯", 7: "默契", 8: "依存", 9: "共感", 10: "灵魂链接",
             11: "命定", 12: "共生", 13: "绝对信赖", 14: "不可替代", 15: "永恒契约",
         }
-        for lv in range(len(thresholds) - 1, -1, -1):
+        for lv in reversed(range(len(thresholds))):
             if value >= thresholds[lv]:
                 actual_lv = lv + 1
                 next_thresh = thresholds[lv + 1] if lv + 1 < len(thresholds) else thresholds[-1] + 100

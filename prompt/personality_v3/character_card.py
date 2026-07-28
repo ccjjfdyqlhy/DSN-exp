@@ -1,14 +1,13 @@
 # prompt/personality_v3/character_card.py
-# 角色卡数据结构 — YAML 读写、校验
 
 from __future__ import annotations
+# 角色卡数据结构 — YAML 读写、校验
 
 import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import yaml
 

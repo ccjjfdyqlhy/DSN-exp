@@ -100,7 +100,7 @@ class NCMApi:
                 from config import Config
                 music_u = getattr(Config, "NCM_MUSIC_U", "") or ""
             except Exception:
-                pass
+                logger.warning("Get operation failed", exc_info=True)
         if not music_u:
             music_u = self.config.get("music_u", "")
         if music_u:
@@ -918,7 +918,7 @@ class NCMApi:
                 if p.exists():
                     p.unlink()
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         self._session_loaded = False
         return {"success": True}
 

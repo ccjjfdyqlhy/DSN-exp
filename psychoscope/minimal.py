@@ -119,7 +119,7 @@ class TerminalState:
             try:
                 termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_attr)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
         self.old_attr = None
 
     def _enter_windows(self):
@@ -156,7 +156,7 @@ def _ensure_raw_mode():
             import termios
             termios.tcsetattr(_RAW_FD, termios.TCSADRAIN, _RAW_ATTRS)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
 
 def read_key(timeout: float = 0.1) -> str | None:
@@ -291,7 +291,7 @@ class MusicPlayer:
             if self._player:
                 self._player.stop()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
         self.state = "stopped"
         self._report_state()
 
@@ -313,7 +313,7 @@ class MusicPlayer:
             if self._player:
                 self._player.audio_set_volume(int(self._volume * 100))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
         self._report_state()
 
     def duck(self):
@@ -322,14 +322,14 @@ class MusicPlayer:
             try:
                 self._player.audio_set_volume(int(self._volume * 0.2 * 100))
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
     def unduck(self):
         if self.state == "playing" and self._player:
             try:
                 self._player.audio_set_volume(int(self._prev_volume * 100))
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
     def start_poll(self):
         self._running = True
@@ -351,7 +351,7 @@ class MusicPlayer:
             try:
                 os.unlink(f)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Operation failed", exc_info=True)
         self._temp_files.clear()
 
     def _report_state(self):
@@ -363,7 +363,7 @@ class MusicPlayer:
             requests.post(f"{self.client.base}/api/music/state",
                           json=payload, timeout=2)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Load/read operation failed", exc_info=True)
 
     def _poll_loop(self):
         import time as _time
@@ -401,7 +401,7 @@ class MusicPlayer:
                 elif action == "volume" and value is not None:
                     self.audio_set_volume(float(value))
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
 
 def _play_beep(client: DSNClient, freq: int = 600):
@@ -434,13 +434,13 @@ def _play_beep(client: DSNClient, freq: int = 600):
             p.stop()
             p.release()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Resource release failed", exc_info=True)
     finally:
         if tmp_path:
             try:
                 os.unlink(tmp_path)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Operation failed", exc_info=True)
 
 
 def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
@@ -578,7 +578,7 @@ class DSNClient:
                     try:
                         os.unlink(tmp_path)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("Operation failed", exc_info=True)
             if ducked:
                 self._player.unduck()
             self._tts_queue.task_done()
@@ -616,7 +616,7 @@ class DSNClient:
             if r.status_code == 200:
                 has_pairing = r.json().get("active", False)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Parse operation failed", exc_info=True)
 
         if not has_pairing:
             print("  No active pairing code on server.")
@@ -1036,7 +1036,7 @@ class HeartbeatPoller:
                 print(f"\n  \u23ed 已跳过: {info.get('text', task_id[:8])}")
                 return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Operation failed", exc_info=True)
         return False
 
     def _loop(self):
@@ -1177,7 +1177,7 @@ class VoiceRecorder:
             try:
                 self._recorder.stop()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
@@ -1186,7 +1186,7 @@ class VoiceRecorder:
             try:
                 self._recorder.delete()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Delete/remove operation failed", exc_info=True)
             self._recorder = None
 
         dur = time.time() - self._start_time
@@ -1225,12 +1225,12 @@ class VoiceRecorder:
                     self._recording = False
                     break
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Operation failed", exc_info=True)
         finally:
             try:
                 self._recorder.stop()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1310,7 +1310,7 @@ def print_system_info(client: DSNClient):
             if idle:
                 print(f"  Idle     : {idle} min")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Operation failed", exc_info=True)
 
     try:
         resp = client._http_get("/api/todo/list")
@@ -1319,7 +1319,7 @@ def print_system_info(client: DSNClient):
             active = [t for t in todos if t.get("status") == "pending"]
             print(f"  Todos    : {len(active)} pending / {len(todos)} total")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Operation failed", exc_info=True)
 
     try:
         resp = client._http_get("/api/reminder/list")
@@ -1332,7 +1332,7 @@ def print_system_info(client: DSNClient):
                     st = r.get("scheduled_time", "")[:16].replace("T", " ")
                     print(f"    [{tlabel}] {st}  {r.get('text', '')[:40]}")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Get operation failed", exc_info=True)
 
     print(f"  ---------------------\n")
 
@@ -1601,7 +1601,7 @@ def main():
                                     dismissed = True
                                     break
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("Operation failed", exc_info=True)
                     if not dismissed:
                         try:
                             resp = client._http_get("/api/alarms/now")
@@ -1613,7 +1613,7 @@ def main():
                                         print(f"\n  \U0001f515 闹钟 {nxt['id']} 已静音")
                                         dismissed = True
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("Operation failed", exc_info=True)
                     if not dismissed:
                         print(f"\n  \U0001f515 无活跃闹钟可静音")
                     client.stop_tts()

@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import logging
+
+_log = logging.getLogger(__name__)
 import io
 import json
 import logging
@@ -96,14 +99,14 @@ class VoiceRecorder:
             try:
                 self._recorder.stop()
             except Exception:
-                pass
+                _log.warning("Stop operation failed", exc_info=True)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
         if self._recorder:
             try:
                 self._recorder.delete()
             except Exception:
-                pass
+                _log.warning("Delete/remove operation failed", exc_info=True)
             self._recorder = None
         dur = time.time() - self._start_time
         if not self._frames or dur < 0.5:
@@ -147,12 +150,12 @@ class VoiceRecorder:
                     self._recording = False
                     break
         except Exception:
-            pass
+            _log.warning("Operation failed", exc_info=True)
         finally:
             try:
                 self._recorder.stop()
             except Exception:
-                pass
+                _log.warning("Stop operation failed", exc_info=True)
 
 
 class ASRClient:

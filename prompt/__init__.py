@@ -1,9 +1,6 @@
 # prompt/__init__.py
 from .library import PromptLibrary
 
-# v1 — 已迁移至 _personality_v1_legacy.py，不再默认导入
-# from ._personality_v1_legacy import PersonalitySystem, PersonalityProfile
-
 # v2 — 当前人格系统
 from .personality_v2 import (
     PersonalitySystemV2,

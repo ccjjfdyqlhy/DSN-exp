@@ -88,7 +88,7 @@ def _extract_narrations(raw: str) -> list[str]:
                 inner = m.group(1).strip()
                 results.append(label_gen(inner))
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
     return results
 
 
@@ -332,7 +332,7 @@ class ChatPipeline:
                 pass
 
         _unpickleable = []
-        for _k in list(ctx.extra.keys()):
+        for _k in list(ctx.extra):
             try:
                 deepcopy(ctx.extra[_k])
             except Exception:

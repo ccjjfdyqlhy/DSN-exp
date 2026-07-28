@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import yaml
 

@@ -6,8 +6,6 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from datetime import datetime, timedelta
-from typing import Optional
 
 logger = logging.getLogger("AffinityModule")
 

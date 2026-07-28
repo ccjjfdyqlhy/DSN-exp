@@ -7,6 +7,8 @@ import time
 import subprocess
 from pathlib import Path
 
+import logging
+_log = logging.getLogger(__name__)
 ROOT = Path(__file__).parent
 ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
@@ -98,7 +100,7 @@ def _run_python(code: str, timeout: int = 30) -> dict:
         try:
             os.unlink(tmp.name)
         except Exception:
-            pass
+            _log.warning("Operation failed", exc_info=True)
 
 
 def _create_chat(api_key: str):

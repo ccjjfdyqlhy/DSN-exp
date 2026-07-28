@@ -76,14 +76,6 @@ class AuthManager:
         if self.totp:
             self.totp._db = value
 
-    # ═══════════ bootstrap ═══════════
-
-    def generate_pairing_if_needed(self) -> str | None:
-        """首次启动或没有用户时，生成配对码。返回码文本或 None"""
-        if self._user_count() == 0:
-            return self.pairing.generate()
-        return None
-
     def _user_count(self) -> int:
         if self._db is None:
             return 0
@@ -162,25 +154,7 @@ class AuthManager:
         logger.warning("authenticate: ALL METHODS FAILED path=%s", request.path)
         return None
 
-    # ═══════════ user management ═══════════
-
-    def create_user(self, display_name: str, is_admin: bool = False) -> int:
-        if self._db is None:
-            return 1
-        try:
-            conn = self._db._get_connection()
-            cursor = conn.execute(
-                "INSERT INTO users (uid, nickname, display_name, is_admin) VALUES ("
-                "(SELECT COALESCE(MAX(uid), 0) + 1 FROM users), ?, ?, ?)",
-                (display_name, display_name, 1 if is_admin else 0),
-            )
-            conn.commit()
-            uid = cursor.lastrowid
-            logger.info("创建用户 uid=%d name=%s admin=%s", uid, display_name, is_admin)
-            return uid
-        except Exception as e:
-            logger.error("创建用户失败: %s", e)
-            return 1
+    # ═══════════ get_user / list_users ═══════════
 
     def get_user(self, uid: int) -> dict | None:
         return self._get_user(uid)
@@ -212,7 +186,7 @@ class AuthManager:
             if row:
                 return dict(row)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         return {"uid": uid, "nickname": "用户", "display_name": ""}
 
     def _get_uid_by_name(self, display_name: str) -> int:
@@ -227,19 +201,8 @@ class AuthManager:
             if row:
                 return row["uid"]
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         return 0
-
-    # ═══════════ pairing shortcut ═══════════
-
-    def verify_pairing(self, code: str, display_name: str, is_admin: bool = False) -> dict | None:
-        """配对码验证快捷入口"""
-        uid = self.pairing.verify(code, display_name=display_name, is_admin=is_admin)
-        if uid is None:
-            return None
-        if display_name:
-            self._update_user_name(uid, display_name)
-        return {"uid": uid, "display_name": display_name, "is_admin": is_admin}
 
     def _update_user_name(self, uid: int, display_name: str) -> None:
         if self._db is None:
@@ -251,4 +214,4 @@ class AuthManager:
             )
             self._db._get_connection().commit()
         except Exception:
-            pass
+            logger.warning("Connection failed", exc_info=True)

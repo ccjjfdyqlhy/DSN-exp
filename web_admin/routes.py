@@ -92,7 +92,7 @@ def api_status():
                 for u in users
             ]
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     try:
         db = DB()
         conn = db._get_connection()
@@ -105,7 +105,7 @@ def api_status():
         ).fetchone()[0]
         data["stats"] = {"chats": chats, "messages": msgs, "active_sessions": sessions}
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     auth_manager = AM()
     if auth_manager and auth_manager.pairing.is_active():
         data["pairing_active"] = True
@@ -349,7 +349,7 @@ def api_memory_reindex():
             for processed, total, preview, skipped in ms.reindex_embeddings(user_id=uid):
                 pass
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return jsonify({"success": True, "message": "Reindex started"})
@@ -499,7 +499,7 @@ def api_persona_distill(card_id):
             if d:
                 personality_v3.mark_distillation_done(card_id)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return jsonify({"success": True, "message": f"Distillation started for {card_id}"})
@@ -719,7 +719,7 @@ def api_agent_create():
             )
             result["api_key"] = raw_key
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     return jsonify({"success": True, "agent": result})
 
 @admin_bp.route("/agent/bind", methods=["POST"])

@@ -5,8 +5,6 @@
 import os
 import time
 import base64
-import json
-import re
 import logging
 import threading
 import queue
@@ -35,6 +33,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from audio.infer import VocalExp
 from plugins.builtin.tts_profile import TTSProfileManager
 from utils.text_clean import clean_tts_text
+
+_root_logger = logging.getLogger()
 
 # ── 模块级全局变量 ──
 app: Flask = None
@@ -228,7 +228,7 @@ def _handle_reminder_completion(task, result):
     try:
         db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
 
 def _handle_reasoner_completion(task, result):
@@ -238,7 +238,7 @@ def _handle_reasoner_completion(task, result):
     try:
         db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
 
 def _handle_action_completion(task, result, retry_depth=0):
@@ -266,7 +266,7 @@ def _handle_action_completion(task, result, retry_depth=0):
     try:
         db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
 
 # ── 模型预加载 ──
@@ -384,6 +384,7 @@ def create_application():
     setup_logging(app)
     completion_queue = queue.Queue()
 
+
     # ── 认证 ──
     from auth import AuthManager, auth_bp
     _auth_manager = AuthManager(
@@ -449,15 +450,13 @@ def create_application():
             model_name=app.config.get("MEMORY_MODEL"),
             summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),
         )
-        memory_system = MemorySystem(db=db, summary_model=summary_model)
+        _embedding_client = None
         if _lmstudio_enabled and Config.MEMORY_EMBEDDING_ENABLED:
             try:
-                memory_system = MemorySystem(
-                    db=db, summary_model=summary_model,
-                    embedding_client=EmbeddingClient(base_url=Config.LMSTUDIO_BASE_URL),
-                )
+                _embedding_client = EmbeddingClient(base_url=Config.LMSTUDIO_BASE_URL)
             except Exception:
-                pass
+                _embedding_client = None
+        memory_system = MemorySystem(db=db, summary_model=summary_model, embedding_client=_embedding_client)
     _t("记忆与摘要", disabled=not _memory_enabled)
 
     # ── TTS ──
@@ -495,7 +494,7 @@ def create_application():
             from models.asr_filter import LMFilterModel
             filter_model = LMFilterModel()
         except Exception:
-            pass
+            _root_logger.warning("Operation failed", exc_info=True)
     asr_model = None
     if app.config.get("ASR_ENABLED", True):
         from funasr import AutoModel
@@ -514,13 +513,15 @@ def create_application():
 
     # ── Prompt ──
     _prompt_dir = os.path.join(os.path.dirname(__file__), "prompt", "prompts")
+    _v2_dir = os.path.join(os.path.dirname(__file__), "prompt", "personality_v2", "presets") \
+        if not Config.PERSONALITY_V3_OVERRIDE_V2 else None
     prompt_engine = prompt.init_prompt_engine(
         library_dirs=[
             os.path.join(_prompt_dir, "core"),
             os.path.join(_prompt_dir, "capabilities"),
             os.path.join(_prompt_dir, "extensions"),
         ],
-        personality_v2_dir=os.path.join(os.path.dirname(__file__), "prompt", "personality_v2", "presets"),
+        personality_v2_dir=_v2_dir,
         db=db,
     )
 
@@ -551,7 +552,7 @@ def create_application():
                 _narrative_model.load_system_prompt_file(
                     os.path.join(os.path.dirname(__file__), "prompt", "world", "narrative.md"))
         except Exception:
-            pass
+            _root_logger.warning("Operation failed", exc_info=True)
     _t("世界", disabled=not Config.WORLD_ENABLED)
 
     # ── 技能系统 ──
@@ -570,7 +571,7 @@ def create_application():
         skill_manager.scan_and_load()
         prompt_engine.set_skill_registry(skill_registry)
     except Exception:
-        pass
+        _root_logger.warning("Set operation failed", exc_info=True)
     _t("技能系统")
 
     # ── 人格系统 V3 ──
@@ -586,17 +587,16 @@ def create_application():
             )
             personality_v3.init_tables()
             if Config.DISTILLATION_MODEL == "lmstudio":
-                _d = create_chat_client("fast")
-                if hasattr(_d, 'model_name'):
-                    _d.model_name = Config.PERSONALITY_MODEL_NAME
-                personality_v3.set_distillation_model(fast_chat=_d)
+                if hasattr(_v3_chat, 'model_name'):
+                    _v3_chat.model_name = Config.PERSONALITY_MODEL_NAME
+                personality_v3.set_distillation_model(fast_chat=_v3_chat)
             else:
                 personality_v3.set_distillation_model(main_chat=create_chat_client("deep"))
             prompt_engine.personality_v3 = personality_v3
             if Config.PERSONALITY_V3_OVERRIDE_V2:
                 prompt_engine.personality_v2 = None
         except Exception:
-            pass
+            _root_logger.warning("Operation failed", exc_info=True)
     _t("人格系统 V3", disabled=not Config.PERSONALITY_V3_ENABLED)
 
     # ── DSNEngine ──
@@ -620,8 +620,6 @@ def create_application():
     if Config.SEMANTIC_CACHE_ENABLED:
         try:
             from semantic_cache import CacheStore, L1PragmaticCache, CacheEngine
-            from semantic_cache.l2 import L2Cache
-            from semantic_cache.l3 import L3SlotRegistry
 
             _cache_dir = os.path.join(os.path.dirname(__file__),
                                       Config.SEMANTIC_CACHE_DIR)
@@ -706,7 +704,10 @@ def create_application():
         
         embedding_client = None
         if Config.MEMORY_EMBEDDING_ENABLED:
-            embedding_client = EmbeddingClient()
+            if memory_system is not None and memory_system.embedding_client is not None:
+                embedding_client = memory_system.embedding_client
+            else:
+                embedding_client = EmbeddingClient()
             app.logger.info("提示词缓存: 向量嵌入已启用")
         else:
             app.logger.info("提示词缓存: 向量嵌入未启用，仅使用关键词搜索")
@@ -739,7 +740,7 @@ def create_application():
                 if k.startswith("personality_materials."):
                     inst._v3 = personality_v3
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
     # ── 维护模块 ──
     _maint_disabled = True
