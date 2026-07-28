@@ -2,10 +2,9 @@
 # plan_store.py
 # 计划系统 — 三层模型 (Goal → Phase → DailyTask) + SQLite 持久化
 
-import json
 import logging
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, date, timedelta
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -122,16 +121,16 @@ class PlanStore:
         try:
             conn.execute("ALTER TABLE daily_tasks ADD COLUMN goal_id TEXT DEFAULT ''")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         try:
             conn.execute("ALTER TABLE daily_tasks ADD COLUMN phase_id TEXT DEFAULT ''")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         # 迁移: 为旧 phases 补充 position 列
         try:
             conn.execute("ALTER TABLE phases ADD COLUMN position INTEGER DEFAULT 0")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         conn.commit()
 
     # ── Goal CRUD ──

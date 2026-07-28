@@ -539,7 +539,7 @@ class DSNEngine:
                 from db.plan_engine import PlanEngine
                 plan_engine = PlanEngine(PlanStore(self.db))
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
 
             for key, instance in list(self.skill_registry._tool_instances.items()):
                 if not key.startswith("system.") and not key.startswith("batch."):
@@ -614,7 +614,7 @@ class DSNEngine:
                         peers.load_preset(0, preset_name)
                         loaded_preset = True
                 except Exception:
-                    pass
+                    logger.warning("Load/read operation failed", exc_info=True)
         if not loaded_preset and self._cfg and self._cfg.personality_preset:
             loaded_preset = peers.load_preset(0, self._cfg.personality_preset)
         if not loaded_preset:
@@ -699,7 +699,7 @@ class DSNEngine:
                 PluginDIContainer.register("distillation_engine",
                     DistillationEngine(db=self.db, skill_manager=self.skill_manager, llm_client=_llm))
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         PluginDIContainer.register("v3_system",
             self.prompt_engine.personality_v3 if self.prompt_engine else None)
         PluginDIContainer.register("card_id", self._cfg.card_id if self._cfg else "exa")
@@ -731,7 +731,7 @@ class DSNEngine:
                         try:
                             plugin.set_skill_registry(self.skill_registry)
                         except Exception:
-                            pass
+                            logger.warning("Set operation failed", exc_info=True)
                     loaded.add(manifest.name)
 
         self._models_plugin = PluginDIContainer.get("models")
@@ -830,7 +830,7 @@ class DSNEngine:
                     spec.get("_skill_name", ""), tool_spec_obj)
                 schema = built.get("function", {}).get("parameters", {})
         except Exception:
-            pass
+            logger.warning("Get operation failed", exc_info=True)
         return schema
 
     def chat(self, message: str, user_id: int = 1,
@@ -1377,7 +1377,7 @@ def create_engine_with_defaults(
                     try:
                         plugin.set_skill_registry(skill_registry)
                     except Exception:
-                        pass
+                        logger.warning("Set operation failed", exc_info=True)
                 loaded_plugins.add(manifest.name)
 
     _models = PluginDIContainer.get("models")

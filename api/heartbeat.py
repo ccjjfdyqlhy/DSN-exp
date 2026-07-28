@@ -16,13 +16,11 @@
 #   - "reminder" | "habit" | "countdown" | "daily_plan" | "periodic": 提醒类
 #   - "vision": 视觉感知类 → 主LLM根据场景描述决策是否主动说话
 
-from __future__ import annotations
-
 import json
 import logging
 from datetime import datetime
 
-from flask import Blueprint, request, jsonify, g, current_app
+from flask import Blueprint, request, jsonify, g
 
 from api.alarm import check_and_trigger as check_alarms
 
@@ -232,7 +230,7 @@ def heartbeat():
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         fallback_reply = "（AI 不可用）"
         return jsonify({
             "has_notification": True,
@@ -267,7 +265,7 @@ def heartbeat():
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         return jsonify({
             "has_notification": True,
             "reply": "（通知生成失败）",
@@ -292,7 +290,7 @@ def heartbeat():
             try:
                 _task_manager.mark_notification_delivered(notification_id)
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
             return jsonify({"has_notification": False})
 
     # 4. 标记为已投递

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
 
 from .traits import format_deviant_dimensions
 from .dynamic_synthesizer import DynamicSnapshot

@@ -1,11 +1,7 @@
 # prompt/impression.py
 # ImpressionManager — 用户印象的查询/归纳/注入
 
-from __future__ import annotations
-
 import logging
-from datetime import datetime, timezone
-from typing import Optional
 
 logger = logging.getLogger("ImpressionManager")
 

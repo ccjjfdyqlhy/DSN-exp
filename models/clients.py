@@ -7,8 +7,9 @@ import json
 import os
 import logging
 import threading
+import time
 from collections import deque
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 
 
 # 全局详细模式标志，由 /detail 命令切换
@@ -297,7 +298,7 @@ class OpenAIChat:
                 try:
                     _body = e.response.text[:2000]
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
             self.logger.error("网络请求失败: %s\n响应体: %s", str(e), _body if _body else "(无)")
             raise
         except KeyError as e:
@@ -788,6 +789,10 @@ class EmbeddingClient:
 class LMSummaryModel:
     """摘要模型 — 支持 DeepSeek API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
 
+    _TRANSIENT_STATUS_CODES = frozenset((429, 500, 502, 503, 504))
+    _MAX_RETRIES = 2
+    _RETRY_BACKOFF_SECONDS = 1.0
+
     SUMMARY_PROMPT = (
         "你是下方对话中标记为[助手/AI]的一方。\n"
         "现在用第一人称(我=助手)概括这段对话：\n\n"
@@ -863,8 +868,50 @@ class LMSummaryModel:
 
         def _do_request():
             self.logger.debug("%s summary request → %s", backend_name, self.model_name)
-            response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
+            for attempt in range(self._MAX_RETRIES + 1):
+                try:
+                    response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
+                    response.raise_for_status()
+                    break
+                except (
+                    requests.exceptions.HTTPError,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                ) as exc:
+                    resp = getattr(exc, "response", None)
+                    status_code = getattr(resp, "status_code", None)
+                    retryable = (
+                        status_code in self._TRANSIENT_STATUS_CODES
+                        if status_code is not None
+                        else isinstance(
+                            exc,
+                            (requests.exceptions.ConnectionError, requests.exceptions.Timeout),
+                        )
+                    )
+                    if not retryable or attempt == self._MAX_RETRIES:
+                        raise
+
+                    retry_after = None
+                    if resp is not None:
+                        retry_after = resp.headers.get("Retry-After")
+                    try:
+                        delay = min(float(retry_after), 30.0) if retry_after else None
+                    except (TypeError, ValueError):
+                        delay = None
+                    if delay is None:
+                        delay = self._RETRY_BACKOFF_SECONDS * (2 ** attempt)
+                    delay = max(delay, 0.0)
+                    self.logger.warning(
+                        "%s 摘要请求临时失败 (HTTP %s)，%.1f 秒后重试 (%d/%d)",
+                        backend_name,
+                        status_code or type(exc).__name__,
+                        delay,
+                        attempt + 1,
+                        self._MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    continue
+
             result = response.json()
             if "choices" in result and result["choices"]:
                 summary = result["choices"][0]["message"]["content"].strip()

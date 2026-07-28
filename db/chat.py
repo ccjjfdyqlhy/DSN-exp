@@ -184,7 +184,7 @@ class ChatDBManager:
                     for _name, _sql in V3_TABLES:
                         conn.execute(_sql)
                 except Exception:
-                    pass  # V3 可能未完全部署
+                    _log.warning("V3 table initialization failed", exc_info=True)  # V3 可能未完全部署
 
                 # 用户印象表
                 conn.execute("""
@@ -535,8 +535,7 @@ class ChatDBManager:
 
     @staticmethod
     def _next_user_id() -> int:
-        import os, struct, time
-        # 生成一个足够大的伪随机 UID，避免与现有用户冲突
+        import time
         return int(time.time() * 1000) % 900000000 + 100000000
 
     def save_memory(self, user_id: int, chat_id: int, round_index: int, summary: str,

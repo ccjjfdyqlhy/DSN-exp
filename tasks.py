@@ -8,11 +8,10 @@ import logging
 import locale
 import re as _re
 import threading
-import time
 import uuid
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, Future
 import schedule
 
@@ -83,26 +82,6 @@ class Task:
         self.error: Optional[str] = None
         self.handled_by_pipeline: bool = False
         
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return {
-            "task_id": self.task_id,
-            "task_type": self.task_type.value,
-            "user_id": self.user_id,
-            "chat_id": self.chat_id,
-            "params": self.params,
-            "priority": self.priority.value,
-            "scheduled_time": self.scheduled_time.isoformat() if self.scheduled_time else None,
-            "interval_seconds": self.interval_seconds,
-            "skip_count": self.skip_count,
-            "status": self.status.value,
-            "created_at": self.created_at.isoformat(),
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "result": self.result,
-            "error": self.error
-        }
-    
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Task':
         """从字典创建任务对象"""
@@ -174,7 +153,7 @@ class TaskManager:
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("迁移列失败: ALTER TABLE %s ADD COLUMN %s", table, column, exc_info=True)
 
     def _init_db(self):
         """初始化任务相关的数据库表"""
@@ -496,24 +475,6 @@ class TaskManager:
         
         return future
     
-    def execute_action_sync(self, user_id: int, chat_id: int, params: dict) -> Dict[str, Any]:
-        """同步执行 action 任务并等待结果返回（用于 Agent Loop）。
-        不走 completion_queue 通知通道。"""
-        task_id = self.create_task(
-            task_type=TaskType.ACTION,
-            user_id=user_id,
-            chat_id=chat_id,
-            params=params,
-            priority=1,
-        )
-        future = self.execute_task(task_id)
-        try:
-            result = future.result(timeout=Config.ACTION_TIMEOUT)
-            return result
-        except Exception as e:
-            self.logger.error("action 同步执行失败 (task_id=%s): %s", task_id, e)
-            return {"success": False, "error": str(e), "action_type": params.get("action_type", "")}
-    
     def _execute_task_internal(self, task: Task) -> Dict[str, Any]:
         """内部任务执行逻辑"""
         try:
@@ -769,7 +730,7 @@ class TaskManager:
             try:
                 os.unlink(temp_file)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("清理临时文件失败: %s", temp_file, exc_info=True)
 
     def _action_write_file(self, task, content, result):
         from utils.workspace import get_workspace_manager
@@ -964,37 +925,6 @@ class TaskManager:
         with self.lock:
             return self.tasks.get(task_id)
     
-    def get_user_tasks(self, user_id: int, status: Optional[TaskStatus] = None) -> List[Task]:
-        """获取用户的任务列表"""
-        with self.lock:
-            task_ids = self._user_task_index.get(user_id, set())
-            tasks = [self.tasks[tid] for tid in task_ids if tid in self.tasks]
-            
-            if status:
-                tasks = [task for task in tasks if task.status == status]
-            
-            return sorted(tasks, key=lambda t: t.created_at, reverse=True)
-    
-    def cancel_task(self, task_id: str) -> bool:
-        """取消任务"""
-        with self.lock:
-            if task_id not in self.tasks:
-                return False
-            
-            task = self.tasks[task_id]
-            if task.status not in [TaskStatus.PENDING, TaskStatus.RUNNING]:
-                return False
-            
-            task.status = TaskStatus.CANCELLED
-            task.completed_at = datetime.now()
-            self._save_task(task)
-            
-            # 从调度器中移除相关 job
-            self.scheduler.clear(tag=task_id)
-            
-            self.logger.info("任务已取消: %s", task_id)
-            return True
-    
     def shutdown(self):
         """关闭任务管理器"""
         self.running = False
@@ -1089,18 +1019,3 @@ class ComplexityAnalyzer:
             "suggestion": suggestion
         }
 
-
-# 全局任务管理器实例
-_task_manager: Optional[TaskManager] = None
-
-def get_task_manager(db: Optional[ChatDBManager] = None) -> TaskManager:
-    """获取全局任务管理器实例"""
-    global _task_manager
-    if _task_manager is None and db is not None:
-        _task_manager = TaskManager(db)
-    return _task_manager
-
-def set_task_manager(manager: TaskManager):
-    """设置全局任务管理器实例"""
-    global _task_manager
-    _task_manager = manager

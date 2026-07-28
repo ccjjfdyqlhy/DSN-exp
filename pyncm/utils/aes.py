@@ -135,7 +135,7 @@ class AES:
             word = xor_bytes(word, key_columns[-iteration_size])
             key_columns.append(word)
         # Group key words in 4x4 byte matrices.
-        return [key_columns[4 * i : 4 * (i + 1)] for i in range(len(key_columns) // 4)]
+        return [key_columns[i : i + 4] for i in range(0, len(key_columns), 4)]
 
     def encrypt_block(self, plaintext):
         """Encrypts a single block of 16 byte long plaintext."""

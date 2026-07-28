@@ -289,7 +289,7 @@ class NarrativeModel:
                 body = err.read().decode("utf-8") if hasattr(err, "read") else str(err)
                 return "no model" in body.lower()
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         return False
 
     @property

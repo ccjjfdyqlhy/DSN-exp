@@ -1,10 +1,7 @@
 # scripts/player.py
 # ScriptPlayer — 匹配 + 回放录制内容
 
-from __future__ import annotations
-
 import logging
-from typing import Optional
 
 from scripts.state import ScriptState
 

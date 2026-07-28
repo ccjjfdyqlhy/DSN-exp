@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .character_card import CharacterCard
 from .distillation_engine import DistilledTraits
@@ -142,7 +141,6 @@ class V3StateManager:
         logger.info("V3StateManager: 角色卡已写入文件 card_id=%s path=%s", card.card_id, yaml_path)
 
     def save_distillation(self, traits: DistilledTraits) -> None:
-        import json as _json
         json_path = _CARDS_DIR / f"{traits.card_id}.distilled.json"
         json_path.write_text(traits.to_json(), encoding="utf-8")
         self._distillation_cache[traits.card_id] = traits
