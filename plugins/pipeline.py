@@ -786,10 +786,10 @@ class ChatPipeline:
                         fast_first = bool(Config.TTS_FAST_FIRST_LINE)
                     except Exception:
                         fast_first = True
-                    if fast_first and tts_q is not None and i == 0:
+                    if fast_first and tts_q is not None:
                         local = getattr(self._tts_process_model, "_local_preprocess", None)
                         processed_line = local(line) if callable(local) else line
-                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 local_preprocess 快路径, t=%.3f", i + 1, total, time.perf_counter())
+                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 local_preprocess 快路径 (流式), t=%.3f", i + 1, total, time.perf_counter())
                     else:
                         processed_line = self._tts_process_model.process_tts_text(line)
                         logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 process_tts_text (可能 LLM), t=%.3f", i + 1, total, time.perf_counter())

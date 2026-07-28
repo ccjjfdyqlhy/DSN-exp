@@ -154,6 +154,34 @@ def chat_stream_send():
     if not data or "message" not in data:
         return jsonify({"error": "Missing message"}), 400
 
+    # ── 双模协同路径 ──
+    coordinator = app.config.get("DUAL_COORDINATOR")
+    if coordinator:
+        user_id = g.user["uid"]
+        chat_id = data.get("chat_id")
+        if not chat_id:
+            chat_id = db.create_chat(user_id, data.get("chat_name", "dual"))
+
+        def dual_generate():
+            yield from coordinator.process_stream(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=data["message"],
+                nickname=g.user.get("nickname", "用户"),
+                chat_name=data.get("chat_name", "dual"),
+            )
+
+        return Response(
+            stream_with_context(dual_generate()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # ── 单模路径 (现有逻辑) ──
     def generate():
         import asyncio
         loop = asyncio.new_event_loop()
@@ -184,6 +212,28 @@ def chat_stream_send():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.route("/api/chat/interject", methods=["POST"])
+@login_required
+def chat_interject():
+    """双模模式下，用户在 SSE 途中插话。"""
+    coordinator = app.config.get("DUAL_COORDINATOR")
+    if not coordinator:
+        return jsonify({"error": "Dual mode not enabled"}), 404
+
+    data = request.get_json()
+    message = (data or {}).get("message", "").strip()
+    chat_id = (data or {}).get("chat_id")
+    if not message:
+        return jsonify({"error": "Missing message"}), 400
+
+    session = coordinator.get_active_session(g.user["uid"], chat_id)
+    if not session:
+        return jsonify({"error": "No active stream"}), 404
+
+    session.interject_queue.put(message)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/chat/list", methods=["GET"])
@@ -290,6 +340,34 @@ def asr_passthrough():
     if not recognized_text:
         return jsonify({"reply": "", "chat_id": data.get("chat_id"), "filtered": True})
 
+    # ── 双模协同路径 ──
+    coordinator = app.config.get("DUAL_COORDINATOR")
+    if coordinator:
+        user_id = g.user["uid"]
+        chat_id = data.get("chat_id")
+        if not chat_id:
+            chat_id = db.create_chat(user_id, data.get("chat_name", "dual"))
+
+        def dual_generate():
+            yield from coordinator.process_stream(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=recognized_text,
+                nickname=g.user.get("nickname", "用户"),
+                chat_name=data.get("chat_name", "dual"),
+            )
+
+        return Response(
+            stream_with_context(dual_generate()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # ── 单模路径 (现有逻辑) ──
     message = f"你听到用户那边传来的声音：{recognized_text}"
 
     def generate():

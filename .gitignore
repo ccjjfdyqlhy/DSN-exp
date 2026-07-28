@@ -36,3 +36,5 @@ note.txt
 .opencode/
 .pyncm_session
 AGENTS.md
+/prototypes/*
+/website/*

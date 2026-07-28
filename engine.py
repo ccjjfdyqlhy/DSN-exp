@@ -810,7 +810,8 @@ class DSNEngine:
              nickname: str = "用户", **kwargs) -> dict:
         """同步对话"""
         if history is None and chat_id and self.db:
-            history = self.db.get_chat_history(user_id, chat_id)
+            history = self.db.get_chat_history(user_id, chat_id,
+                                              exclude_types=kwargs.pop("_exclude_types", ["instant"]))
 
         if chat_id is None and self.db:
             chat_id = self.db.create_chat(user_id, chat_name)
@@ -848,7 +849,8 @@ class DSNEngine:
                           nickname: str = "用户", **kwargs) -> AsyncGenerator[str, None]:
         """异步流式对话"""
         if history is None and chat_id and self.db:
-            history = self.db.get_chat_history(user_id, chat_id)
+            history = self.db.get_chat_history(user_id, chat_id,
+                                                exclude_types=kwargs.pop("_exclude_types", ["instant"]))
 
         if chat_id is None and self.db:
             chat_id = self.db.create_chat(user_id, chat_name)
