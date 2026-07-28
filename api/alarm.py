@@ -39,6 +39,7 @@ def _init_alarm_table():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS alarms (
             id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 0,
             time TEXT NOT NULL,
             days TEXT NOT NULL DEFAULT '[]',
             message TEXT NOT NULL DEFAULT '',
@@ -47,16 +48,27 @@ def _init_alarm_table():
             created_at TEXT NOT NULL
         )
     """)
+    # 迁移：为旧表补充 user_id 列，并将遗留闹钟归属到首个管理员用户
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(alarms)").fetchall()]
+    if "user_id" not in cols:
+        conn.execute("ALTER TABLE alarms ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "UPDATE alarms SET user_id = "
+            "(SELECT uid FROM users ORDER BY is_admin DESC, uid ASC LIMIT 1) "
+            "WHERE user_id = 0"
+        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_alarms_user ON alarms(user_id)")
     conn.commit()
 
 
 @alarm_bp.before_request
 def _require_auth():
-    if _auth_manager:
-        user = _auth_manager.authenticate(request)
-        g.user = user
-    else:
-        g.user = {"uid": 0}
+    if not _auth_manager:
+        return jsonify({"error": "Auth unavailable"}), 503
+    user = _auth_manager.authenticate(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    g.user = user
 
 
 # ── 辅助 ──
@@ -64,6 +76,7 @@ def _require_auth():
 def _row_to_alarm(row):
     return {
         "id": row["id"],
+        "user_id": row["user_id"],
         "time": row["time"],
         "days": json.loads(row["days"]),
         "message": row["message"],
@@ -91,6 +104,9 @@ def _validate_alarm(data):
 
 @alarm_bp.route("/api/alarms", methods=["POST"])
 def create_alarm():
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     err = _validate_alarm(data)
     if err:
@@ -99,6 +115,7 @@ def create_alarm():
     alarm_id = str(uuid.uuid4())[:8]
     alarm = {
         "id": alarm_id,
+        "user_id": uid,
         "time": data["time"],
         "days": data.get("days", WEEKDAYS.copy()),
         "message": data.get("message", "⏰ 闹钟响了!"),
@@ -108,8 +125,9 @@ def create_alarm():
     }
     conn = _db._get_connection()
     conn.execute(
-        "INSERT INTO alarms (id, time, days, message, sound, enabled, created_at) VALUES (?,?,?,?,?,?,?)",
-        (alarm["id"], alarm["time"], json.dumps(alarm["days"]),
+        "INSERT INTO alarms (id, user_id, time, days, message, sound, enabled, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (alarm["id"], alarm["user_id"], alarm["time"], json.dumps(alarm["days"]),
          alarm["message"], alarm.get("sound"), int(alarm["enabled"]), alarm["created_at"]),
     )
     conn.commit()
@@ -118,26 +136,41 @@ def create_alarm():
 
 @alarm_bp.route("/api/alarms", methods=["GET"])
 def list_alarms():
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = _db._get_connection()
-    rows = conn.execute("SELECT * FROM alarms ORDER BY time").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM alarms WHERE user_id=? ORDER BY time", (uid,)
+    ).fetchall()
     return jsonify({"alarms": [_row_to_alarm(r) for r in rows]})
 
 
 @alarm_bp.route("/api/alarms/<alarm_id>", methods=["DELETE"])
 def delete_alarm(alarm_id):
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = _db._get_connection()
-    row = conn.execute("SELECT * FROM alarms WHERE id=?", (alarm_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM alarms WHERE id=? AND user_id=?", (alarm_id, uid)
+    ).fetchone()
     if not row:
         return jsonify({"error": "not found"}), 404
-    conn.execute("DELETE FROM alarms WHERE id=?", (alarm_id,))
+    conn.execute("DELETE FROM alarms WHERE id=? AND user_id=?", (alarm_id, uid))
     conn.commit()
     return jsonify({"ok": True})
 
 
 @alarm_bp.route("/api/alarms/<alarm_id>", methods=["PATCH"])
 def update_alarm(alarm_id):
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = _db._get_connection()
-    row = conn.execute("SELECT * FROM alarms WHERE id=?", (alarm_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM alarms WHERE id=? AND user_id=?", (alarm_id, uid)
+    ).fetchone()
     if not row:
         return jsonify({"error": "not found"}), 404
 
@@ -159,20 +192,27 @@ def update_alarm(alarm_id):
         vals.append(json.dumps(data["days"]))
     if sets:
         vals.append(alarm_id)
-        conn.execute(f"UPDATE alarms SET {','.join(sets)} WHERE id=?", vals)
+        vals.append(uid)
+        conn.execute(f"UPDATE alarms SET {','.join(sets)} WHERE id=? AND user_id=?", vals)
         conn.commit()
-        row = conn.execute("SELECT * FROM alarms WHERE id=?", (alarm_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM alarms WHERE id=? AND user_id=?", (alarm_id, uid)
+        ).fetchone()
     return jsonify({"ok": True, "alarm": _row_to_alarm(row)})
 
 
 @alarm_bp.route("/api/alarms/<alarm_id>/dismiss", methods=["POST"])
 def dismiss_alarm(alarm_id):
     """静音闹钟：将该闹钟今天及未来7天的触发标记为已忽略。"""
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = _db._get_connection()
-    row = conn.execute("SELECT * FROM alarms WHERE id=?", (alarm_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM alarms WHERE id=? AND user_id=?", (alarm_id, uid)
+    ).fetchone()
     if not row:
         return jsonify({"error": "not found"}), 404
-    today = datetime.now().strftime("%Y-%m-%d")
     with fired_log_lock:
         for offset in range(8):
             d = (datetime.now() + timedelta(days=offset)).strftime("%Y-%m-%d")
@@ -184,10 +224,15 @@ def dismiss_alarm(alarm_id):
 
 @alarm_bp.route("/api/alarms/now", methods=["GET"])
 def now_info():
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     now = datetime.now()
     today_weekday = WEEKDAYS[now.weekday()]
     conn = _db._get_connection()
-    all_alarms = conn.execute("SELECT * FROM alarms ORDER BY time").fetchall()
+    all_alarms = conn.execute(
+        "SELECT * FROM alarms WHERE user_id=? ORDER BY time", (uid,)
+    ).fetchall()
 
     next_alarm = None
     for offset in range(8):
@@ -251,8 +296,13 @@ def now_info():
 
 @alarm_bp.route("/api/alarms/status", methods=["GET"])
 def alarm_status():
+    uid = g.user.get("uid", 0)
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = _db._get_connection()
-    all_alarms = conn.execute("SELECT * FROM alarms").fetchall()
+    all_alarms = conn.execute(
+        "SELECT * FROM alarms WHERE user_id=?", (uid,)
+    ).fetchall()
     with fired_log_lock:
         fired_count = len(fired_log)
     return jsonify({
@@ -263,7 +313,7 @@ def alarm_status():
 
 # ── 心跳检查（供 heartbeat.py 调用）──
 
-def check_and_trigger() -> list[dict]:
+def check_and_trigger(uid: int) -> list[dict]:
     """返回当前时刻应触发的闹钟列表（供 heartbeat 端点调用）。"""
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -271,7 +321,9 @@ def check_and_trigger() -> list[dict]:
     current_time = now.strftime("%H:%M")
 
     conn = _db._get_connection()
-    all_alarms = conn.execute("SELECT * FROM alarms").fetchall()
+    all_alarms = conn.execute(
+        "SELECT * FROM alarms WHERE user_id=?", (uid,)
+    ).fetchall()
 
     triggered = []
     for r in all_alarms:

@@ -44,12 +44,13 @@ def init_heartbeat_api(db, task_manager, auth_manager, engine):
 
 @heartbeat_bp.before_request
 def _require_auth():
-    """复用全局认证"""
-    if _auth_manager:
-        user = _auth_manager.authenticate(request)
-        g.user = user
-    else:
-        g.user = {"uid": 0}
+    """复用全局认证，未认证直接拒绝"""
+    if not _auth_manager:
+        return jsonify({"error": "Auth unavailable"}), 503
+    user = _auth_manager.authenticate(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    g.user = user
 
 
 # ── Prompt 构建 ──
@@ -161,7 +162,7 @@ def heartbeat():
     if not notifications:
         # 2. 检查闹钟触发
         try:
-            triggered_alarms = check_alarms()
+            triggered_alarms = check_alarms(uid)
             if triggered_alarms:
                 alarm = triggered_alarms[0]
                 alarm_prompt = (
