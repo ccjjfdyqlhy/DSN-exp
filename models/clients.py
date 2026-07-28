@@ -787,12 +787,9 @@ class EmbeddingClient:
 
 
 class LMSummaryModel:
-    """摘要模型 — 支持 DeepSeek API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
+    """摘要模型 — 支持 OpenAI 兼容 API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
 
     _TRANSIENT_STATUS_CODES = frozenset((429, 500, 502, 503, 504))
-    _MAX_RETRIES = 2
-    _RETRY_BACKOFF_SECONDS = 1.0
-
     SUMMARY_PROMPT = (
         "你是下方对话中标记为[助手/AI]的一方。\n"
         "现在用第一人称(我=助手)概括这段对话：\n\n"
@@ -813,7 +810,7 @@ class LMSummaryModel:
         api_key: str = None,
         model_name: str = None,
         summary_length: int = 100,
-        timeout: int = 60,
+        timeout: int = None,
         logger: Optional[logging.Logger] = None,
     ):
         from config import Config
@@ -821,7 +818,10 @@ class LMSummaryModel:
         self.backend = backend or getattr(Config, 'MEMORY_SUMMARY_BACKEND', 'openai')
         self.model_name = model_name or Config.MEMORY_MODEL
         self.summary_length = summary_length
-        self.timeout = timeout
+        self.timeout = Config.SUMMARY_TIMEOUT if timeout is None else timeout
+        self._max_retries = max(0, Config.SUMMARY_RETRY_COUNT)
+        self._retry_backoff_seconds = max(0.0, Config.SUMMARY_RETRY_BACKOFF_SECONDS)
+        self._temperature = Config.SUMMARY_TEMPERATURE
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self._http_session = requests.Session()
 
@@ -830,8 +830,8 @@ class LMSummaryModel:
         self._model_ready = threading.Event()
         self._model_load_failed = False
 
-        # 摘要上下文: 保持最近 10 次摘要的对话+结果
-        self._summary_context = deque(maxlen=10)
+        # 摘要上下文: 保持最近若干次摘要的对话+结果。
+        self._summary_context = deque(maxlen=max(0, Config.SUMMARY_CONTEXT_SIZE))
 
         if self.backend == "openai":
             self.api_key = api_key or Config.OPENAI_API_KEY
@@ -851,7 +851,7 @@ class LMSummaryModel:
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_length,
-            "temperature": 0.1,
+            "temperature": self._temperature,
             "stream": False,
         }
 
@@ -868,7 +868,7 @@ class LMSummaryModel:
 
         def _do_request():
             self.logger.debug("%s summary request → %s", backend_name, self.model_name)
-            for attempt in range(self._MAX_RETRIES + 1):
+            for attempt in range(self._max_retries + 1):
                 try:
                     response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
                     response.raise_for_status()
@@ -888,7 +888,7 @@ class LMSummaryModel:
                             (requests.exceptions.ConnectionError, requests.exceptions.Timeout),
                         )
                     )
-                    if not retryable or attempt == self._MAX_RETRIES:
+                    if not retryable or attempt == self._max_retries:
                         raise
 
                     retry_after = None
@@ -899,7 +899,7 @@ class LMSummaryModel:
                     except (TypeError, ValueError):
                         delay = None
                     if delay is None:
-                        delay = self._RETRY_BACKOFF_SECONDS * (2 ** attempt)
+                        delay = self._retry_backoff_seconds * (2 ** attempt)
                     delay = max(delay, 0.0)
                     self.logger.warning(
                         "%s 摘要请求临时失败 (HTTP %s)，%.1f 秒后重试 (%d/%d)",
@@ -907,7 +907,7 @@ class LMSummaryModel:
                         status_code or type(exc).__name__,
                         delay,
                         attempt + 1,
-                        self._MAX_RETRIES,
+                        self._max_retries,
                     )
                     time.sleep(delay)
                     continue
@@ -961,7 +961,7 @@ class LMSummaryModel:
         return _do_request()
 
     def summarize_text(self, text: str, max_length: Optional[int] = None) -> str:
-        """生成摘要。根据 backend 自动选择 DeepSeek 或 LMStudio。"""
+        """生成摘要。根据 backend 自动选择 OpenAI 兼容 API 或 LMStudio。"""
         if not text or not isinstance(text, str):
             raise ValueError("text 必须是非空字符串")
 
@@ -977,11 +977,11 @@ class LMSummaryModel:
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
             }
-            return self._call_llm(prompt, max_length, "DeepSeek", url, headers)
+            return self._call_llm(prompt, max_length, self.model_name or "OpenAI", url, headers)
         else:
             url = f"{self.base_url}/v1/chat/completions"
             headers = {"Content-Type": "application/json"}
-            return self._call_llm(prompt, max_length, "LMStudio", url, headers, is_lmstudio=True)
+            return self._call_llm(prompt, max_length, self.model_name or "LMStudio", url, headers, is_lmstudio=True)
 
     def _auto_load_model(self) -> bool:
         return _load_lmstudio_model(self.base_url, self.model_name, "摘要模型")

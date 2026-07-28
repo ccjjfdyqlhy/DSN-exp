@@ -12,6 +12,7 @@ from datetime import datetime, date, timedelta
 from io import StringIO
 
 from flask import Blueprint, jsonify, request
+from config import Config
 
 logger = logging.getLogger("web_admin")
 
@@ -317,7 +318,7 @@ def api_memory_query():
     if date_before:
         sql += " AND created_at < ?"
         params.append(date_before)
-    sql += " ORDER BY id DESC LIMIT 50"
+    sql += f" ORDER BY id DESC LIMIT {Config.MEMORY_QUERY_LIMIT}"
     rows = conn.execute(sql, params).fetchall()
     results = []
     for r in rows:
@@ -534,8 +535,8 @@ def api_reminders():
     rows = conn.execute(
         f"SELECT task_id, task_type, user_id, chat_id, priority, scheduled_time, "
         f"status, interval_seconds, skip_count, created_at FROM tasks {w} "
-        f"ORDER BY priority DESC, scheduled_time ASC LIMIT 50",
-        params,
+        f"ORDER BY priority DESC, scheduled_time ASC LIMIT ?",
+        (*params, Config.REMINDER_LIST_LIMIT),
     ).fetchall()
     reminders = []
     for r in rows:

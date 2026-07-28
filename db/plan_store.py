@@ -115,16 +115,6 @@ class PlanStore:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_date ON daily_tasks(date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON daily_tasks(user_id, date)")
         conn.commit()
-        # 迁移: 为旧 daily_tasks 补充 goal_id/phase_id 列
-        try:
-            conn.execute("ALTER TABLE daily_tasks ADD COLUMN goal_id TEXT DEFAULT ''")
-        except Exception:
-            logger.warning("Operation failed", exc_info=True)
-        try:
-            conn.execute("ALTER TABLE daily_tasks ADD COLUMN phase_id TEXT DEFAULT ''")
-        except Exception:
-            logger.warning("Operation failed", exc_info=True)
-        conn.commit()
 
     # ── Goal CRUD ──
 

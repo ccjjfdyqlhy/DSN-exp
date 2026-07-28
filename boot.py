@@ -118,7 +118,7 @@ def _convert_audio_to_wav(audio_bytes: bytes) -> bytes:
         proc = subprocess.run(
             [ffmpeg, "-y", "-i", "pipe:0", "-f", "wav", "-acodec", "pcm_s16le",
              "-ar", "16000", "-ac", "1", "pipe:1"],
-            input=audio_bytes, capture_output=True, timeout=15,
+            input=audio_bytes, capture_output=True, timeout=Config.ASR_CONVERT_TIMEOUT,
         )
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout
@@ -156,20 +156,26 @@ def setup_logging(_app):
     log_dir = _app.config["LOG_DIR"]
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log")
-    file_handler = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=30, encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
+    log_level = getattr(logging, str(_app.config["LOG_LEVEL"]).upper(), logging.INFO)
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=_app.config["LOG_MAX_BYTES"],
+        backupCount=_app.config["LOG_BACKUP_COUNT"],
+        encoding="utf-8",
+    )
+    file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level)
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     root = logging.getLogger()
     for h in root.handlers[:]:
         root.removeHandler(h)
     root.addHandler(file_handler)
     root.addHandler(console_handler)
-    root.setLevel(logging.INFO)
+    root.setLevel(log_level)
     root.propagate = False
-    _app.logger.setLevel(logging.INFO)
+    _app.logger.setLevel(log_level)
     _app.logger.propagate = True
     logging.getLogger('werkzeug').setLevel(logging.INFO)
     logging.getLogger('werkzeug').propagate = True
@@ -465,16 +471,24 @@ def create_application():
         tts_client = VocalExp(app.config["TTS_BASE_URL"])
         tts_profile_mgr = TTSProfileManager()
 
-        # TTS 启动探测：等待服务就绪（最多重试3次，指数退避）
+        # TTS 启动探测：等待服务就绪，按配置进行指数退避。
         tts_probe_ok = False
-        for _tts_attempt in range(4):
-            if tts_client.probe(timeout=3.0):
+        for _tts_attempt in range(Config.TTS_PROBE_ATTEMPTS):
+            if tts_client.probe(timeout=Config.TTS_PROBE_TIMEOUT):
                 tts_probe_ok = True
                 app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
                 break
-            if _tts_attempt < 3:
-                _tts_wait = min(2.0 * (2 ** _tts_attempt), 8.0)
-                app.logger.warning("TTS 服务未就绪，%.1fs 后重试 (%d/3)...", _tts_wait, _tts_attempt + 1)
+            if _tts_attempt + 1 < Config.TTS_PROBE_ATTEMPTS:
+                _tts_wait = min(
+                    Config.TTS_PROBE_BACKOFF_BASE * (2 ** _tts_attempt),
+                    Config.TTS_PROBE_BACKOFF_MAX,
+                )
+                app.logger.warning(
+                    "TTS 服务未就绪，%.1fs 后重试 (%d/%d)...",
+                    _tts_wait,
+                    _tts_attempt + 1,
+                    Config.TTS_PROBE_ATTEMPTS - 1,
+                )
                 time.sleep(_tts_wait)
         if not tts_probe_ok:
             app.logger.warning("TTS 服务 (端口 9880) 启动探测失败，TTS 功能可能不可用")

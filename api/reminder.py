@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, g
 from datetime import datetime, timedelta
 import json
 
+from config import Config
 from tasks import TaskType, TaskStatus
 
 reminder_bp = Blueprint("reminder_api", __name__)
@@ -44,10 +45,11 @@ def list_reminders():
         "SELECT task_id, task_type, params, priority, scheduled_time, "
         "interval_seconds, skip_count, created_at FROM tasks "
         "WHERE user_id = ? AND task_type IN (?, ?, ?, ?, ?) AND status = ? "
-        "ORDER BY scheduled_time ASC LIMIT 50",
+        "ORDER BY scheduled_time ASC LIMIT ?",
         (uid, TaskType.REMINDER.value, TaskType.HABIT.value,
          TaskType.COUNTDOWN.value, TaskType.DAILY_PLAN.value,
-         TaskType.PERIODIC.value, TaskStatus.PENDING.value),
+         TaskType.PERIODIC.value, TaskStatus.PENDING.value,
+         Config.REMINDER_LIST_LIMIT),
     ).fetchall()
 
     reminders = []
