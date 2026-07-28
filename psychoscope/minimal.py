@@ -847,6 +847,53 @@ class DSNClient:
                     async_poller.add_task(task_id)
                 continue
 
+            if status == "instant_reply":
+                reply = data.get("reply", "")
+                if reply:
+                    print(f"\n  \U0001f4ac {reply}")
+                audio_b64 = data.get("audio_b64", "")
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    if t_first_audio is None:
+                        t_first_audio = time.perf_counter()
+                    tts_queue.put((reply, audio_b64))
+                continue
+
+            if status == "main_started":
+                tid = data.get("task_id", "")
+                desc = data.get("description", "")
+                print(f"\n  \u2699\ufe0f 主模型启动 [{tid[:8]}] {desc}")
+                continue
+
+            if status == "progress":
+                text = data.get("text", "")
+                tid = data.get("task_id", "")
+                if text:
+                    print(f"\n  \U0001f504 [{tid[:8]}] {text}")
+                audio_b64 = data.get("audio_b64", "")
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    tts_queue.put((text, audio_b64))
+                continue
+
+            if status == "main_reply":
+                reply = data.get("reply", "")
+                tid = data.get("task_id", "")
+                got_text = True
+                self.chat_id = data.get("chat_id", self.chat_id)
+                if reply:
+                    print(f"\n  \U0001f4ac [{tid[:8]}] {reply}")
+                audio_b64 = data.get("audio_b64", "")
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    tts_queue.put((reply, audio_b64))
+                continue
+
+            if status == "cancelled":
+                tid = data.get("task_id", "")
+                print(f"\n  \u26d4 任务已取消 [{tid[:8]}]")
+                continue
+
+            if status == "heartbeat":
+                continue
+
             if status == "text_ready":
                 reply = data.get("reply", "")
                 got_text = True
