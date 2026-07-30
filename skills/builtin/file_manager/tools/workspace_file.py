@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from config import Config
+
 logger = logging.getLogger("skill.file_manager")
 
 
@@ -62,8 +64,13 @@ class WorkspaceFileTool:
             if not p.is_file():
                 return {"success": False, "error": f"不是文件: {path}", "cwd": self._cwd()}
             size = p.stat().st_size
-            if size > 1024 * 1024:
-                return {"success": False, "error": f"文件过大 ({size} bytes), 超过1MB限制", "cwd": self._cwd()}
+            max_bytes = Config.FILE_READ_MAX_SIZE_MB * 1024 * 1024
+            if size > max_bytes:
+                return {
+                    "success": False,
+                    "error": f"文件过大 ({size} bytes), 超过{Config.FILE_READ_MAX_SIZE_MB}MB限制",
+                    "cwd": self._cwd(),
+                }
             content = p.read_text(encoding='utf-8-sig')
             return {"success": True, "path": str(p), "size": size, "content": content, "cwd": self._cwd()}
         except PermissionError as e:

@@ -2,9 +2,6 @@
 # PromptCache — 提示词缓存系统，支持 <help> 标签检索
 # v1.0 — 基于向量相似度的提示词检索
 
-from __future__ import annotations
-
-import json
 import struct
 import threading
 import logging

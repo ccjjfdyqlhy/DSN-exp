@@ -65,6 +65,10 @@ tools:
             type: string
             description: "结束日期 (YYYY-MM-DD)"
             required: false
+          position:
+            type: integer
+            description: "排序位置（自动计算）"
+            required: false
 
   - name: list_goals
     display_name: "列出目标"

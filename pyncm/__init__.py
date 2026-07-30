@@ -201,7 +201,7 @@ class Session(requests.Session):
     def dump(self) -> dict:
         return {
             name: self._session_info[name][0](self)
-            for name in self._session_info.keys()
+            for name in self._session_info
         }
 
     def load(self, dumped):
@@ -294,7 +294,7 @@ def writeLoginInfo(content):
         try:
             content = json.loads(content)
         except Exception:
-            pass
+            logger.warning("Load/read operation failed", exc_info=True)
     sessionManager.session.login_info = {'tick': time(), 'content': content}  # type: ignore
     if isinstance(content, bytes) or not content.get('code') == 200:  # type: ignore
         sessionManager.session.login_info['success'] = False

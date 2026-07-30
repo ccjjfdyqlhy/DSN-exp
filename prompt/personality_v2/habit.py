@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import logging
 import hashlib
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal
 
 logger = logging.getLogger("HabitModule")
 
@@ -340,7 +339,7 @@ class PatternObserver:
             if len(msg) < 4:
                 continue
             substrings = set()
-            for i in range(len(msg)):
+            for i, _ in enumerate(msg):
                 for j in range(i + 2, min(i + 8, len(msg) + 1)):
                     sub = msg[i:j].strip()
                     if len(sub) >= 2:

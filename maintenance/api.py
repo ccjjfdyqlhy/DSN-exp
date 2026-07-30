@@ -25,6 +25,17 @@ def _get_maint_system():
     return flask.current_app.config.get("MAINTENANCE_SYSTEM")
 
 
+def _require_auth():
+    """触发/控制类操作需要认证，返回 (user, error_response) 二元组。"""
+    mgr = flask.current_app.config.get("AUTH_MANAGER")
+    if not mgr:
+        return None, (jsonify({"error": "Auth unavailable"}), 503)
+    user = mgr.authenticate(request)
+    if not user:
+        return None, (jsonify({"error": "Unauthorized"}), 401)
+    return user, None
+
+
 @maintenance_bp.route("/status")
 def status():
     ms = _get_maint_system()
@@ -65,6 +76,9 @@ def sse_stream():
 
 @maintenance_bp.route("/trigger", methods=["POST"])
 def trigger_maintenance():
+    _, err = _require_auth()
+    if err:
+        return err
     ms = _get_maint_system()
     if not ms:
         return jsonify({"error": "维护系统不可用"}), 503
@@ -76,6 +90,9 @@ def trigger_maintenance():
 
 @maintenance_bp.route("/toggle_standby", methods=["POST"])
 def toggle_standby():
+    _, err = _require_auth()
+    if err:
+        return err
     ms = _get_maint_system()
     if not ms:
         return jsonify({"error": "维护系统不可用"}), 503

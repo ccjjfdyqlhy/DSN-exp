@@ -7,8 +7,9 @@ import json
 import os
 import logging
 import threading
+import time
 from collections import deque
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 
 
 # 全局详细模式标志，由 /detail 命令切换
@@ -39,6 +40,14 @@ def _is_no_model_error(response) -> bool:
         return "no model" in body.lower() or "No models loaded" in body
     except Exception:
         return False
+
+
+def _post_json(session: requests.Session, url: str, headers: dict,
+               payload: dict, timeout: int | float) -> dict:
+    """Submit a JSON request through a reusable session and decode its response."""
+    response = session.post(url, headers=headers, json=payload, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
 
 
 
@@ -146,6 +155,7 @@ class OpenAIChat:
         self.last_usage = None
         self.last_model = self.model
         self._last_message: Optional[dict] = None
+        self._http_session = requests.Session()
 
         if logger is not None:
             self.logger = logger
@@ -242,10 +252,9 @@ class OpenAIChat:
 
         try:
             self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False)[:500])
-            response = requests.post(
-                self.api_url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            result = response.json()
+            result = _post_json(
+                self._http_session, self.api_url, headers, payload, self.timeout,
+            )
             self.logger.debug("API响应: %s", json.dumps(result, ensure_ascii=False)[:500])
 
             self.last_usage = result.get("usage")
@@ -289,7 +298,7 @@ class OpenAIChat:
                 try:
                     _body = e.response.text[:2000]
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
             self.logger.error("网络请求失败: %s\n响应体: %s", str(e), _body if _body else "(无)")
             raise
         except KeyError as e:
@@ -382,6 +391,7 @@ class LMStudioChat:
         self.messages: List[Dict[str, str]] = []
         self.last_usage = None
         self.last_model = self.model_name or "lmstudio"
+        self._http_session = requests.Session()
 
         if logger is not None:
             self.logger = logger
@@ -430,9 +440,9 @@ class LMStudioChat:
 
         # actually make the http call to the chat api
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-                response.raise_for_status()
-                result = response.json()
+                result = _post_json(
+                    self._http_session, url, headers, payload, self.timeout,
+                )
                 self.last_usage = result.get("usage")
                 self.last_model = result.get("model", self.model_name)
                 return result
@@ -777,8 +787,9 @@ class EmbeddingClient:
 
 
 class LMSummaryModel:
-    """摘要模型 — 支持 DeepSeek API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
+    """摘要模型 — 支持 OpenAI 兼容 API 和本地 LMStudio 双后端，用于对话记忆压缩。"""
 
+    _TRANSIENT_STATUS_CODES = frozenset((429, 500, 502, 503, 504))
     SUMMARY_PROMPT = (
         "你是下方对话中标记为[助手/AI]的一方。\n"
         "现在用第一人称(我=助手)概括这段对话：\n\n"
@@ -799,7 +810,7 @@ class LMSummaryModel:
         api_key: str = None,
         model_name: str = None,
         summary_length: int = 100,
-        timeout: int = 60,
+        timeout: int = None,
         logger: Optional[logging.Logger] = None,
     ):
         from config import Config
@@ -807,7 +818,10 @@ class LMSummaryModel:
         self.backend = backend or getattr(Config, 'MEMORY_SUMMARY_BACKEND', 'openai')
         self.model_name = model_name or Config.MEMORY_MODEL
         self.summary_length = summary_length
-        self.timeout = timeout
+        self.timeout = Config.SUMMARY_TIMEOUT if timeout is None else timeout
+        self._max_retries = max(0, Config.SUMMARY_RETRY_COUNT)
+        self._retry_backoff_seconds = max(0.0, Config.SUMMARY_RETRY_BACKOFF_SECONDS)
+        self._temperature = Config.SUMMARY_TEMPERATURE
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self._http_session = requests.Session()
 
@@ -816,8 +830,8 @@ class LMSummaryModel:
         self._model_ready = threading.Event()
         self._model_load_failed = False
 
-        # 摘要上下文: 保持最近 10 次摘要的对话+结果
-        self._summary_context = deque(maxlen=10)
+        # 摘要上下文: 保持最近若干次摘要的对话+结果。
+        self._summary_context = deque(maxlen=max(0, Config.SUMMARY_CONTEXT_SIZE))
 
         if self.backend == "openai":
             self.api_key = api_key or Config.OPENAI_API_KEY
@@ -837,7 +851,7 @@ class LMSummaryModel:
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_length,
-            "temperature": 0.1,
+            "temperature": self._temperature,
             "stream": False,
         }
 
@@ -854,8 +868,50 @@ class LMSummaryModel:
 
         def _do_request():
             self.logger.debug("%s summary request → %s", backend_name, self.model_name)
-            response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
-            response.raise_for_status()
+            for attempt in range(self._max_retries + 1):
+                try:
+                    response = self._http_session.post(url, headers=headers, json=payload, timeout=self.timeout)
+                    response.raise_for_status()
+                    break
+                except (
+                    requests.exceptions.HTTPError,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                ) as exc:
+                    resp = getattr(exc, "response", None)
+                    status_code = getattr(resp, "status_code", None)
+                    retryable = (
+                        status_code in self._TRANSIENT_STATUS_CODES
+                        if status_code is not None
+                        else isinstance(
+                            exc,
+                            (requests.exceptions.ConnectionError, requests.exceptions.Timeout),
+                        )
+                    )
+                    if not retryable or attempt == self._max_retries:
+                        raise
+
+                    retry_after = None
+                    if resp is not None:
+                        retry_after = resp.headers.get("Retry-After")
+                    try:
+                        delay = min(float(retry_after), 30.0) if retry_after else None
+                    except (TypeError, ValueError):
+                        delay = None
+                    if delay is None:
+                        delay = self._retry_backoff_seconds * (2 ** attempt)
+                    delay = max(delay, 0.0)
+                    self.logger.warning(
+                        "%s 摘要请求临时失败 (HTTP %s)，%.1f 秒后重试 (%d/%d)",
+                        backend_name,
+                        status_code or type(exc).__name__,
+                        delay,
+                        attempt + 1,
+                        self._max_retries,
+                    )
+                    time.sleep(delay)
+                    continue
+
             result = response.json()
             if "choices" in result and result["choices"]:
                 summary = result["choices"][0]["message"]["content"].strip()
@@ -905,7 +961,7 @@ class LMSummaryModel:
         return _do_request()
 
     def summarize_text(self, text: str, max_length: Optional[int] = None) -> str:
-        """生成摘要。根据 backend 自动选择 DeepSeek 或 LMStudio。"""
+        """生成摘要。根据 backend 自动选择 OpenAI 兼容 API 或 LMStudio。"""
         if not text or not isinstance(text, str):
             raise ValueError("text 必须是非空字符串")
 
@@ -921,11 +977,11 @@ class LMSummaryModel:
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
             }
-            return self._call_llm(prompt, max_length, "DeepSeek", url, headers)
+            return self._call_llm(prompt, max_length, self.model_name or "OpenAI", url, headers)
         else:
             url = f"{self.base_url}/v1/chat/completions"
             headers = {"Content-Type": "application/json"}
-            return self._call_llm(prompt, max_length, "LMStudio", url, headers, is_lmstudio=True)
+            return self._call_llm(prompt, max_length, self.model_name or "LMStudio", url, headers, is_lmstudio=True)
 
     def _auto_load_model(self) -> bool:
         return _load_lmstudio_model(self.base_url, self.model_name, "摘要模型")
@@ -1066,9 +1122,7 @@ class OCRModel:
         headers = {"Content-Type": "application/json"}
 
         def _do_request():
-            resp = self._http_session.post(url, headers=headers, json=payload, timeout=300)
-            resp.raise_for_status()
-            result = resp.json()
+            result = _post_json(self._http_session, url, headers, payload, 300)
             if "choices" in result and result["choices"]:
                 return result["choices"][0]["message"]["content"].strip()
             return ""
@@ -1149,6 +1203,7 @@ class VisionModel:
         self.model_name = model_name or Config.VISION_MODEL_NAME
         self.timeout = timeout
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._http_session = requests.Session()
 
         if not self.api_key:
             self.logger.warning("VISION_API_KEY 未配置，视觉模型请求将无法通过需要认证的 API")
@@ -1156,12 +1211,8 @@ class VisionModel:
     @staticmethod
     def encode_image(image_path: str, mime_type: str = "image/png") -> str:
         """读取本地图片并转为 Base64 data URL"""
-        import base64
-        if not os.path.isfile(image_path):
-            raise FileNotFoundError(f"图片文件不存在: {image_path}")
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-        return f"data:{mime_type};base64,{image_data}"
+        from utils.media import image_file_data_url
+        return image_file_data_url(image_path, mime_type)
 
     def ask(self, data_url: str, prompt: str = "请详细描述这张图片的内容",
             max_tokens: int = 2048, temperature: float = 0.1,
@@ -1206,9 +1257,9 @@ class VisionModel:
                          self.model_name, prompt[:60] + ("..." if len(prompt) > 60 else ""))
 
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-            result = resp.json()
+            result = _post_json(
+                self._http_session, url, headers, payload, self.timeout,
+            )
         except requests.exceptions.Timeout:
             self.logger.error("VisionModel 请求超时 (%ds)", self.timeout)
             raise
@@ -1253,9 +1304,7 @@ class VisionModel:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         self.logger.debug("VisionModel ask_raw: %s", str(payload)[:200])
-        resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        return _post_json(self._http_session, url, headers, payload, self.timeout)
 
     # ----- OCR / 文档分类（用于 VISION_OVERRIDE 模式） -----
 

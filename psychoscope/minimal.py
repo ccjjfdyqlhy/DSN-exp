@@ -119,7 +119,7 @@ class TerminalState:
             try:
                 termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_attr)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
         self.old_attr = None
 
     def _enter_windows(self):
@@ -156,7 +156,7 @@ def _ensure_raw_mode():
             import termios
             termios.tcsetattr(_RAW_FD, termios.TCSADRAIN, _RAW_ATTRS)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
 
 def read_key(timeout: float = 0.1) -> str | None:
@@ -236,8 +236,8 @@ class MusicPlayer:
 
     def load_playlist(self):
         try:
-            resp = requests.get(
-                f"{self.client.base}/api/music/list?uid={self.uid}", timeout=5
+            resp = self.client._http_get(
+                f"/api/music/list?uid={self.uid}", timeout=5
             )
             if resp.status_code == 200:
                 self.playlist = resp.json().get("files", [])
@@ -252,7 +252,8 @@ class MusicPlayer:
         song = self.playlist[idx]
         url = f"{self.client.base}/api/music/play/{song['filename']}?uid={self.uid}"
         try:
-            resp = requests.get(url, stream=True, timeout=10)
+            resp = requests.get(url, stream=True, timeout=10,
+                                headers=self.client._headers())
             if resp.status_code != 200:
                 log.warning("MusicPlayer: 下载失败 %d", resp.status_code)
                 return
@@ -291,7 +292,7 @@ class MusicPlayer:
             if self._player:
                 self._player.stop()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
         self.state = "stopped"
         self._report_state()
 
@@ -313,7 +314,7 @@ class MusicPlayer:
             if self._player:
                 self._player.audio_set_volume(int(self._volume * 100))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
         self._report_state()
 
     def duck(self):
@@ -322,14 +323,14 @@ class MusicPlayer:
             try:
                 self._player.audio_set_volume(int(self._volume * 0.2 * 100))
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
     def unduck(self):
         if self.state == "playing" and self._player:
             try:
                 self._player.audio_set_volume(int(self._prev_volume * 100))
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
     def start_poll(self):
         self._running = True
@@ -351,7 +352,7 @@ class MusicPlayer:
             try:
                 os.unlink(f)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Operation failed", exc_info=True)
         self._temp_files.clear()
 
     def _report_state(self):
@@ -360,18 +361,17 @@ class MusicPlayer:
             current = {"filename": self.playlist[self.current_index]["filename"]}
         payload = {"state": self.state, "current": current, "volume": self._volume}
         try:
-            requests.post(f"{self.client.base}/api/music/state",
-                          json=payload, timeout=2)
+            self.client._http_post("/api/music/state", json=payload, timeout=2)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Load/read operation failed", exc_info=True)
 
     def _poll_loop(self):
         import time as _time
         while self._running:
             _time.sleep(1.5)
             try:
-                resp = requests.get(
-                    f"{self.client.base}/api/music/status?consume=1", timeout=3)
+                resp = self.client._http_get(
+                    "/api/music/status?consume=1", timeout=3)
                 if resp.status_code != 200:
                     continue
                 data = resp.json()
@@ -401,7 +401,7 @@ class MusicPlayer:
                 elif action == "volume" and value is not None:
                     self.audio_set_volume(float(value))
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Set operation failed", exc_info=True)
 
 
 def _play_beep(client: DSNClient, freq: int = 600):
@@ -434,13 +434,13 @@ def _play_beep(client: DSNClient, freq: int = 600):
             p.stop()
             p.release()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Resource release failed", exc_info=True)
     finally:
         if tmp_path:
             try:
                 os.unlink(tmp_path)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Operation failed", exc_info=True)
 
 
 def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
@@ -503,7 +503,7 @@ class DSNClient:
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
         self._tts_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
-        self._send_queue: queue.Queue[str | None] = queue.Queue()
+        self._send_queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self._volume = 1.0
         self.async_poller = None
         self._player: MusicPlayer | None = None
@@ -578,7 +578,7 @@ class DSNClient:
                     try:
                         os.unlink(tmp_path)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("Operation failed", exc_info=True)
             if ducked:
                 self._player.unduck()
             self._tts_queue.task_done()
@@ -616,7 +616,7 @@ class DSNClient:
             if r.status_code == 200:
                 has_pairing = r.json().get("active", False)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Parse operation failed", exc_info=True)
 
         if not has_pairing:
             print("  No active pairing code on server.")
@@ -758,22 +758,65 @@ class DSNClient:
             log.error("Audio send failed: %s", e)
             return None
 
+    def send_text(self, message: str) -> Optional[str]:
+        if not self.api_key or not message.strip():
+            return None
+
+        t0 = time.perf_counter()
+        log.info("[DEBUG_CLI] send_text: 开始 SSE 请求, t=%.4f", t0)
+
+        try:
+            resp = self._http_post_stream(
+                "/api/chat/stream_send",
+                json={
+                    "message": message,
+                    "chat_id": self.chat_id,
+                    "chat_name": "minimal",
+                    "tts_enabled": True,
+                    "is_asr_input": False,
+                },
+            )
+            if resp.status_code != 200:
+                log.warning("Text send HTTP %d: %s", resp.status_code, resp.text[:200])
+                return None
+
+            reply_text, t_first_audio = self._handle_sse_stream(
+                resp, self._tts_queue, t0, async_poller=self.async_poller)
+            elapsed = time.perf_counter() - t0
+            log.info("[DEBUG_CLI] send_text: SSE 流结束, 总耗时=%.1fs", elapsed)
+
+            if t_first_audio is not None:
+                first_audio_ms = (t_first_audio - t0) * 1000
+                print(f"\n  \U0001f50a 首条音频: {first_audio_ms:.0f}ms")
+
+            return reply_text
+        except Exception as e:
+            log.error("Text send failed: %s", e)
+            return None
+
     @property
     def is_sending(self) -> bool:
         return self._sending.is_set()
 
     def send_audio_async(self, audio_b64: str):
-        self._send_queue.put(audio_b64)
+        self._send_queue.put(("audio", audio_b64))
+
+    def send_text_async(self, message: str):
+        self._send_queue.put(("text", message))
 
     def _send_worker(self):
         while True:
-            b64 = self._send_queue.get()
-            if b64 is None:
+            item = self._send_queue.get()
+            if item is None:
                 self._send_queue.task_done()
                 continue
+            kind, payload = item
             self._sending.set()
             try:
-                self.send_audio(b64)
+                if kind == "audio":
+                    self.send_audio(payload)
+                elif kind == "text":
+                    self.send_text(payload)
             except Exception:
                 log.exception("Send worker error")
             finally:
@@ -802,6 +845,53 @@ class DSNClient:
                 task_id = data.get("task_id", "")
                 if task_id and async_poller:
                     async_poller.add_task(task_id)
+                continue
+
+            if status == "instant_reply":
+                reply = data.get("reply", "")
+                if reply:
+                    print(f"\n  \U0001f4ac {reply}")
+                audio_b64 = data.get("audio_b64", "")
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    if t_first_audio is None:
+                        t_first_audio = time.perf_counter()
+                    tts_queue.put((reply, audio_b64))
+                continue
+
+            if status == "main_started":
+                tid = data.get("task_id", "")
+                desc = data.get("description", "")
+                print(f"\n  \u2699\ufe0f 主模型启动 [{tid[:8]}] {desc}")
+                continue
+
+            if status == "progress":
+                text = data.get("text", "")
+                tid = data.get("task_id", "")
+                if text:
+                    print(f"\n  \U0001f504 [{tid[:8]}] {text}")
+                audio_b64 = data.get("audio_b64", "")
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    tts_queue.put((text, audio_b64))
+                continue
+
+            if status == "main_reply":
+                reply = data.get("reply", "")
+                tid = data.get("task_id", "")
+                got_text = True
+                self.chat_id = data.get("chat_id", self.chat_id)
+                if reply:
+                    print(f"\n  \U0001f4ac [{tid[:8]}] {reply}")
+                audio_b64 = data.get("audio_b64", "")
+                if audio_b64 and HAS_AUDIO and tts_queue is not None:
+                    tts_queue.put((reply, audio_b64))
+                continue
+
+            if status == "cancelled":
+                tid = data.get("task_id", "")
+                print(f"\n  \u26d4 任务已取消 [{tid[:8]}]")
+                continue
+
+            if status == "heartbeat":
                 continue
 
             if status == "text_ready":
@@ -993,7 +1083,7 @@ class HeartbeatPoller:
                 print(f"\n  \u23ed 已跳过: {info.get('text', task_id[:8])}")
                 return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Operation failed", exc_info=True)
         return False
 
     def _loop(self):
@@ -1134,7 +1224,7 @@ class VoiceRecorder:
             try:
                 self._recorder.stop()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
@@ -1143,7 +1233,7 @@ class VoiceRecorder:
             try:
                 self._recorder.delete()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Delete/remove operation failed", exc_info=True)
             self._recorder = None
 
         dur = time.time() - self._start_time
@@ -1182,12 +1272,12 @@ class VoiceRecorder:
                     self._recording = False
                     break
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("Operation failed", exc_info=True)
         finally:
             try:
                 self._recorder.stop()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1206,7 +1296,7 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     if locked:
         print("  \U0001f512 Panel locked")
     print("=" * 43)
-    print("  [Enter] hold-to-talk    [p] personality")
+    print("  [Enter] toggle record   [p] personality")
     print("  [a x2]  lock panel      [i] system info")
     print("  [b x2]  music mode      [h] help")
     print("  [t]     text input      [s] standby")
@@ -1249,7 +1339,7 @@ def print_personality(client: DSNClient):
 
 def toggle_standby(client: DSNClient):
     try:
-        resp = requests.post(f"{client.base}/api/maintenance/toggle_standby", timeout=10)
+        resp = client._http_post("/api/maintenance/toggle_standby", timeout=10)
         state = resp.json().get("state", "?")
         print(f"  Server State: {state}")
     except Exception as e:
@@ -1267,7 +1357,7 @@ def print_system_info(client: DSNClient):
             if idle:
                 print(f"  Idle     : {idle} min")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Operation failed", exc_info=True)
 
     try:
         resp = client._http_get("/api/todo/list")
@@ -1276,7 +1366,7 @@ def print_system_info(client: DSNClient):
             active = [t for t in todos if t.get("status") == "pending"]
             print(f"  Todos    : {len(active)} pending / {len(todos)} total")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Operation failed", exc_info=True)
 
     try:
         resp = client._http_get("/api/reminder/list")
@@ -1289,7 +1379,7 @@ def print_system_info(client: DSNClient):
                     st = r.get("scheduled_time", "")[:16].replace("T", " ")
                     print(f"    [{tlabel}] {st}  {r.get('text', '')[:40]}")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Get operation failed", exc_info=True)
 
     print(f"  ---------------------\n")
 
@@ -1370,12 +1460,14 @@ def main():
     locked = False
     _music_mode = False
     _music_was_playing = False
+    _recording_session = False
+    _auto_stop_ts = 0.0
     _last_a_ts = 0.0
     _last_b_ts = 0.0
     _DOUBLE_CLICK_WINDOW = 0.5
 
     print_header(cfg, client)
-    print("  Ready! Hold Enter to speak...\n")
+    print("  Ready! Press Enter to toggle recording...\n")
 
     def _sigint(sig, frame):
         raise KeyboardInterrupt()
@@ -1387,6 +1479,19 @@ def main():
             while running:
                 ch = read_key(timeout=0.1)
 
+                # ── 静音/超时自动停止：capture loop 已将 _recording 置为 False ──
+                if _recording_session and not recorder.is_recording and recorder.has_frames:
+                    _ensure_raw_mode()
+                    print("\n  (auto-stopped by silence)")
+                    recorder.stop_and_send()
+                    print()
+                    _ensure_raw_mode()
+                    _recording_session = False
+                    _auto_stop_ts = time.time()
+                    if _music_was_playing and player.state == "paused":
+                        player.toggle()
+                    _music_was_playing = False
+
                 if ch is None:
                     continue
 
@@ -1396,8 +1501,12 @@ def main():
                     if now - _last_a_ts < _DOUBLE_CLICK_WINDOW:
                         locked = not locked
                         if locked:
-                            if recorder.is_recording:
+                            if _recording_session:
                                 recorder.stop_and_send()
+                                _recording_session = False
+                                if _music_was_playing and player.state == "paused":
+                                    player.toggle()
+                                _music_was_playing = False
                             print("\n  \U0001f512 Panel locked")
                         else:
                             print("\n  \U0001f513 Panel unlocked")
@@ -1427,37 +1536,36 @@ def main():
                 if locked:
                     continue
 
-                # ── Enter: hold-to-talk ──
+                # ── Enter: toggle 开始/停止录音 ──
                 if ch in ("\r", "\n"):
                     if client.is_sending:
                         print("\n  \u23f3 上一轮对话还在发送中，请稍候...")
                         continue
-                    if not recorder.is_recording:
+                    if not _recording_session:
+                        # 刚自动停止则忽略本次 Enter，避免误启动新录音
+                        if time.time() - _auto_stop_ts < 1.0:
+                            continue
                         _music_was_playing = _music_mode and player.state == "playing"
                         if _music_was_playing:
                             player.toggle()
-                        print("\n  Recording... (hold Enter, release to stop)")
+                        print("\n  Recording... (press Enter to stop)")
                         recorder.start()
-                        _key_repeated = False
-                        while recorder.is_recording:
-                            poll_timeout = 0.12 if _key_repeated else 0.7
-                            next_ch = read_key(timeout=poll_timeout)
-                            if next_ch is None:
-                                break
-                            _key_repeated = True
-                        _ensure_raw_mode()
-                        print()
+                        _recording_session = True
+                    else:
                         recorder.stop_and_send()
+                        _ensure_raw_mode()
                         print()
                         _ensure_raw_mode()
+                        _recording_session = False
                         if _music_was_playing and player.state == "paused":
                             player.toggle()
                         _music_was_playing = False
 
                 # ── q / Ctrl+C: 退出 ──
                 elif ch.lower() == "q":
-                    if recorder.is_recording:
+                    if _recording_session:
                         recorder.stop_and_send()
+                        _recording_session = False
                     break
 
                 # ── p: 人格状态 ──
@@ -1540,7 +1648,7 @@ def main():
                                     dismissed = True
                                     break
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("Operation failed", exc_info=True)
                     if not dismissed:
                         try:
                             resp = client._http_get("/api/alarms/now")
@@ -1552,7 +1660,7 @@ def main():
                                         print(f"\n  \U0001f515 闹钟 {nxt['id']} 已静音")
                                         dismissed = True
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("Operation failed", exc_info=True)
                     if not dismissed:
                         print(f"\n  \U0001f515 无活跃闹钟可静音")
                     client.stop_tts()
@@ -1585,22 +1693,14 @@ def main():
                     except Exception as e:
                         print(f"\n  Alarm status failed: {e}")
 
-                # ── t: 文本输入 ──
+                # ── t: 文本输入（流式 SSE + TTS）──
                 elif ch.lower() == "t":
                     text = raw_input("  Text Input: ").strip()
                     if text:
-                        try:
-                            resp = client._http_post("/api/chat/send", json={
-                                "message": text,
-                                "chat_id": client.chat_id,
-                                "chat_name": "minimal",
-                                "tts_enabled": False,
-                            })
-                            if resp.status_code == 200:
-                                reply = resp.json().get("reply", "")
-                                print(f"\n  {reply}")
-                        except Exception as e:
-                            pass
+                        if client.is_sending:
+                            print("\n  \u23f3 上一轮对话还在发送中，请稍候...")
+                        else:
+                            client.send_text_async(text)
 
                 # ── =: 异步任务 ──
                 elif ch == "=":
@@ -1647,7 +1747,7 @@ def main():
             player.cleanup()
             async_poller.stop()
             reminder.stop()
-            if recorder.is_recording:
+            if _recording_session and recorder.has_frames:
                 recorder.stop_and_send()
             cfg["chat_id"] = client.chat_id
             save_config(cfg)

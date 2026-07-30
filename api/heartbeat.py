@@ -16,13 +16,11 @@
 #   - "reminder" | "habit" | "countdown" | "daily_plan" | "periodic": 提醒类
 #   - "vision": 视觉感知类 → 主LLM根据场景描述决策是否主动说话
 
-from __future__ import annotations
-
 import json
 import logging
 from datetime import datetime
 
-from flask import Blueprint, request, jsonify, g, current_app
+from flask import Blueprint, request, jsonify, g
 
 from api.alarm import check_and_trigger as check_alarms
 
@@ -46,12 +44,13 @@ def init_heartbeat_api(db, task_manager, auth_manager, engine):
 
 @heartbeat_bp.before_request
 def _require_auth():
-    """复用全局认证"""
-    if _auth_manager:
-        user = _auth_manager.authenticate(request)
-        g.user = user
-    else:
-        g.user = {"uid": 0}
+    """复用全局认证，未认证直接拒绝"""
+    if not _auth_manager:
+        return jsonify({"error": "Auth unavailable"}), 503
+    user = _auth_manager.authenticate(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    g.user = user
 
 
 # ── Prompt 构建 ──
@@ -163,7 +162,7 @@ def heartbeat():
     if not notifications:
         # 2. 检查闹钟触发
         try:
-            triggered_alarms = check_alarms()
+            triggered_alarms = check_alarms(uid)
             if triggered_alarms:
                 alarm = triggered_alarms[0]
                 alarm_prompt = (
@@ -232,7 +231,7 @@ def heartbeat():
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         fallback_reply = "（AI 不可用）"
         return jsonify({
             "has_notification": True,
@@ -267,7 +266,7 @@ def heartbeat():
         try:
             _task_manager.mark_notification_delivered(notification_id)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
         return jsonify({
             "has_notification": True,
             "reply": "（通知生成失败）",
@@ -292,7 +291,7 @@ def heartbeat():
             try:
                 _task_manager.mark_notification_delivered(notification_id)
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
             return jsonify({"has_notification": False})
 
     # 4. 标记为已投递

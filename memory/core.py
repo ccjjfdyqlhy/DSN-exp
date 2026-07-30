@@ -21,10 +21,6 @@ logger = logging.getLogger("MemorySystem")
 _RECALL_RE = re.compile(r"<recall>\s*(.*?)\s*</recall>", re.DOTALL)
 _MEMO_RE = re.compile(r"<memo>(.*?)</memo>", re.DOTALL)
 
-MAX_DETAIL_CHARS_PER_ROUND = 4000
-MAX_TOTAL_DETAIL_CHARS = 16000
-
-
 class MemorySystem:
     def __init__(
         self,
@@ -35,6 +31,7 @@ class MemorySystem:
         self.db = db
         self.summary_model = summary_model or LMSummaryModel()
         self._ec = embedding_client
+        self.embedding_client = embedding_client
         self._embedding_enabled = (
             embedding_client is not None and Config.MEMORY_EMBEDDING_ENABLED
         )
@@ -304,7 +301,7 @@ class MemorySystem:
         user_id: int,
         keywords: list[str],
         limit: int = 5,
-        threshold: float = 0.5,
+        threshold: Optional[float] = None,
         embedding_query: Optional[str | list[float]] = None,
         embedding_weight: Optional[float] = None,
     ) -> list[dict]:
@@ -316,6 +313,7 @@ class MemorySystem:
         - list[float]: 直接作为向量相似度查询
         - None: 仅做 keyword 搜索 (原有行为)
         """
+        threshold = Config.MEMORY_SEARCH_THRESHOLD if threshold is None else threshold
         use_vector = (
             self._embedding_enabled
             and embedding_query is not None
@@ -462,27 +460,45 @@ class MemorySystem:
             where += " AND c.user_id = ?"
             params.append(user_id)
 
+        # 批量获取所有轮次的完整消息，避免 N+1
         rows = conn.execute(
-            f"SELECT DISTINCT c.user_id, m.chat_id, m.round_index "
+            f"SELECT c.user_id, m.chat_id, m.round_index, m.role, m.content "
             f"FROM messages m "
             f"JOIN chats c ON m.chat_id = c.chat_id "
-            f"{where} ORDER BY m.chat_id, m.round_index",
+            f"{where} ORDER BY m.chat_id, m.round_index, m.message_id",
             params,
         ).fetchall()
 
-        total = len(rows)
+        from collections import OrderedDict
+        round_msgs: OrderedDict = OrderedDict()
+        for r in rows:
+            key = (r["user_id"], r["chat_id"], r["round_index"])
+            if key not in round_msgs:
+                round_msgs[key] = []
+            round_msgs[key].append(r)
+
+        total = len(round_msgs)
         if total == 0:
             logger.info("没有需要索引的原始消息")
             return
 
         processed = 0
         skipped = 0
-        for r in rows:
-            uid = r["user_id"]
-            cid = r["chat_id"]
-            round_ = r["round_index"]
+        for (uid, cid, round_), msgs in round_msgs.items():
             try:
-                text = self._build_round_text(uid, cid, round_)
+                parts = []
+                for m in msgs:
+                    try:
+                        content = self._decrypt(uid, m["content"])
+                    except Exception:
+                        content = m["content"] or ""
+                    role = m["role"]
+                    if role == "user":
+                        role = "[用户]"
+                    elif role == "assistant":
+                        role = "[助手]"
+                    parts.append(f"{role}: {content}")
+                text = "\n".join(parts)
                 if not text:
                     skipped += 1
                     processed += 1
@@ -679,6 +695,7 @@ class MemorySystem:
             embedding_query = " ".join(keywords) if isinstance(keywords, list) else keywords
             hits = self.search(
                 user_id, keywords, count,
+                threshold=Config.MEMORY_SEARCH_THRESHOLD,
                 embedding_query=embedding_query if self._embedding_enabled else None,
             )
             search_text = self._format_search_results(hits, keywords)
@@ -860,7 +877,7 @@ class MemorySystem:
         total_chars = 0
         truncated = False
 
-        for round_idx in sorted(detail.keys()):
+        for round_idx in sorted(detail):
             messages = detail[round_idx]
             if not messages:
                 continue
@@ -875,15 +892,29 @@ class MemorySystem:
             time_label = f"{ts} ({ago})" if ago else ts
             lines.append(f"第{round_idx}轮 ({time_label}):")
             lines.append("─" * 56)
+            round_chars = 0
             for msg in messages:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
                 role_label = "User" if role == "user" else "Agent"
                 line = f"{role_label}: {content}"
+                remaining_round = Config.MEMORY_DETAIL_CHARS_PER_ROUND - round_chars
+                remaining_total = Config.MEMORY_TOTAL_DETAIL_CHARS - total_chars
+                remaining = min(remaining_round, remaining_total)
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if len(line) > remaining:
+                    line = (
+                        line[:remaining]
+                        if remaining <= 3
+                        else line[:remaining - 3].rstrip() + "..."
+                    )
+                    truncated = True
                 lines.append(line)
                 total_chars += len(line)
-                if total_chars > MAX_TOTAL_DETAIL_CHARS:
-                    truncated = True
+                round_chars += len(line)
+                if truncated:
                     break
             if truncated:
                 lines.append("...(内容截断)")

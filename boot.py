@@ -5,8 +5,6 @@
 import os
 import time
 import base64
-import json
-import re
 import logging
 import threading
 import queue
@@ -21,7 +19,9 @@ from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from api.alarm import alarm_bp, init_alarm_api
+from api.study_timetable import study_bp, init_study_timetable_api
 from db.plan_store import set_plan_db
+from db.study_timetable import set_study_db
 from db.chat import ChatDBManager
 from db.question_bank import QuestionBankDBManager
 from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
@@ -36,6 +36,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from audio.infer import VocalExp
 from plugins.builtin.tts_profile import TTSProfileManager
 from utils.text_clean import clean_tts_text
+
+_root_logger = logging.getLogger()
 
 # ── 模块级全局变量 ──
 app: Flask = None
@@ -119,7 +121,7 @@ def _convert_audio_to_wav(audio_bytes: bytes) -> bytes:
         proc = subprocess.run(
             [ffmpeg, "-y", "-i", "pipe:0", "-f", "wav", "-acodec", "pcm_s16le",
              "-ar", "16000", "-ac", "1", "pipe:1"],
-            input=audio_bytes, capture_output=True, timeout=15,
+            input=audio_bytes, capture_output=True, timeout=Config.ASR_CONVERT_TIMEOUT,
         )
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout
@@ -157,20 +159,26 @@ def setup_logging(_app):
     log_dir = _app.config["LOG_DIR"]
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log")
-    file_handler = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=30, encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
+    log_level = getattr(logging, str(_app.config["LOG_LEVEL"]).upper(), logging.INFO)
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=_app.config["LOG_MAX_BYTES"],
+        backupCount=_app.config["LOG_BACKUP_COUNT"],
+        encoding="utf-8",
+    )
+    file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level)
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     root = logging.getLogger()
     for h in root.handlers[:]:
         root.removeHandler(h)
     root.addHandler(file_handler)
     root.addHandler(console_handler)
-    root.setLevel(logging.INFO)
+    root.setLevel(log_level)
     root.propagate = False
-    _app.logger.setLevel(logging.INFO)
+    _app.logger.setLevel(log_level)
     _app.logger.propagate = True
     logging.getLogger('werkzeug').setLevel(logging.INFO)
     logging.getLogger('werkzeug').propagate = True
@@ -229,7 +237,7 @@ def _handle_reminder_completion(task, result):
     try:
         db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
 
 def _handle_reasoner_completion(task, result):
@@ -239,7 +247,7 @@ def _handle_reasoner_completion(task, result):
     try:
         db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
 
 def _handle_action_completion(task, result, retry_depth=0):
@@ -267,7 +275,7 @@ def _handle_action_completion(task, result, retry_depth=0):
     try:
         db.append_messages(task.user_id, task.chat_id, [{"role": "system", "content": msg}])
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
 
 # ── 模型预加载 ──
@@ -385,6 +393,7 @@ def create_application():
     setup_logging(app)
     completion_queue = queue.Queue()
 
+
     # ── 认证 ──
     from auth import AuthManager, auth_bp
     _auth_manager = AuthManager(
@@ -401,6 +410,7 @@ def create_application():
     app.register_blueprint(plan_bp)
     app.register_blueprint(heartbeat_bp)
     app.register_blueprint(alarm_bp)
+    app.register_blueprint(study_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
     from api.agent import agent_bp
@@ -413,6 +423,7 @@ def create_application():
     db = ChatDBManager(db_path=app.config["DATABASE_PATH"])
     app.config["DB"] = db
     set_plan_db(db)
+    set_study_db(db)
     _auth_manager.db = db
     if _auth_manager._user_count() == 0:
         print("  首次启动提示: 在服务器控制台输入 /newbind 生成配对码")
@@ -430,60 +441,71 @@ def create_application():
             init_reminder_api(db, task_manager, _auth_manager)
             init_alarm_api(db, _auth_manager)
             init_plan_api(db, _auth_manager)
+            init_study_timetable_api(db, _auth_manager)
             threading.Thread(target=process_task_completion, daemon=True).start()
         except Exception:
             task_manager = None
     _t("任务管理器", disabled=not _task_mgr_enabled)
 
     # ── 模型预加载（在记忆系统之前，避免 EmbeddingClient 加载时挤掉主模型）──
-    _preload_models(app)
-    _t("模型预加载")
+    _lmstudio_enabled = Config.LMSTUDIO_ENABLED
+    if _lmstudio_enabled:
+        _preload_models(app)
+    _t("模型预加载", disabled=not _lmstudio_enabled)
 
     # ── 记忆与摘要 ──
     _memory_enabled = app.config.get("MEMORY_ENABLED", True)
     if _memory_enabled:
         summary_model = LMSummaryModel(
             backend=app.config.get("MEMORY_SUMMARY_BACKEND", "openai"),
-            base_url=app.config.get("LMSTUDIO_BASE_URL"),
+            base_url=app.config.get("LMSTUDIO_BASE_URL") if _lmstudio_enabled else None,
             model_name=app.config.get("MEMORY_MODEL"),
             summary_length=app.config.get("MEMORY_SUMMARY_LENGTH", 100),
         )
-        memory_system = MemorySystem(db=db, summary_model=summary_model)
-        if Config.MEMORY_EMBEDDING_ENABLED:
+        _embedding_client = None
+        if _lmstudio_enabled and Config.MEMORY_EMBEDDING_ENABLED:
             try:
-                memory_system = MemorySystem(
-                    db=db, summary_model=summary_model,
-                    embedding_client=EmbeddingClient(base_url=Config.LMSTUDIO_BASE_URL),
-                )
+                _embedding_client = EmbeddingClient(base_url=Config.LMSTUDIO_BASE_URL)
             except Exception:
-                pass
+                _embedding_client = None
+        memory_system = MemorySystem(db=db, summary_model=summary_model, embedding_client=_embedding_client)
     _t("记忆与摘要", disabled=not _memory_enabled)
 
     # ── TTS ──
-    tts_client = VocalExp(app.config["TTS_BASE_URL"])
-    tts_profile_mgr = TTSProfileManager()
+    _tts_enabled = Config.TTS_ENABLED
+    if _tts_enabled:
+        tts_client = VocalExp(app.config["TTS_BASE_URL"])
+        tts_profile_mgr = TTSProfileManager()
 
-    # TTS 启动探测：等待服务就绪（最多重试3次，指数退避）
-    tts_probe_ok = False
-    for _tts_attempt in range(4):
-        if tts_client.probe(timeout=3.0):
-            tts_probe_ok = True
-            app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
-            break
-        if _tts_attempt < 3:
-            _tts_wait = min(2.0 * (2 ** _tts_attempt), 8.0)
-            app.logger.warning("TTS 服务未就绪，%.1fs 后重试 (%d/3)...", _tts_wait, _tts_attempt + 1)
-            time.sleep(_tts_wait)
-    if not tts_probe_ok:
-        app.logger.warning("TTS 服务 (端口 9880) 启动探测失败，TTS 功能可能不可用")
+        # TTS 启动探测：等待服务就绪，按配置进行指数退避。
+        tts_probe_ok = False
+        for _tts_attempt in range(Config.TTS_PROBE_ATTEMPTS):
+            if tts_client.probe(timeout=Config.TTS_PROBE_TIMEOUT):
+                tts_probe_ok = True
+                app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
+                break
+            if _tts_attempt + 1 < Config.TTS_PROBE_ATTEMPTS:
+                _tts_wait = min(
+                    Config.TTS_PROBE_BACKOFF_BASE * (2 ** _tts_attempt),
+                    Config.TTS_PROBE_BACKOFF_MAX,
+                )
+                app.logger.warning(
+                    "TTS 服务未就绪，%.1fs 后重试 (%d/%d)...",
+                    _tts_wait,
+                    _tts_attempt + 1,
+                    Config.TTS_PROBE_ATTEMPTS - 1,
+                )
+                time.sleep(_tts_wait)
+        if not tts_probe_ok:
+            app.logger.warning("TTS 服务 (端口 9880) 启动探测失败，TTS 功能可能不可用")
 
-    if Config.TTS_PROCESS_ENABLED:
-        try:
-            from models.tts_process import TTSProcessModel
-            _tts_process_model = TTSProcessModel()
-        except Exception:
-            _tts_process_model = None
-    _t("TTS")
+        if Config.TTS_PROCESS_ENABLED:
+            try:
+                from models.tts_process import TTSProcessModel
+                _tts_process_model = TTSProcessModel()
+            except Exception:
+                _tts_process_model = None
+    _t("TTS", disabled=not _tts_enabled)
 
     # ── ASR ──
     filter_model = None
@@ -492,7 +514,7 @@ def create_application():
             from models.asr_filter import LMFilterModel
             filter_model = LMFilterModel()
         except Exception:
-            pass
+            _root_logger.warning("Operation failed", exc_info=True)
     asr_model = None
     if app.config.get("ASR_ENABLED", True):
         from funasr import AutoModel
@@ -511,13 +533,15 @@ def create_application():
 
     # ── Prompt ──
     _prompt_dir = os.path.join(os.path.dirname(__file__), "prompt", "prompts")
+    _v2_dir = os.path.join(os.path.dirname(__file__), "prompt", "personality_v2", "presets") \
+        if not Config.PERSONALITY_V3_OVERRIDE_V2 else None
     prompt_engine = prompt.init_prompt_engine(
         library_dirs=[
             os.path.join(_prompt_dir, "core"),
             os.path.join(_prompt_dir, "capabilities"),
             os.path.join(_prompt_dir, "extensions"),
         ],
-        personality_v2_dir=os.path.join(os.path.dirname(__file__), "prompt", "personality_v2", "presets"),
+        personality_v2_dir=_v2_dir,
         db=db,
     )
 
@@ -548,7 +572,7 @@ def create_application():
                 _narrative_model.load_system_prompt_file(
                     os.path.join(os.path.dirname(__file__), "prompt", "world", "narrative.md"))
         except Exception:
-            pass
+            _root_logger.warning("Operation failed", exc_info=True)
     _t("世界", disabled=not Config.WORLD_ENABLED)
 
     # ── 技能系统 ──
@@ -560,13 +584,14 @@ def create_application():
         skill_manager = SkillManager(
             skill_dirs=[os.path.join(os.path.dirname(__file__), "skills", "builtin"),
                         os.path.join(os.path.dirname(__file__), "skills", "custom"),
-                        os.path.join(os.path.dirname(__file__), "skills", "system")],
+                        os.path.join(os.path.dirname(__file__), "skills", "system"),
+                        os.path.join(os.path.dirname(__file__), "skills", "batch")],
             registry=skill_registry,
         )
         skill_manager.scan_and_load()
         prompt_engine.set_skill_registry(skill_registry)
     except Exception:
-        pass
+        _root_logger.warning("Set operation failed", exc_info=True)
     _t("技能系统")
 
     # ── Phase 2: 学习系统 ──
@@ -630,17 +655,16 @@ def create_application():
             )
             personality_v3.init_tables()
             if Config.DISTILLATION_MODEL == "lmstudio":
-                _d = create_chat_client("fast")
-                if hasattr(_d, 'model_name'):
-                    _d.model_name = Config.PERSONALITY_MODEL_NAME
-                personality_v3.set_distillation_model(fast_chat=_d)
+                if hasattr(_v3_chat, 'model_name'):
+                    _v3_chat.model_name = Config.PERSONALITY_MODEL_NAME
+                personality_v3.set_distillation_model(fast_chat=_v3_chat)
             else:
                 personality_v3.set_distillation_model(main_chat=create_chat_client("deep"))
             prompt_engine.personality_v3 = personality_v3
             if Config.PERSONALITY_V3_OVERRIDE_V2:
                 prompt_engine.personality_v2 = None
         except Exception:
-            pass
+            _root_logger.warning("Operation failed", exc_info=True)
     _t("人格系统 V3", disabled=not Config.PERSONALITY_V3_ENABLED)
 
     # ── DSNEngine ──
@@ -670,8 +694,6 @@ def create_application():
     if Config.SEMANTIC_CACHE_ENABLED:
         try:
             from semantic_cache import CacheStore, L1PragmaticCache, CacheEngine
-            from semantic_cache.l2 import L2Cache
-            from semantic_cache.l3 import L3SlotRegistry
 
             _cache_dir = os.path.join(os.path.dirname(__file__),
                                       Config.SEMANTIC_CACHE_DIR)
@@ -756,7 +778,10 @@ def create_application():
         
         embedding_client = None
         if Config.MEMORY_EMBEDDING_ENABLED:
-            embedding_client = EmbeddingClient()
+            if memory_system is not None and memory_system.embedding_client is not None:
+                embedding_client = memory_system.embedding_client
+            else:
+                embedding_client = EmbeddingClient()
             app.logger.info("提示词缓存: 向量嵌入已启用")
         else:
             app.logger.info("提示词缓存: 向量嵌入未启用，仅使用关键词搜索")
@@ -789,7 +814,7 @@ def create_application():
                 if k.startswith("personality_materials."):
                     inst._v3 = personality_v3
     except Exception:
-        pass
+        _root_logger.warning("Operation failed", exc_info=True)
 
     # ── 维护模块 ──
     _maint_disabled = True
@@ -821,6 +846,60 @@ def create_application():
     except Exception:
         app.config["MAINTENANCE_SYSTEM"] = None
     _t("维护模块", disabled=_maint_disabled)
+
+    # ── 双模协同 ──
+    _dual_disabled = True
+    try:
+        if Config.DUAL_ENABLED:
+            from dual import (
+                RequestPool, StreamRegistry, InstantContextRegistry,
+                TTSSynthesizer, InstantModelService,
+                MainModelDispatcher, DualCoordinator,
+            )
+
+            request_pool = RequestPool.get_instance()
+            stream_registry = StreamRegistry.get_instance()
+            instant_registry = InstantContextRegistry.get_instance()
+
+            tts_synth = TTSSynthesizer(
+                tts_client=tts_client,
+                tts_profile_mgr=tts_profile_mgr,
+                tts_process_model=_tts_process_model,
+            )
+
+            instant_service = InstantModelService(
+                prompt_engine=prompt_engine,
+                memory_system=memory_system,
+                tts_synth=tts_synth,
+                request_pool=request_pool,
+                instant_registry=instant_registry,
+                db=db,
+            )
+
+            main_dispatcher = MainModelDispatcher(
+                engine=engine,
+                request_pool=request_pool,
+                max_workers=Config.DUAL_MAIN_WORKERS,
+            )
+
+            dual_coordinator = DualCoordinator(
+                instant_service=instant_service,
+                main_dispatcher=main_dispatcher,
+                stream_registry=stream_registry,
+                request_pool=request_pool,
+                tts_synth=tts_synth,
+            )
+
+            app.config["DUAL_COORDINATOR"] = dual_coordinator
+            _dual_disabled = False
+            app.logger.info("双模协同已启用 (Instant=%s, workers=%d)",
+                            Config.INSTANT_MODEL, Config.DUAL_MAIN_WORKERS)
+        else:
+            app.logger.info("双模协同已禁用 (DUAL_ENABLED=false)")
+    except Exception:
+        app.config["DUAL_COORDINATOR"] = None
+        app.logger.warning("双模协同初始化失败", exc_info=True)
+    _t("双模协同", disabled=_dual_disabled)
 
     # ── 打印启动耗时 ──
     app.logger.info("=" * 45)

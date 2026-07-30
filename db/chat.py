@@ -71,44 +71,6 @@ class ChatDBManager:
             self._local.conn.close()
             del self._local.conn
 
-    @staticmethod
-    def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_def: str) -> None:
-        """安全添加列：仅当列不存在时执行 ALTER TABLE"""
-        try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
-            logging.getLogger("ChatDBManager").info("迁移: %s.%s 添加成功", table, column)
-        except sqlite3.OperationalError:
-            pass  # 列已存在
-
-    @staticmethod
-    def _migrate_messages_role(conn: sqlite3.Connection) -> None:
-        """迁移: 如果 messages 表 role 列有 CHECK 约束阻止 'system'，则重建表"""
-        try:
-            conn.execute("INSERT INTO messages (chat_id, role, content) VALUES (-1, 'system', '_migration_test')")
-            conn.execute("DELETE FROM messages WHERE chat_id = -1 AND content = '_migration_test'")
-            conn.commit()
-        except sqlite3.IntegrityError:
-            # 旧约束存在，需要迁移
-            logger = logging.getLogger("ChatDBManager")
-            logger.info("迁移 messages 表: 移除 role CHECK 约束...")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages_new (
-                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    round_index INTEGER DEFAULT NULL,
-                    FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
-                )
-            """)
-            conn.execute("INSERT INTO messages_new SELECT * FROM messages ORDER BY message_id")
-            conn.execute("DROP TABLE messages")
-            conn.execute("ALTER TABLE messages_new RENAME TO messages")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
-            conn.commit()
-            logger.info("迁移完成: messages 表现在接受 'system' role")
-
     def _init_db(self):
         """初始化表结构（线程安全，使用锁）"""
         with self._init_lock:
@@ -118,18 +80,20 @@ class ChatDBManager:
                     CREATE TABLE IF NOT EXISTS users (
                         uid INTEGER PRIMARY KEY,
                         nickname TEXT NOT NULL,
+                        display_name TEXT DEFAULT '',
+                        is_admin INTEGER DEFAULT 0,
+                        littleskin_uid INTEGER DEFAULT NULL,
+                        bound_to INTEGER DEFAULT NULL,
+                        last_agent_sync TEXT DEFAULT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                # 认证系统扩展列
-                self._migrate_add_column(conn, "users", "display_name", "TEXT DEFAULT ''")
-                self._migrate_add_column(conn, "users", "is_admin", "INTEGER DEFAULT 0")
-                self._migrate_add_column(conn, "users", "littleskin_uid", "INTEGER DEFAULT NULL")
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS chats (
                         chat_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
                         chat_name TEXT NOT NULL,
+                        chat_type TEXT DEFAULT 'user',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE
                     )
@@ -141,11 +105,17 @@ class ChatDBManager:
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        round_index INTEGER DEFAULT NULL,
                         FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
                     )
                 """)
+                # 迁移: 为旧表补充 msg_type 列
+                _msg_cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+                if "msg_type" not in _msg_cols:
+                    conn.execute("ALTER TABLE messages ADD COLUMN msg_type TEXT NOT NULL DEFAULT 'main'")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_round ON messages(chat_id, round_index)")
 
                 # 任务通知表
                 conn.execute("""
@@ -154,25 +124,15 @@ class ChatDBManager:
                         task_id TEXT NOT NULL,
                         user_id INTEGER NOT NULL,
                         chat_id INTEGER NOT NULL,
-                        result TEXT NOT NULL,
+                        result TEXT,
                         status TEXT DEFAULT 'unread' CHECK(status IN ('unread', 'read')),
+                        delivered INTEGER DEFAULT 0,
+                        dismissed INTEGER DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
                     )
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id ON task_notifications(task_id)")
-                
-                # 迁移: messages 表 round_index 列
-                self._migrate_add_column(conn, "messages", "round_index", "INTEGER DEFAULT NULL")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_round ON messages(chat_id, round_index)")
-                
-                # 迁移: 移除 messages 表 role 列的 CHECK 约束，允许 'system' role
-                self._migrate_messages_role(conn)
-
-                # 迁移: AI Agent 绑定支持
-                self._migrate_add_column(conn, "users", "bound_to", "INTEGER DEFAULT NULL")
-                self._migrate_add_column(conn, "users", "last_agent_sync", "TEXT DEFAULT NULL")
-                self._migrate_add_column(conn, "chats", "chat_type", "TEXT DEFAULT 'user'")
 
                 # 人格系统 v2 状态表
                 from prompt.personality_v2.persistence import CREATE_PERSONALITY_TABLE
@@ -184,7 +144,7 @@ class ChatDBManager:
                     for _name, _sql in V3_TABLES:
                         conn.execute(_sql)
                 except Exception:
-                    pass  # V3 可能未完全部署
+                    self.logger.warning("V3 表初始化失败", exc_info=True)
 
                 # 用户印象表
                 conn.execute("""
@@ -535,8 +495,7 @@ class ChatDBManager:
 
     @staticmethod
     def _next_user_id() -> int:
-        import os, struct, time
-        # 生成一个足够大的伪随机 UID，避免与现有用户冲突
+        import time
         return int(time.time() * 1000) % 900000000 + 100000000
 
     def save_memory(self, user_id: int, chat_id: int, round_index: int, summary: str,
@@ -699,8 +658,12 @@ class ChatDBManager:
             conn.rollback()
             raise
 
-    def get_chat_history(self, user_id: int, chat_id: int) -> List[Dict[str, str]]:
-        """获取指定聊天会话的所有消息（需验证用户所有权，系统内部聊天拒绝）"""
+    def get_chat_history(self, user_id: int, chat_id: int,
+                         exclude_types: list[str] = None) -> List[Dict[str, str]]:
+        """获取指定聊天会话的所有消息（需验证用户所有权，系统内部聊天拒绝）
+
+        :param exclude_types: 排除的消息类型列表，如 ['instant'] 可过滤掉 Instant 模型的消息
+        """
         conn = self._get_connection()
         try:
             # 先验证该聊天属于该用户且非系统聊天
@@ -712,10 +675,14 @@ class ChatDBManager:
                 self.logger.warning("用户 %d 无权访问聊天 %d", user_id, chat_id)
                 return []
 
-            rows = conn.execute(
-                "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC",
-                (chat_id,),
-            ).fetchall()
+            query = "SELECT role, content FROM messages WHERE chat_id = ?"
+            params: list = [chat_id]
+            if exclude_types:
+                placeholders = ",".join("?" * len(exclude_types))
+                query += f" AND msg_type NOT IN ({placeholders})"
+                params.extend(exclude_types)
+            query += " ORDER BY timestamp ASC"
+            rows = conn.execute(query, params).fetchall()
             return [{"role": r["role"], "content": self._cipher.decrypt(user_id, r["content"])} for r in rows]
         except sqlite3.Error as e:
             self.logger.error("获取聊天历史失败: %s", e)
@@ -818,16 +785,17 @@ class ChatDBManager:
                 role = msg.get("role")
                 content = msg.get("content")
                 skip_memory = msg.get("skip_memory", False) or skip_memory_check
+                msg_type = msg.get("msg_type", "main")
 
                 if role not in ("user", "assistant", "system") or not isinstance(content, str):
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
 
-                # 加密内容后插入数据库，含 round_index
+                # 加密内容后插入数据库，含 round_index 和 msg_type
                 encrypted = self._cipher.encrypt(user_id, content)
                 conn.execute(
-                    "INSERT INTO messages (chat_id, role, content, round_index) VALUES (?, ?, ?, ?)",
-                    (chat_id, role, encrypted, round_index),
+                    "INSERT INTO messages (chat_id, role, content, round_index, msg_type) VALUES (?, ?, ?, ?, ?)",
+                    (chat_id, role, encrypted, round_index, msg_type),
                 )
 
                 # 如果消息标记为跳过记忆化，记录日志

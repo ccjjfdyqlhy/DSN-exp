@@ -2,10 +2,9 @@
 # plan_store.py
 # 计划系统 — 三层模型 (Goal → Phase → DailyTask) + SQLite 持久化
 
-import json
 import logging
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, date, timedelta
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -47,6 +46,7 @@ class Phase:
     end_date: str = ""
     status: str = "pending"        # pending / active / completed
     progress: float = 0.0
+    position: int = 0
 
 
 @dataclass
@@ -92,6 +92,7 @@ class PlanStore:
                 end_date    TEXT,
                 status      TEXT DEFAULT 'pending',
                 progress    REAL DEFAULT 0.0,
+                position    INTEGER DEFAULT 0,
                 FOREIGN KEY (goal_id) REFERENCES goals(goal_id) ON DELETE CASCADE
             )
         """)
@@ -115,16 +116,6 @@ class PlanStore:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_phases_goal ON phases(goal_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_date ON daily_tasks(date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON daily_tasks(user_id, date)")
-        conn.commit()
-        # 迁移: 为旧 daily_tasks 补充 goal_id/phase_id 列
-        try:
-            conn.execute("ALTER TABLE daily_tasks ADD COLUMN goal_id TEXT DEFAULT ''")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE daily_tasks ADD COLUMN phase_id TEXT DEFAULT ''")
-        except Exception:
-            pass
         conn.commit()
 
     # ── Goal CRUD ──
@@ -183,10 +174,10 @@ class PlanStore:
     def create_phase(self, phase: Phase) -> str:
         conn = self.db._get_connection()
         conn.execute(
-            "INSERT INTO phases (phase_id, goal_id, title, description, start_date, end_date, status, progress) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO phases (phase_id, goal_id, title, description, start_date, end_date, status, progress, position) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (phase.phase_id, phase.goal_id, phase.title, phase.description,
-             phase.start_date, phase.end_date, phase.status, phase.progress),
+             phase.start_date, phase.end_date, phase.status, phase.progress, phase.position),
         )
         conn.commit()
         return phase.phase_id
@@ -194,11 +185,12 @@ class PlanStore:
     def get_phases(self, goal_id: str) -> list[Phase]:
         conn = self.db._get_connection()
         rows = conn.execute(
-            "SELECT * FROM phases WHERE goal_id = ? ORDER BY start_date ASC", (goal_id,)
+            "SELECT * FROM phases WHERE goal_id = ? ORDER BY position ASC, start_date ASC", (goal_id,)
         ).fetchall()
         return [Phase(phase_id=r["phase_id"], goal_id=r["goal_id"], title=r["title"],
                       description=r["description"] or "", start_date=r["start_date"] or "",
-                      end_date=r["end_date"] or "", status=r["status"], progress=r["progress"])
+                      end_date=r["end_date"] or "", status=r["status"], progress=r["progress"],
+                      position=r["position"] or 0)
                 for r in rows]
 
     # ── DailyTask CRUD ──

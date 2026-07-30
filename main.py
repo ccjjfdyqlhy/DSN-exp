@@ -15,9 +15,11 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import deque
 
-from tasks import TaskManager, TaskStatus, TaskType
+from tasks import TaskStatus, TaskType
 
 # ── 首次启动检测：必须在任何可能触发 config.py 的 import 之前执行 ──
+import logging
+_log = logging.getLogger(__name__)
 _ENV_PATH = Path(__file__).parent / ".env"
 
 
@@ -62,6 +64,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.table import Table
 from rich import box
+from config import Config
 
 try:
     from prompt.personality_v3.traits import TRAIT_MAP
@@ -76,7 +79,7 @@ except ImportError:
 
 console = Console()
 
-LOG_BUFFER: deque = deque(maxlen=200)
+LOG_BUFFER: deque = deque(maxlen=Config.LOG_BUFFER_SIZE)
 LOG_LOCK = threading.Lock()
 _LOG_HANDLER_INSTALLED = False
 
@@ -180,7 +183,7 @@ def _check_port_available(host: str, port: int):
                         pname = "?"
                     console.print(f"  PID={pid}  进程={pname}")
     except Exception:
-        pass
+        _log.warning("Operation failed", exc_info=True)
 
     try:
         result = subprocess.run(
@@ -192,7 +195,7 @@ def _check_port_available(host: str, port: int):
             if len(parts) >= 2:
                 console.print(f"  lsof: {' '.join(parts)}")
     except Exception:
-        pass
+        _log.warning("Operation failed", exc_info=True)
 
     raise OSError(f"Address already in use: {host}:{port}")
 
@@ -475,7 +478,7 @@ def _cmd_status(auth_manager, db):
             ).fetchone()[0]
             print(f"  总聊天数: {chats}  总消息数: {msgs}  活跃会话: {sessions}")
         except Exception:
-            pass
+            _log.warning("Operation failed", exc_info=True)
 
     if auth_manager and auth_manager.pairing.is_active():
         print("  [配对码] 存在未使用的配对码")
@@ -656,8 +659,7 @@ def _cmd_export(db, args: str):
         return
     out_path = parts[3]
 
-    import json, os
-    from utils.crypto import MessageCipher
+    import json
     cipher = db._cipher
 
     conn = db._get_connection()
@@ -830,16 +832,14 @@ def _cmd_reminder(db, args: str):
         rows = conn.execute(
             f"SELECT task_id, task_type, user_id, chat_id, priority, scheduled_time, "
             f"status, interval_seconds, skip_count, created_at FROM tasks {w} "
-            f"ORDER BY priority DESC, scheduled_time ASC LIMIT 50",
-            params,
+            f"ORDER BY priority DESC, scheduled_time ASC LIMIT ?",
+            (*params, Config.REMINDER_LIST_LIMIT),
         ).fetchall()
 
         if not rows:
             print("  无匹配的提醒任务")
             return
 
-        from rich.table import Table
-        from rich.console import Console
         table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
         table.add_column("ID", style="dim", max_width=10)
         table.add_column("类型")
@@ -863,7 +863,7 @@ def _cmd_reminder(db, args: str):
             skip = str(r["skip_count"]) if r["skip_count"] else ""
             table.add_row(tid, typ, ts, iv, status, skip)
 
-        Console().print(table)
+        console.print(table)
         print(f"\n  命令: /reminder cancel <id> | /reminder skip <id>")
 
     elif sub == "cancel":
@@ -1206,7 +1206,6 @@ def _cmd_memory_query(db, parts: list[str]):
         return
 
     # 解析过滤参数
-    # 解析过滤参数
     from datetime import datetime as dt, timedelta
 
     tokens = parts[3:]
@@ -1248,10 +1247,6 @@ def _cmd_memory_query(db, parts: list[str]):
             print("  未找到匹配的记忆")
             return
 
-        from rich.table import Table
-        from rich.console import Console
-        console = Console()
-
         table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
         table.add_column("轮次", justify="right")
         table.add_column("匹配度")
@@ -1283,14 +1278,13 @@ def _cmd_memory_query(db, parts: list[str]):
         sql += " AND created_at < ?"
         params.append(date_before)
 
-    sql += " ORDER BY id DESC LIMIT 50"
+    sql += f" ORDER BY id DESC LIMIT {Config.MEMORY_QUERY_LIMIT}"
 
     rows = conn.execute(sql, params).fetchall()
     if not rows:
         print("  未找到匹配的记忆")
         return
 
-    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     results = []
@@ -1310,10 +1304,6 @@ def _cmd_memory_query(db, parts: list[str]):
     if not results:
         print("  未找到匹配的记忆")
         return
-
-    from rich.table import Table
-    from rich.console import Console
-    console = Console()
 
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
     table.add_column("ID", style="dim", justify="right")
@@ -1381,7 +1371,6 @@ def _cmd_memory_rebuild(db, parts: list[str]):
 
     # 查询匹配的 memory_v2 条目
     conn = db._get_connection()
-    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     if mode == "latest":
@@ -1418,10 +1407,6 @@ def _cmd_memory_rebuild(db, parts: list[str]):
             "id": r["id"], "user_id": r["user_id"], "chat_id": r["chat_id"],
             "round": r["round"], "content": content, "created_at": r["created_at"],
         })
-
-    from rich.table import Table
-    from rich.console import Console
-    console = Console()
 
     start = entries[0]
     end = entries[-1]
@@ -1477,21 +1462,36 @@ def _cmd_memory_users(auth_manager, db):
     table.add_column("记忆数")
 
     conn = db._get_connection()
+    user_ids = [u["uid"] for u in users]
+    placeholders = ",".join("?" for _ in user_ids)
+
+    chat_rows = {}
+    if placeholders:
+        rows = conn.execute(
+            f"SELECT user_id, COUNT(*) AS cnt FROM chats "
+            f"WHERE chat_name != '__steward__' AND user_id IN ({placeholders}) "
+            f"GROUP BY user_id",
+            user_ids,
+        ).fetchall()
+        chat_rows = {r["user_id"]: r["cnt"] for r in rows}
+
+    mem_rows = {}
+    if placeholders:
+        rows = conn.execute(
+            f"SELECT user_id, COUNT(*) AS cnt FROM memory_v2 "
+            f"WHERE type = 'exp' AND user_id IN ({placeholders}) "
+            f"GROUP BY user_id",
+            user_ids,
+        ).fetchall()
+        mem_rows = {r["user_id"]: r["cnt"] for r in rows}
+
     for u in users:
         uid = u["uid"]
-        chat_row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM chats WHERE user_id = ? AND chat_name != '__steward__'",
-            (uid,),
-        ).fetchone()
-        mem_row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM memory_v2 WHERE user_id = ? AND type = 'exp'",
-            (uid,),
-        ).fetchone()
         table.add_row(
             str(uid),
             u["display_name"],
-            str(chat_row["cnt"]) if chat_row else "0",
-            str(mem_row["cnt"]) if mem_row else "0",
+            str(chat_rows.get(uid, 0)),
+            str(mem_rows.get(uid, 0)),
         )
     console.print(table)
 
@@ -1516,13 +1516,22 @@ def _cmd_memory_chats(db, uid_str: str):
     table.add_column("创建时间")
 
     conn = db._get_connection()
+    chat_ids = [c["chat_id"] for c in chats if c["chat_id"] is not None]
+    mem_counts = {}
+    if chat_ids:
+        placeholders = ",".join("?" for _ in chat_ids)
+        rows = conn.execute(
+            f"SELECT chat_id, COUNT(*) AS cnt FROM memory_v2 "
+            f"WHERE user_id = ? AND type = 'exp' AND chat_id IN ({placeholders}) "
+            f"GROUP BY chat_id",
+            (uid,) + tuple(chat_ids),
+        ).fetchall()
+        mem_counts = {r["chat_id"]: r["cnt"] for r in rows}
+
     for c in chats:
         cid = c["chat_id"]
-        mem_row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM memory_v2 WHERE user_id = ? AND chat_id = ? AND type = 'exp'",
-            (uid, cid),
-        ).fetchone()
-        mem_count = f" ({mem_row['cnt']} 记忆)" if mem_row and mem_row["cnt"] > 0 else ""
+        mc = mem_counts.get(cid, 0)
+        mem_count = f" ({mc} 记忆)" if mc > 0 else ""
         table.add_row(
             str(cid),
             c["chat_name"] + mem_count,
@@ -1551,7 +1560,6 @@ def _cmd_memory_list(db, uid_str: str, cid_str: str, round_str: str | None):
         print(f"  用户 {uid} 无权访问聊天 {cid}")
         return
 
-    from utils.crypto import MessageCipher
     cipher = db._cipher
 
     if round_str is not None:
@@ -2395,7 +2403,7 @@ def main():
                 "[yellow]  首次启动: 在控制台输入 [bold]/newbind[/] 生成配对码[/]\n"
             )
     except Exception:
-        pass
+        _log.warning("Operation failed", exc_info=True)
 
     # ── 启动 HTTP 服务器 ──
     host = getattr(Config, "SERVER_HOST", "0.0.0.0")
@@ -2533,17 +2541,17 @@ def main():
             if server:
                 server.shutdown()
         except Exception:
-            pass
+            _log.warning("Operation failed", exc_info=True)
         try:
             if debug_server:
                 debug_server.shutdown()
         except Exception:
-            pass
+            _log.warning("Operation failed", exc_info=True)
         try:
             if admin_server:
                 admin_server.shutdown()
         except Exception:
-            pass
+            _log.warning("Operation failed", exc_info=True)
         console.print("\n[yellow]Shutting down...[/]")
 
 

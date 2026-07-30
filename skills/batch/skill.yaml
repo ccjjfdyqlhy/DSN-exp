@@ -1,0 +1,48 @@
+name: batch
+display_name: "批量操作"
+description: "一次性提交多个操作到后台线程池并行执行，适合批量文件处理、批量命令、并行编译等场景。"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 70
+tags: [batch, parallel, async, task]
+activation:
+  keywords: ["批量", "batch", "并行", "parallel", "同时执行", "一起跑"]
+  auto_activate: false
+dependencies: []
+tools:
+  - name: batch_execute
+    display_name: "批量执行"
+    description: "一次性提交多个操作到后台线程池并行执行。每个操作可以是 shell/python/write_file/edit_file。提交后立即返回所有 task_id，不阻塞对话。适合：批量文件重命名、并行编译多个项目、同时运行多个脚本、批量下载等场景。"
+    module: "tools.batch_tools"
+    class: "BatchTools"
+    methods:
+      - name: batch_execute
+        description: "批量提交操作到线程池"
+        parameters:
+          actions:
+            type: array
+            description: "操作列表，每个元素是一个操作对象"
+            required: true
+            items:
+              type: object
+              description: "单个操作：包含 action_type, content, 以及可选的 file_path/overwrite/pattern/replacement/label"
+
+  - name: batch_status
+    display_name: "批量状态查询"
+    description: "查询批量任务的执行状态。传入 task_id 列表，返回每个任务的当前状态和结果。"
+    module: "tools.batch_tools"
+    class: "BatchTools"
+    methods:
+      - name: batch_status
+        description: "查询批量任务状态"
+        parameters:
+          task_ids:
+            type: array
+            description: "要查询的 task_id 列表"
+            required: true
+            items:
+              type: string

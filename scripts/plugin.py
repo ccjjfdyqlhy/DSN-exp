@@ -1,10 +1,7 @@
 # scripts/plugin.py
 # ScriptPlugin — 管道钩子集成（PRE_FILTER + PRE_PROCESS + POST_PROCESS）
 
-from __future__ import annotations
-
 import logging
-from typing import Optional
 
 from plugins.base import Plugin, HookPoint, PluginContext
 

@@ -27,7 +27,7 @@ try:
                 _raw = parts[2].strip()
         _FATE_PROMPT = _raw
 except Exception:
-    pass
+    logger.warning("Operation failed", exc_info=True)
 
 
 class WorldPlugin(Plugin):
@@ -240,7 +240,7 @@ class WorldPlugin(Plugin):
                 update["affinity_level"] = aff.get("level", 0)
                 update["mood_label"] = st.get("mood", {}).get("label", "")
             except Exception:
-                pass
+                logger.warning("Update operation failed", exc_info=True)
         # Detect affinity level up
         prev = self._engine.prev_affinity_level
         current = update.get("affinity_level", 0)

@@ -2,11 +2,10 @@ import hashlib
 import json
 import logging
 import re
-import time
-from typing import Any, Optional
+from typing import Optional
 
 from semantic_cache.models import SearchResult, ActionGraph
-from semantic_cache.l2 import L2Cache, compute_action_signature, compute_slot_hash, FallbackException
+from semantic_cache.l2 import L2Cache, compute_action_signature, compute_slot_hash
 from semantic_cache.l3 import L3SlotRegistry
 
 logger = logging.getLogger("CacheEngine")

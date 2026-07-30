@@ -1,14 +1,9 @@
-import json
 import logging
-import os
-import sqlite3
 import struct
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-import numpy as np
 
 logger = logging.getLogger("CacheStore")
 
@@ -152,7 +147,7 @@ class CacheStore:
                     vecs.append(vec)
                     keys.append(r["cache_key"])
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         with self._index_lock:
             self._index = np.array(vecs, dtype=np.float32) if vecs else None
             self._index_norm = (

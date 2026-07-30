@@ -75,8 +75,8 @@ class EngineConfig:
     task_max_workers: int = Config.TASK_MAX_WORKERS
     agent_active: bool = True
     agent_max_steps: int = Config.AGENT_MAX_STEPS
-    agent_token_budget: int = 1000000
-    agent_timeout: float = 120.0
+    agent_token_budget: int = Config.AGENT_TOKEN_BUDGET
+    agent_timeout: float = Config.AGENT_TIMEOUT_SECONDS
     debug_play_as_model: bool = Config.DEBUG_PLAY_AS_MODEL
     debug_play_as_model_port: int = Config.DEBUG_PLAY_AS_MODEL_PORT
 
@@ -474,6 +474,13 @@ class DSNEngine:
 
 
 
+        if not Config.TTS_ENABLED:
+            self._tts_client = None
+            self._tts_profile_mgr = None
+            self._tts_available = False
+            self._logger.info("TTS 已禁用 (TTS_ENABLED=false)")
+            return
+
         # initialize the tts client
         try:
             from audio.infer import VocalExp
@@ -532,21 +539,22 @@ class DSNEngine:
                 from db.plan_engine import PlanEngine
                 plan_engine = PlanEngine(PlanStore(self.db))
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
 
             for key, instance in list(self.skill_registry._tool_instances.items()):
-                if not key.startswith("system."):
+                if not key.startswith("system.") and not key.startswith("batch."):
                     continue
                 cls = type(instance)
                 if not hasattr(cls, '_ctx'):
                     continue
                 cls._ctx["task_manager"] = self.task_manager
                 cls._ctx["db"] = self.db
-                cls._ctx["memory_system"] = self.memory_system
-                cls._ctx["notebook_store"] = nb_store
-                cls._ctx["plan_engine"] = plan_engine
-                cls._ctx["prompt_cache"] = self.prompt_cache
-                cls._ctx["impression_manager"] = self.impression_manager
+                if key.startswith("system."):
+                    cls._ctx["memory_system"] = self.memory_system
+                    cls._ctx["notebook_store"] = nb_store
+                    cls._ctx["plan_engine"] = plan_engine
+                    cls._ctx["prompt_cache"] = self.prompt_cache
+                    cls._ctx["impression_manager"] = self.impression_manager
             self._logger.info("系统技能依赖注入完成")
         except Exception as e:
             self._logger.warning("系统技能依赖注入失败: %s", e)
@@ -606,7 +614,7 @@ class DSNEngine:
                         peers.load_preset(0, preset_name)
                         loaded_preset = True
                 except Exception:
-                    pass
+                    logger.warning("Load/read operation failed", exc_info=True)
         if not loaded_preset and self._cfg and self._cfg.personality_preset:
             loaded_preset = peers.load_preset(0, self._cfg.personality_preset)
         if not loaded_preset:
@@ -691,7 +699,7 @@ class DSNEngine:
                 PluginDIContainer.register("distillation_engine",
                     DistillationEngine(db=self.db, skill_manager=self.skill_manager, llm_client=_llm))
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         PluginDIContainer.register("v3_system",
             self.prompt_engine.personality_v3 if self.prompt_engine else None)
         PluginDIContainer.register("card_id", self._cfg.card_id if self._cfg else "exa")
@@ -723,7 +731,7 @@ class DSNEngine:
                         try:
                             plugin.set_skill_registry(self.skill_registry)
                         except Exception:
-                            pass
+                            logger.warning("Set operation failed", exc_info=True)
                     loaded.add(manifest.name)
 
         self._models_plugin = PluginDIContainer.get("models")
@@ -822,7 +830,7 @@ class DSNEngine:
                     spec.get("_skill_name", ""), tool_spec_obj)
                 schema = built.get("function", {}).get("parameters", {})
         except Exception:
-            pass
+            logger.warning("Get operation failed", exc_info=True)
         return schema
 
     def chat(self, message: str, user_id: int = 1,
@@ -831,7 +839,8 @@ class DSNEngine:
              nickname: str = "用户", **kwargs) -> dict:
         """同步对话"""
         if history is None and chat_id and self.db:
-            history = self.db.get_chat_history(user_id, chat_id)
+            history = self.db.get_chat_history(user_id, chat_id,
+                                              exclude_types=kwargs.pop("_exclude_types", ["instant"]))
 
         if chat_id is None and self.db:
             chat_id = self.db.create_chat(user_id, chat_name)
@@ -869,7 +878,8 @@ class DSNEngine:
                           nickname: str = "用户", **kwargs) -> AsyncGenerator[str, None]:
         """异步流式对话"""
         if history is None and chat_id and self.db:
-            history = self.db.get_chat_history(user_id, chat_id)
+            history = self.db.get_chat_history(user_id, chat_id,
+                                                exclude_types=kwargs.pop("_exclude_types", ["instant"]))
 
         if chat_id is None and self.db:
             chat_id = self.db.create_chat(user_id, chat_name)
@@ -1369,7 +1379,7 @@ def create_engine_with_defaults(
                     try:
                         plugin.set_skill_registry(skill_registry)
                     except Exception:
-                        pass
+                        logger.warning("Set operation failed", exc_info=True)
                 loaded_plugins.add(manifest.name)
 
     _models = PluginDIContainer.get("models")

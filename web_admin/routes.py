@@ -12,6 +12,7 @@ from datetime import datetime, date, timedelta
 from io import StringIO
 
 from flask import Blueprint, jsonify, request
+from config import Config
 
 logger = logging.getLogger("web_admin")
 
@@ -92,7 +93,7 @@ def api_status():
                 for u in users
             ]
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     try:
         db = DB()
         conn = db._get_connection()
@@ -105,7 +106,7 @@ def api_status():
         ).fetchone()[0]
         data["stats"] = {"chats": chats, "messages": msgs, "active_sessions": sessions}
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     auth_manager = AM()
     if auth_manager and auth_manager.pairing.is_active():
         data["pairing_active"] = True
@@ -317,7 +318,7 @@ def api_memory_query():
     if date_before:
         sql += " AND created_at < ?"
         params.append(date_before)
-    sql += " ORDER BY id DESC LIMIT 50"
+    sql += f" ORDER BY id DESC LIMIT {Config.MEMORY_QUERY_LIMIT}"
     rows = conn.execute(sql, params).fetchall()
     results = []
     for r in rows:
@@ -349,7 +350,7 @@ def api_memory_reindex():
             for processed, total, preview, skipped in ms.reindex_embeddings(user_id=uid):
                 pass
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return jsonify({"success": True, "message": "Reindex started"})
@@ -499,7 +500,7 @@ def api_persona_distill(card_id):
             if d:
                 personality_v3.mark_distillation_done(card_id)
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return jsonify({"success": True, "message": f"Distillation started for {card_id}"})
@@ -534,8 +535,8 @@ def api_reminders():
     rows = conn.execute(
         f"SELECT task_id, task_type, user_id, chat_id, priority, scheduled_time, "
         f"status, interval_seconds, skip_count, created_at FROM tasks {w} "
-        f"ORDER BY priority DESC, scheduled_time ASC LIMIT 50",
-        params,
+        f"ORDER BY priority DESC, scheduled_time ASC LIMIT ?",
+        (*params, Config.REMINDER_LIST_LIMIT),
     ).fetchall()
     reminders = []
     for r in rows:
@@ -719,7 +720,7 @@ def api_agent_create():
             )
             result["api_key"] = raw_key
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     return jsonify({"success": True, "agent": result})
 
 @admin_bp.route("/agent/bind", methods=["POST"])

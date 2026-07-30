@@ -1,14 +1,11 @@
 # scripts/recorder.py
 # ScriptRecorder — 录制 AI 响应/动作/状态变迁
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Optional
 
 from scripts.state import ScriptState

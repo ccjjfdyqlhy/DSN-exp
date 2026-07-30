@@ -107,7 +107,7 @@ class PairingManager:
                                 conn.execute("DELETE FROM users WHERE uid = ?", (ruid,))
                                 logger.warning("[临时] 删除无聊天记录的重名用户 uid=%d (display_name=%s)", ruid, display_name)
                             except Exception:
-                                pass
+                                logger.warning("Operation failed", exc_info=True)
                         conn.commit()
                         uid = uid_with_chat
                     # 更新复用用户的 display_name 和 is_admin
@@ -120,7 +120,7 @@ class PairingManager:
                     logger.info("配对码验证成功, 复用用户 uid=%d (display_name=%s)", uid, display_name)
                     return uid
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
 
         uid = self._create_default_user(display_name, is_admin)
         self._mark_code_used(code)
@@ -169,7 +169,7 @@ class PairingManager:
             )
             self._db._get_connection().commit()
         except Exception:
-            pass
+            logger.warning("Connection failed", exc_info=True)
 
     def _mark_code_used(self, code: str) -> None:
         if self._db is None:
@@ -180,4 +180,4 @@ class PairingManager:
             )
             self._db._get_connection().commit()
         except Exception:
-            pass
+            logger.warning("Connection failed", exc_info=True)

@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, g
 from datetime import datetime, timedelta
 import json
 
+from config import Config
 from tasks import TaskType, TaskStatus
 
 reminder_bp = Blueprint("reminder_api", __name__)
@@ -24,12 +25,13 @@ def init_reminder_api(db, task_manager, auth_manager):
 
 @reminder_bp.before_request
 def _require_auth():
-    """复用全局认证"""
-    if _auth_manager:
-        user = _auth_manager.authenticate(request)
-        g.user = user
-    else:
-        g.user = {"uid": 0}
+    """复用全局认证，未认证直接拒绝"""
+    if not _auth_manager:
+        return jsonify({"error": "Auth unavailable"}), 503
+    user = _auth_manager.authenticate(request)
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    g.user = user
 
 
 @reminder_bp.route("/api/reminder/list")
@@ -44,10 +46,11 @@ def list_reminders():
         "SELECT task_id, task_type, params, priority, scheduled_time, "
         "interval_seconds, skip_count, created_at FROM tasks "
         "WHERE user_id = ? AND task_type IN (?, ?, ?, ?, ?) AND status = ? "
-        "ORDER BY scheduled_time ASC LIMIT 50",
+        "ORDER BY scheduled_time ASC LIMIT ?",
         (uid, TaskType.REMINDER.value, TaskType.HABIT.value,
          TaskType.COUNTDOWN.value, TaskType.DAILY_PLAN.value,
-         TaskType.PERIODIC.value, TaskStatus.PENDING.value),
+         TaskType.PERIODIC.value, TaskStatus.PENDING.value,
+         Config.REMINDER_LIST_LIMIT),
     ).fetchall()
 
     reminders = []

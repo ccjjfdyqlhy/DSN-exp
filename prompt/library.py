@@ -1,14 +1,11 @@
 # prompt/library.py
 # MD 文件提示词库 — 解析带 YAML frontmatter 的 .md 文件，按分类索引
 
-from __future__ import annotations
-
 import logging
 import re
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("PromptLibrary")
 

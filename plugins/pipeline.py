@@ -9,7 +9,7 @@ import json
 import queue
 import time
 import logging
-from copy import copy
+from copy import copy, deepcopy
 from typing import AsyncGenerator, Callable, Awaitable, Optional
 
 from .base import HookPoint, PluginContext
@@ -88,7 +88,7 @@ def _extract_narrations(raw: str) -> list[str]:
                 inner = m.group(1).strip()
                 results.append(label_gen(inner))
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
     return results
 
 
@@ -332,7 +332,7 @@ class ChatPipeline:
                 pass
 
         _unpickleable = []
-        for _k in list(ctx.extra.keys()):
+        for _k in list(ctx.extra):
             try:
                 deepcopy(ctx.extra[_k])
             except Exception:
@@ -659,8 +659,8 @@ class ChatPipeline:
         logger.info("检测到图片输入，启用 Vision/Memory 并行路径")
 
         # 并行：Vision 单独跑，其余插件一起跑
-        vision_ctx = copy(ctx)
-        other_ctx = copy(ctx)
+        vision_ctx = self._clone_pre_process_context(ctx)
+        other_ctx = self._clone_pre_process_context(ctx)
 
         vision_task = asyncio.create_task(
             self.pm.dispatch_only(HookPoint.PRE_PROCESS, vision_ctx, {"vision"})
@@ -677,18 +677,51 @@ class ChatPipeline:
         if isinstance(vision_result, Exception):
             logger.exception("PRE_PROCESS 并行(vision)异常: %s", vision_result)
 
-        # 合并：vision 修改 ctx.message，other 修改 ctx.full_history / ctx.system_prompt
-        if not isinstance(vision_result, Exception) and vision_result is not None:
-            ctx.message = vision_result.message
-            ctx.image_data = vision_result.image_data
-            ctx.extra.update(vision_result.extra)
+        return self._merge_pre_process_results(
+            ctx,
+            vision_result if not isinstance(vision_result, Exception) else None,
+            other_result if not isinstance(other_result, Exception) else other_ctx,
+        )
 
-        result_ctx = other_result if not isinstance(other_result, Exception) else other_ctx
-        ctx.full_history = result_ctx.full_history
-        ctx.system_prompt = result_ctx.system_prompt
-        ctx.filtered = result_ctx.filtered
+    @staticmethod
+    def _merge_pre_process_results(
+        original: PluginContext,
+        vision_result: PluginContext | None,
+        other_result: PluginContext,
+    ) -> PluginContext:
+        """Merge the explicitly independent image and non-image preprocess results."""
+        if vision_result is not None:
+            original.message = vision_result.message
+            original.image_data = vision_result.image_data
+            original.extra.update(vision_result.extra)
 
-        return ctx
+        original.full_history = other_result.full_history
+        original.system_prompt = other_result.system_prompt
+        original.filtered = other_result.filtered
+        original.extra.update(other_result.extra)
+        return original
+
+    @staticmethod
+    def _clone_pre_process_context(ctx: PluginContext) -> PluginContext:
+        """Clone mutable request fields so concurrent preprocess plugins stay isolated."""
+        cloned = copy(ctx)
+        try:
+            cloned.history = deepcopy(ctx.history)
+        except Exception:
+            cloned.history = list(ctx.history)
+        try:
+            cloned.full_history = deepcopy(ctx.full_history)
+        except Exception:
+            cloned.full_history = list(ctx.full_history)
+
+        cloned.extra = {}
+        for key, value in ctx.extra.items():
+            try:
+                cloned.extra[key] = deepcopy(value)
+            except Exception:
+                # Runtime services such as database connections stay shared and read-only.
+                cloned.extra[key] = value
+        return cloned
 
     # ---- 按行 TTS 合成 ----
 
@@ -753,10 +786,10 @@ class ChatPipeline:
                         fast_first = bool(Config.TTS_FAST_FIRST_LINE)
                     except Exception:
                         fast_first = True
-                    if fast_first and tts_q is not None and i == 0:
+                    if fast_first and tts_q is not None:
                         local = getattr(self._tts_process_model, "_local_preprocess", None)
                         processed_line = local(line) if callable(local) else line
-                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 local_preprocess 快路径, t=%.3f", i + 1, total, time.perf_counter())
+                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 local_preprocess 快路径 (流式), t=%.3f", i + 1, total, time.perf_counter())
                     else:
                         processed_line = self._tts_process_model.process_tts_text(line)
                         logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 process_tts_text (可能 LLM), t=%.3f", i + 1, total, time.perf_counter())
@@ -995,6 +1028,10 @@ class ChatPipeline:
         tts_lines: list[dict] | None = None
         tts_task = None
 
+        # Python 3.11 不支持 f-string 内嵌多行 dict，用辅助函数替代
+        def _sse(data: dict) -> str:
+            return f"data: {json.dumps(data)}\n\n"
+
         hooks_ordered = [
             HookPoint.PRE_FILTER,
             HookPoint.PRE_PROCESS,
@@ -1018,18 +1055,18 @@ class ChatPipeline:
                 # 前置旁白
                 pre_narrative = ctx.extra.get("pre_narrative", "")
                 if pre_narrative:
-                    yield f"data: {json.dumps({
+                    yield _sse({
                         'status': 'narrative_update',
                         'text': pre_narrative,
                         'speaker': 'narrator',
                         'style': 'pre',
-                    })}\n\n"
+                    })
 
                 # ── v4: 世界激活事件 ──
                 if ctx.extra.get("world_activated"):
-                    yield f"data: {json.dumps({
+                    yield _sse({
                         'status': 'world_activated',
-                    })}\n\n"
+                    })
 
             elif hook == HookPoint.MODEL_INVOKE:
                 if not ctx.skip_model:
@@ -1056,20 +1093,20 @@ class ChatPipeline:
                 if ctx.original_reply:
                     if ctx.reply and ctx.reply != "…":
                         logger.info("[SSE-DEBUG] >>> YIELD text_ready (t=%.4f), reply[:60]=%r", time.perf_counter(), ctx.reply[:60])
-                        yield f"data: {json.dumps({
+                        yield _sse({
                             'status': 'text_ready',
                             'reply': ctx.reply,
                             'chat_id': ctx.chat_id,
-                        })}\n\n"
+                        })
 
                     narrations = _extract_narrations(ctx.original_reply)
                     for n in narrations:
-                        yield f"data: {json.dumps({
+                        yield _sse({
                             'status': 'narrative_update',
                             'text': n,
                             'speaker': 'narrator',
                             'style': 'action',
-                        })}\n\n"
+                        })
 
             elif hook == HookPoint.POST_PROCESS:
                 collector = ActionNarrativeCollector()
@@ -1110,10 +1147,10 @@ class ChatPipeline:
                         else:
                             yield f"data: {json.dumps(evt)}\n\n"
                     except _asyncio.TimeoutError:
-                        yield f"data: {json.dumps({
+                        yield _sse({
                             'status': 'thinking',
                             'text': '正在处理...',
-                        })}\n\n"
+                        })
 
                     # 消费 TTS 流式队列：每行合完立即 yield
                     if tts_q is not None:
@@ -1126,13 +1163,13 @@ class ChatPipeline:
                                 else:
                                     tts_collected.append(line)
                                     logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (t=%.4f), 文本=%r", line['index'] + 1, line['total'], time.perf_counter(), line['text'][:40])
-                                    yield f"data: {json.dumps({
+                                    yield _sse({
                                         'status': 'line',
                                         'index': line['index'],
                                         'total': line['total'],
                                         'text': line['text'],
                                         'audio_b64': line['audio_b64'],
-                                    })}\n\n"
+                                    })
                         except _asyncio.QueueEmpty:
                             pass
 
@@ -1148,10 +1185,10 @@ class ChatPipeline:
                 logger.info("Agent 循环检查: agent_active=%s tag_results=%s",
                             ctx.agent_active, bool(tag_results))
                 if ctx.agent_active and tag_results:
-                    yield f"data: {json.dumps({
+                    yield _sse({
                         'status': 'thinking',
                         'text': 'Agent 循环: 处理执行结果...',
-                    })}\n\n"
+                    })
 
                     agent_thread_q = queue.Queue()
                     ctx.extra["_agent_progress_queue"] = agent_thread_q
@@ -1186,13 +1223,13 @@ class ChatPipeline:
                                     break
                                 else:
                                     logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent stream), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
-                                    yield f"data: {json.dumps({
+                                    yield _sse({
                                         'status': 'line',
                                         'index': line['index'],
                                         'total': line['total'],
                                         'text': line['text'],
                                         'audio_b64': line['audio_b64'],
-                                    })}\n\n"
+                                    })
                         except asyncio.QueueEmpty:
                             pass
 
@@ -1207,11 +1244,11 @@ class ChatPipeline:
                             # 如果本轮 LLM 有回复，立即 yield text_ready + 异步 TTS（流式）
                             reply = evt.get("reply")
                             if reply and reply != "…":
-                                yield f"data: {json.dumps({
+                                yield _sse({
                                     'status': 'text_ready',
                                     'reply': reply,
                                     'chat_id': ctx.chat_id,
-                                })}\n\n"
+                                })
                                 if ctx.tts_enabled and self._tts_client:
                                     # 排空旧 TTS 队列（如果有未完成的前一轮合成）
                                     if agent_tts_q is not None:
@@ -1229,10 +1266,10 @@ class ChatPipeline:
                             if agent_task.done():
                                 break
                             # 保持连接活跃
-                            yield f"data: {json.dumps({
+                            yield _sse({
                                 'status': 'thinking',
                                 'text': 'Agent 正在执行...',
-                            })}\n\n"
+                            })
                             # 消费 TTS 流式队列
                             async for ev in _drain_q():
                                 yield ev
@@ -1247,18 +1284,18 @@ class ChatPipeline:
                                     break
                                 agent_tts_collected.append(line)
                                 logger.info("[SSE-DEBUG] >>> YIELD line %d/%d (Agent post drain), t=%.4f", line['index'] + 1, line['total'], time.perf_counter())
-                                yield f"data: {json.dumps({
+                                yield _sse({
                                     'status': 'line',
                                     'index': line['index'],
                                     'total': line['total'],
                                     'text': line['text'],
                                     'audio_b64': line['audio_b64'],
-                                })}\n\n"
+                                })
                             except asyncio.TimeoutError:
-                                yield f"data: {json.dumps({
+                                yield _sse({
                                     'status': 'thinking',
                                     'text': '音频合成中...',
-                                })}\n\n"
+                                })
 
                     ctx = await agent_task
                     await agent_bridge
@@ -1277,26 +1314,26 @@ class ChatPipeline:
 
                 narrative = ctx.extra.get("narrative", "")
                 if narrative:
-                    yield f"data: {json.dumps({
+                    yield _sse({
                         'status': 'narrative_update',
                         'text': narrative,
                         'speaker': 'narrator',
                         'style': 'post',
-                    })}\n\n"
+                    })
 
                 if ctx.extra.get("confirm_requested"):
-                    yield f"data: {json.dumps({
+                    yield _sse({
                         'status': 'confirm_requested',
-                    })}\n\n"
+                    })
 
                 for text in collector.drain():
                     if text:
-                        yield f"data: {json.dumps({
+                        yield _sse({
                             'status': 'narrative_update',
                             'text': text,
                             'speaker': 'narrator',
                             'style': 'action',
-                        })}\n\n"
+                        })
 
                 if ctx.extra.get("_agent_reply_dirty") and ctx.reply:
                     db = ctx.extra.get("_db")
@@ -1309,11 +1346,11 @@ class ChatPipeline:
                     # 此处不再重复推送，避免重复音频
                     has_agent_reply = ctx.extra.get("_agent_progress_queue") is False
                     if not has_agent_reply:
-                        yield f"data: {json.dumps({
+                        yield _sse({
                             'status': 'text_ready',
                             'reply': ctx.reply,
                             'chat_id': ctx.chat_id,
-                        })}\n\n"
+                        })
                         logger.info("[text_ready:agent_dirty] reply=%s", ctx.reply[:60])
                         if ctx.tts_enabled and self._tts_client and ctx.extra.get("_agent_step", 0) > 0:
                             tts_lines = await self._synthesize_lines(ctx.reply)
@@ -1325,13 +1362,13 @@ class ChatPipeline:
                     if not tts_streamed:
                         # 非流式模式（agent_dirty 重合成）：逐行 yield
                         for line in tts_lines:
-                            yield f"data: {json.dumps({
+                            yield _sse({
                                 'status': 'line',
                                 'index': line['index'],
                                 'total': line['total'],
                                 'text': line['text'],
                                 'audio_b64': line['audio_b64'],
-                            })}\n\n"
+                            })
                     # 组装完整的 ctx.audio（正确拼接多段 WAV）
                     if tts_lines:
                         all_audio = self._concat_wav(
@@ -1356,13 +1393,13 @@ class ChatPipeline:
             if ctx.filtered:
                 timing["total_ms"] = round((time.perf_counter() - t_total) * 1000)
                 self._print_timing(timing, ctx)
-                yield f"data: {json.dumps({
+                yield _sse({
                     'status': 'completed',
                     'reply': ctx.reply,
                     'chat_id': ctx.chat_id,
                     'filtered': True,
                     'timing': timing,
-                })}\n\n"
+                })
                 logger.info("[SSE-DEBUG] >>> filter 路径 completed 已 yield, process_stream 即将 return, t=%.4f", time.perf_counter())
                 return
 

@@ -4,12 +4,10 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 import random
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime
 
 from .fate import Dice, DicePool, ProbabilityTable
 
@@ -178,9 +176,6 @@ class WorldEngine:
             "temperature": temperature,
             "light_color": season.get("light_color", "#FFFFFF"),
         }
-
-    def world_delta(self, real_seconds: float) -> float:
-        return real_seconds * self._time_scale
 
     def _find_season(self, day_of_year: int) -> dict:
         for s in self._seasons:
@@ -497,22 +492,6 @@ class WorldEngine:
         if name not in self._fate_probability_tables:
             self._fate_probability_tables[name] = ProbabilityTable(entries, label=name)
         return self._fate_probability_tables[name]
-
-    def get_fate_prompt(self) -> str:
-        """生成命运系统提示文本，注入 system prompt"""
-        return """═══ 命运引擎 ═══
-
-这个世界存在不确定性。当你遇到不确定的结果时，可以使用命运骰子：
-
-- D20: 标准检定（20=大成功, 1=大失败）
-- D100: 百分骰（极低概率事件）
-- 优势: 投两次取高 / 劣势: 投两次取低
-- 骰池: 2d6+1d4+3 等表达式
-
-你也可以在你的回复中使用自然语言来表达随机性，比如：
-"让我试一下…[D20: 技术破解]"
-
-命运引擎会自动判定结果。"""
 
     # ═══════════════════ 全状态 ═══════════════════
 

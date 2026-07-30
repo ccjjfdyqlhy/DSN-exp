@@ -95,27 +95,27 @@ class BrowserTool:
                 if cls._page:
                     await cls._page.close()
             except Exception:
-                pass
+                logger.warning("Close operation failed", exc_info=True)
             try:
                 if cls._context:
                     await cls._context.close()
             except Exception:
-                pass
+                logger.warning("Close operation failed", exc_info=True)
             try:
                 if cls._browser:
                     await cls._browser.close()
             except Exception:
-                pass
+                logger.warning("Close operation failed", exc_info=True)
             try:
                 if cls._playwright:
                     await cls._playwright.stop()
             except Exception:
-                pass
+                logger.warning("Stop operation failed", exc_info=True)
 
         try:
             _run_async(_stop())
         except Exception:
-            pass
+            logger.warning("Stop operation failed", exc_info=True)
         finally:
             cls._playwright = None
             cls._browser = None
