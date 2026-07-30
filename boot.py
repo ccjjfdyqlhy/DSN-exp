@@ -18,6 +18,7 @@ from api.todo import todo_bp
 from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
+from api.vision import vision_bp, init_vision_api
 from api.alarm import alarm_bp, init_alarm_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
@@ -406,6 +407,7 @@ def create_application():
     app.register_blueprint(reminder_bp)
     app.register_blueprint(plan_bp)
     app.register_blueprint(heartbeat_bp)
+    app.register_blueprint(vision_bp)
     app.register_blueprint(alarm_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
@@ -627,6 +629,8 @@ def create_application():
     app.config["ENGINE"] = engine
     # 初始化心跳接口（需要 engine 来生成 AI 回复 + TTS）
     init_heartbeat_api(db, task_manager, _auth_manager, engine)
+    # 初始化视觉感知协调层（桥接本地客户端摄像头 ↔ 后端 VisionModel/场景变化）
+    init_vision_api(db, engine, _auth_manager)
     _t("DSNEngine")
 
     # ── 语义缓存系统 (L1/L2/L3) ──
