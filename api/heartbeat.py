@@ -334,3 +334,53 @@ def dismiss_notification():
     except Exception as e:
         logger.error("取消通知失败: %s", e, exc_info=True)
         return jsonify({"success": False, "error": "Internal error"}), 500
+
+
+# ── 视觉感知字段注入 ──
+
+@heartbeat_bp.after_request
+def _inject_vision_fields(response):
+    """向 /api/heartbeat 响应注入:
+    - vision_request: 当存在待响应的按需 look_around 请求时下发给客户端
+    - active_vision: 主动视觉配置 {enabled, interval}，供 minimal.py 自配置周期观测线程
+
+    与通知逻辑解耦：无论是否有通知，每次心跳都附带这两个字段。
+    """
+    if request.path != "/api/heartbeat":
+        return response
+
+    try:
+        data = response.get_json()
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        return response
+
+    changed = False
+
+    # on-demand 视觉请求（来自 VisionCoordinator）
+    try:
+        from api.vision import coordinator as _coord
+        if _coord is not None:
+            uid = g.user.get("uid", 0) if g.user else 0
+            vr = _coord.pending_for_uid(uid)
+            if vr:
+                data["vision_request"] = vr
+                changed = True
+    except Exception:
+        logger.warning("注入 vision_request 失败", exc_info=True)
+
+    # 主动视觉配置（让 minimal.py 自配置周期观测线程）
+    try:
+        from config import Config
+        data["active_vision"] = {
+            "enabled": bool(getattr(Config, "ACTIVE_VISION_ENABLED", False)),
+            "interval": int(getattr(Config, "ACTIVE_VISION_INTERVAL", 300)),
+        }
+        changed = True
+    except Exception:
+        logger.warning("注入 active_vision 配置失败", exc_info=True)
+
+    if changed:
+        response.set_data(json.dumps(data, ensure_ascii=False))
+    return response
