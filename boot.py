@@ -77,6 +77,16 @@ def create_chat_client(model_type: str = None):
             max_tokens=app.config.get("LMSTUDIO_MAX_TOKENS", 4096),
             timeout=app.config.get("LMSTUDIO_TIMEOUT", 300),
         )
+    # 多账号优先: 配置了 API 账号时使用 FailoverChat（自动回退）
+    try:
+        from models.api_accounts import get_api_manager
+        if get_api_manager().count() > 0:
+            chat = get_api_manager().enabled_accounts()
+            if chat:
+                from models.api_accounts import FailoverChat
+                return FailoverChat(chat)
+    except Exception:
+        _root_logger.warning("多 API 账号初始化失败，回退单账号模式", exc_info=True)
     return OpenAIChat(
         api_key=app.config["OPENAI_API_KEY"],
         model=app.config.get("MAIN_MODEL_NAME", "deepseek-v4-flash"),

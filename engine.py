@@ -362,8 +362,13 @@ class DSNEngine:
                     timeout=self._engine_cfg.lmstudio_timeout,
                 )
             else:
-                from models import OpenAIChat
-                chat = OpenAIChat(
+                from models.api_accounts import load_failover_chat
+                fc = load_failover_chat(
+                    model_override=self._engine_cfg.model_name,
+                    api_key_fallback=self._engine_cfg.openai_api_key,
+                    api_url_fallback=f"{Config.OPENAI_API_BASE}/chat/completions",
+                )
+                chat = fc if fc is not None else OpenAIChat(
                     api_key=self._engine_cfg.openai_api_key,
                     model=self._engine_cfg.model_name,
                     api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
@@ -690,8 +695,13 @@ class DSNEngine:
         if self.skill_manager:
             try:
                 from skills.distill import DistillationEngine
-                from models import OpenAIChat
-                _llm = OpenAIChat(
+                from models.api_accounts import load_failover_chat
+                _fc = load_failover_chat(
+                    model_override=ec.model_name if ec else None,
+                    api_key_fallback=(ec.openai_api_key if ec else Config.OPENAI_API_KEY),
+                    api_url_fallback=f"{Config.OPENAI_API_BASE}/chat/completions",
+                )
+                _llm = _fc if _fc is not None else OpenAIChat(
                     api_key=ec.openai_api_key if ec else Config.OPENAI_API_KEY,
                     model=ec.model_name if ec else Config.MAIN_MODEL_NAME,
                     api_url=f"{Config.OPENAI_API_BASE}/chat/completions",

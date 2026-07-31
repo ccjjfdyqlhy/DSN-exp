@@ -7,6 +7,8 @@ import time
 import subprocess
 from pathlib import Path
 
+import requests
+
 import logging
 _log = logging.getLogger(__name__)
 ROOT = Path(__file__).parent
@@ -103,13 +105,16 @@ def _run_python(code: str, timeout: int = 30) -> dict:
             _log.warning("Operation failed", exc_info=True)
 
 
-def _create_chat(api_key: str):
+def _create_chat(api_key: str, base_url: str | None = None,
+                 model: str | None = None):
     from models.clients import OpenAIChat
-    return OpenAIChat(api_key=api_key)
+    return OpenAIChat(api_key=api_key, api_url=base_url or None,
+                      model=model or "deepseek-v4-flash")
 
 
 def _chat_send_with_retry(chat, message: str, max_retries: int = 3) -> str | None:
     """发送消息，网络错误时自动重试。重试耗尽后询问用户是否继续。"""
+    print("\n  提示词正在注入，请等待...", flush=True)
     retries = 0
     while True:
         try:
@@ -119,7 +124,7 @@ def _chat_send_with_retry(chat, message: str, max_retries: int = 3) -> str | Non
             if retries <= max_retries:
                 wait = min(2 ** retries, 10)
                 print(f"  ⚠ 网络请求失败 (第 {retries}/{max_retries} 次重试): {e}")
-                print(f"    等待 {wait} 秒后重试...")
+                print(f"    等待 {wait} 秒后重试...", flush=True)
                 try:
                     time.sleep(wait)
                 except KeyboardInterrupt:
@@ -144,13 +149,36 @@ def _render_markdown(text: str) -> None:
         print(text)
 
 
-def _safe_input(prompt: str = "") -> str:
+def _safe_input(prompt: str = "", default: str | None = None) -> str:
+    """带默认值的输入：显示 [默认: xxx]，直接回车应用默认值。末尾带 > 提示符。"""
+    if default is not None:
+        prompt = f"{prompt} [默认: {default}]"
+    prompt = f"{prompt} > "
     try:
-        return input(prompt).strip()
+        val = input(prompt).strip()
+        if not val and default is not None:
+            return default
+        return val
     except EOFError:
-        return ""
+        return default or ""
     except UnicodeDecodeError:
-        return ""
+        return default or ""
+
+
+def _safe_input_secret(prompt: str = "", default: str | None = None) -> str:
+    """隐藏输入的密码框（getpass），支持默认值。末尾带 > 提示符。"""
+    import getpass
+    if default is not None:
+        prompt = f"{prompt} [默认: {'*' * 8}]"
+    prompt = f"{prompt} > "
+    try:
+        val = getpass.getpass(prompt).strip()
+        if not val and default is not None:
+            return default
+        return val
+    except (EOFError, KeyboardInterrupt, OSError):
+        # getpass 在非交互环境可能失败，回退到普通 input
+        return _safe_input(prompt, default)
 
 
 # ─────────────────────── 环境检测（静默采集） ───────────────────────
@@ -202,77 +230,85 @@ def _check_pip_packages() -> dict:
     return {"all_ok": len(missing) == 0 and len(errors) == 0, "missing": missing, "errors": errors}
 
 
+def _probe_service(base_url: str, path: str = "", timeout: float = 3.0) -> bool:
+    """
+    用 requests 探测服务是否可达。
+    与运行时探活一致：status < 500 视为可达（服务在运行），
+    避免 GPT-SoVITS 根路径返回 404/405 被误判为未运行。
+    """
+    url = f"{base_url.rstrip('/')}{path}"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        return resp.status_code < 500
+    except Exception:
+        return False
+
+
 def _check_third_party() -> dict:
+    """检测第三方服务（每个服务严格探测一次，实时打印进度）。
+    与运行时配置的端点/探活阈值保持一致。"""
     result = {}
 
-    r = _run_shell(
-        "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9880 2>/dev/null || echo 000",
-        timeout=5,
-    )
-    tts_running = r["output"].strip() == "200"
-    if not tts_running:
-        for _i in range(2):
-            time.sleep(2)
-            r = _run_shell(
-                "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9880 2>/dev/null || echo 000",
-                timeout=5,
-            )
-            if r["output"].strip() == "200":
-                tts_running = True
-                break
+    tts_base = _env_read("TTS_BASE_URL") or "http://127.0.0.1:9880"
+    print(f"  检测 GPT-SoVITS (TTS, {tts_base}) ... ", end="", flush=True)
+    tts_running = _probe_service(tts_base, timeout=5)
+    print("✓ 运行中" if tts_running else "✗ 未检测到")
     result["tts"] = {
-        "name": "GPT-SoVITS (TTS 语音合成, 端口 9880)",
+        "name": f"GPT-SoVITS (TTS 语音合成, {tts_base})",
         "running": tts_running,
+        "base_url": tts_base,
     }
 
-    r = _run_shell(
-        "curl -s -o /dev/null -w '%{http_code}' http://localhost:8000 2>/dev/null || echo 000",
-        timeout=5,
-    )
+    two_md = _env_read("TWO_MD_API") or "http://localhost:8000"
+    print(f"  检测 2md (文档解析, {two_md}) ... ", end="", flush=True)
+    md_running = _probe_service(two_md, timeout=5)
+    print("✓ 运行中" if md_running else "✗ 未检测到")
     result["2md"] = {
-        "name": "2md (文档解析服务, 端口 8000)",
-        "running": r["output"].strip() == "200",
+        "name": f"2md (文档解析服务, {two_md})",
+        "running": md_running,
+        "base_url": two_md,
     }
 
-    r = _run_shell(
-        "curl -s -o /dev/null -w '%{http_code}' http://localhost:4501/v1/models 2>/dev/null || echo 000",
-        timeout=5,
-    )
-    lm_running = r["output"].strip() == "200"
-    if not lm_running:
-        for _i in range(2):
-            time.sleep(2)
-            r = _run_shell(
-                "curl -s -o /dev/null -w '%{http_code}' http://localhost:4501/v1/models 2>/dev/null || echo 000",
-                timeout=5,
-            )
-            if r["output"].strip() == "200":
-                lm_running = True
-                break
+    lm_base = _env_read("LMSTUDIO_BASE_URL") or "http://localhost:4501"
+    print(f"  检测 LMStudio (本地模型, {lm_base}) ... ", end="", flush=True)
+    lm_running = _probe_service(lm_base, path="/v1/models", timeout=5)
+    print("✓ 运行中" if lm_running else "✗ 未检测到")
     result["lmstudio"] = {
-        "name": "LMStudio (本地模型推理, 端口 4501)",
+        "name": f"LMStudio (本地模型推理, {lm_base})",
         "running": lm_running,
+        "base_url": lm_base,
     }
 
     return result
 
 
 def _collect_environment_info() -> dict:
-    """静默采集环境信息，不做任何打印，返回采集结果供 AI 使用。"""
+    """采集环境信息（实时显示检测进度），返回采集结果供 AI 使用。"""
     env_info: dict = {}
 
+    print("\n  ── 环境检测 ──")
+    print("  Python ... ", end="", flush=True)
     py = _check_python()
+    print(f"✓ {py['version']}" if py["ok"] else f"✗ 需要 3.10+（当前 {py['version']}）")
     env_info["python"] = py
 
+    print("  Conda ... ", end="", flush=True)
     conda = _check_conda()
+    print(f"✓ {conda['version']}" if conda["available"] else "✗ 未安装")
     env_info["conda"] = conda
 
+    print("  依赖包 ... ", end="", flush=True)
     pkgs = _check_pip_packages()
+    if pkgs["all_ok"]:
+        print("✓ 已全部安装")
+    else:
+        print(f"✗ 缺少 {len(pkgs['missing'])} 个")
     env_info["packages"] = pkgs
 
     third = _check_third_party()
     env_info["services"] = third
 
+    print("  ── 环境检测完成 ──\n")
     return {"success": py["ok"], "env_info": env_info}
 
 
@@ -288,7 +324,7 @@ def _install_missing_packages(env_info: dict) -> None:
     if len(pkgs["missing"]) > 5:
         print(f"    ... 还有 {len(pkgs['missing']) - 5} 个")
 
-    install = _safe_input("\n  是否安装缺失依赖? (Y/n): ").lower()
+    install = _safe_input("\n  是否安装缺失依赖? (Y/n)", default="Y").lower()
     if install in ("", "y", "yes"):
         print("  正在安装...")
         r = _run_shell(
@@ -323,6 +359,96 @@ def _get_current_config() -> str:
     if configured:
         return "已配置的内容:\n" + "\n".join(configured)
     return "当前没有已配置的内容"
+
+
+# ─────────────────────── 紧凑配置清单 ───────────────────────
+# 从 .env.example 解析出 {分组: [键]} 的紧凑清单，替代整文件注入 system prompt。
+
+_SECTION_RE = re.compile(r"#\s*(第[一二三四五六七八九十]+层[^#]*?)\s*$")
+_KEY_RE = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*)\s*=\s*([^\s#]*)")
+_COMMENT_RE = re.compile(r"^#\s*(.+?)\s*$")
+
+
+def _load_manifest() -> dict[str, list[dict]]:
+    """解析 .env.example → {分组名: [{key, hint, default}]}。"""
+    manifest: dict[str, list[dict]] = {}
+    if not ENV_EXAMPLE_PATH.exists():
+        return manifest
+    current_section = "其他"
+    pending_hint = ""
+    for line in ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines():
+        s = line.rstrip()
+        m = _SECTION_RE.match(s)
+        if m:
+            current_section = m.group(1).strip()
+            pending_hint = ""
+            manifest.setdefault(current_section, [])
+            continue
+        km = _KEY_RE.match(s)
+        if km:
+            key = km.group(1)
+            default = km.group(2) or ""
+            manifest.setdefault(current_section, []).append({
+                "key": key,
+                "hint": pending_hint[:60],
+                "default": default,
+            })
+            pending_hint = ""
+            continue
+        cm = _COMMENT_RE.match(s)
+        if cm and not cm.group(1).startswith("="):
+            pending_hint = cm.group(1).strip()
+            continue
+    return manifest
+
+
+def _valid_config_keys() -> set[str]:
+    """白名单: .env.example 中出现过的键。"""
+    keys = set()
+    for items in _load_manifest().values():
+        for it in items:
+            keys.add(it["key"])
+    return keys
+
+
+def _manifest_text(sections: list[str] | None = None,
+                   prefix: str = "  - {key}  ({hint}) 默认={default}") -> str:
+    """渲染紧凑配置清单（默认全部，可选只取指定分组），含推荐默认值。"""
+    manifest = _load_manifest()
+    lines = []
+    for section, items in manifest.items():
+        if sections and section not in sections:
+            continue
+        lines.append(f"\n【{section}】")
+        for it in items:
+            hint = it["hint"]
+            default = it.get("default", "") or "（未设默认）"
+            lines.append(prefix.format(key=it["key"], hint=hint, default=default))
+    return "\n".join(lines)
+
+
+# 基础体验配置涉及的分组（第1~3层 + 语音 TTS 组）
+_BASIC_SECTIONS = [
+    "第一层: 必需配置",
+    "第二层: 服务、存储与安全",
+    "第三层: 模型基础设施",
+]
+
+
+def _env_summary_text(env_info: dict) -> str:
+    """环境检测结果的紧凑文本，供 AI 判断依赖是否就位。"""
+    services = env_info.get("services", {})
+    parts = []
+    for key, svc in services.items():
+        state = "运行中" if svc.get("running") else "未运行"
+        parts.append(f"- {svc.get('name', key)} ({key}): {state}")
+    return "\n".join(parts) if parts else "（无服务检测结果）"
+
+
+def _recheck_services() -> str:
+    """重新探测第三方服务，返回状态文本。"""
+    third = _check_third_party()
+    return _env_summary_text({"services": third})
 
 
 def _get_character_cards_info() -> str:
@@ -376,29 +502,92 @@ manual_overrides: {{}}
     return card_id
 
 
-# ─────────────────────── API Key 获取 ───────────────────────
+# ─────────────────────── API Provider 获取 ───────────────────────
+
+# 常见 OpenAI 兼容端点预设: (显示名, base_url, 默认模型, 是否允许空 key 但必须选模型)
+API_PROVIDERS = [
+    ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+    ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+    ("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
+    ("Moonshot Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
+    ("硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "Qwen/Qwen2.5-7B-Instruct"),
+    ("本地 LMStudio", "http://localhost:4501/v1", "", ),
+]
 
 
-def _get_api_key() -> str | None:
-    """获取 DeepSeek API Key（此步骤发生在 AI 就绪之前，只能手动输入）。"""
+def _pick_provider(default_base: str = "", default_model: str = "") -> tuple[str, str, str]:
+    """让用户选择 API Provider，返回 (base_url, model)。默认回车选择 DeepSeek。"""
+    print("\n  [选择 API Provider]")
+    print("  支持任意 OpenAI 兼容端点（DeepSeek / OpenAI / 智谱 / Kimi / 本地 LMStudio 等）\n")
+    for i, (name, base, model) in enumerate(API_PROVIDERS, 1):
+        model_txt = f" 默认模型: {model}" if model else "（需输入模型名）"
+        marker = "  ← 默认" if i == 1 else ""
+        print(f"    {i}. {name} — {base}  {model_txt}{marker}")
+    print(f"    {len(API_PROVIDERS) + 1}. 自定义端点")
+    print(f"    {len(API_PROVIDERS) + 2}. 暂不配置 API，稍后再配")
+
+    while True:
+        choice = _safe_input(f"\n  请选择 (1-{len(API_PROVIDERS) + 2})", default="1").strip()
+        try:
+            n = int(choice)
+        except ValueError:
+            print("  请输入数字编号")
+            continue
+        if 1 <= n <= len(API_PROVIDERS):
+            name, base, model = API_PROVIDERS[n - 1]
+            print(f"  ✓ 已选择: {name}")
+            if not model:
+                model = _safe_input("  请输入 LMStudio 中已加载的模型名",
+                                    default=default_model or None).strip()
+                if not model:
+                    print("  LMStudio 模式必须提供模型名，返回重选")
+                    continue
+            return base, model
+        if n == len(API_PROVIDERS) + 1:
+            base = _safe_input("  请输入 API Base URL（含 /v1，不含 /chat/completions）",
+                               default=default_base or None).strip()
+            model = _safe_input("  请输入模型名", default=default_model or None).strip()
+            if not base or not model:
+                print("  Base URL 与模型名均不能为空")
+                continue
+            return base, model
+        if n == len(API_PROVIDERS) + 2:
+            return "", ""
+        print("  无效选择")
+
+
+def _get_api_key() -> tuple[str | None, str, str, str]:
+    """获取 API Key + Provider + 备用 Token，返回 (api_key, base_url, model, backup_key)。"""
     existing = _env_read("OPENAI_API_KEY")
+    existing_base = _env_read("OPENAI_API_BASE") or "https://api.deepseek.com/v1"
+    existing_model = _env_read("MAIN_MODEL_NAME") or "deepseek-v4-flash"
     api_key = None
+    base_url = existing_base
+    model = existing_model
+    backup_key = ""
 
     if existing and existing != "sk-your-key-here":
         print(f"\n  已检测到 API Key: {existing[:8]}...{existing[-4:]}")
-        confirm = _safe_input("  使用此 Key? (Y/n): ").lower()
+        confirm = _safe_input("  使用此 Key? (Y/n)", default="Y").lower()
         if confirm in ("", "y", "yes"):
             api_key = existing
 
     if not api_key:
-        print("\n  [配置 DeepSeek API Key]")
-        print("  获取地址: https://platform.deepseek.com\n")
+        print("\n  [配置 API Key]")
+        print("  支持任意 OpenAI 兼容端点（DeepSeek / OpenAI / 智谱 / Kimi / 本地 LMStudio 等）\n")
+
+        # 先选端点（预设 / 自定义 / 稍后配置），默认 DeepSeek
+        base_url, model = _pick_provider(default_base=existing_base,
+                                         default_model=existing_model)
+        if base_url == "" and model == "":
+            # 用户选择"稍后配置"
+            return None, "", "", ""
 
         while True:
-            key = _safe_input("  请输入 API Key (sk-...): ")
+            key = _safe_input_secret("  请输入 API Key (sk-...)", default=existing if existing else None)
 
             if key.lower() == "/quit":
-                return None
+                return None, "", "", ""
 
             if not key:
                 print("  请输入有效的 API Key")
@@ -406,17 +595,21 @@ def _get_api_key() -> str | None:
 
             if not key.startswith("sk-"):
                 print("  API Key 通常以 'sk-' 开头，请确认是否正确")
-                confirm = _safe_input("  继续使用此 Key? (y/N): ").lower()
+                confirm = _safe_input("  继续使用此 Key? (y/N)").lower()
                 if confirm != "y":
                     continue
 
             print("  验证中...")
             _env_write("OPENAI_API_KEY", key)
+            if base_url:
+                _env_write("OPENAI_API_BASE", base_url)
+            if model:
+                _env_write("MAIN_MODEL_NAME", model)
             from dotenv import load_dotenv
             load_dotenv(ENV_PATH, override=True)
 
             try:
-                chat = _create_chat(key)
+                chat = _create_chat(key, base_url=base_url, model=model)
                 chat.messages = [{"role": "system", "content": "请回复 OK。"}]
                 test_reply = chat.send_message("ping")
                 if test_reply:
@@ -425,126 +618,256 @@ def _get_api_key() -> str | None:
                     break
             except Exception as e:
                 print(f"  验证失败: {e}")
-                retry = _safe_input("  重新输入? (Y/n): ").lower()
+                retry = _safe_input("  重新输入? (Y/n)", default="Y").lower()
                 if retry in ("n", "no"):
-                    return None
+                    return None, "", "", ""
                 continue
 
-    return api_key
+        # ── 备用 Token（可选）：主 Token 失效时优雅顶上 ──
+        want_backup = _safe_input("  是否为此端点设置备用 Token? (y/N)", default="N").lower()
+        if want_backup in ("y", "yes"):
+            while True:
+                backup_key = _safe_input_secret("  请输入备用 Token (sk-...)")
+                if backup_key.lower() == "/quit":
+                    backup_key = ""
+                    break
+                if not backup_key:
+                    print("  未输入，跳过备用 Token")
+                    backup_key = ""
+                    break
+                print("  验证备用 Token...")
+                try:
+                    chat = _create_chat(backup_key, base_url=base_url, model=model)
+                    chat.messages = [{"role": "system", "content": "请回复 OK。"}]
+                    test_reply = chat.send_message("ping")
+                    if test_reply:
+                        print("  ✓ 备用 Token 验证成功")
+                        break
+                except Exception as e:
+                    print(f"  备用 Token 验证失败: {e}")
+                    retry = _safe_input("  重新输入? (Y/n)", default="Y").lower()
+                    if retry in ("n", "no"):
+                        backup_key = ""
+                        break
+                    continue
+
+    return api_key, base_url, model, backup_key
 
 
-# ─────────────────────── AI 引导配置主流程 ───────────────────────
+# ─────────────────────── AI 引导配置主流程（分阶段） ───────────────────────
+
+# 流程阶段:
+#   deps     依赖就位 — 引导安装 GPT-SoVITS / LMStudio / 2md 等未就位服务
+#   basic    基础体验 — 角色卡 + 主模型 + TTS + 记忆 最小集
+#   ask      询问是否继续深度配置
+#   deep     深度配置 — 分组清单逐一展开
+#   done     完成 — 播种账号 + 提示重启
+
+_PHASE_PROMPTS = {
+    "deps": """当前处于【依赖就位】阶段。
+系统环境检测结果显示以下第三方服务尚未运行：
+{service_status}
+
+请逐一处理：
+1. 对每个未运行的服务，用一两句话说明它是什么、为什么需要
+2. 给出最简安装/启动指引（尽量具体）
+3. 询问用户是否现在就安装，或跳过该服务
+
+用户安装好后，请在回复末尾输出 [RECHECK_DEPS] 让系统重新探测。
+当所有服务已就位或用户明确跳过全部时，输出 [DEPS_DONE]。""",
+
+    "basic": """当前处于【基础体验配置】阶段。
+一次性向用户展示全部基础配置项及其【推荐默认值】，不要逐项询问。
+用表格列出每一项（键 / 当前值 / 推荐默认值），并给出每项的简短说明。
+然后询问用户：是否全部采用推荐默认值？或要修改哪几项？
+- 用户说"全部默认/按回车/都用默认" → 在回复末尾输出 [CONFIG_BATCH] 逐行给出 KEY=VALUE[/CONFIG_BATCH]
+- 用户指定要改的项 → 按用户指定生成 [CONFIG_BATCH]，未指定的用推荐默认值
+基础配置还包括：角色卡（默认 EXA / 自定义 / 跳过）。
+
+可用配置键（基础分组，含推荐默认值）：
+{manifest}
+
+配置完成后输出 [BASIC_DONE]。""",
+
+    "ask": """当前处于【是否深度配置】阶段。
+请询问用户：是否继续配置更多高级功能（世界、叙事、视觉、技能、工具、双模协同等）？
+- 用户同意 → 输出 [DEEP_YES]
+- 用户不需要 → 输出 [DEEP_NO]""",
+
+    "deep": """当前处于【深度配置】阶段。
+以下是全部配置分组。请【分组】处理，但每组也要【一次性】列出该组全部配置项及推荐默认值，不要逐项问。
+处理完一组再用 [CONFIG_BATCH] 输出该组已确定的 KEY=VALUE，然后进入下一组。
+
+对每组：
+1. 用表格列出该组全部配置项（键 / 当前值 / 推荐默认值 / 简短说明）
+2. 询问用户：全部采用默认？还是要改哪几项？
+3. 根据用户答复，用 [CONFIG_BATCH] 逐行输出该组最终的 KEY=VALUE
+4. 然后继续下一组
+
+{manifest}
+
+全部组处理完后输出 [CONFIG_COMPLETE]。""",
+}
 
 
-def _ai_guided_configure(api_key: str, env_info: dict) -> bool:
-    """AI 通过自然语言对话引导用户完成全部配置（角色卡 + .env 功能）。"""
-    chat = _create_chat(api_key)
+def _handle_config_directive(response: str, whitelist: set[str]) -> None:
+    """处理 [CONFIG]KEY=VALUE[/CONFIG] 与 [CONFIG_BATCH] 块，校验白名单后写入 .env。"""
+    # 批量块：每行 KEY=VALUE
+    batch_matches = re.findall(r'\[CONFIG_BATCH\](.*?)\[/CONFIG_BATCH\]', response, re.DOTALL)
+    for block in batch_matches:
+        print("\n  ── 应用推荐配置 ──")
+        for line in block.splitlines():
+            line = line.strip()
+            if "=" in line:
+                key, value = line.split("=", 1)
+                _apply_one_config(key.strip(), value.strip(), whitelist)
 
-    env_example_content = _get_env_config_info()
-    current_config = _get_current_config()
-    cards_info = _get_character_cards_info()
+    # 单条：KEY=VALUE
+    config_matches = re.findall(r'\[CONFIG\](.+?)\[/CONFIG\]', response)
+    for match in config_matches:
+        if "=" in match:
+            key, value = match.split("=", 1)
+            _apply_one_config(key.strip(), value.strip(), whitelist)
 
-    # 将环境检测结果整理为文本摘要
-    env_summary = (
-        f"Python {env_info['python']['version']} "
-        f"({'OK' if env_info['python']['ok'] else '需要升级'}), "
-        f"Conda {'已安装 ' + env_info['conda']['version'] if env_info['conda']['available'] else '未安装'}, "
-        f"依赖包 {'全部安装' if env_info['packages']['all_ok'] else f'缺少 {len(env_info["packages"]["missing"])} 个'}, "
-        f"TTS {'运行中' if env_info['services']['tts']['running'] else '未运行'}, "
-        f"文档解析 {'运行中' if env_info['services']['2md']['running'] else '未运行'}, "
-        f"LMStudio {'运行中' if env_info['services']['lmstudio']['running'] else '未运行'}"
-    )
 
-    system_prompt = f"""你是 DSN-exp 系统的配置向导，通过自然语言对话帮助用户完成所有配置。
+def _apply_one_config(key: str, value: str, whitelist: set[str]) -> None:
+    if key.upper() not in whitelist:
+        print(f"  ⚠ 忽略未知配置项: {key}（不在 .env.example 白名单中）")
+        return
+    _env_write(key.upper(), value)
+    display_v = value[:20] + "..." if len(value) > 20 else value
+    print(f"  ✓ 已配置: {key.upper()}={display_v}")
 
-当前状态：
-- OPENAI_API_KEY 已配置好，无需再配置
-- 环境检测：{env_summary}
-- {cards_info}
 
-你的任务分两大步，必须按顺序完成：
+def _handle_account_directive(response: str) -> None:
+    """处理 [ACCOUNT]名称|BaseURL|APIKey|模型[/ACCOUNT]，播种到 APIManager。"""
+    matches = re.findall(r'\[ACCOUNT\](.+?)\[/ACCOUNT\]', response)
+    for match in matches:
+        parts = [p.strip() for p in match.split("|")]
+        if len(parts) < 4:
+            print("  ⚠ 账号指令格式应为: 名称|BaseURL|APIKey|模型")
+            continue
+        name, base_url, api_key, model = parts[:4]
+        try:
+            from models.api_accounts import get_api_manager
+            mgr = get_api_manager()
+            ok, msg = mgr.add(name, base_url=base_url, api_key=api_key, model=model)
+            print(f"  {'✓' if ok else '✗'} {msg}")
+        except Exception as e:
+            print(f"  ⚠ 添加 API 账号失败: {e}")
 
-**第一步：角色卡配置**
-先向用户问好并简要介绍环境状态，然后询问用户想如何配置 AI 角色：
-1. 使用默认角色卡 (EXA)
-2. 创建自定义角色卡
-3. 跳过，以后再配置
 
-如果用户选择创建自定义角色卡，通过多轮自然对话收集角色的名字、性格特点和说话方式。
-收集完成后，在回复中输出以下格式来触发创建（每项一行，值写在同一行）：
+def _seed_main_account(base_url: str = "", model: str = "", backup_key: str = "") -> None:
+    """把主账号（.env 中的 OPENAI_API_KEY）同步播种到多账号管理器。"""
+    key = _env_read("OPENAI_API_KEY")
+    if not key or key == "sk-your-key-here":
+        return
+    base = base_url or _env_read("OPENAI_API_BASE") or "https://api.deepseek.com/v1"
+    model = model or _env_read("MAIN_MODEL_NAME") or "deepseek-v4-flash"
+    try:
+        from models.api_accounts import get_api_manager
+        mgr = get_api_manager()
+        existing = mgr.get("main")
+        if existing:
+            if backup_key and not existing.backup_api_key:
+                mgr.set_backup_key("main", backup_key)
+            return
+        ok, msg = mgr.add("main", base_url=base, api_key=key, model=model, priority=0)
+        if ok and backup_key:
+            mgr.set_backup_key("main", backup_key)
+        _log.info("主账号已播种到多账号管理器: %s", msg)
+    except Exception as e:
+        _log.warning("主账号播种失败: %s", e)
 
-[CREATE_CARD]
-name: 角色名
-personality: 性格描述（一句话概括即可）
-speech_style: 说话方式（一句话概括即可）
-[/CREATE_CARD]
 
-如果用户选择使用默认角色卡或跳过，则直接进入第二步。
+def _ai_guided_configure(api_key: str, env_info: dict, base_url: str = "",
+                         model: str = "") -> bool:
+    """AI 分阶段引导配置：依赖 → 基础 → 询问深度 → 深度 → 完成。"""
+    chat = _create_chat(api_key, base_url=base_url or None,
+                        model=model or None)
+    chat.max_history = 24  # 限制上下文长度，避免长对话超窗
 
-**第二步：系统功能配置**
-根据 .env.example 中的功能分组，逐个询问用户是否需要配置。
+    whitelist = _valid_config_keys()
+    manifest_all = _manifest_text()
+    manifest_basic = _manifest_text(_BASIC_SECTIONS)
 
-.env.example 完整内容：
-```
-{env_example_content}
-```
+    # 系统提示词固定为流程规则（不含大块清单，清单按阶段注入）
+    system_prompt = f"""你是 DSN-exp 系统的配置向导，通过自然语言对话帮助用户完成配置。
 
-{current_config}
+当前环境：
+- 已配置 API Key: {api_key[:8]}...
+- 环境检测：
+{_env_summary_text(env_info)}
+- {_get_character_cards_info()}
 
-对每个功能组：
-- 用一两句话简要介绍该功能的用途
-- 询问用户是否启用以及需要什么配置值
-- 如果用户说"默认"/"跳过"/"不需要"/"不"，则跳过该功能组
-- 如果用户提供了具体的配置值，在回复中使用 [CONFIG]KEY=VALUE[/CONFIG] 格式
-- 一次可以写入多个配置项
+流程分阶段进行，你必须严格跟随当前阶段指令，只在回复末尾输出对应标签：
+[RECHECK_DEPS]  用户说服务已装好，需要系统重新探测依赖
+[DEPS_DONE]     依赖阶段完成
+[BASIC_DONE]    基础体验配置完成
+[DEEP_YES]      用户同意继续深度配置
+[DEEP_NO]       用户拒绝深度配置
+[CONFIG_COMPLETE] 全部配置完成
+
+配置写入规则：
+- 需要写入配置时输出 [CONFIG]KEY=VALUE[/CONFIG]（一行一条）
+- 【批量】一次确定一组配置时，用 [CONFIG_BATCH]...[/CONFIG_BATCH] 块，块内每行一条 KEY=VALUE
+- 需要创建角色卡时输出 [CREATE_CARD]...[/CREATE_CARD]
+- 需要添加备用 API 账号时输出 [ACCOUNT]名称|BaseURL|APIKey|模型[/ACCOUNT]
 
 对话规则：
-- 每次只介绍并询问一个功能组，不要一次性列出所有配置让用户回答
-- 语气友好、自然、轻松
-- 使用 markdown 格式让回复更清晰
-- 如果用户想回头修改之前的配置，灵活处理
-- 所有配置完成后，用一句话总结已配置的内容，然后输出 [CONFIG_COMPLETE] 标签
+- 每次只问一个问题，语气友好、轻松，用 markdown 让回复清晰
+- 严格按当前阶段指令行事，不要提前展开后续阶段的内容
+- 当前已配置内容：
+{_get_current_config()}
 """
 
     chat.messages = [{"role": "system", "content": system_prompt}]
-    reply = _chat_send_with_retry(
-        chat,
-        "请开始引导用户完成配置。先问好，简要介绍环境状态，然后开始第一步角色卡配置。"
-    )
+
+    phase = "deps"
+
+    def _phase_prompt() -> str:
+        if phase == "deps":
+            status = _env_summary_text(env_info)
+            return _PHASE_PROMPTS["deps"].format(service_status=status)
+        if phase == "basic":
+            return _PHASE_PROMPTS["basic"].format(manifest=manifest_basic)
+        if phase == "ask":
+            return _PHASE_PROMPTS["ask"]
+        if phase == "deep":
+            return _PHASE_PROMPTS["deep"].format(manifest=manifest_all)
+        return ""
+
+    reply = _chat_send_with_retry(chat, _phase_prompt())
     if reply is None:
         print("  配置已取消（网络不可用）。")
         return False
     os.system('cls' if os.name == 'nt' else 'clear')
     _render_markdown(reply)
 
-    max_turns = 50
+    max_turns = 80
     for _ in range(max_turns):
-        user_input = _safe_input("\n你: ")
-        if not user_input:
-            continue
-        if user_input.lower() in ("/quit", "/exit", "退出"):
-            print("  配置已取消。")
-            return False
+        # ── 处理重新探测依赖（立即探测并让 AI 评估，不等用户输入） ──
+        if "[RECHECK_DEPS]" in reply:
+            reply = reply.replace("[RECHECK_DEPS]", "").strip()
+            _render_markdown(reply or "（正在重新探测依赖...）")
+            probe = _recheck_services()
+            print(f"\n  [系统] 依赖状态已更新:\n{probe}\n")
+            assessment = _chat_send_with_retry(
+                chat,
+                f"{_phase_prompt()}\n\n依赖已重新探测，结果如下：\n{probe}\n"
+                "请根据最新结果判断：如果还有服务未就位，继续引导用户安装；"
+                "如果已全部就位，输出 [DEPS_DONE]。"
+            )
+            if assessment is None:
+                print("  配置已取消（网络不可用）。")
+                return False
+            reply = assessment
 
-        chat.messages.append({"role": "assistant", "content": reply})
-        chat.messages.append({"role": "user", "content": user_input})
+        _handle_config_directive(reply, whitelist)
+        _handle_account_directive(reply)
 
-        response = _chat_send_with_retry(
-            chat,
-            f"用户说: {user_input}\n\n"
-            "如果需要创建角色卡，使用 [CREATE_CARD]...[/CREATE_CARD] 格式。\n"
-            "如果需要写入配置，使用 [CONFIG]KEY=VALUE[/CONFIG] 格式。\n"
-            "如果所有配置已完成，输出 [CONFIG_COMPLETE] 标签。\n"
-            "如果不需要操作，直接正常回复即可。"
-        )
-        if response is None:
-            print("  配置已取消（网络不可用）。")
-            return False
-
-        # ── 处理角色卡创建指令 ──
-        card_match = re.search(
-            r'\[CREATE_CARD\](.+?)\[/CREATE_CARD\]', response, re.DOTALL
-        )
+        # 角色卡创建
+        card_match = re.search(r'\[CREATE_CARD\](.+?)\[/CREATE_CARD\]', reply, re.DOTALL)
         if card_match:
             block = card_match.group(1).strip()
             card_data: dict[str, str] = {}
@@ -556,7 +879,6 @@ speech_style: 说话方式（一句话概括即可）
                     card_data[current_key] = kv.group(2).strip()
                 elif current_key and line.strip():
                     card_data[current_key] += ' ' + line.strip()
-
             card_name = card_data.get('name', '')
             if card_name:
                 card_id = _create_character_card(
@@ -568,35 +890,74 @@ speech_style: 说话方式（一句话概括即可）
             else:
                 print("  ⚠ 角色卡创建失败：未解析到角色名称")
 
-        # ── 处理配置写入指令 ──
-        config_matches = re.findall(r'\[CONFIG\](.+?)\[/CONFIG\]', response)
-        for match in config_matches:
-            if "=" in match:
-                key, value = match.split("=", 1)
-                key, value = key.strip(), value.strip()
-                _env_write(key, value)
-                display_v = value[:20] + "..." if len(value) > 20 else value
-                print(f"  ✓ 已配置: {key}={display_v}")
+        # ── 阶段推进 ──
+        if phase == "deps" and "[DEPS_DONE]" in reply:
+            phase = "basic"
+            reply = reply.replace("[DEPS_DONE]", "").strip()
+            _phase_advance(chat, "基础体验配置")
+            print("\n  ═ 进入基础体验配置 ═\n")
+        elif phase == "basic" and "[BASIC_DONE]" in reply:
+            phase = "ask"
+            reply = reply.replace("[BASIC_DONE]", "").strip()
+            _phase_advance(chat, "询问是否继续深度配置")
+            print("\n  ═ 询问是否继续深度配置 ═\n")
+        elif phase == "ask" and "[DEEP_YES]" in reply:
+            phase = "deep"
+            reply = reply.replace("[DEEP_YES]", "").strip()
+            _phase_advance(chat, "深度配置")
+            print("\n  ═ 开始深度配置 ═\n")
+        elif phase == "ask" and "[DEEP_NO]" in reply:
+            phase = "done"
+            reply = reply.replace("[DEEP_NO]", "").strip()
+        elif phase == "deep" and "[CONFIG_COMPLETE]" in reply:
+            phase = "done"
+            reply = reply.replace("[CONFIG_COMPLETE]", "").strip()
 
-        # ── 清理标签后显示给用户 ──
-        display = re.sub(
-            r'\[CREATE_CARD\].*?\[/CREATE_CARD\]', '', response, flags=re.DOTALL
-        )
+        # ── 渲染本轮回复（剥掉标签） ──
+        display = re.sub(r'\[CONFIG_BATCH\].*?\[/CONFIG_BATCH\]', '', reply, flags=re.DOTALL)
         display = re.sub(r'\[CONFIG\].*?\[/CONFIG\]', '', display)
-        display = re.sub(r'\[CONFIG_COMPLETE\]', '', display).strip()
-
+        display = re.sub(r'\[ACCOUNT\].*?\[/ACCOUNT\]', '', display)
+        display = re.sub(r'\[CREATE_CARD\].*?\[/CREATE_CARD\]', '', display)
+        display = re.sub(r'\[(RECHECK_DEPS|DEPS_DONE|BASIC_DONE|DEEP_YES|DEEP_NO|CONFIG_COMPLETE)\]', '', display)
+        display = display.strip()
         if display:
             os.system('cls' if os.name == 'nt' else 'clear')
             _render_markdown(display)
-            reply = display
-        else:
-            reply = response
 
-        # ── 判断是否完成 ──
-        if "[CONFIG_COMPLETE]" in response:
+        # 阶段完成
+        if phase == "done":
             return True
 
+        # ── 等待用户输入 ──
+        user_input = _safe_input("\n你: ")
+        if not user_input:
+            continue
+        if user_input.lower() in ("/quit", "/exit", "退出"):
+            print("  配置已取消。")
+            return False
+
+        chat.messages.append({"role": "assistant", "content": display or reply})
+        chat.messages.append({"role": "user", "content": user_input})
+
+        response = _chat_send_with_retry(
+            chat,
+            f"{_phase_prompt()}\n\n用户说: {user_input}\n"
+            "请按当前阶段指令继续引导。需要操作时使用对应标签，不需要则直接回复。"
+        )
+        if response is None:
+            print("  配置已取消（网络不可用）。")
+            return False
+        reply = response
+
     return True
+
+
+def _phase_advance(chat, new_phase_name: str) -> None:
+    """向对话注入阶段切换通知，AI 据此调整行为。"""
+    chat.messages.append({
+        "role": "system",
+        "content": f"【系统】阶段已切换为：{new_phase_name}。请立即按新阶段指令行事。",
+    })
 
 
 # ─────────────────────── 主入口 ───────────────────────
@@ -620,20 +981,38 @@ def run() -> bool:
         _install_missing_packages(env_result["env_info"])
 
         # ── API Key 获取（AI 尚未就绪，只能手动输入） ──
-        api_key = _get_api_key()
+        api_key, base_url, model, backup_key = _get_api_key()
         if not api_key:
             return False
 
-        # ── AI 引导的完整配置（角色卡 + 全部功能配置） ──
+        # ── AI 引导的分阶段配置（依赖 → 基础 → 询问深度 → 深度） ──
         print("\n" + "=" * 50)
-        print("  接下来由 AI 引导你完成所有配置")
+        print("  接下来由 AI 引导你完成配置")
         print("=" * 50 + "\n")
 
-        _ai_guided_configure(api_key, env_result["env_info"])
+        ok = _ai_guided_configure(api_key, env_result["env_info"],
+                                  base_url=base_url, model=model)
+        if not ok:
+            print("""
+  配置未完成。
+  你可以稍后重新运行以下命令继续：
+    python onboarding.py
+""")
+            return False
+
+        # ── 播种主账号到多账号管理器（含备用 Token） ──
+        _seed_main_account(base_url=base_url, model=model, backup_key=backup_key)
 
         print("""
   配置完成！
 
+  系统已就绪。是否立即启动正式后端控制台？
+""")
+        choice = _safe_input("  立即启动? (Y/n)", default="Y").lower()
+        if choice in ("", "y", "yes"):
+            _launch_main()
+            return True
+        print("""
   现在重新运行 main.py 即可启动完整系统：
     python main.py
 
@@ -644,6 +1023,23 @@ def run() -> bool:
     except KeyboardInterrupt:
         print("\n  引导已取消。")
         return False
+
+
+def _launch_main() -> None:
+    """启动正式后端控制台（main.py）。"""
+    print("  正在启动正式后端控制台...\n")
+    try:
+        main_path = ROOT / "main.py"
+        subprocess.Popen(
+            [sys.executable, str(main_path)],
+            cwd=str(ROOT),
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except Exception as e:
+        print(f"  启动失败: {e}")
+        print("  请手动运行: python main.py")
 
 
 if __name__ == "__main__":

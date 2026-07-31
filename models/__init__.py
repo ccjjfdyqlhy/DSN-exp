@@ -14,6 +14,15 @@ from .clients import (
     _unload_lmstudio_model,
 )
 from .scheduler import ModelScheduler, _get_loaded_models
+from .api_accounts import (
+    APIAccount,
+    APIManager,
+    FailoverChat,
+    get_api_manager,
+    reset_api_manager,
+    build_failover_chat,
+    load_failover_chat,
+)
 
 __all__ = [
     "OpenAIChat",
@@ -31,4 +40,11 @@ __all__ = [
     "DETAIL_ACTIONS",
     "toggle_detail_chats",
     "toggle_detail_actions",
+    "APIAccount",
+    "APIManager",
+    "FailoverChat",
+    "get_api_manager",
+    "reset_api_manager",
+    "build_failover_chat",
+    "load_failover_chat",
 ]

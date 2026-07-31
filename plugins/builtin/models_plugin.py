@@ -311,15 +311,25 @@ class ModelsPlugin(Plugin):
                 max_tokens=self._lmstudio_max_tokens,
                 timeout=self._lmstudio_timeout,
             )
-        else:
-            from models import OpenAIChat
-            chat = OpenAIChat(
-                api_key=self._openai_api_key,
-                model=self._openai_model_name or getattr(Config, "MAIN_MODEL_NAME", "deepseek-v4-flash"),
-                api_url=self._openai_api_base
-            )
-            logger.info("ModelsPlugin: 创建 OpenAIChat — model=%s", chat.model)
-            return chat
+        # 多账号优先: 配置了 API 账号时使用 FailoverChat（自动回退）
+        try:
+            from models.api_accounts import get_api_manager
+            accounts = get_api_manager().enabled_accounts()
+            if accounts:
+                from models.api_accounts import FailoverChat
+                chat = FailoverChat(accounts)
+                logger.info("ModelsPlugin: 创建 FailoverChat — %d 个账号", len(accounts))
+                return chat
+        except Exception as e:
+            logger.warning("ModelsPlugin: 多账号初始化失败，回退单账号: %s", e)
+        from models import OpenAIChat
+        chat = OpenAIChat(
+            api_key=self._openai_api_key,
+            model=self._openai_model_name or getattr(Config, "MAIN_MODEL_NAME", "deepseek-v4-flash"),
+            api_url=self._openai_api_base
+        )
+        logger.info("ModelsPlugin: 创建 OpenAIChat — model=%s", chat.model)
+        return chat
 
     @staticmethod
     def _clean_reply(reply: str) -> str:
