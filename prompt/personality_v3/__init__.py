@@ -14,8 +14,16 @@ from .distillation_engine import DistillationEngine, DistilledTraits
 from .dynamic_synthesizer import DynamicSynthesizer, DynamicSnapshot, DEFAULT_MOOD
 from .personality_generator import PersonalityPromptGenerator, DEFAULT_FALLBACK_PROMPT
 from .personality_judge import PersonalityJudge, MoodUpdateResult
+from .dynamics_engine import DynamicsEngine, DynamicsConfig
+from .evidence_accumulator import EvidenceAccumulator
+from .audit import AuditLogger, AuditEntry
 from .state_manager import V3StateManager
 from .persistence import V3Persistence
+from .events import (
+    PerceptionRecord,
+    affinity_level as _shared_affinity_level,
+    AFFINITY_THRESHOLDS as _AFFINITY_THRESHOLDS,
+)
 from .traits import (
     ALL_DIMENSIONS, TRAIT_MAP, TRAIT_IDS, CATEGORIES,
     default_indicator_vector, clamp_vector, deviant_dimensions, format_deviant_dimensions,
@@ -36,12 +44,15 @@ class PersonalitySystemV3:
         logger.info("V3: 初始化 PersonalitySystemV3 (db=%s)", "available" if db else "none")
         self.db = db
         self._persistence = V3Persistence(db)
-        self._state_manager = V3StateManager(self._persistence)
+        self._evidence = EvidenceAccumulator(db)
+        self._audit = AuditLogger(db)
+        self._state_manager = V3StateManager(self._persistence, evidence=self._evidence)
 
         have_pm = personality_model_chat is not None
         logger.info("V3: 性格模型可用=%s", have_pm)
         self._generator = PersonalityPromptGenerator(personality_model_chat)
         self._judge = PersonalityJudge(personality_model_chat)
+        self._dynamics = DynamicsEngine()
 
         have_dc = distillation_chat is not None
         have_fc = fast_distillation_chat is not None
@@ -62,6 +73,8 @@ class PersonalitySystemV3:
     def init_tables(self) -> None:
         logger.info("V3: 开始初始化持久层表...")
         self._persistence.init_tables()
+        self._evidence.init_tables()
+        self._audit.init_tables()
         logger.info("V3: 持久层表初始化完成")
 
     def set_personality_model(self, chat) -> None:
@@ -353,7 +366,7 @@ class PersonalitySystemV3:
         logger.debug("V3: 性格提示词已生成 uid=%d len=%d", uid, len(result))
         return result
 
-    # === 交互分析（情绪+亲和判定） ===
+    # === 交互分析（事件分类 + 确定性动力学 + 证据累积） ===
 
     def analyze_interaction(
         self,
@@ -399,7 +412,8 @@ class PersonalitySystemV3:
         logger.debug("V3: 判定交互 uid=%d msglen=%d replylen=%d prev_affinity=%.1f",
                      uid, len(user_message), len(ai_reply), prev_affinity)
 
-        result = self._judge.analyze(
+        # 1. LLM 只负责事件分类（语义判断，不产生数值）
+        perception = self._judge.classify(
             user_message=user_message,
             ai_reply=ai_reply,
             previous_mood=prev_mood,
@@ -411,21 +425,100 @@ class PersonalitySystemV3:
             conversation_history=context_header,
         )
 
+        # 2. 确定性动力学引擎推演情绪/亲密度
+        card = self.get_card(snapshot.card_id)
+        trait_b3 = None
+        baseline = None
+        if card:
+            distilled = self._state_manager.get_distillation_for_card(snapshot.card_id)
+            if distilled:
+                vec = distilled.indicator_vector or {}
+                trait_b3 = vec.get("B3")
+                b6 = vec.get("B6", 0.5)
+                baseline = {
+                    "joy": 0.2 + 0.6 * b6,
+                    "sadness": 0.4 - 0.3 * b6,
+                    "anger": 0.1,
+                    "fear": 0.1,
+                }
+
+        days_since_last = self._state_manager.get_days_since_last(uid)
+        result = self._dynamics.apply(
+            perception=perception,
+            previous_mood=prev_mood,
+            previous_affinity=prev_affinity,
+            baseline_mood=baseline,
+            trait_b3=trait_b3,
+            days_since_last=days_since_last,
+        )
+
+        # 3. 证据累积 → 缓慢演化 50 维特质
+        self._accumulate_evidence(snapshot, perception)
+
+        # 4. 审计日志: 记录本轮状态变化，可复盘/定位动力学问题
+        self._audit.record(AuditEntry(
+            event_type=perception.event_type,
+            intensity=perception.intensity,
+            signal=f"affinity_w={perception.affinity_weight():+.2f}",
+            rule_id=result.rule_id,
+            old_value=result.old_affinity,
+            new_value=result.new_affinity,
+            mood_before=result.old_mood,
+            mood_after=result.new_mood,
+            affinity_delta=result.affinity_delta,
+            mood_delta=result.mood_delta,
+            uid=uid,
+            card_id=snapshot.card_id,
+            analysis=perception.analysis,
+        ))
+
         self._state_manager.on_interaction(uid, result.new_mood, result.new_affinity)
+
+        # 5. 定期 consolidate 写回蒸馏产物
+        self._maybe_consolidate(snapshot.card_id)
 
         d_joy = result.new_mood.get("joy", 0.5) - prev_mood.get("joy", 0.5)
         d_aff = result.new_affinity - prev_affinity
         logger.info(
-            "V3: 人格交互 #%d uid=%d — joy=%.2f→%.2f (%+.2f) affinity=%.1f→%.1f (%+.1f) %s",
+            "V3: 人格交互 #%d uid=%d — 事件=%s/%s joy=%.2f→%.2f (%+.2f) affinity=%.1f→%.1f (%+.1f) %s",
             interactions + 1, uid,
+            perception.event_type, perception.intensity,
             prev_mood.get("joy", 0.5), result.new_mood.get("joy", 0.5), d_joy,
             prev_affinity, result.new_affinity, d_aff,
-            result.analysis[:80] if result.analysis else "",
+            perception.analysis[:60] if perception.analysis else "",
         )
 
         return result
 
+    def _accumulate_evidence(self, snapshot: DynamicSnapshot, perception: PerceptionRecord) -> None:
+        card_id = snapshot.card_id
+        distilled = self._state_manager.get_distillation_for_card(card_id)
+        base_vector = (distilled.indicator_vector if distilled else {}) or {}
+        self._evidence.add_evidence(card_id, perception, base_vector)
+        if getattr(self._evidence, "_db", None) is not None:
+            self._evidence.flush_card(card_id)
+
+    def _maybe_consolidate(self, card_id: str) -> None:
+        if not self._evidence.should_consolidate(card_id):
+            return
+        distilled_json_path = (
+            Path(__file__).parent.parent.parent / "character_cards" / f"{card_id}.distilled.json"
+        )
+        merged = self._evidence.consolidate(card_id, distilled_json_path)
+        if merged:
+            self._state_manager.invalidate_distillation(card_id)
+            self._generator.invalidate_cache()
+            logger.info("V3: 人格演化已固化 card=%s（%d 条证据）", card_id,
+                        self._evidence.get_total(card_id))
+
     # === 获取状态 ===
+
+    def get_recent_events(self, uid: int = 0, card_id: str = "", limit: int = 30) -> list[dict]:
+        """最近的人格状态变化事件流（审计）。"""
+        try:
+            return self._audit.recent(uid=uid, card_id=card_id, limit=limit)
+        except Exception:
+            return []
 
     def get_personality_status(self, uid: int) -> dict:
         self.ensure_user_bound(uid)
@@ -435,6 +528,10 @@ class PersonalitySystemV3:
 
         from .traits import vector_to_labels
 
+        evidence_total = self._evidence.get_total(snapshot.card_id)
+        plasticity = self._evidence.get_plasticity(snapshot.card_id)
+        maturity = 1.0 - (sum(plasticity.values()) / len(plasticity) if plasticity else 1.0)
+
         return {
             "uid": uid,
             "card_id": snapshot.card_id,
@@ -443,6 +540,10 @@ class PersonalitySystemV3:
             "affinity_value": snapshot.affinity_value,
             "affinity_level": self._affinity_level(snapshot.affinity_value),
             "labels": vector_to_labels(snapshot.indicator_vector),
+            "evidence_total": evidence_total,
+            "plasticity_avg": round(sum(plasticity.values()) / len(plasticity), 4) if plasticity else None,
+            "maturity": round(maturity, 4),
+            "recent_events": self.get_recent_events(uid=uid, limit=10),
         }
 
     def get_personality_full(self, uid: int) -> dict:
@@ -473,24 +574,13 @@ class PersonalitySystemV3:
     def flush(self) -> None:
         logger.info("V3: flush 持久层")
         self._state_manager.flush()
+        for card_id in list(getattr(self._evidence, "_mu", {}).keys()):
+            self._evidence.flush_card(card_id)
 
     @staticmethod
     def _affinity_level(value: float) -> dict:
         """游戏式等级系统: 等级越高, 升级所需亲密度越多。上不封顶。"""
-        thresholds = [0, 10, 30, 60, 100, 150, 210, 280, 360, 450, 550, 660, 780, 910, 1050]
-        labels = {
-            1: "初识", 2: "关注", 3: "留意", 4: "在意", 5: "记住",
-            6: "习惯", 7: "默契", 8: "依存", 9: "共感", 10: "灵魂链接",
-            11: "命定", 12: "共生", 13: "绝对信赖", 14: "不可替代", 15: "永恒契约",
-        }
-        for lv in reversed(range(len(thresholds))):
-            if value >= thresholds[lv]:
-                actual_lv = lv + 1
-                next_thresh = thresholds[lv + 1] if lv + 1 < len(thresholds) else thresholds[-1] + 100
-                progress = min(1.0, (value - thresholds[lv]) / max(next_thresh - thresholds[lv], 1))
-                label = labels.get(actual_lv, f"Lv.{actual_lv}")
-                return {"level": actual_lv, "label": label, "progress": progress}
-        return {"level": 1, "label": "初识", "progress": 0.0}
+        return _shared_affinity_level(value)
 
 
 __all__ = [
@@ -509,6 +599,12 @@ __all__ = [
     "DEFAULT_FALLBACK_PROMPT",
     "PersonalityJudge",
     "MoodUpdateResult",
+    "DynamicsEngine",
+    "DynamicsConfig",
+    "EvidenceAccumulator",
+    "PerceptionRecord",
+    "AuditLogger",
+    "AuditEntry",
     "V3StateManager",
     "V3Persistence",
     "ExperienceImporter",

@@ -17,6 +17,7 @@ logger = logging.getLogger("DynamicSynthesizer")
 class DynamicSnapshot:
     card_id: str = ""
     indicator_vector: dict[str, float] = field(default_factory=dict)
+    stable_indicator_vector: dict[str, float] = field(default_factory=dict)
     foundation_description: str = ""
     behavioral_patterns: list[dict] = field(default_factory=list)
     speech_patterns: list[dict] = field(default_factory=list)
@@ -96,6 +97,7 @@ class DynamicSynthesizer:
         snapshot = DynamicSnapshot(
             card_id=card_id,
             indicator_vector=vec,
+            stable_indicator_vector=dict(distilled_indicator_vector),
             foundation_description=foundation_description,
             behavioral_patterns=behavioral_patterns or [],
             speech_patterns=speech_patterns or [],
