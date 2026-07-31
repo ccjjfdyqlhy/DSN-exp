@@ -46,12 +46,190 @@ except ImportError:
 try:
     import cv2
     HAS_CAMERA = True
+    # 抑制 OpenCV 摄像头枚举/抓帧时的控制台噪音（DSHOW/MSMF 警告、obsensor 错误刷屏）
+    try:
+        cv2.setLogLevel(0)  # 0 = LOG_LEVEL_SILENT
+    except Exception:
+        pass
 except ImportError:
     cv2 = None
     HAS_CAMERA = False
     print("[WARN] opencv-python not installed. pip install opencv-python (本地摄像头需要)")
 
 CAMERA_DEVICE_ID = int(os.environ.get("DSN_CAMERA_DEVICE_ID", "0"))
+
+# 摄像头枚举整体超时（秒）——cv2 打开部分设备可能阻塞，超时后放弃剩余探测
+ENUM_TIMEOUT = 5.0
+
+# 逻辑名 → 设备索引的映射（可被环境变量覆盖，格式: cam0=0,cam1=2）
+# 未配置时按枚举顺序自动分配 cam0, cam1, ...
+_CAMERA_NAME_TO_INDEX: dict[str, int] = {}
+_CAMERA_INDEX_TO_NAME: dict[int, str] = {}
+_CAMERA_BACKEND: dict[int, int] = {}   # 设备索引 → 最佳 cv2 后端
+_CAMERA_SCAN_DONE = False
+_CAMERA_SCAN_LOCK = threading.Lock()
+
+
+def _parse_camera_map(raw: str) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, idx = part.split("=", 1)
+        try:
+            mapping[name.strip()] = int(idx.strip())
+        except ValueError:
+            continue
+    return mapping
+
+
+def _enumerate_cameras(max_probe: int = 8) -> list[dict]:
+    """枚举本机摄像头，返回 [{index, name, logical_name}]。
+    通过尝试打开 cv2 设备判断可用性；探测上限 max_probe。
+    整体有超时保护：cv2.VideoCapture 在部分驱动上可能长时间阻塞，
+    在独立线程中执行并限定上限（ENUM_TIMEOUT 秒）。
+    线程安全：并发调用时串行扫描；只有扫描完整完成且找到摄像头时才缓存结果，
+    空/超时结果不缓存，下次调用会重新扫描。
+    """
+    global _CAMERA_NAME_TO_INDEX, _CAMERA_INDEX_TO_NAME, _CAMERA_SCAN_DONE
+    if not HAS_CAMERA:
+        return []
+    with _CAMERA_SCAN_LOCK:
+        if _CAMERA_SCAN_DONE:
+            return [{"index": i, "name": n, "logical_name": nm}
+                    for i, nm in sorted(_CAMERA_INDEX_TO_NAME.items())
+                    for n in [f"cam{i}"]]
+
+        result_holder: list = []
+        done = threading.Event()
+
+        def _scan():
+            try:
+                result_holder.extend(_scan_devices(max_probe))
+            except Exception:
+                log.warning("摄像头扫描异常", exc_info=True)
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_scan, daemon=True, name="cam-scan")
+        t.start()
+        scan_completed = done.wait(timeout=ENUM_TIMEOUT)
+        devices = list(result_holder)
+
+        env_map = _parse_camera_map(os.environ.get("DSN_CAMERA_MAP", ""))
+
+        # 分配逻辑名：优先 env 映射，其余按顺序 cam0, cam1...
+        used_names = set()
+        _CAMERA_NAME_TO_INDEX = {}
+        _CAMERA_INDEX_TO_NAME = {}
+        _CAMERA_BACKEND.clear()
+        for dev in devices:
+            idx = dev["index"]
+            logical = None
+            for nm, mapped_idx in env_map.items():
+                if mapped_idx == idx and nm not in used_names:
+                    logical = nm
+                    break
+            if logical is None:
+                i = 0
+                while f"cam{i}" in used_names:
+                    i += 1
+                logical = f"cam{i}"
+            used_names.add(logical)
+            dev["logical_name"] = logical
+            _CAMERA_NAME_TO_INDEX[logical] = idx
+            _CAMERA_INDEX_TO_NAME[idx] = logical
+            if dev.get("backend"):
+                _CAMERA_BACKEND[idx] = dev["backend"]
+
+        # 仅当扫描完整完成且找到设备时才缓存；否则留待下次重试
+        if scan_completed and devices:
+            _CAMERA_SCAN_DONE = True
+        if devices:
+            log.info("枚举到 %d 个摄像头: %s",
+                     len(devices),
+                     ", ".join(f"{d['logical_name']}=device{d['index']}" for d in devices))
+        else:
+            log.warning("本次扫描未检测到可用摄像头（completed=%s）", scan_completed)
+        return devices
+
+
+def _scan_devices(max_probe: int, backends: list | None = None) -> list[dict]:
+    """在子线程中执行的实际设备探测（cv2 打开可能阻塞）。
+    记录每个 index 的最佳可用后端，抓帧时复用同一后端（关键：枚举与抓帧后端不一致
+    会导致 Windows 上 DSHOW/MSMF 冲突，出现 cam 打不开或抓帧失败）。
+    :param backends: 可显式指定后端列表（测试用）；默认按平台推断。
+    """
+    if backends is None:
+        backends = _default_backends()
+    elif isinstance(backends, (list, tuple)):
+        backends = list(backends)
+
+    devices = []
+    for idx in range(max_probe):
+        for backend in backends:
+            try:
+                if backend:
+                    cap = cv2.VideoCapture(idx, backend)
+                else:
+                    cap = cv2.VideoCapture(idx)
+                opened = cap.isOpened()
+                if opened:
+                    devices.append({"index": idx, "name": f"cam{idx}", "backend": backend})
+                    cap.release()
+                    break
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            except Exception:
+                continue
+    return devices
+
+
+def _default_backends() -> list:
+    """按平台返回默认的 cv2 摄像头后端候选列表。"""
+    if sys.platform.startswith("linux"):
+        return [getattr(cv2, "CAP_V4L2", 0), getattr(cv2, "CAP_FFMPEG", 0), 0]
+    if sys.platform == "darwin":
+        return [getattr(cv2, "CAP_AVFOUNDATION", 0), 0]
+    if os.name == "nt":
+        # DSHOW 优先，其次 MSMF，最后默认——部分摄像头只在特定后端可开
+        return [getattr(cv2, "CAP_DSHOW", 0), getattr(cv2, "CAP_MSMF", 0), 0]
+    return [0]
+
+
+def _resolve_camera(camera: str) -> int:
+    """把逻辑名（cam0/front）解析为设备索引；空或 'all' 返回主摄像头索引。"""
+    if camera in (None, "", "all", "default"):
+        return CAMERA_DEVICE_ID
+    if not _CAMERA_SCAN_DONE and HAS_CAMERA:
+        _enumerate_cameras()
+    if camera in _CAMERA_NAME_TO_INDEX:
+        return _CAMERA_NAME_TO_INDEX[camera]
+    try:
+        return int(camera)
+    except (ValueError, TypeError):
+        return CAMERA_DEVICE_ID
+
+
+def _camera_backend_for(device_id: int) -> int:
+    """返回指定设备的最佳 cv2 后端（枚举时记录），未知则 0（默认后端）。"""
+    if _CAMERA_SCAN_DONE:
+        return _CAMERA_BACKEND.get(device_id, 0)
+    if HAS_CAMERA:
+        _enumerate_cameras()
+    return _CAMERA_BACKEND.get(device_id, 0)
+
+
+def _open_camera(device_id: int):
+    """用记录的最佳后端打开摄像头；无记录后端则用默认。"""
+    backend = _camera_backend_for(device_id)
+    if backend:
+        return cv2.VideoCapture(device_id, backend)
+    return cv2.VideoCapture(device_id)
+
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_HOST = os.environ.get("DSN_HOST", "127.0.0.1")
@@ -464,18 +642,19 @@ def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-def _capture_camera_frame(camera_id: int = CAMERA_DEVICE_ID) -> Optional[str]:
+def _capture_camera_frame(camera: str | int | None = None) -> Optional[str]:
     """本地 cv2 抓一帧 → JPEG(q75) → base64 data URL。失败返回 None。
 
-    产物格式与后端原 _observe_once/_capture_frame 完全一致
-    ("data:image/jpeg;base64,...")，保证后端 VisionModel 管道零改动。
+    支持逻辑名（cam0 / front）或设备索引；空则用主摄像头 CAMERA_DEVICE_ID。
+    产物格式 ("data:image/jpeg;base64,...") 与后端 VisionModel 管道一致。
     """
     if not HAS_CAMERA:
         return None
+    device_id = _resolve_camera(camera)
     try:
-        cap = cv2.VideoCapture(camera_id)
+        cap = _open_camera(device_id)
         if not cap.isOpened():
-            log.warning("摄像头无法打开 (device_id=%s)", camera_id)
+            log.warning("摄像头无法打开 (device_id=%s)", device_id)
             return None
         ret, frame = cap.read()
         cap.release()
@@ -488,7 +667,49 @@ def _capture_camera_frame(camera_id: int = CAMERA_DEVICE_ID) -> Optional[str]:
             return None
         return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
     except Exception:
-        log.warning("摄像头抓帧失败", exc_info=True)
+        log.warning("摄像头抓帧失败 (device_id=%s)", device_id, exc_info=True)
+        return None
+
+
+def _capture_all_cameras() -> list[dict]:
+    """枚举并逐台抓帧，返回 [{logical_name, index, image_data}]（只含抓帧成功的）。"""
+    result = []
+    for dev in _enumerate_cameras():
+        frame = _capture_camera_frame(dev["index"])
+        if frame:
+            result.append({
+                "logical_name": dev["logical_name"],
+                "index": dev["index"],
+                "image_data": frame,
+            })
+    return result
+
+
+def _capture_and_save_frame(camera, save_dir: Path) -> Optional[Path]:
+    """抓一帧并保存为 JPEG 文件到 save_dir，返回保存路径；失败返回 None。"""
+    if not HAS_CAMERA:
+        return None
+    device_id = _resolve_camera(camera)
+    try:
+        cap = _open_camera(device_id)
+        if not cap.isOpened():
+            log.warning("摄像头无法打开 (device_id=%s)", device_id)
+            return None
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            log.warning("摄像头读取画面失败 (device_id=%s)", device_id)
+            return None
+        save_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = save_dir / f"camera_{device_id}_{ts}.jpg"
+        ok = cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ok:
+            log.warning("JPEG 写入失败: %s", path)
+            return None
+        return path
+    except Exception:
+        log.warning("摄像头抓帧保存失败 (device_id=%s)", device_id, exc_info=True)
         return None
 
 
@@ -1089,14 +1310,18 @@ class VisionObserver:
         self._thread: Optional[threading.Thread] = None
         self._enabled = False
         self._interval = 300
+        self._camera = ""
 
-    def configure(self, enabled: bool, interval: int) -> bool:
+    def configure(self, enabled: bool, interval: int, camera: str = "") -> bool:
         """更新配置；返回配置是否发生变化。"""
         enabled = bool(enabled)
         interval = max(30, int(interval or 300))
-        changed = (enabled != self._enabled) or (interval != self._interval)
+        camera = camera or ""
+        changed = (enabled != self._enabled) or (interval != self._interval) \
+            or (camera != self._camera)
         self._enabled = enabled
         self._interval = interval
+        self._camera = camera
         return changed
 
     def start(self):
@@ -1127,16 +1352,17 @@ class VisionObserver:
                 time.sleep(1)
             if not self._running:
                 return
-            frame = _capture_camera_frame()
+            frame = _capture_camera_frame(self._camera or CAMERA_DEVICE_ID)
             if frame is None:
                 log.warning("VisionObserver: 抓帧失败，跳过本轮")
                 continue
             try:
                 self._client._http_post("/api/vision/observation", json={
                     "image_data": frame,
+                    "camera": self._camera or "default",
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }, timeout=30)
-                log.info("VisionObserver: 帧已推送后端")
+                log.info("VisionObserver: 帧已推送后端 (camera=%s)", self._camera or "default")
             except Exception:
                 log.warning("VisionObserver: 推送后端失败", exc_info=True)
 
@@ -1230,29 +1456,37 @@ class HeartbeatPoller:
         av = data.get("active_vision")
         if av and self._vision_observer is not None:
             if self._vision_observer.configure(
-                    av.get("enabled", False), av.get("interval", 300)):
-                log.info("VisionObserver 配置更新: enabled=%s interval=%s",
-                         av.get("enabled"), av.get("interval"))
+                    av.get("enabled", False), av.get("interval", 300),
+                    av.get("camera", "")):
+                log.info("VisionObserver 配置更新: enabled=%s interval=%s camera=%s",
+                         av.get("enabled"), av.get("interval"), av.get("camera", ""))
                 self._vision_observer.start()  # 已 start 则 no-op
 
-        # ── 按需视觉请求：抓一帧回传后端，唤醒阻塞中的 look_around ──
+        # ── 按需视觉请求：抓一帧/多帧回传后端，唤醒阻塞中的 look_around ──
         vr = data.get("vision_request")
         if vr:
             rid = vr.get("request_id", "")
+            cam = vr.get("camera", "") or ""
             if rid:
-                log.info("收到 on-demand 视觉请求: %s", rid)
-                frame = _capture_camera_frame()
-                if frame:
-                    try:
-                        self._client._http_post("/api/vision/frame", json={
-                            "request_id": rid,
-                            "image_data": frame,
-                        }, timeout=30)
-                        log.info("视觉帧已回传: %s", rid)
-                    except Exception:
-                        log.warning("视觉帧回传失败: %s", rid, exc_info=True)
-                else:
-                    log.warning("无法抓帧，视觉请求 %s 将在后端超时兜底", rid)
+                log.info("收到 on-demand 视觉请求: %s camera=%r", rid, cam)
+                frames = _capture_all_cameras() if cam in ("all", "all_cameras") \
+                    else [{"logical_name": cam or "default",
+                           "image_data": _capture_camera_frame(cam)}]
+                frames = [f for f in frames if f.get("image_data")]
+                try:
+                    payload = {"request_id": rid}
+                    if frames:
+                        payload["frames"] = frames
+                    else:
+                        payload["frames"] = []
+                        payload["error"] = "未检测到可用摄像头或抓帧失败"
+                    self._client._http_post("/api/vision/frame", json=payload, timeout=60)
+                    if frames:
+                        log.info("视觉帧已回传: %s (%d 张)", rid, len(frames))
+                    else:
+                        log.warning("无法抓帧，已告知后端: %s", rid)
+                except Exception:
+                    log.warning("视觉帧回传失败: %s", rid, exc_info=True)
 
         if not data.get("has_notification"):
             return
@@ -1438,8 +1672,8 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [t]     text input      [s] standby")
     print("  [=]     async task      [k] skip reminder")
     print("  [r]     heartbeat       [f] silence alarm")
-    print("  [l]     alarm status    [q/Ctrl+C] quit")
-    print("  [n/m]   vol-/vol+ (music mode)")
+    print("  [l]     alarm status    [v] list cameras")
+    print("  [q/Ctrl+C] quit         [n/m] vol-/+ (music)")
     print("  [d/e/f] prev/toggle/next (music mode)")
     print("=" * 43)
     print()
@@ -1471,6 +1705,50 @@ def print_personality(client: DSNClient):
         print(f"  --------------------------")
     except Exception as e:
         print(f"  Error: {e}")
+
+
+def print_cameras(client: DSNClient = None, save_shots: bool = True):
+    """列出本机所有可用摄像头及其逻辑名/备注，并对每台抓一帧保存到 temp。"""
+    print(f"\n  --- Cameras ---")
+    if not HAS_CAMERA:
+        print("  opencv-python 未安装，无法枚举摄像头")
+        return
+
+    cams = _enumerate_cameras()
+    if not cams:
+        print("  未检测到任何可用摄像头")
+        return
+
+    # 尝试拉取后端登记的备注（若有客户端引用）
+    notes: dict[str, str] = {}
+    if client is not None:
+        try:
+            resp = client._http_get("/api/vision/cameras", timeout=10)
+            if resp.status_code == 200:
+                for c in resp.json().get("cameras", []):
+                    if c.get("note"):
+                        notes[c["logical_name"]] = c["note"]
+        except Exception:
+            pass
+
+    for c in cams:
+        note = notes.get(c["logical_name"], "")
+        marker = "  ← 主摄像头" if c["index"] == CAMERA_DEVICE_ID else ""
+        line = f"  {c['logical_name']}: device{c['index']} (index={c['index']}){marker}"
+        if note:
+            line += f"  [备注: {note}]"
+        print(line)
+
+    # 对每台摄像头各拍一帧保存到 temp（测试效果 / 排查用）
+    if save_shots:
+        print("  正在逐台拍照保存到 temp/ ...")
+        for c in cams:
+            saved = _capture_and_save_frame(c["index"], TTS_DIR)
+            if saved:
+                print(f"    ✓ {c['logical_name']} → {saved.name}")
+            else:
+                print(f"    ✗ {c['logical_name']} 抓帧失败")
+    print("  --------------------------")
 
 
 def toggle_standby(client: DSNClient):
@@ -1531,6 +1809,11 @@ def main():
     parser.add_argument("--pairing", default="")
     args = parser.parse_args()
 
+    # 尽早注册 SIGINT，确保任何阻塞（含 cv2 摄像头枚举）期间 ^C 都能生效
+    def _early_sigint(sig, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGINT, _early_sigint)
+
     cfg = load_config()
     cfg["host"] = f"{args.host}:{args.port}"
 
@@ -1587,6 +1870,19 @@ def main():
     async_poller = AsyncTaskPoller(client, client._tts_queue)
     async_poller.start()
     client.async_poller = async_poller
+
+    # 枚举摄像头并上报后端（多摄像头支持）——后台守护线程，避免 cv2 打开慢设备阻塞启动
+    def _report_cameras_background():
+        try:
+            cams = _enumerate_cameras()
+            if cams:
+                client._http_post("/api/vision/cameras", json={"cameras": cams}, timeout=15)
+                log.info("已上报 %d 个摄像头到后端: %s",
+                         len(cams), ", ".join(d["logical_name"] for d in cams))
+        except Exception:
+            log.warning("摄像头枚举/上报失败", exc_info=True)
+    threading.Thread(target=_report_cameras_background, daemon=True,
+                     name="camera-report").start()
 
     player = MusicPlayer(client, cfg.get("uid", 1))
     player.start_poll()
@@ -1708,6 +2004,10 @@ def main():
                 # ── p: 人格状态 ──
                 elif ch.lower() == "p":
                     print_personality(client)
+
+                # ── v: 列出所有可用摄像头 ──
+                elif ch.lower() == "v":
+                    print_cameras(client)
 
                 # ── s: standby ──
                 elif ch.lower() == "s":

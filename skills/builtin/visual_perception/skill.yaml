@@ -23,6 +23,38 @@ tools:
             type: string
             description: "关注焦点（可选）: 留空则全面描述；指定如 'user' 关注用户状态，'environment' 关注环境"
             required: false
+          camera:
+            type: string
+            description: "目标摄像头逻辑名（可选，如 cam0 / cam1 / front）。首次调用时留空或填 'all' 会枚举所有摄像头并逐台描述；之后可按逻辑名单独调用某台"
+            required: false
+
+  - name: set_camera_note
+    display_name: "给摄像头写备注"
+    description: "给指定摄像头写一条备注（说明它的位置/用途），便于后续识别。首次 look_around 拿到各摄像头描述后，用本工具给每台摄像头写备注。"
+    module: "tools.perception"
+    class: "VisualPerceptionTool"
+    methods:
+      - name: set_camera_note
+        description: "给摄像头写备注"
+        parameters:
+          logical_name:
+            type: string
+            description: "摄像头逻辑名，如 cam0 / cam1"
+            required: true
+          note:
+            type: string
+            description: "备注内容，如 '对着桌面的主摄像头' / '对着门口的摄像头'"
+            required: true
+
+  - name: list_cameras
+    display_name: "列出摄像头"
+    description: "列出所有已登记摄像头及其备注。"
+    module: "tools.perception"
+    class: "VisualPerceptionTool"
+    methods:
+      - name: list_cameras
+        description: "列出已登记摄像头及备注"
+        parameters: {}
 
 activation:
   keywords: ["看看", "看", "观察", "看到", "视觉", "摄像头", "周围", "环境", "你看到", "look"]

@@ -376,6 +376,7 @@ def _inject_vision_fields(response):
         data["active_vision"] = {
             "enabled": bool(getattr(Config, "ACTIVE_VISION_ENABLED", False)),
             "interval": int(getattr(Config, "ACTIVE_VISION_INTERVAL", 300)),
+            "camera": getattr(Config, "ACTIVE_VISION_CAMERA", "") or "",
         }
         changed = True
     except Exception:
