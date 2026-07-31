@@ -15,10 +15,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import deque
 
-from tasks import TaskStatus, TaskType
-
 # ── 首次启动检测：必须在任何可能触发 config.py 的 import 之前执行 ──
-import logging
 _log = logging.getLogger(__name__)
 _ENV_PATH = Path(__file__).parent / ".env"
 
@@ -59,6 +56,8 @@ if not _is_env_configured():
         sys.exit(0)
     print("\n  ✓ 配置完成，正在启动完整系统...\n")
 
+# 仅在 .env 就绪后导入（tasks → config 依赖环境变量）
+from tasks import TaskStatus, TaskType
 
 from rich.console import Console
 from rich.text import Text
@@ -997,6 +996,133 @@ def _cmd_plan(db, args: str):
 """)
 
 
+def _cmd_login(args: str):
+    """多 OpenAI 兼容 API 账号管理"""
+    from models.api_accounts import get_api_manager
+    mgr = get_api_manager()
+
+    parts = args.split()
+    sub = parts[0].lower() if parts else ""
+
+    if sub in ("", "list"):
+        _login_list(mgr)
+    elif sub == "add":
+        _login_add(mgr, parts)
+    elif sub == "remove":
+        if len(parts) < 2:
+            print("  用法: /login remove <账号名>")
+            return
+        ok, msg = mgr.remove(parts[1])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("prio", "priority"):
+        if len(parts) < 3:
+            print("  用法: /login prio <账号名> <优先级>   (越小越优先)")
+            return
+        try:
+            prio = int(parts[2])
+        except ValueError:
+            print("  错误: 优先级必须是整数")
+            return
+        ok, msg = mgr.set_priority(parts[1], prio)
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("on", "enable"):
+        if len(parts) < 2:
+            print("  用法: /login enable <账号名>")
+            return
+        ok, msg = mgr.set_enabled(parts[1], True)
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("off", "disable"):
+        if len(parts) < 2:
+            print("  用法: /login disable <账号名>")
+            return
+        ok, msg = mgr.set_enabled(parts[1], False)
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("model", "setmodel"):
+        if len(parts) < 3:
+            print("  用法: /login model <账号名> <模型名>")
+            return
+        ok, msg = mgr.set_model(parts[1], parts[2])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("url", "base"):
+        if len(parts) < 3:
+            print("  用法: /login url <账号名> <Base URL>")
+            return
+        ok, msg = mgr.set_base_url(parts[1], parts[2])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("backup", "bk"):
+        if len(parts) < 3:
+            print("  用法: /login backup <账号名> <备用 Token>")
+            print("  备用 Token 在主 Token 失效时自动顶上（同端点）")
+            return
+        ok, msg = mgr.set_backup_key(parts[1], parts[2])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("test", "ping"):
+        targets = parts[1:] or [a["name"] for a in mgr.list_accounts()]
+        for name in targets:
+            print(f"  ⏳ 测试账号 '{name}'...")
+            ok, msg = mgr.test(name)
+            print(f"  {'✓' if ok else '✗'} {name}: {msg}")
+    else:
+        print("""
+  /login 子命令 (多 OpenAI 兼容 API 账号管理):
+    /login                   列出所有账号 (按优先级排序)
+    /login add <名称> <Base URL> <API Key> <模型名>
+                            添加一个 API 账号 (优先级自动排到末尾)
+    /login remove <名称>     删除账号
+    /login prio <名称> <数字> 设置调用优先级 (越小越优先, 0 最高)
+    /login enable <名称>     启用账号
+    /login disable <名称>    禁用账号 (不会参与调用/回退)
+    /login model <名称> <模型> 修改模型名
+    /login url <名称> <URL>  修改 Base URL
+    /login backup <名称> <Token>  设置备用 Token (主 Token 失效时自动顶上)
+    /login test [名称...]    测试连通性 (不带参数则测试全部)
+
+  调用规则: 每次请求按优先级顺序尝试; 当前账号报错自动回退到下一个。
+  示例:
+    /login add deepseek https://api.deepseek.com/v1 sk-xxx deepseek-chat
+    /login add openai https://api.openai.com/v1 sk-yyy gpt-4o
+    /login prio openai 0
+    /login test deepseek openai
+""")
+
+
+def _login_list(mgr):
+    accounts = mgr.list_accounts()
+    if not accounts:
+        print("\n  尚未配置任何 API 账号。")
+        print("  使用 /login add <名称> <Base URL> <API Key> <模型名> 添加第一个账号。")
+        return
+    print("\n  [bold]已配置的 API 账号 (按优先级排序)[/]")
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("#", justify="right")
+    table.add_column("名称", style="bold")
+    table.add_column("Base URL", style="dim")
+    table.add_column("模型", style="dim")
+    table.add_column("Key", style="dim")
+    table.add_column("备用Token", style="dim")
+    table.add_column("状态", justify="center")
+    for i, acc in enumerate(accounts):
+        status = "[green]启用[/]" if acc.get("enabled") else "[red]禁用[/]"
+        key_masked = f"{acc.get('api_key','')[:4]}...{acc.get('api_key','')[-4:]}" if acc.get("api_key") else ""
+        bk = acc.get("backup_api_key", "")
+        bk_masked = f"{bk[:4]}...{bk[-4:]}" if bk else ""
+        table.add_row(str(i + 1), acc.get("name", "?"),
+                      acc.get("base_url", ""), acc.get("model", ""),
+                      key_masked, bk_masked, status)
+    console.print(table)
+    print()
+
+
+def _login_add(mgr, parts: list[str]):
+    if len(parts) < 5:
+        print("  用法: /login add <名称> <Base URL> <API Key> <模型名>")
+        print("  示例: /login add deepseek https://api.deepseek.com/v1 sk-xxx deepseek-chat")
+        return
+    name, base_url, api_key, model = parts[1], parts[2], parts[3], parts[4]
+    ok, msg = mgr.add(name, base_url=base_url, api_key=api_key, model=model)
+    print(f"  {'✓' if ok else '✗'} {msg}")
+
+
 def _cmd_help():
     """显示帮助信息"""
     print("""
@@ -1025,6 +1151,7 @@ def _cmd_help():
     /persona distill <角色卡名>   立即启动人格蒸馏
     /persona materials <角色卡名> 列出蒸馏素材
     /persona rollback <角色卡名> 列出备份快照并回滚
+    /login       管理多个 OpenAI 兼容 API 账号 (add/remove/prio/enable/test)
     /hibernate check             查看待机策略+活跃度分布
     /hibernate archive <时间>    设定下次整理时间
     /hibernate sleep             立刻进入待机
@@ -1766,6 +1893,9 @@ def _h_persona(am, db, pm, pe, cc, pv, arg):
 def _h_help(am, db, pm, pe, cc, pv, arg):
     _cmd_help()
 
+def _h_login(am, db, pm, pe, cc, pv, arg):
+    _cmd_login(arg)
+
 def _h_agent(am, db, pm, pe, cc, pv, arg):
     _cmd_agent(am, db, arg)
 
@@ -1809,6 +1939,7 @@ _CMD_TABLE = {
     "/config": _h_config,
     "/listconfig": _h_listconfig,
     "/persona": _h_persona,
+    "/login": _h_login,
     "/export": _h_export,
     "/import": _h_import,
     "/reminder": _h_reminder,
