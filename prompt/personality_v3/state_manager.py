@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .character_card import CharacterCard
@@ -20,8 +21,9 @@ _CARDS_DIR = Path(__file__).parent.parent.parent / "character_cards"
 
 
 class V3StateManager:
-    def __init__(self, persistence: V3Persistence):
+    def __init__(self, persistence: V3Persistence, evidence=None):
         self._persistence = persistence
+        self._evidence = evidence  # EvidenceAccumulator (可选), 用于稳定特质中心
         self._synthesizer = DynamicSynthesizer()
         self._card_cache: dict[str, CharacterCard] = {}
         self._distillation_cache: dict[str, DistilledTraits] = {}
@@ -111,6 +113,15 @@ class V3StateManager:
             card_id=card_id,
         )
 
+        # 稳定特质中心: 优先使用人格演化后的证据 mu（若已累积），否则用蒸馏基线
+        if self._evidence is not None:
+            try:
+                ev_mu = self._evidence.get_mu(card_id)
+                if ev_mu:
+                    snapshot.stable_indicator_vector = dict(ev_mu)
+            except Exception:
+                logger.warning("V3StateManager: 读取演化特质失败, 回退蒸馏基线")
+
         self._snapshot_cache[uid] = snapshot
         return snapshot
 
@@ -126,13 +137,37 @@ class V3StateManager:
             return
 
         interactions = bind.get("total_interactions", 0) + 1
-        self._persistence.update_user_state(uid, card_id, interactions, new_affinity, new_mood)
+        self._persistence.update_user_state(
+            uid, card_id, interactions, new_affinity, new_mood,
+            last_interaction_ts=datetime.now(timezone.utc).isoformat(),
+        )
         self._invalidate_snapshot(uid)
         logger.debug("V3StateManager: on_interaction uid=%d interactions=%d affinity=%.1f",
                      uid, interactions, new_affinity)
 
     def get_distillation_for_card(self, card_id: str) -> DistilledTraits | None:
         return self._get_distillation(card_id)
+
+    def invalidate_distillation(self, card_id: str) -> None:
+        """consolidate 写回蒸馏产物后使缓存失效。"""
+        self._distillation_cache.pop(card_id, None)
+        self._snapshot_cache.clear()
+        logger.debug("V3StateManager: 蒸馏缓存已失效 card_id=%s", card_id)
+
+    def get_days_since_last(self, uid: int) -> float:
+        """距上次交互的天数，用于亲密度遗忘。"""
+        bind = self._persistence.get_user_active_card(uid)
+        ts = (bind or {}).get("last_interaction_ts", "")
+        if not ts:
+            return 0.0
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            last = _dt.fromisoformat(ts)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=_tz.utc)
+            return max(0.0, (_dt.now(_tz.utc) - last).total_seconds() / 86400.0)
+        except Exception:
+            return 0.0
 
     def save_card(self, card: CharacterCard) -> None:
         yaml_path = _CARDS_DIR / f"{card.card_id}.yaml"
