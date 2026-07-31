@@ -18,6 +18,7 @@ from api.todo import todo_bp
 from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
+from api.vision import vision_bp, init_vision_api
 from api.alarm import alarm_bp, init_alarm_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
@@ -73,6 +74,16 @@ def create_chat_client(model_type: str = None):
             max_tokens=app.config.get("LMSTUDIO_MAX_TOKENS", 4096),
             timeout=app.config.get("LMSTUDIO_TIMEOUT", 300),
         )
+    # 多账号优先: 配置了 API 账号时使用 FailoverChat（自动回退）
+    try:
+        from models.api_accounts import get_api_manager
+        if get_api_manager().count() > 0:
+            chat = get_api_manager().enabled_accounts()
+            if chat:
+                from models.api_accounts import FailoverChat
+                return FailoverChat(chat)
+    except Exception:
+        _root_logger.warning("多 API 账号初始化失败，回退单账号模式", exc_info=True)
     return OpenAIChat(
         api_key=app.config["OPENAI_API_KEY"],
         model=app.config.get("MAIN_MODEL_NAME", "deepseek-v4-flash"),
@@ -406,6 +417,7 @@ def create_application():
     app.register_blueprint(reminder_bp)
     app.register_blueprint(plan_bp)
     app.register_blueprint(heartbeat_bp)
+    app.register_blueprint(vision_bp)
     app.register_blueprint(alarm_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
@@ -627,6 +639,8 @@ def create_application():
     app.config["ENGINE"] = engine
     # 初始化心跳接口（需要 engine 来生成 AI 回复 + TTS）
     init_heartbeat_api(db, task_manager, _auth_manager, engine)
+    # 初始化视觉感知协调层（桥接本地客户端摄像头 ↔ 后端 VisionModel/场景变化）
+    init_vision_api(db, engine, _auth_manager)
     _t("DSNEngine")
 
     # ── 语义缓存系统 (L1/L2/L3) ──
