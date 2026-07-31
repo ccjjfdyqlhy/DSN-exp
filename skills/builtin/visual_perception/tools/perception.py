@@ -33,11 +33,13 @@ class VisualPerceptionTool:
 
     # ── 公开方法（被 SkillRegistry 调用） ──
 
-    def look_around(self, focus: str = "") -> dict[str, Any]:
+    def look_around(self, focus: str = "", camera: str = "") -> dict[str, Any]:
         """
         观察周围环境。
         :param focus: 关注焦点 ("user" / "environment" / "" 全面)
-        :return: dict with success, description, image_url, visual_prompt
+        :param camera: 目标摄像头逻辑名（如 cam0 / front）。空或 "all" 时枚举全部摄像头，
+                       逐台抓帧并分别描述，返回 逻辑名+描述 列表。
+        :return: dict with success, description, cameras[{logical_name, description, note}]
         """
         from config import Config
         if not getattr(Config, "CAMERA_ENABLED", True):
@@ -56,50 +58,106 @@ class VisualPerceptionTool:
                 "description": "（视觉协调器不可用，无法获取画面）",
             }
 
-        # 发起 on-demand 请求并阻塞等待客户端回传帧
-        request_id = coord.create_request(focus=focus, uid=0)
-        logger.info("look_around: 已发起视觉请求 %s, 阻塞等待客户端帧...", request_id)
-        data_url = coord.wait(request_id)
+        # 首次/全部: 枚举全部摄像头；否则按逻辑名抓单台
+        request_camera = camera if camera not in ("", "all", "all_cameras") else "all"
 
-        if not data_url:
-            logger.warning("look_around: 客户端未在超时内回传帧, 返回兜底描述")
+        # 发起 on-demand 请求并阻塞等待客户端回传帧
+        request_id = coord.create_request(focus=focus, uid=0, camera=request_camera)
+        logger.info("look_around: 已发起视觉请求 %s (camera=%r), 阻塞等待客户端帧...",
+                    request_id, request_camera)
+        try:
+            frames, wait_error = coord.wait_with_error(request_id)
+        except AttributeError:
+            # 旧协调器兼容
+            frames = coord.wait(request_id)
+            wait_error = "客户端未在超时内回传帧" if not frames else ""
+
+        if not frames:
+            logger.warning("look_around: %s", wait_error or "客户端未响应")
             return {
                 "success": False,
-                "error": "客户端未在超时内回传帧",
-                "description": "（视觉系统暂不可用，客户端未响应）",
+                "error": wait_error or "客户端未在超时内回传帧",
+                "description": f"（{wait_error or '视觉系统暂不可用'}）",
                 "focus": focus or "全面",
+                "camera": request_camera,
             }
 
-        # 构造给 VisionModel 的提示词
+        # 逐台抓帧交给视觉模型描述
         prompt = self._build_vision_prompt(focus)
-        try:
-            vm = self._get_vision_model()
-            description = vm.ask(
-                data_url=data_url,
-                prompt=prompt,
-                max_tokens=512,
-                temperature=0.1,
-            )
-            logger.info("视觉感知完成: %s", description[:80])
-        except Exception as e:
-            logger.error("VisionModel 分析失败: %s", e)
-            description = "（视觉分析失败）"
+        cameras_desc = []
+        for logical_name, data_url in sorted(frames.items()):
+            description = self._describe_frame(data_url, prompt, logical_name)
+            note = ""
+            try:
+                note = coord.list_cameras_note(logical_name)
+            except Exception:
+                pass
+            cameras_desc.append({
+                "logical_name": logical_name,
+                "description": description,
+                "note": note,
+            })
 
-        # 构建回复 — 第一人称"你看到"，让主模型感觉这是自己的视觉
+        # 单摄像头时保持向后兼容的顶层字段；多摄像头时返回列表
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         result = {
             "success": True,
             "timestamp": now,
-            "description": description.strip(),
             "focus": focus or "全面",
-            "image_url": data_url,  # 原始画面 data URL，供支持多模态的主模型直接"看到"
-            "visual_prompt": (
-                "你刚才通过摄像头看到了以下画面。这是你真实的眼睛看到的内容，"
-                "不是文字描述，是你自己的视觉感知。你可以基于这个画面信息来理解当前环境。"
-                f"\n\n画面分析结果（{now}）：\n{description.strip()}"
-            ),
+            "camera": request_camera,
+            "cameras": cameras_desc,
         }
+        if len(cameras_desc) == 1:
+            c = cameras_desc[0]
+            result["description"] = c["description"]
+            result["image_url"] = frames.get(c["logical_name"])
+        else:
+            parts = [f"{c['logical_name']}: {c['description']}" for c in cameras_desc]
+            result["description"] = "\n".join(parts)
+
+        visual_prompt = self._build_visual_prompt(result, now)
+        result["visual_prompt"] = visual_prompt
+        logger.info("视觉感知完成: %d 台摄像头", len(cameras_desc))
         return result
+
+    def set_camera_note(self, logical_name: str, note: str) -> dict[str, Any]:
+        """给指定摄像头写备注，便于后续调用时识别其用途/位置。"""
+        coord = self._get_coordinator()
+        if coord is None:
+            return {"success": False, "error": "VisionCoordinator 不可用"}
+        ok = coord.set_camera_note(logical_name, note)
+        return {"success": ok, "logical_name": logical_name, "note": note}
+
+    def list_cameras(self) -> dict[str, Any]:
+        """列出已登记摄像头及其备注。"""
+        coord = self._get_coordinator()
+        if coord is None:
+            return {"success": False, "error": "VisionCoordinator 不可用", "cameras": []}
+        return {"success": True, "cameras": coord.list_cameras()}
+
+    def _describe_frame(self, data_url: str, prompt: str, logical_name: str) -> str:
+        """给一张帧调用视觉模型，返回描述；失败返回兜底文本。"""
+        try:
+            vm = self._get_vision_model()
+            return vm.ask(data_url=data_url, prompt=prompt, max_tokens=512, temperature=0.1)
+        except Exception as e:
+            logger.error("VisionModel 分析失败 (camera=%s): %s", logical_name, e)
+            return "（视觉分析失败）"
+
+    def _build_visual_prompt(self, result: dict, now: str) -> str:
+        """构建第一人称"你看到"提示，注入主模型。"""
+        desc = result.get("description", "")
+        if result.get("cameras") and len(result["cameras"]) > 1:
+            lines = []
+            for c in result["cameras"]:
+                note = f"（备注: {c['note']}）" if c.get("note") else ""
+                lines.append(f"- {c['logical_name']}: {c['description']}{note}")
+            desc = "\n".join(lines)
+        return (
+            "你刚才通过摄像头看到了以下画面。这是你真实的眼睛看到的内容，"
+            "不是文字描述，是你自己的视觉感知。你可以基于这些画面信息来理解当前环境。"
+            f"\n\n画面分析结果（{now}）：\n{desc}"
+        )
 
     # ── 内部方法 ──
 

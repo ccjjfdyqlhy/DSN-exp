@@ -6,6 +6,10 @@
 #   - 场景变化检测 + 主动通知(task_notifications)
 #   - PRE_PROCESS 注入(主动视觉插件)
 #
+# 多摄像头: 所有摄像头都连接在本地客户端上。首次视觉请求（camera="all"）
+# 由客户端枚举+逐台抓帧，回传多帧；后端逐张给视觉模型，返回逻辑名+描述列表。
+# 主 AI 可用 set_camera_note 给各摄像头写备注，之后可按逻辑名单独 look_around。
+#
 # 两条管线:
 #   1. 周期性主动视觉:
 #        minimal.py 定时 cv2 抓帧 → POST /api/vision/observation
@@ -13,9 +17,9 @@
 #        → /api/heartbeat 拉取 → 主 LLM 决策 → 主动说话 + TTS
 #
 #   2. 按需 look_around:
-#        Agent 调 look_around → VisionCoordinator.create_request (阻塞等待)
-#        → /api/heartbeat 响应携带 vision_request
-#        → minimal.py 抓帧 → POST /api/vision/frame
+#        Agent 调 look_around(camera=...) → VisionCoordinator.create_request (阻塞等待)
+#        → /api/heartbeat 响应携带 vision_request(camera)
+#        → minimal.py 抓帧(单/全) → POST /api/vision/frame
 #        → 唤醒 look_around → VisionModel → 返回描述(超时则兜底)
 
 from __future__ import annotations
@@ -67,23 +71,68 @@ class VisionCoordinator:
     def __init__(self):
         self._lock = threading.Lock()
         self._pending: dict[str, dict] = {}  # request_id -> {...}
+        # 摄像头元数据: logical_name -> {index, note, last_seen}
+        self._cameras: dict[str, dict] = {}
+        self._camera_lock = threading.Lock()
 
-    def create_request(self, focus: str = "", uid: int = 0) -> str:
-        """创建一条 pending 按需视觉请求，返回 request_id。"""
+    # === 摄像头元数据（客户端枚举上报 + 主AI备注） ===
+
+    def register_cameras(self, cameras: list[dict]) -> None:
+        """客户端枚举上报摄像头: [{logical_name, index, ...}]。"""
+        with self._camera_lock:
+            for c in cameras:
+                name = c.get("logical_name", "")
+                if not name:
+                    continue
+                entry = self._cameras.setdefault(name, {"index": None, "note": "", "last_seen": time.time()})
+                entry["index"] = c.get("index", entry.get("index"))
+                entry["last_seen"] = time.time()
+        logger.info("已登记 %d 个摄像头: %s", len(cameras), [c.get("logical_name") for c in cameras])
+
+    def list_cameras(self) -> list[dict]:
+        with self._camera_lock:
+            return [
+                {"logical_name": name, "note": entry.get("note", ""),
+                 "index": entry.get("index"), "last_seen": entry.get("last_seen")}
+                for name, entry in sorted(self._cameras.items())
+            ]
+
+    def set_camera_note(self, name: str, note: str) -> bool:
+        with self._camera_lock:
+            if name not in self._cameras:
+                self._cameras[name] = {"index": None, "note": "", "last_seen": time.time()}
+            self._cameras[name]["note"] = note
+        logger.info("摄像头备注已更新: %s → %s", name, note[:40])
+        return True
+
+    def list_cameras_note(self, name: str) -> str:
+        with self._camera_lock:
+            entry = self._cameras.get(name)
+            return (entry or {}).get("note", "")
+
+    # === 按需请求 ===
+
+    def create_request(self, focus: str = "", uid: int = 0, camera: str = "") -> str:
+        """创建一条 pending 按需视觉请求，返回 request_id。
+
+        :param camera: 目标摄像头逻辑名；"all"/"all_cameras" 表示枚举全部；空=主摄像头。
+        """
         request_id = f"vision_req_{uuid.uuid4().hex[:16]}"
         req = {
             "request_id": request_id,
             "uid": uid,
             "focus": focus,
+            "camera": camera,
             "event": threading.Event(),
-            "frame": None,          # 客户端回传的 base64 data URL
+            "frames": {},           # logical_name -> base64 data URL
             "created_at": time.time(),
             "status": "pending",    # pending -> delivered
         }
         with self._lock:
             self._gc()
             self._pending[request_id] = req
-        logger.info("视觉按需请求已创建: request_id=%s focus=%s", request_id, focus)
+        logger.info("视觉按需请求已创建: request_id=%s focus=%s camera=%r",
+                    request_id, focus, camera)
         return request_id
 
     def pending_for_uid(self, uid: int) -> Optional[dict]:
@@ -99,24 +148,34 @@ class VisionCoordinator:
                     return {
                         "request_id": req["request_id"],
                         "focus": req["focus"],
+                        "camera": req.get("camera", ""),
                         "timeout": int(self.REQUEST_TIMEOUT),
                     }
             return None
 
-    def submit_frame(self, request_id: str, frame_data_url: str) -> bool:
-        """客户端回传帧 → 唤醒阻塞的 look_around。"""
+    def submit_frame(self, request_id: str, frames: dict[str, str],
+                     error: str = "") -> bool:
+        """客户端回传帧 → 唤醒阻塞的 look_around。
+
+        :param frames: {logical_name: base64 data URL}，可含多台摄像头。
+        :param error: 客户端抓帧失败时的错误信息（此时 frames 为空）。
+        """
         with self._lock:
             req = self._pending.get(request_id)
             if not req or req["status"] != "pending":
                 return False
-            req["frame"] = frame_data_url
+            req["frames"].update(frames)
+            req["error"] = error
             req["status"] = "delivered"
             req["event"].set()
-        logger.info("视觉帧已回传: request_id=%s", request_id)
+        if error:
+            logger.info("视觉请求已响应(带错误): request_id=%s error=%s", request_id, error[:60])
+        else:
+            logger.info("视觉帧已回传: request_id=%s (%d 台)", request_id, len(frames))
         return True
 
-    def wait(self, request_id: str, timeout: Optional[float] = None) -> Optional[str]:
-        """阻塞等待客户端回传帧；超时返回 None。"""
+    def wait(self, request_id: str, timeout: Optional[float] = None) -> Optional[dict]:
+        """阻塞等待客户端回传帧；超时/错误返回 None。返回 {logical_name: data_url}。"""
         with self._lock:
             req = self._pending.get(request_id)
         if not req:
@@ -125,13 +184,37 @@ class VisionCoordinator:
             timeout = self.REQUEST_TIMEOUT
         req["event"].wait(timeout=timeout)
         with self._lock:
-            frame = req.get("frame")
+            frames = dict(req.get("frames", {}))
+            error = req.get("error", "")
             self._pending.pop(request_id, None)
-        if frame:
-            logger.info("视觉按需请求已满足: request_id=%s", request_id)
+        if frames:
+            logger.info("视觉按需请求已满足: request_id=%s cameras=%s",
+                        request_id, list(frames.keys()))
+        elif error:
+            logger.warning("视觉按需请求返回错误: request_id=%s error=%s",
+                           request_id, error[:80])
         else:
             logger.warning("视觉按需请求超时/未响应: request_id=%s", request_id)
-        return frame
+        return frames or None
+
+    def wait_with_error(self, request_id: str, timeout: Optional[float] = None) -> tuple[Optional[dict], str]:
+        """阻塞等待客户端回传帧，返回 (frames, error)。超时 frames=None error=超时提示。"""
+        with self._lock:
+            req = self._pending.get(request_id)
+        if not req:
+            return None, "请求不存在"
+        if timeout is None:
+            timeout = self.REQUEST_TIMEOUT
+        req["event"].wait(timeout=timeout)
+        with self._lock:
+            frames = dict(req.get("frames", {}))
+            error = req.get("error", "")
+            self._pending.pop(request_id, None)
+        if frames:
+            return frames, ""
+        if error:
+            return None, error
+        return None, "客户端未在超时内响应"
 
     def _gc(self):
         """清理过期请求（调用方须持有 _lock）。"""
@@ -197,13 +280,59 @@ def vision_observation():
 
 @vision_bp.route("/api/vision/frame", methods=["POST"])
 def vision_frame():
-    """接收客户端响应 on-demand look_around 请求回传的帧 → 唤醒阻塞的 look_around。"""
+    """接收客户端响应 on-demand look_around 请求回传的帧 → 唤醒阻塞的 look_around。
+
+    兼容两种格式:
+      1. 新: {"request_id":..., "frames": [{logical_name, image_data}, ...]}
+      2. 旧: {"request_id":..., "image_data": "..."}   （视为 logical_name="default"）
+    """
     if coordinator is None:
         return jsonify({"success": False, "error": "VisionCoordinator 不可用"}), 503
     data = request.get_json(silent=True) or {}
     request_id = data.get("request_id", "")
-    image_data = data.get("image_data", "")
-    if not request_id or not image_data:
-        return jsonify({"success": False, "error": "缺少 request_id/image_data"}), 400
-    ok = coordinator.submit_frame(request_id, image_data)
+    if not request_id:
+        return jsonify({"success": False, "error": "缺少 request_id"}), 400
+
+    frames: dict[str, str] = {}
+    raw_frames = data.get("frames")
+    if isinstance(raw_frames, list):
+        for f in raw_frames:
+            if isinstance(f, dict) and f.get("image_data"):
+                frames[f.get("logical_name") or "default"] = f["image_data"]
+    elif data.get("image_data"):
+        frames["default"] = data["image_data"]
+
+    error = data.get("error", "")
+    if not frames and not error:
+        return jsonify({"success": False, "error": "缺少 image_data/frames"}), 400
+
+    ok = coordinator.submit_frame(request_id, frames, error=error)
     return jsonify({"success": ok})
+
+
+@vision_bp.route("/api/vision/cameras", methods=["POST", "GET"])
+def vision_cameras():
+    """客户端枚举上报摄像头列表（POST），或后端查询已登记摄像头（GET）。"""
+    if coordinator is None:
+        return jsonify({"error": "VisionCoordinator 不可用"}), 503
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        cameras = data.get("cameras", [])
+        if isinstance(cameras, list):
+            coordinator.register_cameras(cameras)
+        return jsonify({"success": True, "count": len(cameras)})
+    return jsonify({"success": True, "cameras": coordinator.list_cameras()})
+
+
+@vision_bp.route("/api/vision/note", methods=["POST"])
+def vision_note():
+    """主 AI 给指定摄像头写备注。body: {logical_name, note}"""
+    if coordinator is None:
+        return jsonify({"error": "VisionCoordinator 不可用"}), 503
+    data = request.get_json(silent=True) or {}
+    name = data.get("logical_name", "")
+    note = data.get("note", "")
+    if not name:
+        return jsonify({"error": "缺少 logical_name"}), 400
+    coordinator.set_camera_note(name, note)
+    return jsonify({"success": True})
