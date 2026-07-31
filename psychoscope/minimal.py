@@ -43,6 +43,16 @@ except ImportError:
     HAS_PVRECORDER = False
     print("[WARN] pvrecorder missing. pip install pvrecorder")
 
+try:
+    import cv2
+    HAS_CAMERA = True
+except ImportError:
+    cv2 = None
+    HAS_CAMERA = False
+    print("[WARN] opencv-python not installed. pip install opencv-python (本地摄像头需要)")
+
+CAMERA_DEVICE_ID = int(os.environ.get("DSN_CAMERA_DEVICE_ID", "0"))
+
 HERE = Path(__file__).resolve().parent
 DEFAULT_HOST = os.environ.get("DSN_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("DSN_PORT", 5000))
@@ -452,6 +462,34 @@ def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
         wf.setframerate(sr)
         wf.writeframes(int_samples.tobytes())
     return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _capture_camera_frame(camera_id: int = CAMERA_DEVICE_ID) -> Optional[str]:
+    """本地 cv2 抓一帧 → JPEG(q75) → base64 data URL。失败返回 None。
+
+    产物格式与后端原 _observe_once/_capture_frame 完全一致
+    ("data:image/jpeg;base64,...")，保证后端 VisionModel 管道零改动。
+    """
+    if not HAS_CAMERA:
+        return None
+    try:
+        cap = cv2.VideoCapture(camera_id)
+        if not cap.isOpened():
+            log.warning("摄像头无法打开 (device_id=%s)", camera_id)
+            return None
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            log.warning("摄像头读取画面失败")
+            return None
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if not ok:
+            log.warning("JPEG 编码失败")
+            return None
+        return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
+    except Exception:
+        log.warning("摄像头抓帧失败", exc_info=True)
+        return None
 
 
 def iter_sse_lines(response: requests.Response):
@@ -1036,6 +1074,74 @@ class AsyncTaskPoller:
 
 
 # ════════════════════════════════════════════════════════════════
+# VisionObserver — 周期性主动视觉：本地 cv2 抓帧 → POST /api/vision/observation
+# ════════════════════════════════════════════════════════════════
+
+class VisionObserver:
+    """每 interval 秒本地抓帧推送后端（后端跑 VisionModel + 场景变化 + 通知）。
+
+    配置由 heartbeat 响应的 active_vision 字段自配置（configure→start）。
+    """
+
+    def __init__(self, client: DSNClient):
+        self._client = client
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._enabled = False
+        self._interval = 300
+
+    def configure(self, enabled: bool, interval: int) -> bool:
+        """更新配置；返回配置是否发生变化。"""
+        enabled = bool(enabled)
+        interval = max(30, int(interval or 300))
+        changed = (enabled != self._enabled) or (interval != self._interval)
+        self._enabled = enabled
+        self._interval = interval
+        return changed
+
+    def start(self):
+        if self._running:
+            return
+        if not self._enabled:
+            log.info("VisionObserver 未启用 (active_vision.enabled=false)")
+            return
+        if not HAS_CAMERA:
+            log.warning("VisionObserver: opencv-python 未安装，无法周期抓帧")
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        log.info("VisionObserver 已启动 (interval=%ds)", self._interval)
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def _loop(self):
+        while self._running:
+            # 可被 stop 中断的间隔等待
+            for _ in range(self._interval):
+                if not self._running:
+                    return
+                time.sleep(1)
+            if not self._running:
+                return
+            frame = _capture_camera_frame()
+            if frame is None:
+                log.warning("VisionObserver: 抓帧失败，跳过本轮")
+                continue
+            try:
+                self._client._http_post("/api/vision/observation", json={
+                    "image_data": frame,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }, timeout=30)
+                log.info("VisionObserver: 帧已推送后端")
+            except Exception:
+                log.warning("VisionObserver: 推送后端失败", exc_info=True)
+
+
+# ════════════════════════════════════════════════════════════════
 # HeartbeatPoller — 心跳 + 提醒轮询
 # ════════════════════════════════════════════════════════════════
 
@@ -1043,9 +1149,11 @@ class HeartbeatPoller:
     HEARTBEAT_INTERVAL = 5
     HEARTBEAT_TIMEOUT = 30
 
-    def __init__(self, client: "DSNClient", tts_queue: queue.Queue):
+    def __init__(self, client: "DSNClient", tts_queue: queue.Queue,
+                 vision_observer: "VisionObserver | None" = None):
         self._client = client
         self._tts_queue = tts_queue
+        self._vision_observer = vision_observer
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_triggered: dict[str, dict] = {}
@@ -1117,6 +1225,34 @@ class HeartbeatPoller:
             data = resp.json()
         except Exception:
             return
+
+        # ── 主动视觉：用 heartbeat 下发的配置自配置 VisionObserver ──
+        av = data.get("active_vision")
+        if av and self._vision_observer is not None:
+            if self._vision_observer.configure(
+                    av.get("enabled", False), av.get("interval", 300)):
+                log.info("VisionObserver 配置更新: enabled=%s interval=%s",
+                         av.get("enabled"), av.get("interval"))
+                self._vision_observer.start()  # 已 start 则 no-op
+
+        # ── 按需视觉请求：抓一帧回传后端，唤醒阻塞中的 look_around ──
+        vr = data.get("vision_request")
+        if vr:
+            rid = vr.get("request_id", "")
+            if rid:
+                log.info("收到 on-demand 视觉请求: %s", rid)
+                frame = _capture_camera_frame()
+                if frame:
+                    try:
+                        self._client._http_post("/api/vision/frame", json={
+                            "request_id": rid,
+                            "image_data": frame,
+                        }, timeout=30)
+                        log.info("视觉帧已回传: %s", rid)
+                    except Exception:
+                        log.warning("视觉帧回传失败: %s", rid, exc_info=True)
+                else:
+                    log.warning("无法抓帧，视觉请求 %s 将在后端超时兜底", rid)
 
         if not data.get("has_notification"):
             return
@@ -1445,7 +1581,8 @@ def main():
 
     # 初始化所有组件
     recorder = VoiceRecorder(client)
-    reminder = HeartbeatPoller(client, client._tts_queue)
+    vision_obs = VisionObserver(client)
+    reminder = HeartbeatPoller(client, client._tts_queue, vision_observer=vision_obs)
     reminder.start()
     async_poller = AsyncTaskPoller(client, client._tts_queue)
     async_poller.start()
@@ -1744,6 +1881,7 @@ def main():
         except KeyboardInterrupt:
             pass
         finally:
+            vision_obs.stop()
             player.cleanup()
             async_poller.stop()
             reminder.stop()

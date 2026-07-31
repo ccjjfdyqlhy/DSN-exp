@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import tarfile
 from datetime import datetime
 from pathlib import Path
@@ -50,7 +51,7 @@ class BackupTask(MaintenanceTask):
         stats = {"copied": [], "skipped": [], "compressed": None}
 
         # 1. 复制 env 和 config
-        reporter(TaskProgress(current=1, total=5, message="备份 .env 和 config.py..."))
+        reporter(TaskProgress(current=1, total=6, message="备份 .env 和 config.py..."))
         for key in ("env", "config"):
             for rel in BACKUP_PATHS[key]:
                 src = PROJECT_ROOT / rel
@@ -58,8 +59,28 @@ class BackupTask(MaintenanceTask):
                     shutil.copy2(src, target_dir / src.name)
                     stats["copied"].append(rel)
 
-        # 2. 复制 character_cards
-        reporter(TaskProgress(current=2, total=5, message="备份角色卡..."))
+        # 2. 备份数据库（使用 SQLite 在线备份 API，保证一致性快照）
+        reporter(TaskProgress(current=2, total=6, message="备份数据库..."))
+        db_paths = list(BACKUP_PATHS["db"])
+        try:
+            from config import Config as _Config
+            configured = getattr(_Config, "DATABASE_PATH", None)
+            if configured and configured not in db_paths:
+                db_paths.append(configured)
+        except Exception:
+            pass
+        for rel in db_paths:
+            src = PROJECT_ROOT / rel
+            if not src.exists():
+                stats["skipped"].append(rel)
+                continue
+            if _backup_sqlite(src, target_dir / src.name):
+                stats["copied"].append(rel)
+            else:
+                stats["skipped"].append(rel)
+
+        # 3. 复制 character_cards
+        reporter(TaskProgress(current=3, total=6, message="备份角色卡..."))
         cc_src = PROJECT_ROOT / "character_cards"
         cc_dst = target_dir / "character_cards"
         if cc_src.exists():
@@ -67,24 +88,24 @@ class BackupTask(MaintenanceTask):
             count = len(list(cc_dst.rglob("*")))
             stats["copied"].append(f"character_cards/ ({count} files)")
 
-        # 3. 复制 notebook
-        reporter(TaskProgress(current=3, total=5, message="备份观察日记..."))
+        # 4. 复制 notebook
+        reporter(TaskProgress(current=4, total=6, message="备份观察日记..."))
         nb_src = PROJECT_ROOT / "notebook"
         nb_dst = target_dir / "notebook"
         if nb_src.exists():
             _copy_tree(nb_src, nb_dst)
             stats["copied"].append("notebook/")
 
-        # 4. 复制 TTS_profiles
-        reporter(TaskProgress(current=4, total=5, message="备份 TTS 配置..."))
+        # 5. 复制 TTS_profiles
+        reporter(TaskProgress(current=5, total=6, message="备份 TTS 配置..."))
         tts_src = PROJECT_ROOT / "TTS_profiles"
         tts_dst = target_dir / "TTS_profiles"
         if tts_src.exists():
             _copy_tree(tts_src, tts_dst)
             stats["copied"].append("TTS_profiles/")
 
-        # 5. 压缩备份日志目录
-        reporter(TaskProgress(current=5, total=5, message="压缩备份日志..."))
+        # 6. 压缩备份日志目录
+        reporter(TaskProgress(current=6, total=6, message="压缩备份日志..."))
         log_src = PROJECT_ROOT / "logs"
         if log_src.exists():
             log_count = 0
@@ -139,3 +160,25 @@ def _copy_tree(src: Path, dst: Path):
     if dst.exists():
         shutil.rmtree(dst)
     shutil.copytree(src, dst)
+
+
+def _backup_sqlite(src: Path, dst: Path) -> bool:
+    """用 SQLite 在线备份 API 生成一致性快照，即使数据库正在被写入也安全。"""
+    src_conn = None
+    try:
+        try:
+            src_conn = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
+        except sqlite3.Error:
+            src_conn = sqlite3.connect(str(src))
+        dst_conn = sqlite3.connect(str(dst))
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+        return True
+    except sqlite3.Error:
+        logger.exception("SQLite 备份失败: %s", src)
+        return False
+    finally:
+        if src_conn is not None:
+            src_conn.close()

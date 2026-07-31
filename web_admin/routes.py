@@ -469,6 +469,22 @@ def api_persona_status(card_id):
     if d:
         for tid, val in d.indicator_vector.items():
             traits[tid] = {"name": _TRAIT_NAMES.get(tid, tid), "value": val}
+
+    evidence = {}
+    try:
+        ev_total = personality_v3._evidence.get_total(card_id)
+        plast = personality_v3._evidence.get_plasticity(card_id)
+        avg_p = sum(plast.values()) / len(plast) if plast else 0.0
+        evidence = {
+            "total": ev_total,
+            "plasticity_avg": round(avg_p, 4),
+            "maturity": round(1.0 - avg_p, 4),
+        }
+    except Exception:
+        evidence = {}
+
+    recent_events = personality_v3.get_recent_events(card_id=card_id, limit=10)
+
     return jsonify({
         "card_id": card_id,
         "display_name": card.display_name or card.name,
@@ -483,6 +499,8 @@ def api_persona_status(card_id):
             "model": d.model_used if d else None,
             "created_at": d.created_at if d else None,
         } if d else None,
+        "evidence": evidence,
+        "recent_events": recent_events,
         "traits": traits,
     })
 

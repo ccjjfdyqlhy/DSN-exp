@@ -22,14 +22,26 @@ CREATE TABLE IF NOT EXISTS user_character_cards (
     mood_state_json TEXT NOT NULL DEFAULT '{}',
     dynamic_config_json TEXT NOT NULL DEFAULT '{}',
     seed INTEGER NOT NULL DEFAULT 42,
+    last_interaction_ts TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (uid, card_id)
 )
 """
 
+CREATE_EVIDENCE_TABLE = """
+CREATE TABLE IF NOT EXISTS personality_evidence (
+    card_id TEXT PRIMARY KEY,
+    mu_json TEXT NOT NULL DEFAULT '{}',
+    sigma_json TEXT NOT NULL DEFAULT '{}',
+    counts_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 ALL_TABLES = [
     ("user_character_cards", CREATE_USER_CARDS_TABLE),
+    ("personality_evidence", CREATE_EVIDENCE_TABLE),
 ]
 
 
@@ -61,11 +73,22 @@ class V3Persistence:
             for name, sql in ALL_TABLES:
                 conn.execute(sql)
             conn.commit()
-            logger.info("V3 持久层表已就绪 (蒸馏产物 + 用户状态)")
+            self._migrate(conn)
+            logger.info("V3 持久层表已就绪 (蒸馏产物 + 用户状态 + 证据)")
         except Exception as e:
             logger.error("创建 V3 持久层表失败: %s", e)
             conn.rollback()
             raise
+
+    def _migrate(self, conn) -> None:
+        """老库升级: 补充新增列。"""
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(user_character_cards)").fetchall()]
+            if "last_interaction_ts" not in cols:
+                conn.execute("ALTER TABLE user_character_cards ADD COLUMN last_interaction_ts TEXT DEFAULT ''")
+                conn.commit()
+        except Exception as e:
+            logger.warning("V3 持久层迁移 last_interaction_ts 失败: %s", e)
 
     # ---- 用户角色卡绑定 CRUD ----
 
@@ -106,6 +129,22 @@ class V3Persistence:
         if not row:
             return None
         result = dict(row)
+
+        # 合并尚未 flush 的待写状态（read-your-writes），避免 5 秒窗口内读到旧值
+        with self._lock:
+            for key, pending in self._pending.items():
+                uid_str, pcard_id = key.rsplit("_", 1)
+                if int(uid_str) == uid and pcard_id == result.get("card_id"):
+                    result["total_interactions"] = pending["total_interactions"]
+                    result["affinity_value"] = pending["affinity_value"]
+                    try:
+                        result["mood_state_json"] = json.loads(pending["mood_state_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    if pending.get("last_interaction_ts"):
+                        result["last_interaction_ts"] = pending["last_interaction_ts"]
+                    break
+
         try:
             result["mood_state_json"] = json.loads(result.get("mood_state_json", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -117,13 +156,15 @@ class V3Persistence:
         return result
 
     def update_user_state(self, uid: int, card_id: str, total_interactions: int,
-                          affinity_value: float, mood_state: dict) -> None:
+                          affinity_value: float, mood_state: dict,
+                          last_interaction_ts: str = "") -> None:
         if self._db is None:
             return
         data = {
             "total_interactions": total_interactions,
             "affinity_value": affinity_value,
             "mood_state_json": json.dumps(mood_state, ensure_ascii=False),
+            "last_interaction_ts": last_interaction_ts,
         }
         with self._lock:
             key = f"{uid}_{card_id}"
@@ -159,10 +200,12 @@ class V3Persistence:
                 conn.execute(
                     """UPDATE user_character_cards
                        SET total_interactions = ?, affinity_value = ?,
-                           mood_state_json = ?, updated_at = datetime('now')
+                           mood_state_json = ?, last_interaction_ts = ?,
+                           updated_at = datetime('now')
                        WHERE uid = ? AND card_id = ?""",
                     (data["total_interactions"], data["affinity_value"],
-                     data["mood_state_json"], uid, card_id),
+                     data["mood_state_json"], data.get("last_interaction_ts", ""),
+                     uid, card_id),
                 )
             conn.commit()
             logger.info("已刷新 %d 条用户人格状态", len(pending))

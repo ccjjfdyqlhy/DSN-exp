@@ -1,5 +1,13 @@
 # skills/builtin/visual_perception/tools/perception.py
-# 视觉感知工具 — 摄像头抓帧 → VisionModel 分析 → 返回"你看到"的描述
+# 视觉感知工具 — 摄像头抓帧已迁移到本地客户端(minimal.py)。
+#
+# look_around 流程:
+#   Agent 调 look_around → VisionCoordinator.create_request (阻塞等待)
+#     → /api/heartbeat 响应携带 vision_request
+#     → minimal.py 本地 cv2 抓帧 → POST /api/vision/frame
+#     → 唤醒 look_around → VisionModel 多模态分析 → 返回"你看到"的描述
+#
+# 客户端离线/超时则返回兜底描述。
 
 from __future__ import annotations
 
@@ -13,14 +21,15 @@ logger = logging.getLogger("skill.visual_perception")
 class VisualPerceptionTool:
     """
     视觉感知工具。
-    通过 OpenCV 抓取摄像头画面 → VisionModel 多模态分析 → 返回结构化视觉描述。
+    摄像头抓帧由本地客户端(minimal.py)完成；本工具通过 VisionCoordinator
+    向客户端请求一帧 → 经 VisionModel 多模态分析 → 返回结构化视觉描述。
     描述以第一人称"你看到..."呈现，让主模型感知这是它自己的视觉。
     """
 
     _ctx: dict = {}  # 运行时注入
 
     def __init__(self):
-        self._cap = None
+        pass
 
     # ── 公开方法（被 SkillRegistry 调用） ──
 
@@ -28,23 +37,37 @@ class VisualPerceptionTool:
         """
         观察周围环境。
         :param focus: 关注焦点 ("user" / "environment" / "" 全面)
-        :return: dict with success, description, ... 
+        :return: dict with success, description, image_url, visual_prompt
         """
         from config import Config
-        if not Config.CAMERA_ENABLED:
+        if not getattr(Config, "CAMERA_ENABLED", True):
             return {
                 "success": False,
                 "error": "摄像头功能未启用 (CAMERA_ENABLED=false)",
                 "description": "（摄像头已关闭，无法获取画面）",
             }
-        try:
-            frame, data_url = self._capture_frame()
-        except Exception as e:
-            logger.error("摄像头抓帧失败: %s", e)
+
+        coord = self._get_coordinator()
+        if coord is None:
+            logger.error("VisionCoordinator 不可用，无法发起按需视觉请求")
             return {
                 "success": False,
-                "error": f"摄像头不可用: {e}",
-                "description": "（视觉系统故障，无法获取画面）",
+                "error": "VisionCoordinator 不可用",
+                "description": "（视觉协调器不可用，无法获取画面）",
+            }
+
+        # 发起 on-demand 请求并阻塞等待客户端回传帧
+        request_id = coord.create_request(focus=focus, uid=0)
+        logger.info("look_around: 已发起视觉请求 %s, 阻塞等待客户端帧...", request_id)
+        data_url = coord.wait(request_id)
+
+        if not data_url:
+            logger.warning("look_around: 客户端未在超时内回传帧, 返回兜底描述")
+            return {
+                "success": False,
+                "error": "客户端未在超时内回传帧",
+                "description": "（视觉系统暂不可用，客户端未响应）",
+                "focus": focus or "全面",
             }
 
         # 构造给 VisionModel 的提示词
@@ -80,27 +103,21 @@ class VisualPerceptionTool:
 
     # ── 内部方法 ──
 
-    def _capture_frame(self):
-        """OpenCV 抓取一帧 → JPEG base64 data URL"""
-        import cv2
-        cap = cv2.VideoCapture(self._get_camera_id())
-        if not cap.isOpened():
-            raise RuntimeError("无法打开摄像头")
+    def _get_coordinator(self):
+        """获取 VisionCoordinator 实例（优先用注入的，否则懒读 api.vision 模块单例）。
 
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            raise RuntimeError("无法读取摄像头画面")
-
-        # JPEG 压缩（平衡质量与大小）
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 75]
-        success, buf = cv2.imencode(".jpg", frame, encode_params)
-        if not success:
-            raise RuntimeError("JPEG 编码失败")
-
-        from utils.media import image_data_url
-        data_url = image_data_url(buf.tobytes(), "image/jpeg")
-        return frame, data_url
+        注意: 必须每次调用时重新读取模块属性，而非 `from api.vision import coordinator`，
+        因为该变量在 init_vision_api 时才被赋值，模块顶部导入会捕获到 None。
+        """
+        coord = self._ctx.get("coordinator")
+        if coord is not None:
+            return coord
+        try:
+            import api.vision as _vmod
+            return getattr(_vmod, "coordinator", None)
+        except Exception as e:
+            logger.error("读取 api.vision.coordinator 失败: %s", e)
+            return None
 
     def _build_vision_prompt(self, focus: str) -> str:
         base = (
@@ -129,12 +146,9 @@ class VisualPerceptionTool:
         from models.clients import VisionModel
         return VisionModel()
 
-    def _get_camera_id(self) -> int:
-        """获取摄像头设备 ID"""
-        from config import Config
-        return getattr(Config, "CAMERA_DEVICE_ID", 0)
-
     @classmethod
-    def set_context(cls, vision_model=None, **kwargs):
+    def set_context(cls, vision_model=None, coordinator=None, **kwargs):
         if vision_model is not None:
             cls._ctx["vision_model"] = vision_model
+        if coordinator is not None:
+            cls._ctx["coordinator"] = coordinator

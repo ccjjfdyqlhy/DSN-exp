@@ -1,18 +1,22 @@
 # plugins/builtin/active_vision_plugin.py
-# 主动视觉感知插件 v2 — 后台定时观测摄像头 + 场景变化检测 + 主动说话通知
+# 主动视觉感知插件 v3 — 摄像头抓帧已迁移到本地客户端(minimal.py)。
+# 后端只保留: VisionModel 分析 + 场景变化检测 + 主动通知 + PRE_PROCESS 注入。
 #
 # 双管线:
 #   1. 被动注入: PRE_PROCESS 注入 "[视觉感知]" 到 system_prompt (保持原有)
 #   2. 主动通知: 场景变化 → 写 task_notifications → 前端心跳拉取 → 主LLM决策 → 主动说话
 #
-# Pipeline 2 完整路径:
-#   CameraWatcher 后台线程定时抓帧
+# 新管线 2 完整路径:
+#   minimal.py 本地 cv2 定时抓帧
+#     → POST /api/vision/observation → ingest_observation()
 #     → VisionModel 语义描述
 #     → 场景变化检测 (用户出现/离开/光线突变/周期性)
 #     → 写 task_notifications DB (delivered=0, task_type='vision')
 #     → 前端心跳 POST /api/heartbeat 拉取
 #     → 构造 prompt, 调 engine.chat() 让主LLM决策是否说话
 #     → 返回 reply + TTS → 前端显示/播放
+#
+# 旧的 _observation_loop 后台线程与 cv2 抓帧代码已移除。
 
 from __future__ import annotations
 
@@ -31,23 +35,23 @@ logger = logging.getLogger("ActiveVisionPlugin")
 
 class ActiveVisionPlugin(Plugin):
     """
-    主动视觉感知插件 v2。
+    主动视觉感知插件 v3。
 
     职责:
-    - 后台线程定时抓取摄像头画面，调用 VisionModel 分析
+    - 接收本地客户端(minimal.py)推送的摄像头帧，调用 VisionModel 分析
     - 最新观测结果缓存 + PRE_PROCESS 注入 (被动)
     - 场景变化检测 + 写 task_notifications (主动通知)
     - 提供 get_observation() 供外部获取最新观测
 
     配置 (config.py):
     - ACTIVE_VISION_ENABLED: 是否启用 (默认 false)
-    - ACTIVE_VISION_INTERVAL: 主动观测间隔秒数 (默认 300 = 5分钟)
-    - CAMERA_DEVICE_ID: 摄像头设备 ID (默认 0)
+    - ACTIVE_VISION_INTERVAL: 主动观测间隔秒数 (默认 300 = 5分钟，由客户端侧执行)
+    - CAMERA_ENABLED: 摄像头/视觉总开关 (默认 true)
     - VISION_API_KEY / VISION_API_BASE / VISION_MODEL_NAME: VisionModel 配置
     """
 
     name = "active_vision"
-    description = "主动视觉感知 — 后台定时观测 → 注入系统提示词 + 场景变化主动通知"
+    description = "主动视觉感知 — 接收本地客户端帧 → VisionModel 分析 + 场景变化主动通知"
     hooks = [HookPoint.PRE_PROCESS]
     priority = 26  # 在 MemoryPlugin(27) 之前，ModelPlugin(50) 之前
 
@@ -55,9 +59,6 @@ class ActiveVisionPlugin(Plugin):
         self._vision_model = None
         self._latest_observation: Optional[dict] = None
         self._observation_lock = threading.Lock()
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._last_observe_ts = 0.0
         self._db = db
 
         # 场景变化追踪
@@ -67,7 +68,7 @@ class ActiveVisionPlugin(Plugin):
         self._user_present_since: Optional[float] = None
 
     def set_db(self, db):
-        """注入 DB 引用 (启动时调用)"""
+        """注入 DB 引用 (DI 容器已通过构造函数注入；保留以兼容显式调用)"""
         self._db = db
 
     def on_load(self) -> None:
@@ -78,14 +79,13 @@ class ActiveVisionPlugin(Plugin):
         if not Config.ACTIVE_VISION_ENABLED:
             logger.info("主动视觉感知未启用 (ACTIVE_VISION_ENABLED=false)")
             return
-        logger.info("ActiveVisionPlugin 已加载, 启动观测线程 (interval=%ds)",
-                     Config.ACTIVE_VISION_INTERVAL)
-        self._running = True
-        self._thread = threading.Thread(target=self._observation_loop, daemon=True)
-        self._thread.start()
+        logger.info(
+            "ActiveVisionPlugin 已加载, 等待本地客户端(minimal.py)周期推送帧 (interval=%ds)",
+            Config.ACTIVE_VISION_INTERVAL,
+        )
 
     def on_unload(self) -> None:
-        self._running = False
+        pass
 
     def on_hook(self, hook: HookPoint, ctx: PluginContext) -> PluginContext:
         if hook != HookPoint.PRE_PROCESS:
@@ -114,32 +114,52 @@ class ActiveVisionPlugin(Plugin):
 
         return ctx
 
-    # ── 内部: 观测循环 ──
+    # ── 内部: 接收客户端推送帧并分析 ──
 
-    def _observation_loop(self):
-        """后台观测线程：定时抓帧 → VisionModel 分析 → 缓存 + 场景变化检测"""
+    def ingest_observation(self, data_url: str, timestamp: str = "") -> dict:
+        """接收本地客户端推送的 base64 帧 → VisionModel 分析 → 缓存 + 场景变化检测。
+
+        :param data_url: "data:image/jpeg;base64,..." 格式的帧
+        :param timestamp: 客户端时间戳；为空则取服务器当前时间
+        :return: {success, timestamp, description, image_url} 或 {success, error}
+        """
         from config import Config
-        interval = Config.ACTIVE_VISION_INTERVAL
-        camera_id = Config.CAMERA_DEVICE_ID
+        if not Config.ACTIVE_VISION_ENABLED:
+            return {"success": False, "error": "主动视觉未启用 (ACTIVE_VISION_ENABLED=false)"}
 
-        while self._running:
-            try:
-                result = self._observe_once(camera_id)
-                with self._observation_lock:
-                    self._latest_observation = result
-                    self._last_observe_ts = time.time()
+        vm = self._get_vision_model()
+        if vm is None:
+            return {"success": False, "error": "VisionModel 不可用"}
 
-                if result.get("success"):
-                    desc = result.get("description", "")[:60]
-                    logger.info("主动视觉观测完成: %s", desc)
-                    # 场景变化检测 + 主动通知
-                    self._check_scene_change(result)
-                else:
-                    logger.warning("主动视觉观测失败: %s", result.get("error", "未知错误"))
-            except Exception as e:
-                logger.error("主动视觉观测异常: %s", e)
+        prompt = (
+            "你是安装在电脑上的AI视觉系统，正在通过摄像头观察周围。"
+            "请简洁描述你看到的画面：1) 是否有用户，用户在做什么；"
+            "2) 环境光线和场景。控制在40字以内。"
+        )
 
-            time.sleep(interval)
+        try:
+            description = vm.ask(data_url, prompt=prompt, max_tokens=256, temperature=0.1)
+        except Exception as e:
+            return {"success": False, "error": f"VisionModel 分析失败: {e}"}
+
+        now = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        result = {
+            "success": True,
+            "timestamp": now,
+            "description": description.strip(),
+            "image_url": data_url,
+        }
+
+        with self._observation_lock:
+            self._latest_observation = result
+            self._last_observe_ts = time.time()
+
+        desc = result.get("description", "")[:60]
+        logger.info("主动视觉观测完成: %s", desc)
+
+        # 场景变化检测 + 主动通知
+        self._check_scene_change(result)
+        return result
 
     def _check_scene_change(self, observation: dict):
         """
@@ -274,52 +294,6 @@ class ActiveVisionPlugin(Plugin):
         if any(kw in desc_lower for kw in ["正常", "normal", "适中", "自然光"]):
             return "normal"
         return None
-
-    def _observe_once(self, camera_id: int) -> dict:
-        """单次观测：抓帧 → VisionModel 分析"""
-        import cv2
-
-        cap = cv2.VideoCapture(camera_id)
-        if not cap.isOpened():
-            return {"success": False, "error": "摄像头不可用"}
-
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            return {"success": False, "error": "无法读取画面"}
-
-        # JPEG 编码
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 70]
-        success, buf = cv2.imencode(".jpg", frame, encode_params)
-        if not success:
-            return {"success": False, "error": "JPEG 编码失败"}
-
-        from utils.media import image_data_url
-        data_url = image_data_url(buf.tobytes(), "image/jpeg")
-
-        # VisionModel 分析
-        vm = self._get_vision_model()
-        if vm is None:
-            return {"success": False, "error": "VisionModel 不可用"}
-
-        prompt = (
-            "你是安装在电脑上的AI视觉系统，正在通过摄像头观察周围。"
-            "请简洁描述你看到的画面：1) 是否有用户，用户在做什么；"
-            "2) 环境光线和场景。控制在40字以内。"
-        )
-
-        try:
-            description = vm.ask(data_url, prompt=prompt, max_tokens=256, temperature=0.1)
-        except Exception as e:
-            return {"success": False, "error": f"VisionModel 分析失败: {e}"}
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return {
-            "success": True,
-            "timestamp": now,
-            "description": description.strip(),
-            "image_url": data_url,
-        }
 
     def _get_vision_model(self):
         """获取/缓存 VisionModel 实例"""
