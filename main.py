@@ -1884,6 +1884,16 @@ def _persona_status(v3, card_id: str):
         print(f"    模型: {d.model_used}  蒸馏时间: {d.created_at}")
         print(f"    向量维度: {len(d.indicator_vector)}")
 
+        # 证据累积 / 人格成熟度（动力学引擎演化状态）
+        try:
+            ev_total = v3._evidence.get_total(card_id)
+            plast = v3._evidence.get_plasticity(card_id)
+            avg_p = sum(plast.values()) / len(plast) if plast else 0.0
+            maturity = 1.0 - avg_p
+            print(f"    经历证据: {ev_total} 条  平均可塑度: {avg_p:.3f}  人格成熟度: {maturity:.1%}")
+        except Exception:
+            pass
+
         table = Table(box=box.SIMPLE, show_header=True, padding=(0, 1))
         table.add_column("ID", style="dim")
         table.add_column("名称")
@@ -1901,6 +1911,18 @@ def _persona_status(v3, card_id: str):
                 label = bar
             table.add_row(tid, _TRAIT_NAMES.get(tid, ""), f"{val:.2f}", label)
         console.print(table)
+
+        # 最近状态变化事件流（审计）
+        try:
+            events = v3.get_recent_events(card_id=card_id, limit=10)
+            if events:
+                print(f"\n  [bold]最近状态变化（审计）[/]")
+                for ev in events:
+                    print(f"    {ev['event_type']}/{ev['intensity']} "
+                          f"aff {ev['old_value']:.1f}→{ev['new_value']:.1f} "
+                          f"(Δ{ev['affinity_delta']:+.2f}) [{ev['rule_id']}]")
+        except Exception:
+            pass
     print()
 
 

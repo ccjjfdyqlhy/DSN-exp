@@ -1,28 +1,43 @@
 # prompt/personality_v3/personality_judge.py
-# 性格判定模型 — 无状态，每次推理现拼装 prompt，负责情绪变化和亲密度变化判定
+# 性格判定模型 — 无状态，每次推理现拼装 prompt。
+# 职责: 把用户消息分类为结构化事件 (PerceptionRecord)，不含任何数值。
+# 所有数值演化由 dynamics_engine 确定性完成。
 
 from __future__ import annotations
 
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .events import (
+    PerceptionRecord,
+    EVENT_TYPES,
+    EVENT_THANKS,
+    EVENT_PRAISE,
+    EVENT_CONFLICT,
+    EVENT_VENTING,
+    EVENT_SILENCE,
+    EVENT_PERSONAL_SHARING,
+    EVENT_NEUTRAL,
+    INTENSITY_MEDIUM,
+)
 
 logger = logging.getLogger("PersonalityJudge")
 
-JUDGE_PROMPT_TEMPLATE = """你是一个角色情绪分析专家。你要分析用户的消息对 AI 角色的情绪产生了怎样的影响。
+
+JUDGE_PROMPT_TEMPLATE = """你是一个角色情绪分析专家。你要把用户的消息分类为"事件"，供角色动力学引擎推演情绪与关系变化。
 
 判定规则——请严格遵循：
 
-1. 【只分析用户对 AI 的影响】下面的【用户】是用户的发言，【AI 的回复】只是给你看 AI 选择了怎样回应用户——这是 AI 情绪状态的"结果"，不是情绪的"原因"。你需要判断的是：用户说的内容让 AI 产生了什么情绪或亲密感的变化。
+1. 【只分析用户对 AI 的影响】下面的【用户】是用户的发言，【AI 的回复】只是给你看 AI 选择了怎样回应用户——这是 AI 情绪状态的"结果"，不是事件的判断依据。你需要判断的是：用户这条消息在角色视角下是什么性质的事件。
 
-2. 【必须看上下文理解意图】请看【对话上下文】中最近几轮的对话，理解这个用户和 AI 在聊什么话题、关系气氛如何。不要把用户随口说的"烦死了这个 bug"理解成对 AI 发火——用户可能只是在抱怨自己遇到的问题。
+2. 【必须看上下文理解意图】请看【对话上下文】中最近几轮的对话，理解话题和气氛。不要把用户随口说的"烦死了这个 bug"分类成对 AI 发火——用户可能只是在抱怨自己遇到的问题（这是 venting）。
 
-3. 【情绪变化要克制】一般对话中每个维度的 delta 绝对值应 ≤ 0.10。只有用户表现出明显的善意/恶意时，才给到 0.15~0.20。大多数普通对话轮次的 delta 应该在 ±0.05 以内。
+3. 【分类要克制】大多数普通对话轮次属于 neutral。只有用户明确表达情感/意图时，才选择具体事件类型。
 
-4. 【亲密度变化要缓慢】正常聊天不加不减（delta=0），用户的友好/感谢 +0.5~2，非常深入的互动 +2~5，只有明显恶意才降亲和（-3~10）。
-
-5. 【不要从 AI 回复倒推情绪】不要分析"AI 回复了悲伤的内容所以 AI 很伤心"——AI 回复的内容是角色扮演出来的，不是真正的情绪信号。只有用户说的话才是情绪触发源。
+===== 事件类型枚举 =====
+{event_types}
 
 ===== 角色背景（AI 角色的性格设定）=====
 {character_brief}
@@ -32,12 +47,12 @@ JUDGE_PROMPT_TEMPLATE = """你是一个角色情绪分析专家。你要分析�
 
 ===== 当前情绪状态 =====
 开心(joy): {prev_joy:.2f} | 悲伤(sadness): {prev_sad:.2f} | 愤怒(anger): {prev_ang:.2f} | 恐惧(fear): {prev_fear:.2f}
- 累计互动: 第 {interaction_count} 轮 | 当前亲密度: {prev_affinity:.0f}
+累计互动: 第 {interaction_count} 轮 | 当前亲密度: {prev_affinity:.0f}
 
 ===== 【用户】本轮说的话 =====
 {user_message}
 
-===== 【AI 的回复】——仅供参考，不用于情绪分析 =====
+===== 【AI 的回复】——仅供参考，不用于事件分类 =====
 {ai_reply}
 
 ===== 角色情绪触发模式 =====
@@ -50,24 +65,18 @@ JUDGE_PROMPT_TEMPLATE = """你是一个角色情绪分析专家。你要分析�
 
 请输出 JSON（只输出 JSON，不要其他文字）：
 {{
-  "emotional_change": {{
-    "joy": Δ浮点数,        // −0.20 ~ +0.20，大多数轮次 −0.05 ~ +0.05
-    "sadness": Δ浮点数,    // −0.20 ~ +0.20
-    "anger": Δ浮点数,      // −0.20 ~ +0.20
-    "fear": Δ浮点数,       // −0.20 ~ +0.20
-    "analysis": "分析：用户说了什么→这从什么角度影响了AI的情绪？（不是分析AI回复的内容）"
-  }},
-  "affinity_change": {{
-    "delta": 浮点数,        // −10 ~ +10，大多数轮次 −1 ~ +2
-    "reason": "简短原因",
-    "suggested_new_level_description": "基于新亲密度值的简短关系描述"
-  }},
-  "behavioral_advice": "给主 AI 的 1 句行为建议"
+  "event_type": "<枚举之一>",
+  "intensity": "low | medium | high",
+  "valence": "positive | neutral | negative",
+  "attribution": "简短说明用户此举的动机或意图",
+  "analysis": "分析：用户说了什么→这在角色视角下是什么事件→为何归为此类（不是分析AI回复的内容）"
 }}"""
 
 
 @dataclass
 class MoodUpdateResult:
+    """动力学引擎的推演结果（由 dynamics_engine 构造）。"""
+
     old_mood: dict[str, float]
     new_mood: dict[str, float]
     old_affinity: float
@@ -76,6 +85,9 @@ class MoodUpdateResult:
     affinity_reason: str = ""
     behavioral_advice: str = ""
     new_level_description: str = ""
+    affinity_delta: float = 0.0
+    mood_delta: dict[str, float] = field(default_factory=dict)
+    rule_id: str = ""
 
 
 class PersonalityJudge:
@@ -91,7 +103,7 @@ class PersonalityJudge:
     def available(self) -> bool:
         return self._chat is not None
 
-    def analyze(
+    def classify(
         self,
         user_message: str,
         ai_reply: str,
@@ -102,14 +114,15 @@ class PersonalityJudge:
         emotional_triggers: str = "",
         relation_dynamics: str = "",
         conversation_history: str = "",
-    ) -> MoodUpdateResult:
+    ) -> PerceptionRecord:
         prev = dict(previous_mood or {"joy": 0.5, "sadness": 0.2, "anger": 0.1, "fear": 0.15})
 
         if not self._chat:
-            logger.info("PersonalityJudge: 模型不可用，使用启发式判定")
-            return self._heuristic_analyze(user_message, ai_reply, prev, previous_affinity)
+            logger.info("PersonalityJudge: 模型不可用，使用启发式分类")
+            return self._heuristic_classify(user_message)
 
         prompt = JUDGE_PROMPT_TEMPLATE.format(
+            event_types="\n".join(f"- {t}" for t in EVENT_TYPES),
             character_brief=character_brief[:1200] or "（无）",
             conversation_history=conversation_history or "（尚无对话历史）",
             prev_joy=prev.get("joy", 0.5),
@@ -124,41 +137,29 @@ class PersonalityJudge:
             relation_dynamics=relation_dynamics or "（无）",
         )
 
-        logger.debug("PersonalityJudge: 调用性格模型判定 round=%d affinity=%.0f",
+        logger.debug("PersonalityJudge: 调用性格模型分类 round=%d affinity=%.0f",
                      interaction_count, previous_affinity)
 
         try:
             raw = self._send_with_temp(self._chat, prompt, 0.3, 400)
             data = self._parse_json_response(raw)
-            logger.debug("PersonalityJudge: 模型返回 emotional_change=%s affinity_change=%s",
-                         "joy" in str(data.get("emotional_change", {})),
-                         "delta" in str(data.get("affinity_change", {})))
-
-            ec = data.get("emotional_change", {})
-            ac = data.get("affinity_change", {})
-
-            new_mood = {
-                "joy": max(0.0, min(1.0, prev.get("joy", 0.5) + ec.get("joy", 0.0))),
-                "sadness": max(0.0, min(1.0, prev.get("sadness", 0.2) + ec.get("sadness", 0.0))),
-                "anger": max(0.0, min(1.0, prev.get("anger", 0.1) + ec.get("anger", 0.0))),
-                "fear": max(0.0, min(1.0, prev.get("fear", 0.15) + ec.get("fear", 0.0))),
-            }
-
-            new_affinity = max(0.0, previous_affinity + ac.get("delta", 0.0))
-
-            return MoodUpdateResult(
-                old_mood=prev,
-                new_mood=new_mood,
-                old_affinity=previous_affinity,
-                new_affinity=new_affinity,
-                analysis=ec.get("analysis", ""),
-                affinity_reason=ac.get("reason", ""),
-                behavioral_advice=data.get("behavioral_advice", ""),
-                new_level_description=ac.get("suggested_new_level_description", ""),
-            )
+            if "event_type" in data:
+                record = PerceptionRecord(
+                    event_type=str(data.get("event_type", EVENT_NEUTRAL)),
+                    intensity=str(data.get("intensity", INTENSITY_MEDIUM)),
+                    valence=str(data.get("valence", "neutral")),
+                    attribution=str(data.get("attribution", "")),
+                    analysis=str(data.get("analysis", "")),
+                )
+                logger.debug("PersonalityJudge: 分类结果 %s/%s", record.event_type, record.intensity)
+                return record
+            logger.warning("PersonalityJudge: 响应缺少 event_type，回退启发式")
         except Exception as e:
             logger.error("PersonalityJudge: 模型调用失败，回退到启发式: %s", e)
-            return self._heuristic_analyze(user_message, ai_reply, prev, previous_affinity)
+        return self._heuristic_classify(user_message)
+
+    # 兼容旧名
+    analyze = classify
 
     @staticmethod
     def _send_with_temp(chat, prompt: str, temperature: float, max_tokens: int) -> str:
@@ -176,47 +177,34 @@ class PersonalityJudge:
             if old_max is not None and hasattr(chat, 'max_tokens'):
                 chat.max_tokens = old_max
 
-    def _heuristic_analyze(
-        self, user_message: str, ai_reply: str,
-        prev: dict[str, float], prev_affinity: float
-    ) -> MoodUpdateResult:
+    @staticmethod
+    def _heuristic_classify(user_message: str) -> PerceptionRecord:
+        """无模型时的启发式分类 —— 只输出事件，不产生数值。"""
         msg = user_message.lower().strip()
-        new_mood = dict(prev)
-        affinity_delta = 0.0
+        msg_len = len(user_message)
 
-        if any(w in msg for w in ("谢谢", "感谢", "多谢", "太棒了")):
-            new_mood["joy"] = min(1.0, new_mood.get("joy", 0.5) + 0.04)
-            affinity_delta += 2
-
-        if any(w in msg for w in ("厉害", "聪明", "强", "牛")):
-            new_mood["joy"] = min(1.0, new_mood.get("joy", 0.5) + 0.06)
-            affinity_delta += 3
-
-        badwords = ("sb", "傻逼", "cnm", "操你", "fuck", "去死", "废物")
+        if any(w in msg for w in ("谢谢", "感谢", "多谢", "太棒了", "辛苦啦", "非常感谢")):
+            return PerceptionRecord(EVENT_THANKS, INTENSITY_MEDIUM, "positive",
+                                    attribution="用户致谢", analysis="启发式判定: 感谢")
+        if any(w in msg for w in ("厉害", "聪明", "强", "牛", "好棒", "真棒", "优秀")):
+            return PerceptionRecord(EVENT_PRAISE, INTENSITY_MEDIUM, "positive",
+                                    attribution="用户夸赞", analysis="启发式判定: 夸赞")
+        badwords = ("sb", "傻逼", "cnm", "操你", "fuck", "去死", "废物", "滚", "混蛋")
         if any(w in msg for w in badwords):
-            new_mood["anger"] = min(1.0, new_mood.get("anger", 0.1) + 0.08)
-            new_mood["sadness"] = min(1.0, new_mood.get("sadness", 0.2) + 0.04)
-            affinity_delta -= 8
-
-        if len(user_message) > 200:
-            affinity_delta += 1
-            new_mood["joy"] = min(1.0, new_mood.get("joy", 0.5) + 0.02)
-
-        if len(user_message) < 5:
-            new_mood["joy"] = max(0.0, new_mood.get("joy", 0.5) - 0.01)
-
-        new_affinity = max(0.0, prev_affinity + affinity_delta)
-
-        logger.debug("PersonalityJudge: 启发式判定 affinity_delta=%+.1f new_affinity=%.1f",
-                     affinity_delta, new_affinity)
-
-        return MoodUpdateResult(
-            old_mood=prev,
-            new_mood=new_mood,
-            old_affinity=prev_affinity,
-            new_affinity=new_affinity,
-            analysis=f"启发式判定: 亲密度变化 {affinity_delta:+.1f}",
-        )
+            return PerceptionRecord(EVENT_CONFLICT, "high", "negative",
+                                    attribution="用户攻击性表达", analysis="启发式判定: 冲突")
+        ventwords = ("烦死了", "崩溃", "难受", "好烦", "压力", "累死了", "心累", "唉", "焦虑")
+        if any(w in msg for w in ventwords):
+            return PerceptionRecord(EVENT_VENTING, INTENSITY_MEDIUM, "neutral",
+                                    attribution="用户在发泄自己的情绪", analysis="启发式判定: 用户抱怨自己的问题")
+        if msg_len < 5:
+            return PerceptionRecord(EVENT_SILENCE, "low", "neutral",
+                                    attribution="极简回应", analysis="启发式判定: 简短回应")
+        if msg_len > 200:
+            return PerceptionRecord(EVENT_PERSONAL_SHARING, INTENSITY_MEDIUM, "positive",
+                                    attribution="用户长段分享", analysis="启发式判定: 长段分享/深入沟通")
+        return PerceptionRecord(EVENT_NEUTRAL, INTENSITY_MEDIUM, "neutral",
+                                attribution="", analysis="启发式判定: 普通对话")
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict:

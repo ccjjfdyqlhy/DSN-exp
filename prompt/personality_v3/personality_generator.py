@@ -22,17 +22,14 @@ PERSONALITY_PROMPT_TEMPLATE = """你是一个角色档案整理师。以下是�
 ===== 言语风格 =====
 {speech}
 
-===== 当下情绪状态 =====
+===== 核心性格（稳定的特质维度，不是当前情绪）=====
+{stable_deviants}
+
+===== 当下状态（可变的，仅限这一轮）=====
 整体心境: {mood_summary}
 情绪构成: joy={joy:.2f} sadness={sad:.2f} anger={ang:.2f} fear={fear:.2f}
-
-===== 与观众的当前关系 =====
-亲密度: {affinity:.0f}
-关系阶段: {rel_stage}
+与用户的当前关系: 亲密度 {affinity:.0f}，{rel_stage}
 当前行为边界: {rel_bound}
-
-===== 当前人格快照（仅列出偏离中性的维度）=====
-{deviants}
 
 ===== 对话上下文 =====
 用户刚才说: {user_msg}
@@ -45,10 +42,11 @@ PERSONALITY_PROMPT_TEMPLATE = """你是一个角色档案整理师。以下是�
 
 要求：
 1. 写得像角色档案卡，而不是参数表
-2. 指出当下情绪对台词风格的影响
-3. 根据当前关系阶段提示说话方式
-4. 1~2 句具体的表演建议（不是命令，是引导）
-5. 有特殊说话习惯就自然融入
+2. 【核心性格】部分描述角色稳定的人格——不受当前情绪影响，长期不变
+3. 【当下状态】部分描述这一轮的情绪和关系阶段，指出情绪对台词风格的影响
+4. 根据当前关系阶段提示说话方式
+5. 1~2 句具体的表演建议（不是命令，是引导）
+6. 有特殊说话习惯就自然融入
 
 输出格式：
 ## 角色设定
@@ -119,12 +117,15 @@ class PersonalityPromptGenerator:
         mood = snapshot.mood_state or {}
         mood_summary = self._derive_mood_summary(mood)
         rel_stage, rel_bound = self._derive_relation_stage(snapshot)
-        deviants = format_deviant_dimensions(snapshot.indicator_vector, top_n=12)
+        # 稳定特质中心（未被情绪/噪声调制），当下状态单独注入
+        stable = self._stable_vector(snapshot)
+        stable_deviants = format_deviant_dimensions(stable, top_n=12)
 
         prompt = PERSONALITY_PROMPT_TEMPLATE.format(
             foundation=foundation[:2000],
             behavioral=behavioral or "（暂无）",
             speech=speech or "（暂无）",
+            stable_deviants=stable_deviants,
             mood_summary=mood_summary,
             joy=mood.get("joy", 0.5),
             sad=mood.get("sadness", 0.2),
@@ -133,7 +134,6 @@ class PersonalityPromptGenerator:
             affinity=snapshot.affinity_value,
             rel_stage=rel_stage,
             rel_bound=rel_bound,
-            deviants=deviants,
             user_msg=user_message[:200] if user_message else "（无）",
             conv_tone=conversation_tone,
         )
@@ -171,6 +171,14 @@ class PersonalityPromptGenerator:
         result = "\n".join(parts)
         logger.info("PersonalityGenerator: 使用回退描述 len=%d", len(result))
         return result
+
+    @staticmethod
+    def _stable_vector(snapshot: DynamicSnapshot) -> dict[str, float]:
+        """稳定特质中心（未被情绪/噪声调制），供核心性格呈现。"""
+        stable = snapshot.stable_indicator_vector or {}
+        if stable:
+            return stable
+        return snapshot.indicator_vector or {}
 
     @staticmethod
     def _format_patterns(patterns: list[dict]) -> str:
