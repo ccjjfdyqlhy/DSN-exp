@@ -1056,6 +1056,25 @@ def _cmd_login(args: str):
             return
         ok, msg = mgr.set_backup_key(parts[1], parts[2])
         print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("swap", "exchange"):
+        if len(parts) < 2:
+            print("  用法: /login swap <账号名>")
+            print("  交换主 Token 与备用 Token 的位置")
+            return
+        ok, msg = mgr.swap_keys(parts[1])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("key", "apikey"):
+        if len(parts) < 3:
+            print("  用法: /login key <账号名> <新 API Key>")
+            return
+        ok, msg = mgr.set_api_key(parts[1], parts[2])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub in ("rename", "mv"):
+        if len(parts) < 3:
+            print("  用法: /login rename <旧名称> <新名称>")
+            return
+        ok, msg = mgr.rename(parts[1], parts[2])
+        print(f"  {'✓' if ok else '✗'} {msg}")
     elif sub in ("test", "ping"):
         targets = parts[1:] or [a["name"] for a in mgr.list_accounts()]
         for name in targets:
@@ -1066,23 +1085,29 @@ def _cmd_login(args: str):
         print("""
   /login 子命令 (多 OpenAI 兼容 API 账号管理):
     /login                   列出所有账号 (按优先级排序)
-    /login add <名称> <Base URL> <API Key> <模型名>
-                            添加一个 API 账号 (优先级自动排到末尾)
-    /login remove <名称>     删除账号
+    /login add <名称> <Base URL> <API Key> <模型名> [备用Token]
+                             添加一个 API 账号 (优先级自动排到末尾)
+    /login remove <名称>     删除账号 (main 不可删除)
+    /login rename <旧名称> <新名称>  重命名账号 (main 不可重命名)
     /login prio <名称> <数字> 设置调用优先级 (越小越优先, 0 最高)
     /login enable <名称>     启用账号
     /login disable <名称>    禁用账号 (不会参与调用/回退)
     /login model <名称> <模型> 修改模型名
     /login url <名称> <URL>  修改 Base URL
+    /login key <名称> <Key>  修改 API Key
     /login backup <名称> <Token>  设置备用 Token (主 Token 失效时自动顶上)
+    /login swap <名称>       交换主 Token 与备用 Token
     /login test [名称...]    测试连通性 (不带参数则测试全部)
 
   调用规则: 每次请求按优先级顺序尝试; 当前账号报错自动回退到下一个。
+  main 账号绑定 .env 文件，修改后自动同步。
   示例:
     /login add deepseek https://api.deepseek.com/v1 sk-xxx deepseek-chat
     /login add openai https://api.openai.com/v1 sk-yyy gpt-4o
     /login prio openai 0
     /login test deepseek openai
+    /login swap deepseek
+    /login rename deepseek ds
 """)
 
 
@@ -1115,11 +1140,13 @@ def _login_list(mgr):
 
 def _login_add(mgr, parts: list[str]):
     if len(parts) < 5:
-        print("  用法: /login add <名称> <Base URL> <API Key> <模型名>")
+        print("  用法: /login add <名称> <Base URL> <API Key> <模型名> [备用Token]")
         print("  示例: /login add deepseek https://api.deepseek.com/v1 sk-xxx deepseek-chat")
         return
     name, base_url, api_key, model = parts[1], parts[2], parts[3], parts[4]
-    ok, msg = mgr.add(name, base_url=base_url, api_key=api_key, model=model)
+    backup_key = parts[5] if len(parts) > 5 else ""
+    ok, msg = mgr.add(name, base_url=base_url, api_key=api_key, model=model,
+                      backup_api_key=backup_key)
     print(f"  {'✓' if ok else '✗'} {msg}")
 
 
