@@ -83,15 +83,24 @@ class APIManager:
     def load(self) -> None:
         try:
             p = Path(self._path)
-            if not p.exists():
-                return
-            data = json.loads(p.read_text(encoding="utf-8"))
-            items = data if isinstance(data, list) else data.get("accounts", [])
-            with self._lock:
-                self._accounts = {a.name: a for a in (APIAccount.from_dict(d) for d in items)}
-            logger.info("API 账号已加载: %d 个", len(self._accounts))
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                items = data if isinstance(data, list) else data.get("accounts", [])
+                with self._lock:
+                    self._accounts = {a.name: a for a in (APIAccount.from_dict(d) for d in items)}
+                logger.info("API 账号已加载: %d 个", len(self._accounts))
+            # 托管列表为空但 .env 有有效配置时，自动导入为托管账号
+            if not self._accounts:
+                self._import_env_account()
         except Exception as e:
             logger.error("加载 API 账号失败: %s", e)
+
+    def _import_env_account(self) -> None:
+        fb = self._env_fallback_account()
+        if fb is not None:
+            self._accounts[fb.name] = fb
+            logger.info("从 .env 导入主账号 '%s' 到托管列表", fb.name)
+            self.save()
 
     def save(self) -> None:
         try:
@@ -123,6 +132,7 @@ class APIManager:
                 base_url=getattr(Config, "OPENAI_API_BASE", "") or "",
                 api_key=key,
                 model=getattr(Config, "MAIN_MODEL_NAME", "") or "",
+                backup_api_key=getattr(Config, "OPENAI_BACKUP_API_KEY", "") or "",
                 priority=0,
                 enabled=True,
             )
@@ -147,7 +157,7 @@ class APIManager:
 
     def add(self, name: str, base_url: str = "", api_key: str = "",
             model: str = "", priority: int | None = None,
-            enabled: bool = True) -> tuple[bool, str]:
+            enabled: bool = True, backup_api_key: str = "") -> tuple[bool, str]:
         if not name:
             return False, "账号名不能为空"
         with self._lock:
@@ -158,19 +168,101 @@ class APIManager:
             self._accounts[name] = APIAccount(
                 name=name, base_url=base_url, api_key=api_key, model=model,
                 priority=priority, enabled=enabled,
+                backup_api_key=backup_api_key,
             )
         self.save()
         logger.info("API 账号已添加: %s (%s, priority=%d)", name, base_url, priority)
         return True, f"账号 '{name}' 已添加 (priority={priority})"
 
+    def _is_main(self, name: str) -> bool:
+        return name == "main"
+
+    def _sync_main_to_env(self, acc: APIAccount) -> None:
+        if not self._is_main(acc.name):
+            return
+        try:
+            env_path = Path(__file__).parent.parent / ".env"
+            mappings = {
+                "OPENAI_API_KEY": acc.api_key,
+                "OPENAI_API_BASE": acc.base_url,
+                "MAIN_MODEL_NAME": acc.model,
+                "OPENAI_BACKUP_API_KEY": acc.backup_api_key,
+            }
+            lines: list[str] = []
+            written = set()
+            if env_path.exists():
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        stripped = line.lstrip()
+                        if stripped.startswith("#") or "=" not in stripped:
+                            lines.append(line)
+                            continue
+                        k = stripped.split("=", 1)[0].strip().upper()
+                        if k in mappings:
+                            val = mappings[k]
+                            if val:
+                                lines.append(f"{k}={val}\n")
+                            else:
+                                lines.append(f"#{k}=\n")
+                            written.add(k)
+                        else:
+                            lines.append(line)
+            for k, val in mappings.items():
+                if k not in written and val:
+                    lines.append(f"{k}={val}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            logger.info("已将 main 账号变更同步到 .env")
+        except Exception as e:
+            logger.error("同步 main 到 .env 失败: %s", e)
+
     def remove(self, name: str) -> tuple[bool, str]:
         with self._lock:
             if name not in self._accounts:
                 return False, f"账号 '{name}' 不存在"
+            if self._is_main(name):
+                return False, "主账号 'main' 不可删除"
             del self._accounts[name]
         self.save()
         logger.info("API 账号已删除: %s", name)
         return True, f"账号 '{name}' 已删除"
+
+    def set_api_key(self, name: str, api_key: str) -> tuple[bool, str]:
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        acc.api_key = api_key
+        self.save()
+        self._sync_main_to_env(acc)
+        return True, f"账号 '{name}' API Key 已更新"
+
+    def swap_keys(self, name: str) -> tuple[bool, str]:
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        if not acc.backup_api_key:
+            return False, f"账号 '{name}' 没有备用 Token，无法交换"
+        acc.api_key, acc.backup_api_key = acc.backup_api_key, acc.api_key
+        self.save()
+        self._sync_main_to_env(acc)
+        return True, f"账号 '{name}' 主/备用 Token 已交换"
+
+    def rename(self, old_name: str, new_name: str) -> tuple[bool, str]:
+        if not new_name:
+            return False, "新名称不能为空"
+        if self._is_main(old_name):
+            return False, "主账号 'main' 不可重命名"
+        with self._lock:
+            if old_name not in self._accounts:
+                return False, f"账号 '{old_name}' 不存在"
+            if new_name in self._accounts:
+                return False, f"账号 '{new_name}' 已存在"
+            acc = self._accounts.pop(old_name)
+            acc.name = new_name
+            self._accounts[new_name] = acc
+        self.save()
+        logger.info("API 账号已重命名: %s -> %s", old_name, new_name)
+        return True, f"账号 '{old_name}' 已重命名为 '{new_name}'"
 
     def set_priority(self, name: str, priority: int) -> tuple[bool, str]:
         acc = self.get(name)
@@ -197,6 +289,7 @@ class APIManager:
             return False, f"账号 '{name}' 不存在"
         acc.model = model
         self.save()
+        self._sync_main_to_env(acc)
         return True, f"账号 '{name}' 模型设为 {model}"
 
     def set_backup_key(self, name: str, backup_key: str) -> tuple[bool, str]:
@@ -205,6 +298,7 @@ class APIManager:
             return False, f"账号 '{name}' 不存在"
         acc.backup_api_key = backup_key
         self.save()
+        self._sync_main_to_env(acc)
         return True, f"账号 '{name}' 备用 Token 已设置"
 
     def set_base_url(self, name: str, base_url: str) -> tuple[bool, str]:
@@ -213,6 +307,7 @@ class APIManager:
             return False, f"账号 '{name}' 不存在"
         acc.base_url = base_url
         self.save()
+        self._sync_main_to_env(acc)
         return True, f"账号 '{name}' Base URL 设为 {base_url}"
 
     # === 查询 ===
