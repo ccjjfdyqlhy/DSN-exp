@@ -23,7 +23,10 @@ import models.clients as clients_mod
 
 def _fresh_manager():
     path = os.path.join(tempfile.mkdtemp(), "accounts.json")
-    return APIManager(path=path), path
+    mgr = APIManager(path=path)
+    # 移除自动导入的 .env 主账号，确保测试不依赖外部环境
+    mgr._accounts.pop("main", None)
+    return mgr, path
 
 
 class _FakeOA:
@@ -124,8 +127,8 @@ def test_build_failover_none_when_no_accounts():
     from unittest import mock
     reset_api_manager()
     # 直接验证: 当 .env 无 key 时 _env_fallback_account 返回 None
-    mgr = APIManager(path=os.path.join(tempfile.mkdtemp(), "none.json"))
-    with mock.patch.object(mgr, "_env_fallback_account", return_value=None):
+    with mock.patch.object(ma_module.APIManager, "_env_fallback_account", return_value=None):
+        mgr = APIManager(path=os.path.join(tempfile.mkdtemp(), "none.json"))
         assert mgr.count() == 0
         assert mgr.list_accounts() == []
         assert mgr.enabled_accounts() == []
@@ -199,10 +202,111 @@ def test_backup_token_failover():
     print("  PASSED")
 
 
+def test_main_cannot_be_deleted():
+    print("=== main 不可删除 ===")
+    mgr, _ = _fresh_manager()
+    # 手动添加 main 模拟托管状态
+    mgr.add("main", "http://x/v1", "sk-main", "m")
+    ok, msg = mgr.remove("main")
+    assert not ok, "main 应不可删除"
+    assert "不可删除" in msg
+    # 非 main 可正常删除
+    mgr.add("dummy", "http://x/v1", "sk-dummy", "m")
+    ok, msg = mgr.remove("dummy")
+    assert ok
+    print("  PASSED")
+
+
+def test_main_cannot_be_renamed():
+    print("=== main 不可重命名 ===")
+    mgr, _ = _fresh_manager()
+    mgr.add("main", "http://x/v1", "sk-main", "m")
+    ok, msg = mgr.rename("main", "newname")
+    assert not ok, "main 应不可重命名"
+    assert "不可重命名" in msg
+    ok, msg = mgr.rename("nope", "newname")
+    assert not ok
+    assert "不存在" in msg
+    print("  PASSED")
+
+
+def test_rename():
+    print("=== 重命名 ===")
+    mgr, path = _fresh_manager()
+    mgr.add("old", "http://x/v1", "sk-old", "m")
+    ok, msg = mgr.rename("old", "new")
+    assert ok, msg
+    assert mgr.get("old") is None
+    assert mgr.get("new") is not None
+    assert mgr.get("new").api_key == "sk-old"
+    # 重名冲突
+    mgr.add("other", "http://x/v1", "sk-other", "m")
+    ok, msg = mgr.rename("new", "other")
+    assert not ok
+    assert "已存在" in msg
+    # 持久化验证
+    mgr2 = APIManager(path=path)
+    assert mgr2.get("new") is not None
+    assert mgr2.get("old") is None
+    print("  PASSED")
+
+
+def test_swap_keys():
+    print("=== 交换主/备用 Token ===")
+    mgr, _ = _fresh_manager()
+    mgr.add("test", "http://x/v1", "sk-primary", "m", backup_api_key="sk-backup")
+    ok, msg = mgr.swap_keys("test")
+    assert ok, msg
+    acc = mgr.get("test")
+    assert acc.api_key == "sk-backup"
+    assert acc.backup_api_key == "sk-primary"
+    # 无备用 Token 时拒绝
+    mgr.add("nobk", "http://x/v1", "sk-only", "m")
+    ok, msg = mgr.swap_keys("nobk")
+    assert not ok
+    assert "没有备用 Token" in msg
+    # 不存在账号
+    ok, msg = mgr.swap_keys("nonexistent")
+    assert not ok
+    print("  PASSED")
+
+
+def test_add_with_backup_key():
+    print("=== add 支持备用 Token ===")
+    mgr, _ = _fresh_manager()
+    ok, msg = mgr.add("withbk", "http://x/v1", "sk-primary", "m", backup_api_key="sk-backup")
+    assert ok, msg
+    acc = mgr.get("withbk")
+    assert acc.backup_api_key == "sk-backup"
+    # 不传 backup_api_key 时默认空
+    ok, _ = mgr.add("nobk", "http://x/v1", "sk-only", "m")
+    acc2 = mgr.get("nobk")
+    assert acc2.backup_api_key == ""
+    print("  PASSED")
+
+
+def test_set_api_key():
+    print("=== set_api_key ===")
+    mgr, _ = _fresh_manager()
+    mgr.add("test", "http://x/v1", "sk-old", "m")
+    ok, msg = mgr.set_api_key("test", "sk-new")
+    assert ok, msg
+    assert mgr.get("test").api_key == "sk-new"
+    ok, msg = mgr.set_api_key("nope", "sk-x")
+    assert not ok
+    print("  PASSED")
+
+
 if __name__ == "__main__":
     test_manager_crud()
     test_failover_fallback()
     test_build_failover_none_when_no_accounts()
     test_priority_order()
     test_backup_token_failover()
+    test_main_cannot_be_deleted()
+    test_main_cannot_be_renamed()
+    test_rename()
+    test_swap_keys()
+    test_add_with_backup_key()
+    test_set_api_key()
     print("\nALL API ACCOUNTS TESTS PASSED")

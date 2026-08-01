@@ -44,6 +44,7 @@ class Config:
         required=MAIN_MODEL_TYPE == "openai",
     )
     OPENAI_API_BASE = _env("OPENAI_API_BASE", "https://api.deepseek.com/v1")
+    OPENAI_BACKUP_API_KEY = _env("OPENAI_BACKUP_API_KEY", "")
 
     # ═══════════════════════════════════════════════════════════════════════
     # 第二层: 服务与存储
