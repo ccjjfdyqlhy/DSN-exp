@@ -1081,6 +1081,8 @@ def _cmd_login(args: str):
             print(f"  ⏳ 测试账号 '{name}'...")
             ok, msg = mgr.test(name)
             print(f"  {'✓' if ok else '✗'} {name}: {msg}")
+    elif sub in ("timeslot", "ts", "slot"):
+        _cmd_login_timeslot(mgr, parts)
     else:
         print("""
   /login 子命令 (多 OpenAI 兼容 API 账号管理):
@@ -1098,13 +1100,19 @@ def _cmd_login(args: str):
     /login backup <名称> <Token>  设置备用 Token (主 Token 失效时自动顶上)
     /login swap <名称>       交换主 Token 与备用 Token
     /login test [名称...]    测试连通性 (不带参数则测试全部)
+    /login timeslot <名称>             查看时段优先级
+    /login timeslot <名称> <HH:MM> <HH:MM> <优先级>  添加时段优先级
+    /login timeslot <名称> remove <HH:MM> <HH:MM>    移除某个时段
+    /login timeslot <名称> clear        清除全部时段
 
   调用规则: 每次请求按优先级顺序尝试; 当前账号报错自动回退到下一个。
+  时段优先级: 运行中按当前时间匹配时段取对应优先级 (跨午夜如 22:00-06:00 也支持)。
   main 账号绑定 .env 文件，修改后自动同步。
   示例:
     /login add deepseek https://api.deepseek.com/v1 sk-xxx deepseek-chat
     /login add openai https://api.openai.com/v1 sk-yyy gpt-4o
     /login prio openai 0
+    /login timeslot backup 08:00 20:00 0
     /login test deepseek openai
     /login swap deepseek
     /login rename deepseek ds
@@ -1117,23 +1125,27 @@ def _login_list(mgr):
         print("\n  尚未配置任何 API 账号。")
         print("  使用 /login add <名称> <Base URL> <API Key> <模型名> 添加第一个账号。")
         return
-    print("\n  [bold]已配置的 API 账号 (按优先级排序)[/]")
+    print("\n  [bold]已配置的 API 账号 (按当前时段优先级排序)[/]")
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
-    table.add_column("#", justify="right")
+    table.add_column("优先级", justify="right")
     table.add_column("名称", style="bold")
     table.add_column("Base URL", style="dim")
     table.add_column("模型", style="dim")
     table.add_column("Key", style="dim")
     table.add_column("备用Token", style="dim")
+    table.add_column("时段优先级", style="dim")
     table.add_column("状态", justify="center")
-    for i, acc in enumerate(accounts):
+    for acc in accounts:
         status = "[green]启用[/]" if acc.get("enabled") else "[red]禁用[/]"
         key_masked = f"{acc.get('api_key','')[:4]}...{acc.get('api_key','')[-4:]}" if acc.get("api_key") else ""
         bk = acc.get("backup_api_key", "")
         bk_masked = f"{bk[:4]}...{bk[-4:]}" if bk else ""
-        table.add_row(str(i + 1), acc.get("name", "?"),
+        slots = acc.get("time_slots") or []
+        slot_str = " / ".join(f"{s.get('start','')}-{s.get('end','')}:{s.get('priority','')}"
+                              for s in slots) if slots else ""
+        table.add_row(str(acc.get("priority", "")), acc.get("name", "?"),
                       acc.get("base_url", ""), acc.get("model", ""),
-                      key_masked, bk_masked, status)
+                      key_masked, bk_masked, slot_str, status)
     console.print(table)
     print()
 
@@ -1148,6 +1160,55 @@ def _login_add(mgr, parts: list[str]):
     ok, msg = mgr.add(name, base_url=base_url, api_key=api_key, model=model,
                       backup_api_key=backup_key)
     print(f"  {'✓' if ok else '✗'} {msg}")
+
+
+def _cmd_login_timeslot(mgr, parts: list[str]):
+    """管理账号的时段优先级"""
+    if len(parts) < 2:
+        print("  用法: /login timeslot <名称> [<HH:MM> <HH:MM> <优先级> | remove <HH:MM> <HH:MM> | clear]")
+        print("  示例: /login timeslot backup 08:00 20:00 0")
+        print("  示例: /login timeslot backup clear")
+        return
+    name = parts[1]
+
+    if len(parts) == 2:
+        slots = mgr.list_time_slots(name)
+        if not slots:
+            print(f"  账号 '{name}' 没有配置时段优先级")
+            return
+        print(f"\n  账号 '{name}' 时段优先级:")
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("开始", justify="right")
+        table.add_column("结束", justify="right")
+        table.add_column("优先级", justify="right")
+        for s in slots:
+            table.add_row(str(s.get("start", "")), str(s.get("end", "")),
+                          str(s.get("priority", "")))
+        console.print(table)
+        print()
+        return
+
+    sub = parts[2].lower()
+    if sub in ("clear", "removeall"):
+        ok, msg = mgr.clear_time_slots(name)
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub == "remove":
+        if len(parts) < 5:
+            print("  用法: /login timeslot <名称> remove <HH:MM> <HH:MM>")
+            return
+        ok, msg = mgr.remove_time_slot(name, parts[3], parts[4])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    else:
+        if len(parts) < 5:
+            print("  用法: /login timeslot <名称> <HH:MM> <HH:MM> <优先级>")
+            return
+        try:
+            priority = int(parts[4])
+        except ValueError:
+            print(f"  错误: 优先级必须是整数: {parts[4]}")
+            return
+        ok, msg = mgr.set_time_slot(name, parts[2], parts[3], priority)
+        print(f"  {'✓' if ok else '✗'} {msg}")
 
 
 def _cmd_help():
@@ -1179,9 +1240,10 @@ def _cmd_help():
     /persona materials <角色卡名> 列出蒸馏素材
     /persona rollback <角色卡名> 列出备份快照并回滚
     /login       管理多个 OpenAI 兼容 API 账号 (add/remove/prio/enable/test)
-    /hibernate check             查看待机策略+活跃度分布
-    /hibernate archive <时间>    设定下次整理时间
+    /hibernate check             查看待机策略+活跃度分布+任务安排
+    /hibernate archive <时间>    设定下次整理时间 (now / 7d / 3h / 30m / every <时长>)
     /hibernate sleep             立刻进入待机
+    /hibernate task              查看/添加/移除维护任务 (available/add/remove)
     /export chats <用户ID> <聊天ID> <路径>   导出聊天记录为 JSON
     /export memories <用户ID> <聊天ID> <路径> 导出记忆摘要为 JSON
     /import memories <用户ID> <聊天ID> <路径> 从 JSON 导入记忆摘要
@@ -2401,17 +2463,34 @@ def _cmd_hibernate(ms, args: str):
         console.print("  错误: 维护系统不可用")
         return
 
-    if sub not in ("check", "archive", "sleep"):
+    if sub not in ("check", "archive", "sleep", "task", "tasks"):
         console.print("""
   /hibernate 命令用法:
-    /hibernate check              查看当前策略、活跃度分布、预估下次维护时间
+    /hibernate check               查看当前策略、活跃度分布、维护任务列表
     /hibernate archive <时间>      手动设定下次整理时间 (now / 7d / 3h / 30m / 600)
+    /hibernate archive every <时长> [now]   设置维护重复周期 (every 6h / every 2d / every 45m)
+    /hibernate archive every off            清除重复周期，恢复自动调度
     /hibernate sleep               立即进入待机模式
+    /hibernate task                列出维护流程中的所有任务
+    /hibernate task available      列出所有可用的内置任务
+    /hibernate task add <名称> [--account <账号>] [优先级]   添加一个内置任务
+    /hibernate task remove <名称>        移除一个任务
+
+  内置任务: backup/系统备份, personality/人格蒸馏, logcleanup/日志清理, account_check/账号检查
+  账号检查任务需指定要检查的账号: /hibernate task add account_check --account backup
 
   示例:
     /hibernate archive now        立刻启动整理流程
     /hibernate archive 3h         3 小时后启动整理
     /hibernate archive 600        600 秒后启动整理
+    /hibernate archive every 6h           每 6 小时维护一次
+    /hibernate archive every 2d now       每 2 天维护一次，并立即触发首次
+    /hibernate archive every off          取消重复周期
+    /hibernate task               查看任务安排
+    /hibernate task available     查看可用内置任务
+    /hibernate task remove 日志清理
+    /hibernate task add logcleanup 40
+    /hibernate task add account_check --account backup 30
 """)
         return
 
@@ -2422,6 +2501,9 @@ def _cmd_hibernate(ms, args: str):
         _cmd_hibernate_archive(ms, arg)
     elif sub == "sleep":
         _cmd_hibernate_sleep(ms)
+    elif sub in ("task", "tasks"):
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        _cmd_hibernate_task(ms, arg)
 
 
 def _cmd_hibernate_check(ms):
@@ -2439,15 +2521,23 @@ def _cmd_hibernate_check(ms):
 
     console.print(f"\n  [bold]待机节律状态[/]")
     console.print(f"  服务器状态: {state}")
-    console.print(f"  调度策略: {strategy}")
-
-    if strategy == "fixed":
-        console.print(f"  固定整理时间: 每天 {mc.FIXED_HOUR}:00")
+    interval = ms.get_maint_interval()
+    if interval:
+        console.print(f"  调度策略: manual (手动重复周期)")
+        console.print(f"  重复周期: 每 {interval} 秒")
+        next_at = getattr(ms, "_next_maint_at", None)
+        if next_at:
+            console.print(f"  下次维护: {next_at.strftime('%Y-%m-%d %H:%M:%S')}")
     else:
-        window = tracker.best_idle_window(mc.PREDICTIVE_MIN_FREE_HOURS, mc.PREDICTIVE_MAX_HOUR)
-        if window:
-            console.print(f"  预估最佳空闲窗口: {window[0]}:00 ~ {window[1]}:00")
-        console.print(f"  待机超时: {mc.IDLE_TIMEOUT_MINUTES} 分钟无请求")
+        console.print(f"  调度策略: {strategy}")
+
+        if strategy == "fixed":
+            console.print(f"  固定整理时间: 每天 {mc.FIXED_HOUR}:00")
+        else:
+            window = tracker.best_idle_window(mc.PREDICTIVE_MIN_FREE_HOURS, mc.PREDICTIVE_MAX_HOUR)
+            if window:
+                console.print(f"  预估最佳空闲窗口: {window[0]}:00 ~ {window[1]}:00")
+            console.print(f"  待机超时: {mc.IDLE_TIMEOUT_MINUTES} 分钟无请求")
 
     tm = tracker.minutes_since_last_request()
     console.print(f"  距离上次请求: {tm} 分钟")
@@ -2495,6 +2585,16 @@ def _cmd_hibernate_check(ms):
     if mc.IDLE_TIMEOUT_MINUTES > 0 and tm_now < mc.IDLE_TIMEOUT_MINUTES:
         eta = mc.IDLE_TIMEOUT_MINUTES - tm_now
         console.print(f"  下次待机预估: {eta} 分钟后（如无新请求）")
+
+    tasks = ms.list_tasks()
+    if tasks:
+        console.print(f"\n  [bold]维护任务安排 (共 {len(tasks)} 个)[/]")
+        for t in sorted(tasks, key=lambda x: x["priority"]):
+            detail = f"  [dim]→ 账号: {t['account_id']}[/]" if t.get("account_id") else ""
+            console.print(f"    [dim]priority={t['priority']}[/]  {t['name']}{detail}")
+        console.print("  可用 /hibernate task available/add/remove 调整\n")
+    else:
+        console.print("\n  [yellow]维护流程没有任何任务[/]")
     console.print()
 
 
@@ -2505,10 +2605,13 @@ def _cmd_hibernate_archive(ms, arg: str):
 
     # archive old hibernate tasks
     if not arg:
-        console.print("  用法: /hibernate archive <now | 7d | 3h | 30m | 600>")
+        console.print("  用法: /hibernate archive <now | every <时长> [now] | every off | 7d | 3h | 30m | 600>")
+        console.print("  every <时长>  设置重复周期 (如 every 6h / every 2d / every 45m)")
+        console.print("  every off     清除重复周期，恢复自动调度")
         return
 
     import re, time as _time
+
     if arg.lower() == "now":
         if not ms.trigger_maintenance():
             console.print(f"  无法启动整理（当前状态: {ms.state.state.value}）")
@@ -2516,7 +2619,10 @@ def _cmd_hibernate_archive(ms, arg: str):
             console.print("  [green]整理流程已启动[/]")
         return
 
-    m = re.match(r'^(\d+)\s*(d|h|m)?$', arg, re.IGNORECASE)
+    if arg.lower().startswith("every"):
+        return _cmd_hibernate_interval(ms, arg[5:].strip())
+
+    m = re.match(r'^(\d+)\s*(d|h|m|s)?$', arg, re.IGNORECASE)
     if not m:
         console.print(f"  时间格式错误: {arg}")
         return
@@ -2532,6 +2638,119 @@ def _cmd_hibernate_archive(ms, arg: str):
     console.print(f"  [green]已设定下次整理时间: {target.strftime('%Y-%m-%d %H:%M:%S')}"
           f" (={amount}{unit})[/]")
     append_log("system", "INFO", f"管理员设定下次整理时间: {target.isoformat()} ({arg})")
+
+
+def _cmd_hibernate_interval(ms, arg: str):
+    import re
+
+    arg = arg.strip()
+    if arg.lower() in ("off", "none", "0"):
+        ok, msg = ms.clear_maint_interval()
+        console.print(f"  {'✓' if ok else '✗'} {msg}")
+        append_log("system", "INFO", "管理员清除维护重复周期")
+        return
+
+    m = re.match(r'^(\d+)\s*(d|h|m|s)?(\s+(now|start))?$', arg, re.IGNORECASE)
+    if not m:
+        console.print(f"  周期格式错误: {arg}")
+        console.print("  用法: /hibernate archive every <时长> [now]  (如 every 6h / every 2d)")
+        return
+
+    amount = int(m.group(1))
+    unit = (m.group(2) or 's').lower()
+    multipliers = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
+    seconds = amount * multipliers.get(unit, 1)
+    if seconds <= 0:
+        console.print("  周期必须是正整数")
+        return
+
+    # 是否追加 now 立即触发
+    start_now = bool(m.group(4))
+
+    ok, msg = ms.set_maint_interval(seconds, start_now=start_now)
+    if ok:
+        if start_now:
+            console.print(f"  [green]{msg}[/] (首次立即触发)")
+            ms.trigger_maintenance()
+        else:
+            next_at = ms._next_maint_at
+            console.print(f"  [green]{msg}[/] 下次: {next_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        console.print(f"  ✗ {msg}")
+    append_log("system", "INFO", f"管理员设置维护重复周期: {arg}")
+
+
+def _cmd_hibernate_task(ms, arg: str):
+    parts = arg.split()
+    sub = parts[0].lower() if parts else ""
+
+    if sub in ("", "list"):
+        tasks = ms.list_tasks()
+        if not tasks:
+            console.print("  维护流程中没有任何任务")
+            return
+        console.print("\n  [bold]维护流程任务安排 (按优先级)[/]")
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("优先级", justify="right")
+        table.add_column("任务名", style="bold")
+        for t in sorted(tasks, key=lambda x: x["priority"]):
+            table.add_row(str(t["priority"]), t["name"])
+        console.print(table)
+        console.print("  可用 /hibernate task available 查看内置任务, add 添加, remove 移除\n")
+    elif sub in ("available", "builtin"):
+        avail = ms.available_tasks()
+        console.print("\n  [bold]可用的内置任务[/]")
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("任务名", style="bold")
+        table.add_column("别名")
+        table.add_column("必需参数", style="dim")
+        table.add_column("说明", style="dim")
+        for t in avail:
+            table.add_row(t["name"], t["aliases"], t["requires"] or "-", t["description"])
+        console.print(table)
+        console.print("\n  示例: /hibernate task add account_check --account backup [优先级]\n")
+    elif sub == "add":
+        if len(parts) < 2:
+            console.print("  用法: /hibernate task add <名称> [--account <账号名>] [优先级]")
+            console.print("  运行 /hibernate task available 查看所有内置任务")
+            return
+        name = parts[1]
+        account_id = ""
+        priority = None
+        i = 2
+        while i < len(parts):
+            p = parts[i]
+            if p == "--account":
+                if i + 1 < len(parts):
+                    account_id = parts[i + 1]
+                    i += 2
+                    continue
+                console.print(f"  错误: --account 需要账号名")
+                return
+            elif p.startswith("--account="):
+                account_id = p.split("=", 1)[1]
+                i += 1
+                continue
+            elif p.startswith("-"):
+                console.print(f"  错误: 未知选项 {p}")
+                return
+            else:
+                try:
+                    priority = int(p)
+                    i += 1
+                except ValueError:
+                    console.print(f"  错误: 无法解析 '{p}'")
+                    return
+        ok, msg = ms.add_task(name, priority, account_id=account_id)
+        console.print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub == "remove":
+        if len(parts) < 2:
+            console.print("  用法: /hibernate task remove <名称>")
+            return
+        ok, msg = ms.remove_task(parts[1])
+        console.print(f"  {'✓' if ok else '✗'} {msg}")
+    else:
+        console.print("  用法: /hibernate task [list | available | add <名称> [--account <账号>] [优先级] | remove <名称>]")
 
 
 def _cmd_hibernate_sleep(ms):
