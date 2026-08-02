@@ -1,6 +1,7 @@
 # tests/test_api_accounts.py
 # 多 OpenAI 兼容 API 账号管理 + FailoverChat 自动回退 测试
 
+import datetime
 import os
 import sys
 import tempfile
@@ -297,6 +298,59 @@ def test_set_api_key():
     print("  PASSED")
 
 
+def test_time_slots():
+    print("=== 时段优先级 ===")
+    mgr, _ = _fresh_manager()
+    mgr.add("ts", "http://x/v1", "sk-ts", "m", priority=10)
+
+    ok, msg = mgr.set_time_slot("ts", "08:00", "20:00", 0)
+    assert ok, msg
+    ok, msg = mgr.set_time_slot("ts", "bad", "20:00", 0)
+    assert not ok, "非法时间应被拒绝"
+    ok, msg = mgr.set_time_slot("nope", "08:00", "20:00", 0)
+    assert not ok
+
+    acc = mgr.get("ts")
+    assert len(acc.time_slots) == 1
+    assert acc.effective_priority(datetime.datetime(2026, 1, 1, 10, 0)) == 0
+    assert acc.effective_priority(datetime.datetime(2026, 1, 1, 21, 0)) == 10
+
+    # 跨午夜时段
+    ok, _ = mgr.set_time_slot("ts", "22:00", "06:00", 5)
+    assert ok
+    acc2 = mgr.get("ts")
+    assert acc2.effective_priority(datetime.datetime(2026, 1, 1, 23, 30)) == 5
+    assert acc2.effective_priority(datetime.datetime(2026, 1, 1, 3, 0)) == 5
+    # 第一个匹配的时段优先（22:00-06:00 覆盖午夜）
+    assert acc2.effective_priority(datetime.datetime(2026, 1, 1, 10, 0)) == 0
+
+    # 移除/清除
+    ok, msg = mgr.remove_time_slot("ts", "08:00", "20:00")
+    assert ok
+    ok, msg = mgr.remove_time_slot("ts", "08:00", "20:00")
+    assert not ok
+    ok, msg = mgr.clear_time_slots("ts")
+    assert ok
+    assert mgr.get("ts").time_slots == []
+
+    # 持久化
+    ok, _ = mgr.set_time_slot("ts", "09:00", "17:00", 2)
+    assert ok
+    print("  PASSED")
+
+
+def test_time_slots_persistence():
+    print("=== 时段优先级持久化 ===")
+    mgr, path = _fresh_manager()
+    mgr.add("ts", "http://x/v1", "sk-ts", "m")
+    mgr.set_time_slot("ts", "09:00", "17:00", 2)
+    mgr2 = APIManager(path=path)
+    acc = mgr2.get("ts")
+    assert acc.time_slots == [{"start": "09:00", "end": "17:00", "priority": 2}]
+    assert acc.effective_priority(datetime.datetime(2026, 1, 1, 12, 0)) == 2
+    print("  PASSED")
+
+
 if __name__ == "__main__":
     test_manager_crud()
     test_failover_fallback()
@@ -309,4 +363,6 @@ if __name__ == "__main__":
     test_swap_keys()
     test_add_with_backup_key()
     test_set_api_key()
+    test_time_slots()
+    test_time_slots_persistence()
     print("\nALL API ACCOUNTS TESTS PASSED")

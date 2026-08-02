@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -22,6 +23,16 @@ _ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 DEFAULT_PRIORITY = 100
 
 
+def _valid_hhmm(s: str) -> bool:
+    """校验 HH:MM 时间格式（00-23:00-59）"""
+    try:
+        h, m = s.split(":")
+        h, m = int(h), int(m)
+        return 0 <= h <= 23 and 0 <= m <= 59
+    except Exception:
+        return False
+
+
 @dataclass
 class APIAccount:
     name: str
@@ -33,6 +44,8 @@ class APIAccount:
     backup_api_key: str = ""
     last_error: str = ""
     created_at: float = field(default_factory=time.time)
+    # 时段优先级: [{start: "HH:MM", end: "HH:MM", priority: int}, ...]
+    time_slots: list = field(default_factory=list)
 
     def mask_key(self) -> str:
         if not self.api_key:
@@ -40,6 +53,35 @@ class APIAccount:
         if len(self.api_key) <= 8:
             return "***"
         return f"{self.api_key[:4]}...{self.api_key[-4:]}"
+
+    def _minutes(self, hhmm: str) -> int:
+        try:
+            h, m = hhmm.split(":")
+            return int(h) * 60 + int(m)
+        except Exception:
+            return -1
+
+    def effective_priority(self, now: Optional[datetime.datetime] = None) -> int:
+        """根据当前时间返回匹配时段的优先级；无匹配时段时返回默认 priority。"""
+        if not self.time_slots:
+            return self.priority
+        cur = (now or datetime.datetime.now())
+        cur_min = cur.hour * 60 + cur.minute
+        for slot in self.time_slots:
+            try:
+                start = self._minutes(slot.get("start", ""))
+                end = self._minutes(slot.get("end", ""))
+                if start < 0 or end < 0:
+                    continue
+                if start <= end:
+                    if start <= cur_min < end:
+                        return int(slot.get("priority", self.priority))
+                else:  # 跨午夜，如 22:00-06:00
+                    if cur_min >= start or cur_min < end:
+                        return int(slot.get("priority", self.priority))
+            except Exception:
+                continue
+        return self.priority
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +94,7 @@ class APIAccount:
             "backup_api_key": self.backup_api_key,
             "last_error": self.last_error,
             "created_at": self.created_at,
+            "time_slots": list(self.time_slots),
         }
 
     @classmethod
@@ -66,6 +109,7 @@ class APIAccount:
             backup_api_key=data.get("backup_api_key", ""),
             last_error=data.get("last_error", ""),
             created_at=float(data.get("created_at", time.time())),
+            time_slots=list(data.get("time_slots", []) or []),
         )
 
 
@@ -142,7 +186,7 @@ class APIManager:
 
     def list_accounts(self) -> list[dict]:
         with self._lock:
-            items = sorted(self._accounts.values(), key=lambda a: (a.priority, a.name))
+            items = sorted(self._accounts.values(), key=lambda a: (a.effective_priority(), a.name))
         result = [a.to_dict() for a in items]
         # 无托管账号时，暴露 .env 中配置的主账号，避免"看似未配置"
         if not result:
@@ -272,6 +316,46 @@ class APIManager:
         self.save()
         return True, f"账号 '{name}' 优先级设为 {priority}（越小越优先）"
 
+    # === 时段优先级 ===
+
+    def set_time_slot(self, name: str, start: str, end: str, priority: int) -> tuple[bool, str]:
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        if not _valid_hhmm(start) or not _valid_hhmm(end):
+            return False, "时间格式错误，需为 HH:MM（如 08:00 / 22:30）"
+        acc.time_slots.append({"start": start, "end": end, "priority": int(priority)})
+        self.save()
+        logger.info("账号 %s 添加时段优先级: %s-%s -> %d", name, start, end, int(priority))
+        return True, f"账号 '{name}' 时段 {start}-{end} 优先级设为 {int(priority)}"
+
+    def remove_time_slot(self, name: str, start: str, end: str) -> tuple[bool, str]:
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        original = len(acc.time_slots)
+        acc.time_slots = [s for s in acc.time_slots
+                          if s.get("start") != start or s.get("end") != end]
+        if len(acc.time_slots) == original:
+            return False, f"账号 '{name}' 没有时段 {start}-{end}"
+        self.save()
+        return True, f"账号 '{name}' 已移除时段 {start}-{end}"
+
+    def clear_time_slots(self, name: str) -> tuple[bool, str]:
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        acc.time_slots = []
+        self.save()
+        return True, f"账号 '{name}' 已清除全部时段优先级"
+
+    def list_time_slots(self, name: str) -> list[dict]:
+        acc = self.get(name)
+        if not acc:
+            return []
+        return list(acc.time_slots)
+
+
     def set_enabled(self, name: str, enabled: bool) -> tuple[bool, str]:
         acc = self.get(name)
         if not acc:
@@ -315,7 +399,7 @@ class APIManager:
     def enabled_accounts(self) -> list[APIAccount]:
         with self._lock:
             accounts = [a for _, a in sorted(self._accounts.items(),
-                                             key=lambda kv: (kv[1].priority, kv[1].name))
+                                             key=lambda kv: (kv[1].effective_priority(), kv[1].name))
                         if a.enabled]
         if not accounts:
             fb = self._env_fallback_account()
@@ -392,7 +476,7 @@ class FailoverChat:
         from .clients import OpenAIChat
         self._accounts: list[OpenAIChat] = []
         self._account_names: list[str] = []
-        for acc in sorted(accounts, key=lambda a: (a.priority, a.name)):
+        for acc in sorted(accounts, key=lambda a: (a.effective_priority(), a.name)):
             try:
                 self._accounts.append(OpenAIChat(
                     api_key=acc.api_key,

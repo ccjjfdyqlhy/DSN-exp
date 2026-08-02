@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 BACKUP_PATHS = {
     "env": [".env"],
     "db": ["DSN_usrdata.db", "chats.db"],
+    "api_accounts": [".dsn/api_accounts.json"],
     "character_cards": ["character_cards/"],
     "notebook": ["notebook/"],
     "tts_profiles": ["TTS_profiles/"],
@@ -51,7 +52,7 @@ class BackupTask(MaintenanceTask):
         stats = {"copied": [], "skipped": [], "compressed": None}
 
         # 1. 复制 env 和 config
-        reporter(TaskProgress(current=1, total=6, message="备份 .env 和 config.py..."))
+        reporter(TaskProgress(current=1, total=7, message="备份 .env 和 config.py..."))
         for key in ("env", "config"):
             for rel in BACKUP_PATHS[key]:
                 src = PROJECT_ROOT / rel
@@ -59,8 +60,18 @@ class BackupTask(MaintenanceTask):
                     shutil.copy2(src, target_dir / src.name)
                     stats["copied"].append(rel)
 
-        # 2. 备份数据库（使用 SQLite 在线备份 API，保证一致性快照）
-        reporter(TaskProgress(current=2, total=6, message="备份数据库..."))
+        # 2. 备份 API 账号配置
+        reporter(TaskProgress(current=2, total=7, message="备份 API 账号配置..."))
+        for rel in BACKUP_PATHS["api_accounts"]:
+            src = PROJECT_ROOT / rel
+            if src.exists():
+                dst = target_dir / src.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                stats["copied"].append(rel)
+
+        # 3. 备份数据库（使用 SQLite 在线备份 API，保证一致性快照）
+        reporter(TaskProgress(current=3, total=7, message="备份数据库..."))
         db_paths = list(BACKUP_PATHS["db"])
         try:
             from config import Config as _Config
@@ -79,8 +90,8 @@ class BackupTask(MaintenanceTask):
             else:
                 stats["skipped"].append(rel)
 
-        # 3. 复制 character_cards
-        reporter(TaskProgress(current=3, total=6, message="备份角色卡..."))
+        # 4. 复制 character_cards
+        reporter(TaskProgress(current=4, total=7, message="备份角色卡..."))
         cc_src = PROJECT_ROOT / "character_cards"
         cc_dst = target_dir / "character_cards"
         if cc_src.exists():
@@ -88,24 +99,24 @@ class BackupTask(MaintenanceTask):
             count = len(list(cc_dst.rglob("*")))
             stats["copied"].append(f"character_cards/ ({count} files)")
 
-        # 4. 复制 notebook
-        reporter(TaskProgress(current=4, total=6, message="备份观察日记..."))
+        # 5. 复制 notebook
+        reporter(TaskProgress(current=5, total=7, message="备份观察日记..."))
         nb_src = PROJECT_ROOT / "notebook"
         nb_dst = target_dir / "notebook"
         if nb_src.exists():
             _copy_tree(nb_src, nb_dst)
             stats["copied"].append("notebook/")
 
-        # 5. 复制 TTS_profiles
-        reporter(TaskProgress(current=5, total=6, message="备份 TTS 配置..."))
+        # 6. 复制 TTS_profiles
+        reporter(TaskProgress(current=6, total=7, message="备份 TTS 配置..."))
         tts_src = PROJECT_ROOT / "TTS_profiles"
         tts_dst = target_dir / "TTS_profiles"
         if tts_src.exists():
             _copy_tree(tts_src, tts_dst)
             stats["copied"].append("TTS_profiles/")
 
-        # 6. 压缩备份日志目录
-        reporter(TaskProgress(current=6, total=6, message="压缩备份日志..."))
+        # 7. 压缩备份日志目录
+        reporter(TaskProgress(current=7, total=7, message="压缩备份日志..."))
         log_src = PROJECT_ROOT / "logs"
         if log_src.exists():
             log_count = 0
@@ -118,7 +129,7 @@ class BackupTask(MaintenanceTask):
             if log_count > 0:
                 stats["compressed"] = f"logs.tar.gz ({log_count} files)"
 
-        # 6. 写备份元信息
+        # 8. 写备份元信息
         meta = {
             "timestamp": ts,
             "project": str(PROJECT_ROOT),
@@ -129,7 +140,7 @@ class BackupTask(MaintenanceTask):
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        # 7. 清理旧备份（保留最近 10 次）
+        # 9. 清理旧备份（保留最近 10 次）
         self._purge_old(keep=10)
 
         logger.info(
