@@ -134,7 +134,10 @@ def test_tracker_save_load():
 
 # ── 任务系统 ──
 
-from maintenance.tasks import MaintenanceTask, TaskProgress, PersonalityOptimizeTask, LogCleanupTask
+from maintenance.tasks import (
+    MaintenanceTask, TaskProgress, PersonalityOptimizeTask, LogCleanupTask,
+    AccountCheckTask,
+)
 from maintenance.system import TaskExecutor
 
 
@@ -183,12 +186,36 @@ def test_task_executor_order():
 def test_task_executor_fail_continues():
     """一个任务失败不应阻断后续"""
     exec = TaskExecutor()
-    exec.register(_FailTask())
-    exec.register(_SuccessTask())
+    exec.register(_FailTask())     # priority 20
+    exec.register(_SuccessTask())  # priority 10
     out = exec.run_all(lambda t, p: None)
     assert len(out) == 2
-    assert out[0]["success"] is False
-    assert out[1]["success"] is True
+    # 按优先级升序: 成功任务(10) 先执行成功, 失败任务(20) 后执行失败
+    assert out[0]["success"] is True
+    assert out[1]["success"] is False
+
+
+def test_task_executor_unregister():
+    """unregister 应移除指定任务"""
+    exec = TaskExecutor()
+    exec.register(_SuccessTask())
+    exec.register(_FailTask())
+    assert exec.has("成功任务")
+    assert exec.unregister("成功任务") is True
+    assert not exec.has("成功任务")
+    assert exec.unregister("不存在") is False
+    assert len(exec.list()) == 1
+
+
+def test_task_executor_set_priority():
+    """set_priority 应重新排序"""
+    exec = TaskExecutor()
+    exec.register(_FailTask())     # 20
+    exec.register(_SuccessTask())  # 10
+    assert [t.name for t in exec.list()] == ["成功任务", "失败任务"]
+    assert exec.set_priority("成功任务", 99) is True
+    assert [t.name for t in exec.list()] == ["失败任务", "成功任务"]
+    assert exec.set_priority("不存在", 5) is False
 
 
 # ── 核心系统 ──
@@ -230,6 +257,157 @@ def test_system_standby_no_double_transition():
     ms = MaintenanceSystem()
     assert ms.trigger_standby()
     assert not ms.trigger_standby()  # 已在 standby
+
+
+def test_system_add_remove_task():
+    """add_task/remove_task 应增删任务"""
+    ms = MaintenanceSystem()
+    names = [t["name"] for t in ms.list_tasks()]
+    assert "系统备份" in names and "日志清理" in names and "人格蒸馏" in names
+
+    ok, msg = ms.remove_task("日志清理")
+    assert ok, msg
+    names = [t["name"] for t in ms.list_tasks()]
+    assert "日志清理" not in names
+
+    ok, msg = ms.remove_task("日志清理")
+    assert not ok  # 已移除
+
+    ok, msg = ms.add_task("日志清理", priority=40)
+    assert ok, msg
+    task = [t for t in ms.list_tasks() if t["name"] == "日志清理"][0]
+    assert task["priority"] == 40
+
+    ok, msg = ms.add_task("日志清理")
+    assert not ok  # 已存在
+
+    ok, msg = ms.add_task("不存在的任务")
+    assert not ok
+    assert "未知任务" in msg
+
+
+def test_system_task_persistence(tmp_path):
+    """任务安排应持久化并可恢复"""
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        ok, _ = ms.remove_task("日志清理")
+        assert ok
+        # 新实例应加载持久化配置，日志清理任务仍被移除
+        ms2 = MaintenanceSystem()
+        names = [t["name"] for t in ms2.list_tasks()]
+        assert "日志清理" not in names
+        assert "系统备份" in names
+    finally:
+        msys._TASK_CONFIG_FILE = orig
+
+
+def test_system_add_account_check_task(tmp_path):
+    """account_check 任务需要 account_id，且可持久化恢复"""
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        # 不带 account_id 时应失败
+        ok, msg = ms.add_task("account_check")
+        assert not ok
+        assert "已存在" not in msg  # 应为其他错误信息（无法创建）
+
+        ok, msg = ms.add_task("account_check", account_id="backup", priority=30)
+        assert ok, msg
+        assert "账号检查:backup" in msg
+
+        tasks = ms.list_tasks()
+        check = [t for t in tasks if t["name"] == "账号检查:backup"]
+        assert check and check[0]["account_id"] == "backup"
+        assert check[0]["priority"] == 30
+
+        # 持久化恢复
+        ms2 = MaintenanceSystem()
+        tasks2 = ms2.list_tasks()
+        check2 = [t for t in tasks2 if t["name"] == "账号检查:backup"]
+        assert check2 and check2[0]["account_id"] == "backup"
+    finally:
+        msys._TASK_CONFIG_FILE = orig
+
+
+def test_account_check_task_requires_account_id():
+    """AccountCheckTask 无 account_id 时应失败，有则调用测试"""
+    task = AccountCheckTask()
+    result = task.run(lambda p: None)
+    assert result["success"] is False
+    assert "account_id" in result["error"]
+
+    task2 = AccountCheckTask(account_id="some_account")
+    assert task2.name == "账号检查:some_account"
+    # 账号不存在时返回失败而非抛异常
+    result2 = task2.run(lambda p: None)
+    assert result2["success"] is False
+
+
+def test_system_available_tasks():
+    """available_tasks 应列出所有内置任务"""
+    ms = MaintenanceSystem()
+    avail = ms.available_tasks()
+    names = [t["name"] for t in avail]
+    assert "账号检查" in names
+    assert "系统备份" in names
+    check = [t for t in avail if t["name"] == "账号检查"][0]
+    assert check["requires"] == "account_id"
+
+
+def test_system_maint_interval():
+    """设置/清除维护重复周期"""
+    from datetime import timedelta
+    ms = MaintenanceSystem()
+    assert ms.get_maint_interval() is None
+
+    ok, msg = ms.set_maint_interval(3600)
+    assert ok, msg
+    assert ms.get_maint_interval() == 3600
+    assert ms._next_maint_at is not None
+
+    # 周期触发后应推进到下一个周期点，而非清空
+    ms._next_maint_at = ms._next_maint_at - timedelta(seconds=7200)
+    assert ms._should_start_maintenance() is True
+    assert ms._next_maint_at is not None
+    # 自动策略在手动周期下应被抑制
+    assert ms._should_start_maintenance() is False  # 已推进到未来，且手动周期抑制自动策略
+
+    ok, msg = ms.clear_maint_interval()
+    assert ok, msg
+    assert ms.get_maint_interval() is None
+    assert ms._next_maint_at is None
+
+
+def test_system_maint_interval_start_now():
+    """start_now=True 时下次触发点应为当前时刻"""
+    from datetime import datetime, timedelta
+    ms = MaintenanceSystem()
+    before = datetime.now()
+    ok, _ = ms.set_maint_interval(300, start_now=True)
+    assert ok
+    assert ms.get_maint_interval() == 300
+    assert ms._next_maint_at <= before + timedelta(seconds=1)
+
+
+def test_system_maint_interval_persistence(tmp_path):
+    """维护重复周期应持久化并恢复"""
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        ok, _ = ms.set_maint_interval(7200)
+        assert ok
+        ms2 = MaintenanceSystem()
+        assert ms2.get_maint_interval() == 7200
+        assert ms2._next_maint_at is not None
+    finally:
+        msys._TASK_CONFIG_FILE = orig
 
 
 # ── 预置任务 ──
