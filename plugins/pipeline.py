@@ -440,6 +440,11 @@ class ChatPipeline:
 
         self._report_agent_progress(ctx, 0, max_steps, ["开始处理"])
 
+        # 超步数兜底汇报: 记录最后一轮是否仍在执行工具、以及未回喂给 LLM 的工具结果
+        hit_max = False
+        report_tool_calls: list = []
+        report_results: list = []
+
         for step in range(max_steps):
             results = ctx.extra.pop("_tag_results", [])
             if not results:
@@ -521,7 +526,10 @@ class ChatPipeline:
 
                 ctx = await self._dispatch_post_process(ctx)
                 if step >= max_steps - 1:
-                    logger.warning("Agent 达到最大步数 %d", max_steps)
+                    hit_max = True
+                    report_tool_calls = last_tool_calls
+                    report_results = ctx.extra.get("_tag_results", [])
+                    logger.warning("Agent 达到最大步数 %d，等待兜底汇报", max_steps)
                 continue
 
             # 降级模式：传统 XML 标签处理
@@ -566,7 +574,62 @@ class ChatPipeline:
 
             ctx = await self._dispatch_post_process(ctx)
             if step >= max_steps - 1:
-                logger.warning("Agent 达到最大步数 %d", max_steps)
+                hit_max = True
+                report_results = ctx.extra.get("_tag_results", [])
+                logger.warning("Agent 达到最大步数 %d，等待兜底汇报", max_steps)
+
+        # ── 超步数兜底：最后一轮仍在执行工具、且未产出面向用户的文本时，
+        #    追加一轮"汇报"，把已执行的工具结果总结成最终答复，避免无声终止 ──
+        last_text = (ctx.reply or "").strip()
+        need_report = (hit_max and report_results and models_plugin is not None
+                       and (not last_text or last_text == "…"))
+        if need_report:
+            logger.info("Agent 超步数且无最终文本，追加汇报轮 (%d 条工具结果)",
+                        len(report_results))
+            msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
+            msgs.extend(ctx.full_history)
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+
+            if report_tool_calls:
+                assistant_msg = {"role": "assistant",
+                                 "content": ctx.original_reply or ctx.reply,
+                                 "tool_calls": report_tool_calls}
+                msgs.append(assistant_msg)
+                for r in report_results:
+                    content = json.dumps(r.get("data", r.get("error", "")),
+                                         ensure_ascii=False, default=str)
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": r.get("tool_call_id", "unknown"),
+                        "content": content,
+                    })
+                msgs.append({"role": "user", "content":
+                             "以上工具调用已全部执行完毕，处理步骤已达上限。"
+                             "请直接基于上述工具结果，向用户给出简洁、完整的最终答复。"
+                             "不要调用任何工具。"})
+            else:
+                formatted = self._format_tag_results(report_results)
+                msgs.append({"role": "assistant", "content": ctx.reply or ctx.original_reply or ""})
+                msgs.append({"role": "user", "content":
+                             f"[执行结果]\n{formatted}\n\n处理步骤已达上限，"
+                             "请基于上述结果直接给出面向用户的最终答复，不要调用工具。"})
+
+            try:
+                report = await loop.run_in_executor(
+                    None, lambda: models_plugin.invoke(msgs, ctx)
+                )
+            except Exception as e:
+                logger.error("Agent 汇报轮 invoke 失败: %s", e)
+                report = ""
+
+            if report:
+                ctx.original_reply = report
+                ctx.reply = models_plugin._clean_reply(report)
+                ctx.extra["_agent_step"] = max_steps + 1
+                self._report_agent_progress(ctx, max_steps + 1, max_steps, [],
+                                            reply_text=ctx.reply)
+                logger.info("Agent 超步数汇报完成: %d 字符", len(report))
 
         self._report_agent_progress(ctx, max_steps, max_steps, [], done=True)
         return ctx
@@ -658,6 +721,8 @@ class ChatPipeline:
                     "\n\n【工具激活】你有一个名为 toolbox 的工具。开始处理用户请求前，"
                     "先调用它一次性激活你需要的全部工具（例如 skill-visual_perception-look_around）。"
                     "激活后即可在后续轮次直接调用这些工具；工具很多时不要把它们全部激活。"
+                    "如果用户只是问'你能做什么'，直接根据 toolbox 工具描述里的可用工具列表回答，"
+                    "不要调用 toolbox 去激活工具。"
                 )
         except Exception:
             pass
