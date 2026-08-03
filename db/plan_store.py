@@ -116,6 +116,10 @@ class PlanStore:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_phases_goal ON phases(goal_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_date ON daily_tasks(date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON daily_tasks(user_id, date)")
+        # 迁移: 为旧表补充 position 列 (main 分支的 phases 表无此列)
+        _phase_cols = [r[1] for r in conn.execute("PRAGMA table_info(phases)").fetchall()]
+        if "position" not in _phase_cols:
+            conn.execute("ALTER TABLE phases ADD COLUMN position INTEGER DEFAULT 0")
         conn.commit()
 
     # ── Goal CRUD ──
