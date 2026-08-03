@@ -165,6 +165,23 @@ class QuestionStore:
         result.sort(key=lambda q: id_order.get(q["question_id"], 999))
         return result
 
+    def find_by_content(self, content: str, subject: str = None) -> Optional[dict]:
+        """按题目内容精确查重（供批量导入去重）。"""
+        conn = self._db._get_connection()
+        if subject:
+            row = conn.execute(
+                "SELECT q.* FROM questions q "
+                "JOIN subjects s ON q.subject_id = s.subject_id "
+                "WHERE q.content = ? AND s.code = ? LIMIT 1",
+                (content, subject),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM questions WHERE content = ? LIMIT 1",
+                (content,),
+            ).fetchone()
+        return self._row_to_question(row) if row else None
+
     def count_questions(self, subject: str = None) -> int:
         conn = self._db._get_connection()
         if subject:

@@ -410,6 +410,28 @@ def test_system_maint_interval_persistence(tmp_path):
         msys._TASK_CONFIG_FILE = orig
 
 
+def test_standby_tick_starts_scheduled_maintenance():
+    """待机状态下手动重复周期到期应唤醒并开始维护"""
+    from datetime import timedelta
+    ms = MaintenanceSystem()
+    ok, _ = ms.set_maint_interval(300)
+    assert ok
+    # 模拟周期已到期（超过一个完整周期）
+    ms._next_maint_at = ms._next_maint_at - timedelta(seconds=301)
+    ms.trigger_standby()
+    assert ms.state.state == ServerState.STANDBY
+    ms._on_tick()
+    assert ms.state.state == ServerState.MAINTENANCE
+    # 周期应推进到下一个周期点，而非清空
+    assert ms._next_maint_at is not None
+    # 待机但未到周期时，不应唤醒
+    ms2 = MaintenanceSystem()
+    ok, _ = ms2.set_maint_interval(300)
+    ms2.trigger_standby()
+    ms2._on_tick()
+    assert ms2.state.state == ServerState.STANDBY
+
+
 # ── 预置任务 ──
 
 

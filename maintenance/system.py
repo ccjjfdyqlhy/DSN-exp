@@ -278,6 +278,11 @@ class MaintenanceSystem:
             if config.IDLE_TIMEOUT_MINUTES > 0 and idle_min >= config.IDLE_TIMEOUT_MINUTES:
                 self._enter_standby()
         elif self.state.state == ServerState.STANDBY:
+            if self._should_start_maintenance():
+                self._drain_hibernate()
+                self._wake_from_standby()
+                self._begin_maintenance()
+                return
             self._drain_hibernate()
 
     # ── 调度决策 ──
