@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-ccjjfdyqlhy%2FDSN--exp-181717?style=for-the-badge&logo=github)](https://github.com/ccjjfdyqlhy/DSN-exp)
 
+[Deep-dive into my codebase](REPORT.md)  
+
 **English** | [简体中文](README_zh.md)
 
 ---
