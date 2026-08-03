@@ -35,6 +35,9 @@ class HibernateManager:
         self._engine = engine
         self._queue: queue.Queue[dict] = queue.Queue()
         self._dropped = 0
+        # 任务节流: uid -> 上次执行时间戳
+        self._last_personality: dict[int, float] = {}
+        self._last_memory: dict[int, float] = {}
 
     # ── 推入 ──
 
@@ -116,16 +119,26 @@ class HibernateManager:
 
         eng.tick()
 
-    # ── PersonalityV3 情绪分析 ──
+    # ── PersonalityV3 情绪分析（带节流：同用户最小间隔，降低本地 GPU 争抢）──
 
     def _exec_personality(self, snap: dict):
+        uid = snap.get("user_id")
+        cooldown = getattr(maint_config, "HIBERNATE_PERSONALITY_COOLDOWN", 30)
+        now = time.time()
+        if uid is not None:
+            last = self._last_personality.get(uid, 0.0)
+            if now - last < cooldown:
+                logger.debug("Hibernate[pv3]: 节流跳过 uid=%d (距上次 %.0fs < %ds)",
+                             uid, now - last, cooldown)
+                return
+            self._last_personality[uid] = now
         pe = getattr(self._engine, "prompt_engine", None)
         pv3 = getattr(pe, "personality_v3", None) if pe else None
         if not pv3 or not pv3.enabled:
             return
         try:
             result = pv3.analyze_interaction(
-                uid=snap["user_id"],
+                uid=uid,
                 user_message=snap["message"],
                 ai_reply=snap["reply"],
                 conversation_history=snap.get("history", ""),
@@ -133,26 +146,36 @@ class HibernateManager:
             if result:
                 d_joy = result.new_mood.get("joy", 0.5) - result.old_mood.get("joy", 0.5)
                 d_aff = result.new_affinity - result.old_affinity
-                logger.info("Hibernate[pv3]: uid=%d joy=%+.2f affinity=%+.1f",
-                            snap["user_id"], d_joy, d_aff)
+                logger.info("Hibernate[pv3]: uid=%s joy=%+.2f affinity=%+.1f",
+                            uid, d_joy, d_aff)
         except Exception as e:
             logger.error("Hibernate[pv3] 分析失败: %s", e)
 
-    # ── Memory 摘要 + embedding ──
+    # ── Memory 摘要 + embedding（带节流：同用户最小间隔）──
 
     def _exec_memory(self, snap: dict):
         ms = getattr(self._engine, "memory_system", None)
         if not ms:
             return
+        uid = snap.get("user_id")
+        cooldown = getattr(maint_config, "HIBERNATE_MEMORY_COOLDOWN", 60)
+        now = time.time()
+        if uid is not None:
+            last = self._last_memory.get(uid, 0.0)
+            if now - last < cooldown:
+                logger.debug("Hibernate[memory]: 节流跳过 uid=%s (距上次 %.0fs < %ds)",
+                             uid, now - last, cooldown)
+                return
+            self._last_memory[uid] = now
         try:
             ms.summarize_turn(
-                user_id=snap["user_id"],
+                user_id=uid,
                 chat_id=snap["chat_id"],
                 round_idx=snap.get("round_index"),
                 user_msg=snap["message"],
                 assistant_reply=snap["reply"],
                 async_mode=True,
             )
-            logger.debug("Hibernate[memory]: 摘要任务已提交 uid=%d", snap["user_id"])
+            logger.debug("Hibernate[memory]: 摘要任务已提交 uid=%s", uid)
         except Exception as e:
             logger.error("Hibernate[memory] 失败: %s", e)

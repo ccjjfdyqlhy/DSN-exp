@@ -10,6 +10,8 @@ import threading
 
 from plugins.base import Plugin, HookPoint, PluginContext
 from plugins.builtin.todo_store import get_todo_store, TodoPlan
+from plugins.builtin.subagent_runner import SubAgentRunner
+from config import Config
 
 logger = logging.getLogger("TodoPlugin")
 
@@ -90,6 +92,13 @@ class TodoPlugin(Plugin):
         self._task_mgr = task_manager
         self._store = get_todo_store()
         self._active_sub_agents: dict[str, threading.Thread] = {}
+        self._runner = SubAgentRunner(
+            models_plugin=models_plugin,
+            skill_registry=skill_registry,
+            db=db,
+            task_manager=task_manager,
+            max_steps=getattr(Config, "SUBAGENT_MAX_STEPS", 3),
+        )
 
     def on_load(self) -> None:
         if self._models is None:
@@ -229,12 +238,17 @@ class TodoPlugin(Plugin):
 
         spawned = 0
         for item in pending:
-            needs_sub = any(
-                kw in item.title.lower() + item.description.lower()
-                for kw in ("设计", "编写", "分析", "搜索", "审查", "实现", "构建")
-            )
+            # 优先采纳主模型(assigner)的 needs_sub_agent 决策，缺失时用启发式兜底
+            if item.needs_sub_agent is None:
+                needs_sub = any(
+                    kw in item.title.lower() + item.description.lower()
+                    for kw in ("设计", "编写", "分析", "搜索", "审查", "实现", "构建")
+                )
+            else:
+                needs_sub = item.needs_sub_agent
+
             if not needs_sub:
-                # 简单任务直接标记完成（由主模型处理了）
+                # 简单任务直接标记完成（由主回答覆盖）
                 self._store.update_item(todo_id, item.id, status="completed",
                                         result="由主回答覆盖")
                 continue
@@ -249,36 +263,50 @@ class TodoPlugin(Plugin):
         self._check_plan_complete(todo_id)
 
     def _launch_sub_agent(self, todo_id: str, item, ctx: PluginContext) -> None:
-        """启动单个子代理"""
+        """启动单个子代理 — 隔离上下文 + 工具小循环，完成后即释放"""
         self._store.update_item(todo_id, item.id, status="in_progress")
 
         def _run():
             try:
                 logger.info("子代理启动: %s (item=%s)", todo_id, item.id)
-                # 构建子代理的调用消息
-                messages = [
-                    {"role": "system", "content": (
+                # system prompt 优先使用主模型(assigner)书写的 sub_agent_prompt
+                system_prompt = (
+                    item.sub_agent_prompt
+                    if item.sub_agent_prompt
+                    else (
                         f"你是一个专注的子任务执行代理。你的唯一任务是：{item.description}\n\n"
                         f"任务标题：{item.title}\n"
                         "请直接给出结果，不要询问用户更多信息。"
-                        "如果你需要文件操作或搜索，可以使用 <tool> 标签。"
-                    )},
-                    {"role": "user", "content": f"请完成子任务：{item.title}"},
-                ]
-
-                result = self._models.invoke(messages, ctx)
-                self._store.update_item(todo_id, item.id, status="completed", result=result)
-                logger.info("子代理完成: %s (item=%s)", todo_id, item.id)
+                    )
+                )
+                result = self._runner.run(
+                    system_prompt=system_prompt,
+                    task=item.title,
+                    user_id=ctx.user_id,
+                    chat_id=ctx.chat_id or 0,
+                    model_type=item.sub_agent_model or None,
+                )
+                if result.error:
+                    self._store.update_item(
+                        todo_id, item.id, status="failed", error=result.error)
+                else:
+                    self._store.update_item(
+                        todo_id, item.id, status="completed", result=result.output)
+                logger.info("子代理完成: %s (item=%s, steps=%d, tools=%d)",
+                            todo_id, item.id, result.steps, len(result.tool_trace))
 
             except Exception as e:
                 logger.error("子代理失败: %s (item=%s): %s", todo_id, item.id, e)
                 self._store.update_item(todo_id, item.id, status="failed", error=str(e))
 
             self._check_plan_complete(todo_id)
+            # 用完即释放：移除引用，让子代理线程随结束被回收
+            self._active_sub_agents.pop(item.id, None)
 
         t = threading.Thread(target=_run, daemon=True, name=f"subagent-{item.id}")
         t.start()
         self._active_sub_agents[item.id] = t
+        self._store.update_item(todo_id, item.id, sub_agent_id=t.name)
 
     def _check_plan_complete(self, todo_id: str) -> None:
         plan = self._store.get_plan(todo_id)
@@ -298,23 +326,25 @@ class TodoPlugin(Plugin):
         results = []
         for item in plan.items:
             if item.result:
-                results.append(f"[{item.title}]\n{item.result[:500]}")
+                results.append(f"[{item.title}]\n{item.result[:2000]}")
             elif item.status == "failed":
                 results.append(f"[{item.title}] 失败: {item.error or '未知错误'}")
-
-        if results:
-            try:
-                summary_prompt = (
-                    "请将以下子任务执行结果整合为一个简洁的总结，告知用户完成情况：\n\n"
-                    + "\n\n".join(results)
-                )
-                summary = self._models.invoke(
-                    [{"role": "system", "content": summary_prompt}], None
-                )
-                self._store.set_completed(todo_id, summary)
-            except Exception:
-                self._store.set_completed(todo_id, "\n".join(results))
-        else:
+        if not results:
             self._store.set_completed(todo_id, "所有子任务已完成。")
+            logger.info("Todo 计划完成: %s", todo_id)
+            return
+
+        try:
+            summary_prompt = (
+                "你是任务的分配者(assigner)。以下是分派给子代理的任务及其输出，"
+                "请整合为一个简洁的总结告知用户完成情况：\n\n"
+                + "\n\n".join(results)
+            )
+            summary = self._models.invoke(
+                [{"role": "system", "content": summary_prompt}], None
+            )
+            self._store.set_completed(todo_id, summary)
+        except Exception:
+            self._store.set_completed(todo_id, "\n".join(results))
 
         logger.info("Todo 计划完成: %s", todo_id)

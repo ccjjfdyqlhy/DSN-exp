@@ -136,6 +136,98 @@ class TTSProcessModel:
             self.logger.warning("TTS 预处理 LLM 调用失败，回退到本地预处理结果: %s", e)
             return processed
 
+    def process_tts_batch(self, lines: list[str]) -> list[str]:
+        """批量处理多行文本，仅对需要 LLM 的行做【一次】合并 LLM 调用。
+
+        避免逐行串行调用 LLM（每行 1~2s 的开销是 TTS 阶段主要隐藏耗时）。
+        输出长度与输入一致，逐行对应；失败的行安全回退到本地预处理结果。
+        """
+        if not self.enabled:
+            return list(lines)
+
+        local_results = []
+        need_llm_idx = []
+        for i, line in enumerate(lines):
+            processed = self._local_preprocess(line) if line else ""
+            local_results.append(processed)
+            if processed and self._needs_llm_processing(processed):
+                need_llm_idx.append(i)
+
+        if not need_llm_idx:
+            return local_results
+
+        # 一次 LLM 调用处理全部需要 LLM 的行，用编号分隔、按编号回填
+        try:
+            merged = self._call_lmstudio_batch(
+                [local_results[i] for i in need_llm_idx]
+            )
+            for i, text in zip(need_llm_idx, merged):
+                if text:
+                    local_results[i] = text
+        except Exception as e:
+            self.logger.warning("TTS 预处理批量 LLM 调用失败，回退到本地预处理: %s", e)
+        return local_results
+
+    def _call_lmstudio_batch(self, texts: list[str]) -> list[str]:
+        """把多段文本合并为一次 LLM 调用，返回逐段结果列表。"""
+        if not texts:
+            return []
+        delim = "=====SEG====="
+        numbered = "\n".join(f"[{i}] {t}" for i, t in enumerate(texts))
+        prompt = (
+            "你是一个专为语音合成做文本预处理的AI。下面的每一段都需要单独处理。\n"
+            "对每一段应用如下规则（语言须与原文一致）：\n"
+            "0. 对于中文文本，绝对禁止输出汉语拼音或注音符号，必须保持汉字原文。\n"
+            "1. 阿拉伯数字转中文读法（如 123→一百二十三、50%→百分之五十）；\n"
+            "   电话号码、日期、版本号、ID 保持原样。\n"
+            "2. 中文里嵌入的缩写(API/HTTP/JSON 等)转中文名称（API→应用程序接口等）。\n"
+            "3. 知名品牌转为中文通用读法（NVIDIA→英伟达、iPhone→苹果手机）。\n"
+            "4. 保持每段原文的标点和换行结构。\n"
+            f"输出格式：每段一行，行首带编号 {delim}[编号] 处理后的文本。\n\n"
+            + numbered
+        )
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": min(int(self.max_tokens) * len(texts), 4096),
+            "temperature": self.temperature,
+            "stream": False,
+        }
+
+        def _do():
+            return requests.post(url, headers=headers, json=payload,
+                                 timeout=self.timeout)
+
+        if self._scheduler:
+            with self._scheduler.use(self.model_name, timeout=max(self.timeout, Config.MODEL_REQUEST_TIMEOUT)):
+                resp = _do()
+        else:
+            resp = _do()
+        resp.raise_for_status()
+        result = resp.json()
+        raw = result["choices"][0]["message"]["content"].strip()
+
+        # 解析 "=====SEG=====[i] text" 片段 → 按编号回填
+        parsed: dict[int, str] = {}
+        pattern = re.compile(rf"{re.escape(delim)}\s*\[(\d+)\]\s*")
+        parts = pattern.split(raw)
+        for j in range(1, len(parts) - 1, 2):
+            try:
+                idx = int(parts[j])
+            except ValueError:
+                continue
+            text = (parts[j + 1] or "").strip()
+            if text:
+                parsed[idx] = text
+
+        results = []
+        for i, t in enumerate(texts):
+            processed = parsed.get(i, "").strip()
+            results.append(processed or t)
+        return results
+
     # ---- 阶段一：本地正则预处理 ----
 
     def _needs_llm_processing(self, text: str) -> bool:

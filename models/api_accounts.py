@@ -22,6 +22,110 @@ _ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 # 默认优先级（越小越优先）
 DEFAULT_PRIORITY = 100
 
+# 手动时段安排是优先级系统的"过滤层"（非新修改层）:
+#   promote: 该账号在时段内优先级提到最高（第一个被尝试）
+#   demote:  该账号在时段内优先级压到最低（最后一个被尝试，仍留作备用槽）
+_PROMOTE_PRIORITY = -10 ** 12
+_DEMOTE_PRIORITY = 10 ** 12
+_SCHEDULE_ACTIONS = ("promote", "demote")
+
+# 全局手动时段安排: [{start: "HH:MM", end: "HH:MM", account: str, action: "promote"|"demote"}, ...]
+# 由 APIManager 持久化到 .dsn/api_accounts.json 的 manual_schedule 字段。
+_manual_schedule: list[dict] = []
+_schedule_lock = threading.Lock()
+
+
+def _current_manual_schedule() -> list[dict]:
+    with _schedule_lock:
+        return [dict(s) for s in _manual_schedule]
+
+
+def _set_manual_schedule(schedule: list[dict]) -> None:
+    global _manual_schedule
+    with _schedule_lock:
+        _manual_schedule = [dict(s) for s in (schedule or [])]
+
+
+def _manual_schedule_action(account: str, now: Optional[datetime.datetime]) -> Optional[str]:
+    """当前时刻命中的该账号手动安排动作: "promote" / "demote" / None"""
+    cur = (now or datetime.datetime.now())
+    cur_min = cur.hour * 60 + cur.minute
+    with _schedule_lock:
+        for rule in _manual_schedule:
+            if rule.get("account") != account:
+                continue
+            start = _valid_minutes(rule.get("start", ""))
+            end = _valid_minutes(rule.get("end", ""))
+            if start < 0 or end < 0:
+                continue
+            if start <= end:
+                if start <= cur_min < end:
+                    return rule.get("action") or "promote"
+            else:  # 跨午夜
+                if cur_min >= start or cur_min < end:
+                    return rule.get("action") or "promote"
+    return None
+
+
+def _valid_minutes(hhmm: str) -> int:
+    try:
+        h, m = hhmm.split(":")
+        h, m = int(h), int(m)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+    except Exception:
+        pass
+    return -1
+
+
+# ── 已知坏账号自动后排（近期失败过 → 排到回退链末尾） ──
+
+def _known_down_window() -> int:
+    """近期失败自动后排的时间窗口（秒），可在运行期用 /config set 调整。"""
+    try:
+        from config import Config
+        val = int(getattr(Config, "FAILOVER_DOWN_WINDOW", 3600) or 3600)
+        return max(val, 60)
+    except Exception:
+        return 3600
+
+
+def _recent_failures(account: str, now_epoch: float, window: int) -> list[dict]:
+    """返回该账号在窗口内的失败观察（来自 FailoverChat/account_check 监控记录）。"""
+    try:
+        from .dynamic_router import get_dynamic_router
+        obs = get_dynamic_router()._store.snapshot()
+    except Exception:
+        return []
+    cutoff = now_epoch - window
+    return [o for o in obs
+            if o.get("account") == account
+            and not o.get("ok")
+            and float(o.get("ts", 0)) >= cutoff]
+
+
+def is_known_down(account: str, now: Optional[datetime.datetime] = None) -> bool:
+    """账号是否在最近窗口内失败过（会被自动排后）。"""
+    now = now or datetime.datetime.now()
+    return bool(_recent_failures(account, now.timestamp(), _known_down_window()))
+
+
+def order_accounts_for_routing(accounts: list["APIAccount"],
+                               now: Optional[datetime.datetime] = None) -> list["APIAccount"]:
+    """回退链排序: 优先级排序 + 近期失败的账号整体排到末尾。
+
+    手动 promote/demote 仍通过 effective_priority() 参与排序；但"近期失败过"的
+    账号会被自动放到所有健康账号之后，避免在坏账号上白等（窗口可配置）。
+    窗口过后（无新失败）恢复原有 promote/demote 优先级。
+    """
+    now = now or datetime.datetime.now()
+    down = [a for a in accounts if is_known_down(a.name, now)]
+    down_names = {a.name for a in down}
+    healthy = [a for a in accounts if a.name not in down_names]
+    healthy.sort(key=lambda a: (a.effective_priority(now), a.name))
+    down.sort(key=lambda a: (a.effective_priority(now), a.name))
+    return healthy + down
+
 
 def _valid_hhmm(s: str) -> bool:
     """校验 HH:MM 时间格式（00-23:00-59）"""
@@ -62,25 +166,42 @@ class APIAccount:
             return -1
 
     def effective_priority(self, now: Optional[datetime.datetime] = None) -> int:
-        """根据当前时间返回匹配时段的优先级；无匹配时段时返回默认 priority。"""
+        """根据当前时间返回匹配时段的优先级；无匹配时段时返回默认 priority。
+
+        优先级层级 (从高到低):
+          1. 手动时段安排 manual_schedule (/login schedule)
+             - promote: 提到最高 (最优先被尝试)
+             - demote:  压到最低 (最后被尝试，仍留作备用槽)
+          2. 手动时段 time_slots (source != "dynamic"，/login timeslot)
+          3. 动态学习时段 (source == "dynamic")
+          4. 基础 priority
+        """
+        action = _manual_schedule_action(self.name, now)
+        if action == "promote":
+            return _PROMOTE_PRIORITY
+        if action == "demote":
+            return _DEMOTE_PRIORITY
         if not self.time_slots:
             return self.priority
         cur = (now or datetime.datetime.now())
         cur_min = cur.hour * 60 + cur.minute
-        for slot in self.time_slots:
-            try:
-                start = self._minutes(slot.get("start", ""))
-                end = self._minutes(slot.get("end", ""))
-                if start < 0 or end < 0:
+        manual = [s for s in self.time_slots if s.get("source") != "dynamic"]
+        learned = [s for s in self.time_slots if s.get("source") == "dynamic"]
+        for group in (manual, learned):
+            for slot in group:
+                try:
+                    start = self._minutes(slot.get("start", ""))
+                    end = self._minutes(slot.get("end", ""))
+                    if start < 0 or end < 0:
+                        continue
+                    if start <= end:
+                        if start <= cur_min < end:
+                            return int(slot.get("priority", self.priority))
+                    else:  # 跨午夜，如 22:00-06:00
+                        if cur_min >= start or cur_min < end:
+                            return int(slot.get("priority", self.priority))
+                except Exception:
                     continue
-                if start <= end:
-                    if start <= cur_min < end:
-                        return int(slot.get("priority", self.priority))
-                else:  # 跨午夜，如 22:00-06:00
-                    if cur_min >= start or cur_min < end:
-                        return int(slot.get("priority", self.priority))
-            except Exception:
-                continue
         return self.priority
 
     def to_dict(self) -> dict:
@@ -132,6 +253,7 @@ class APIManager:
                 items = data if isinstance(data, list) else data.get("accounts", [])
                 with self._lock:
                     self._accounts = {a.name: a for a in (APIAccount.from_dict(d) for d in items)}
+                _set_manual_schedule(data.get("manual_schedule", []) if isinstance(data, dict) else [])
                 logger.info("API 账号已加载: %d 个", len(self._accounts))
             # 托管列表为空但 .env 有有效配置时，自动导入为托管账号
             if not self._accounts:
@@ -153,7 +275,9 @@ class APIManager:
             with self._lock:
                 items = [a.to_dict() for a in sorted(self._accounts.values(),
                                                      key=lambda a: (a.priority, a.name))]
-            p.write_text(json.dumps({"accounts": items}, ensure_ascii=False, indent=2),
+                schedule = _current_manual_schedule()
+            p.write_text(json.dumps({"accounts": items, "manual_schedule": schedule},
+                                    ensure_ascii=False, indent=2),
                          encoding="utf-8")
             try:
                 os.chmod(self._path, 0o600)
@@ -324,7 +448,8 @@ class APIManager:
             return False, f"账号 '{name}' 不存在"
         if not _valid_hhmm(start) or not _valid_hhmm(end):
             return False, "时间格式错误，需为 HH:MM（如 08:00 / 22:30）"
-        acc.time_slots.append({"start": start, "end": end, "priority": int(priority)})
+        acc.time_slots.append({"start": start, "end": end,
+                               "priority": int(priority), "source": "manual"})
         self.save()
         logger.info("账号 %s 添加时段优先级: %s-%s -> %d", name, start, end, int(priority))
         return True, f"账号 '{name}' 时段 {start}-{end} 优先级设为 {int(priority)}"
@@ -354,6 +479,88 @@ class APIManager:
         if not acc:
             return []
         return list(acc.time_slots)
+
+    # === 动态学习时段（source=dynamic，由 DynamicRouter 生成） ===
+
+    def set_dynamic_slots(self, name: str, slots: list[dict]) -> tuple[bool, str]:
+        """替换账号的动态学习时段，保留手动时段。"""
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        manual = [s for s in acc.time_slots if s.get("source") != "dynamic"]
+        acc.time_slots = manual + [dict(s) for s in slots]
+        self.save()
+        return True, f"账号 '{name}' 动态时段已更新 ({len(slots)} 段)"
+
+    def clear_dynamic_slots(self, name: str) -> tuple[bool, str]:
+        """移除账号的全部动态学习时段，保留手动时段。"""
+        acc = self.get(name)
+        if not acc:
+            return False, f"账号 '{name}' 不存在"
+        manual = [s for s in acc.time_slots if s.get("source") != "dynamic"]
+        changed = len(manual) != len(acc.time_slots)
+        acc.time_slots = manual
+        if changed:
+            self.save()
+        return changed, f"账号 '{name}' 动态时段已清除"
+
+    def dynamic_slots(self, name: str) -> list[dict]:
+        acc = self.get(name)
+        if not acc:
+            return []
+        return [s for s in acc.time_slots if s.get("source") == "dynamic"]
+
+    def names(self) -> list[str]:
+        """列出所有受管账号名（不含 .env 隐含 main）。"""
+        with self._lock:
+            return list(self._accounts.keys())
+
+    # === 手动时段安排（/login schedule — 优先级系统的过滤层） ===
+
+    def list_schedule(self) -> list[dict]:
+        return _current_manual_schedule()
+
+    def add_schedule(self, start: str, end: str, account: str,
+                     action: str = "promote") -> tuple[bool, str]:
+        action = (action or "promote").lower()
+        if action not in _SCHEDULE_ACTIONS:
+            return False, f"动作必须是 promote(提优) 或 demote(降级)"
+        if not account:
+            return False, "账号名不能为空"
+        if self.get(account) is None:
+            return False, f"账号 '{account}' 不存在"
+        if not _valid_hhmm(start) or not _valid_hhmm(end):
+            return False, "时间格式错误，需为 HH:MM（如 08:00 / 22:30）"
+        rules = _current_manual_schedule()
+        rules.append({"start": start, "end": end, "account": account,
+                      "action": action})
+        _set_manual_schedule(rules)
+        self.save()
+        label = "提优到最高" if action == "promote" else "压到最低"
+        logger.info("手动时段安排已添加: %s-%s %s -> %s (%s)",
+                    start, end, account, action, label)
+        return True, f"时段 {start}-{end} 账号 '{account}' {label}"
+
+    def remove_schedule(self, start: str, end: str, account: str,
+                        action: str = "") -> tuple[bool, str]:
+        rules = _current_manual_schedule()
+        original = len(rules)
+        def _match(r):
+            if r.get("start") != start or r.get("end") != end \
+                    or r.get("account") != account:
+                return False
+            return action == "" or (r.get("action") or "promote") == action
+        rules = [r for r in rules if not _match(r)]
+        if len(rules) == original:
+            return False, f"没有时段 {start}-{end} → {account} 的安排"
+        _set_manual_schedule(rules)
+        self.save()
+        return True, f"已移除时段 {start}-{end} → {account} 的安排"
+
+    def clear_schedule(self) -> tuple[bool, str]:
+        _set_manual_schedule([])
+        self.save()
+        return True, "已清空全部手动时段安排"
 
 
     def set_enabled(self, name: str, enabled: bool) -> tuple[bool, str]:
@@ -405,7 +612,8 @@ class APIManager:
             fb = self._env_fallback_account()
             if fb is not None:
                 accounts = [fb]
-        return accounts
+        # 已知坏账号（近期失败过）自动排到回退链末尾
+        return order_accounts_for_routing(accounts)
 
     def count(self) -> int:
         with self._lock:
@@ -476,7 +684,8 @@ class FailoverChat:
         from .clients import OpenAIChat
         self._accounts: list[OpenAIChat] = []
         self._account_names: list[str] = []
-        for acc in sorted(accounts, key=lambda a: (a.effective_priority(), a.name)):
+        # 已知坏账号（近期失败过）自动排后，优先尝试健康账号
+        for acc in order_accounts_for_routing(accounts):
             try:
                 self._accounts.append(OpenAIChat(
                     api_key=acc.api_key,
@@ -518,10 +727,12 @@ class FailoverChat:
     def _try_all(self, **kwargs) -> str:
         errors: list[tuple[str, str]] = []
         for acc, chat in zip(self._account_names, self._accounts):
+            _t0 = time.time()
             try:
                 # 同步历史到当前账号，从同一状态重试
                 chat.messages = list(self.messages)
                 reply = chat.continue_conversation(**kwargs)
+                self._record_observation(acc, True, (time.time() - _t0) * 1000)
                 self.messages = list(chat.messages)
                 self.last_usage = chat.last_usage
                 self.last_model = chat.last_model
@@ -534,10 +745,21 @@ class FailoverChat:
             except Exception as e:
                 msg = f"{type(e).__name__}: {e}"
                 errors.append((acc, msg))
+                self._record_observation(acc, False, (time.time() - _t0) * 1000)
                 logger.warning("FailoverChat: 账号 %s 调用失败: %s", acc, msg)
                 continue
         err = errors[-1][1] if errors else "无可用账号"
         raise RuntimeError(f"所有 API 账号均失败: {err}")
+
+    @staticmethod
+    def _record_observation(account: str, ok: bool, latency_ms: float) -> None:
+        """记录一次真实请求的成功/失败与延迟，供动态路由学习。"""
+        try:
+            from .dynamic_router import get_dynamic_router
+            base = account.removesuffix("(备用)")
+            get_dynamic_router().record(base, ok, latency_ms, source="request")
+        except Exception:
+            pass
 
     def send_message(self, message: str, tools: list[dict] = None,
                      tool_choice: str = "auto",

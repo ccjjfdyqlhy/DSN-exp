@@ -22,6 +22,12 @@ from .api_accounts import (
     build_failover_chat,
     load_failover_chat,
 )
+from .dynamic_router import (
+    DynamicRouter,
+    MonitorStore,
+    get_dynamic_router,
+    reset_dynamic_router,
+)
 
 __all__ = [
     "OpenAIChat",
@@ -45,4 +51,8 @@ __all__ = [
     "reset_api_manager",
     "build_failover_chat",
     "load_failover_chat",
+    "DynamicRouter",
+    "MonitorStore",
+    "get_dynamic_router",
+    "reset_dynamic_router",
 ]

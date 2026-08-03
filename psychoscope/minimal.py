@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -232,8 +233,8 @@ def _open_camera(device_id: int):
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_HOST = os.environ.get("DSN_HOST", "127.0.0.1")
-DEFAULT_PORT = int(os.environ.get("DSN_PORT", 5000))
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 5000
 CONFIG_FILE = HERE / ".dsn_client.json"
 TTS_DIR = HERE / "temp"
 REMINDER_FILE = TTS_DIR / "reminders.json"
@@ -647,6 +648,7 @@ def _capture_camera_frame(camera: str | int | None = None) -> Optional[str]:
 
     支持逻辑名（cam0 / front）或设备索引；空则用主摄像头 CAMERA_DEVICE_ID。
     产物格式 ("data:image/jpeg;base64,...") 与后端 VisionModel 管道一致。
+    成功抓帧后写入模块级帧缓存，供后续 on-demand 视觉请求零等待复用。
     """
     if not HAS_CAMERA:
         return None
@@ -665,24 +667,72 @@ def _capture_camera_frame(camera: str | int | None = None) -> Optional[str]:
         if not ok:
             log.warning("JPEG 编码失败")
             return None
-        return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
+        data_url = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
+        _store_frame_cache(device_id, data_url)
+        return data_url
     except Exception:
         log.warning("摄像头抓帧失败 (device_id=%s)", device_id, exc_info=True)
         return None
 
 
+# ── 客户端帧缓存：缩短 on-demand 视觉请求的抓帧等待 ──
+# key: device_id(int) → (ts, data_url)。抓帧开摄像头耗时较高（数百 ms 到 1s+），
+# 心跳收到 vision_request 时优先复用新鲜缓存帧，避免每请求都重新开摄像头。
+_FRAME_CACHE: dict[int, tuple[float, str]] = {}
+_FRAME_CACHE_LOCK = threading.Lock()
+FRAME_CACHE_MAX_AGE = float(os.environ.get("DSN_FRAME_CACHE_MAX_AGE", "3"))
+
+
+def _store_frame_cache(device_id: int, data_url: str) -> None:
+    with _FRAME_CACHE_LOCK:
+        _FRAME_CACHE[device_id] = (time.time(), data_url)
+
+
+def _cached_camera_frame(camera: str | int | None = None) -> Optional[str]:
+    """返回缓存中仍新鲜的帧；无/过期则返回 None（由调用方决定是否现场抓帧）。"""
+    if not HAS_CAMERA:
+        return None
+    device_id = _resolve_camera(camera)
+    with _FRAME_CACHE_LOCK:
+        entry = _FRAME_CACHE.get(device_id)
+        if not entry:
+            return None
+        ts, data_url = entry
+        if time.time() - ts > FRAME_CACHE_MAX_AGE:
+            _FRAME_CACHE.pop(device_id, None)
+            return None
+        return data_url
+
+
 def _capture_all_cameras() -> list[dict]:
-    """枚举并逐台抓帧，返回 [{logical_name, index, image_data}]（只含抓帧成功的）。"""
-    result = []
-    for dev in _enumerate_cameras():
-        frame = _capture_camera_frame(dev["index"])
-        if frame:
-            result.append({
-                "logical_name": dev["logical_name"],
-                "index": dev["index"],
-                "image_data": frame,
-            })
-    return result
+    """枚举并逐台抓帧，返回 [{logical_name, index, image_data}]（只含抓帧成功的）。
+    优先复用新鲜缓存帧；缺失/过期者现场抓帧（并行）。"""
+    if not HAS_CAMERA:
+        return []
+    devices = _enumerate_cameras()
+    if not devices:
+        return []
+
+    def _grab(dev: dict) -> Optional[dict]:
+        idx = dev["index"]
+        frame = _cached_camera_frame(idx)
+        if frame is None:
+            frame = _capture_camera_frame(idx)
+        if not frame:
+            return None
+        return {
+            "logical_name": dev["logical_name"],
+            "index": idx,
+            "image_data": frame,
+        }
+
+    if len(devices) <= 1:
+        grabbed = [_grab(dev) for dev in devices]
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(devices), 4),
+                                thread_name_prefix="cam-capture") as ex:
+            grabbed = list(ex.map(_grab, devices))
+    return [g for g in grabbed if g]
 
 
 def _capture_and_save_frame(camera, save_dir: Path) -> Optional[Path]:
@@ -748,6 +798,26 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def prompt_backend_host(cfg: dict) -> str:
+    """首次启动时询问后端地址并持久化到配置文件；端口固定 5000，仅记录主机名。"""
+    while True:
+        choice = input("  Backend address (default 127.0.0.1): ").strip()
+        if not choice:
+            host = DEFAULT_HOST
+        else:
+            for scheme in ("http://", "https://"):
+                if choice.startswith(scheme):
+                    choice = choice[len(scheme):].split("/")[0]
+                    break
+            host = choice.split(":")[0].strip()
+        if not host:
+            continue
+        cfg["backend_host"] = host
+        save_config(cfg)
+        print(f"  Backend address saved: {host}:{DEFAULT_PORT}")
+        return host
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1372,7 +1442,7 @@ class VisionObserver:
 # ════════════════════════════════════════════════════════════════
 
 class HeartbeatPoller:
-    HEARTBEAT_INTERVAL = 5
+    HEARTBEAT_INTERVAL = int(os.environ.get("DSN_HEARTBEAT_INTERVAL", "2"))
     HEARTBEAT_TIMEOUT = 30
 
     def __init__(self, client: "DSNClient", tts_queue: queue.Queue,
@@ -1469,10 +1539,15 @@ class HeartbeatPoller:
             cam = vr.get("camera", "") or ""
             if rid:
                 log.info("收到 on-demand 视觉请求: %s camera=%r", rid, cam)
-                frames = _capture_all_cameras() if cam in ("all", "all_cameras") \
-                    else [{"logical_name": cam or "default",
-                           "image_data": _capture_camera_frame(cam)}]
-                frames = [f for f in frames if f.get("image_data")]
+                if cam in ("all", "all_cameras"):
+                    frames = _capture_all_cameras()
+                else:
+                    logical = cam or "default"
+                    # 优先复用新鲜缓存帧（避免重新打开摄像头），否则现场抓帧
+                    img = _cached_camera_frame(cam)
+                    if img is None:
+                        img = _capture_camera_frame(cam)
+                    frames = [{"logical_name": logical, "image_data": img}] if img else []
                 try:
                     payload = {"request_id": rid}
                     if frames:
@@ -1482,7 +1557,7 @@ class HeartbeatPoller:
                         payload["error"] = "未检测到可用摄像头或抓帧失败"
                     self._client._http_post("/api/vision/frame", json=payload, timeout=60)
                     if frames:
-                        log.info("视觉帧已回传: %s (%d 张)", rid, len(frames))
+                        log.info("视觉帧已回传: %s (%d 张, 缓存命中)", rid, len(frames))
                     else:
                         log.warning("无法抓帧，已告知后端: %s", rid)
                 except Exception:
@@ -1538,6 +1613,51 @@ ReminderWatcher = HeartbeatPoller
 
 
 # ════════════════════════════════════════════════════════════════
+# 麦克风设备管理
+# ════════════════════════════════════════════════════════════════
+
+def _list_microphones() -> list[str]:
+    """枚举本机可用麦克风设备名列表（列表下标即 PvRecorder 的 device_index）。"""
+    if not HAS_PVRECORDER:
+        return []
+    try:
+        return list(PvRecorder.get_audio_devices())
+    except Exception:
+        log.warning("麦克风枚举失败", exc_info=True)
+        return []
+
+
+def prompt_mic_selection(cfg: dict) -> Optional[int]:
+    """列出所有麦克风并让用户选择（回车取消），把选择持久化到配置文件。
+    返回选中的 device_index；未选择或不可用时返回 None。
+    """
+    devices = _list_microphones()
+    if len(devices) <= 1:
+        return None
+
+    current = cfg.get("mic_device_index")
+    print("\n  检测到多个麦克风:")
+    for i, name in enumerate(devices):
+        marker = "  ← 当前" if i == current else ""
+        print(f"    [{i}] {name}{marker}")
+    while True:
+        choice = raw_input(f"  选择麦克风 [0-{len(devices)-1}]（回车保持默认）: ").strip()
+        if choice == "":
+            return None
+        try:
+            idx = int(choice)
+        except ValueError:
+            print("  无效输入，请重试")
+            continue
+        if 0 <= idx < len(devices):
+            cfg["mic_device_index"] = idx
+            save_config(cfg)
+            print(f"  已选择麦克风: {devices[idx]} (device index={idx})")
+            return idx
+        print("  无效选择，请重试")
+
+
+# ════════════════════════════════════════════════════════════════
 # VoiceRecorder — 录音器
 # ════════════════════════════════════════════════════════════════
 
@@ -1552,6 +1672,16 @@ class VoiceRecorder:
         self._recorder: Optional[PvRecorder] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+
+    @staticmethod
+    def _device_index() -> int:
+        """从配置读取持久化的麦克风设备索引；无效/缺失时用默认设备 (-1)。"""
+        cfg = load_config()
+        idx = cfg.get("mic_device_index")
+        devices = _list_microphones()
+        if isinstance(idx, int) and 0 <= idx < len(devices):
+            return idx
+        return -1
 
     @property
     def is_recording(self) -> bool:
@@ -1569,7 +1699,7 @@ class VoiceRecorder:
             return
 
         try:
-            self._recorder = PvRecorder(device_index=-1, frame_length=512)
+            self._recorder = PvRecorder(device_index=self._device_index(), frame_length=512)
         except Exception as e:
             print(f"  Cannot open microphone: {e}")
             return
@@ -1673,6 +1803,7 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [=]     async task      [k] skip reminder")
     print("  [r]     heartbeat       [f] silence alarm")
     print("  [l]     alarm status    [v] list cameras")
+    print("  [g]     select mic")
     print("  [q/Ctrl+C] quit         [n/m] vol-/+ (music)")
     print("  [d/e/f] prev/toggle/next (music mode)")
     print("=" * 43)
@@ -1804,7 +1935,7 @@ def print_system_info(client: DSNClient):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--pairing", default="")
     args = parser.parse_args()
@@ -1815,13 +1946,21 @@ def main():
     signal.signal(signal.SIGINT, _early_sigint)
 
     cfg = load_config()
-    cfg["host"] = f"{args.host}:{args.port}"
 
-    client = DSNClient(args.host, args.port)
+    # 后端地址解析：CLI --host > 配置文件 backend_host > 首次启动询问并持久化；端口固定 5000
+    host = args.host
+    if not host:
+        host = (cfg.get("backend_host") or "").strip()
+    if not host:
+        host = prompt_backend_host(cfg)
 
-    print(f"  Backend: http://{args.host}:{args.port}")
+    cfg["host"] = f"{host}:{args.port}"
+
+    client = DSNClient(host, args.port)
+
+    print(f"  Backend: http://{host}:{args.port}")
     try:
-        r = requests.get(f"http://{args.host}:{args.port}/api/auth/status", timeout=5)
+        r = requests.get(f"http://{host}:{args.port}/api/auth/status", timeout=5)
         if r.status_code == 200:
             st = r.json()
             methods = [k for k, v in st.get("methods", {}).items() if v]
@@ -1831,6 +1970,10 @@ def main():
     except Exception as e:
         print(f"  Connection check error: {e}")
         sys.exit(1)
+
+    # 首次启动（无配置文件）或尚未选定麦克风：若检测到多个麦克风则询问用户选择并持久化
+    if not CONFIG_FILE.exists() or "mic_device_index" not in cfg:
+        prompt_mic_selection(cfg)
 
     display_name = cfg.get("display_name", "")
     pairing_code = args.pairing
@@ -2008,6 +2151,10 @@ def main():
                 # ── v: 列出所有可用摄像头 ──
                 elif ch.lower() == "v":
                     print_cameras(client)
+
+                # ── g: 选择/更换麦克风 ──
+                elif ch.lower() == "g":
+                    prompt_mic_selection(load_config())
 
                 # ── s: standby ──
                 elif ch.lower() == "s":
