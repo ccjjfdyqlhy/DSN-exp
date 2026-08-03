@@ -61,10 +61,11 @@ def test_standby_to_ready():
 
 
 def test_standby_to_maint():
-    """STANDBY → MAINTENANCE 非法"""
+    """STANDBY → MAINTENANCE 允许（待机时定时检修仍可进行）"""
     sm = ServerStateMachine()
     sm.transition(ServerState.STANDBY)
-    assert not sm.transition(ServerState.MAINTENANCE)
+    assert sm.transition(ServerState.MAINTENANCE)
+    assert sm.state == ServerState.MAINTENANCE
 
 
 def test_on_transition_callback():
@@ -410,26 +411,43 @@ def test_system_maint_interval_persistence(tmp_path):
         msys._TASK_CONFIG_FILE = orig
 
 
-def test_standby_tick_starts_scheduled_maintenance():
-    """待机状态下手动重复周期到期应唤醒并开始维护"""
+def test_interval_prevents_auto_standby(tmp_path):
+    """配置手动重复周期时，空闲也不进入自动待机（周期性检修不能停）"""
     from datetime import timedelta
-    ms = MaintenanceSystem()
-    ok, _ = ms.set_maint_interval(300)
-    assert ok
-    # 模拟周期已到期（超过一个完整周期）
-    ms._next_maint_at = ms._next_maint_at - timedelta(seconds=301)
-    ms.trigger_standby()
-    assert ms.state.state == ServerState.STANDBY
-    ms._on_tick()
-    assert ms.state.state == ServerState.MAINTENANCE
-    # 周期应推进到下一个周期点，而非清空
-    assert ms._next_maint_at is not None
-    # 待机但未到周期时，不应唤醒
-    ms2 = MaintenanceSystem()
-    ok, _ = ms2.set_maint_interval(300)
-    ms2.trigger_standby()
-    ms2._on_tick()
-    assert ms2.state.state == ServerState.STANDBY
+    from unittest import mock
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        ms.set_maint_interval(300)
+        # 维护未到期
+        ms._next_maint_at = datetime.now() + timedelta(seconds=9999)
+        with mock.patch.object(ms.tracker, 'minutes_since_last_request',
+                               return_value=999):
+            ms._on_tick()
+        assert ms.state.state == ServerState.READY, "设置了手动周期不应进入自动待机"
+    finally:
+        msys._TASK_CONFIG_FILE = orig
+
+
+def test_standby_runs_scheduled_maintenance(tmp_path):
+    """待机状态下，定时检修到点仍会进入维护（修复空闲后检修停止）"""
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        assert ms.trigger_standby()
+        assert ms.state.state == ServerState.STANDBY
+        # 手动周期到点（start_now → _next_maint_at = now）
+        ok, _ = ms.set_maint_interval(300, start_now=True)
+        assert ok
+        ms._on_tick()
+        assert ms.state.state == ServerState.MAINTENANCE, \
+            f"待机时定时检修应触发维护，实际 {ms.state.state.value}"
+    finally:
+        msys._TASK_CONFIG_FILE = orig
 
 
 # ── 预置任务 ──

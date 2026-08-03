@@ -46,6 +46,11 @@ class Config:
     OPENAI_API_BASE = _env("OPENAI_API_BASE", "https://api.deepseek.com/v1")
     OPENAI_BACKUP_API_KEY = _env("OPENAI_BACKUP_API_KEY", "")
 
+    # 多账号 FailoverChat: 近期失败过的账号自动排后的窗口（秒）。
+    # 该窗口内失败的账号会被自动放到回退链末尾（手动 promote/demote 仍保留，
+    # 但"刚失败过"优先于提优，避免在坏账号上白等）。窗口过后恢复原优先级排序。
+    FAILOVER_DOWN_WINDOW = int(_env("FAILOVER_DOWN_WINDOW", "3600"))
+
     # ═══════════════════════════════════════════════════════════════════════
     # 第二层: 服务与存储
     # ═══════════════════════════════════════════════════════════════════════
@@ -157,6 +162,8 @@ class Config:
     TOOL_CALL_MODE = _env("TOOL_CALL_MODE", "native")          # "native" | "xml" | "auto"
     TOOL_CALL_MODEL = _env("TOOL_CALL_MODEL", "deepseek-v4-pro")
     TOOLBOX_ENABLED = _env("TOOLBOX_ENABLED", "true") == "true"
+    # 主模型对话历史裁剪上限（非 system 消息保留条数）；0 = 不裁剪
+    MODEL_MAX_HISTORY = max(0, int(_env("MODEL_MAX_HISTORY", "12")))
 
     # ── 文件操作限制 ──
     FILE_READ_MAX_SIZE_MB = max(1, int(_env("FILE_READ_MAX_SIZE_MB", "1")))
@@ -205,6 +212,10 @@ class Config:
     VISION_API_BASE = _env("VISION_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
     VISION_MODEL_NAME = _env("VISION_MODEL_NAME", "glm-4.6v")
     VISION_OVERRIDE = _env("VISION_OVERRIDE", "false").lower() == "true"
+    # 启动时预热 VLM（后台发一次低 token dummy 请求，摊薄首次 look_around 冷启动）
+    VISION_WARMUP = _env("VISION_WARMUP", "true").lower() == "true"
+    # look_around 短时去重窗口（秒）：窗口内同 focus+camera 的重复观察直接复用上次结果
+    VISION_LOOK_AROUND_DEDUP = float(_env("VISION_LOOK_AROUND_DEDUP", "10"))
 
     # ── OCR ──
     OCR_MODEL = _env("OCR_MODEL", "deepseek-ocr")

@@ -326,7 +326,8 @@ class ModelsPlugin(Plugin):
         chat = OpenAIChat(
             api_key=self._openai_api_key,
             model=self._openai_model_name or getattr(Config, "MAIN_MODEL_NAME", "deepseek-v4-flash"),
-            api_url=self._openai_api_base
+            api_url=self._openai_api_base,
+            max_history=getattr(Config, "MODEL_MAX_HISTORY", 12),
         )
         logger.info("ModelsPlugin: 创建 OpenAIChat — model=%s", chat.model)
         return chat

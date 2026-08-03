@@ -19,6 +19,14 @@ from collections import deque
 _log = logging.getLogger(__name__)
 _ENV_PATH = Path(__file__).parent / ".env"
 
+# /reboot 请求自动重启控制台的标记（main() finally 中执行 os.execv）
+_REBOOT_REQUESTED = False
+
+
+def _restart_process() -> None:
+    """用同一命令行原地重启控制台进程（os.execv 替换当前进程映像）。"""
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
 def _is_env_configured() -> bool:
     if not _ENV_PATH.exists():
@@ -1083,6 +1091,10 @@ def _cmd_login(args: str):
             print(f"  {'✓' if ok else '✗'} {name}: {msg}")
     elif sub in ("timeslot", "ts", "slot"):
         _cmd_login_timeslot(mgr, parts)
+    elif sub == "schedule":
+        _cmd_login_schedule(mgr, parts)
+    elif sub == "dynamic":
+        _cmd_login_dynamic(mgr, parts)
     else:
         print("""
   /login 子命令 (多 OpenAI 兼容 API 账号管理):
@@ -1100,19 +1112,46 @@ def _cmd_login(args: str):
     /login backup <名称> <Token>  设置备用 Token (主 Token 失效时自动顶上)
     /login swap <名称>       交换主 Token 与备用 Token
     /login test [名称...]    测试连通性 (不带参数则测试全部)
-    /login timeslot <名称>             查看时段优先级
-    /login timeslot <名称> <HH:MM> <HH:MM> <优先级>  添加时段优先级
+    /login timeslot <名称>             查看手动时段优先级
+    /login timeslot <名称> <HH:MM> <HH:MM> <优先级>  添加手动时段优先级
     /login timeslot <名称> remove <HH:MM> <HH:MM>    移除某个时段
-    /login timeslot <名称> clear        清除全部时段
+    /login timeslot <名称> clear        清除全部手动时段
+    /login schedule                    查看手动时段安排 (过滤层)
+    /login schedule add <HH:MM> <HH:MM> <账号> <promote|demote>
+                                       安排时段内提优(promote)或降级(demote)某账号
+    /login schedule remove <HH:MM> <HH:MM> <账号> 移除安排
+    /login schedule clear               清空全部安排
+    /login dynamic [status]   查看动态路由状态 + 学习到的时段安排
+    /login dynamic on         启用动态路由（基于监控数据自动安排时段账号）
+    /login dynamic off        关闭动态路由（移除学习时段，恢复手动+基础优先级）
+    /login dynamic rebuild    立即用最新监控数据重算时段
+    /login dynamic clear      清空监控历史与学习时段
+    /login dynamic flush      把缓存监控数据写入磁盘
 
   调用规则: 每次请求按优先级顺序尝试; 当前账号报错自动回退到下一个。
-  时段优先级: 运行中按当前时间匹配时段取对应优先级 (跨午夜如 22:00-06:00 也支持)。
+  优先级层级 (从高到低):
+    1. 手动时段安排 /login schedule (过滤层) — 时段内 promote=提到最高 / demote=压到最低
+    2. 手动时段优先级 /login timeslot (跨午夜如 22:00-06:00 也支持)
+    3. 动态学习时段 /login dynamic (自动)
+    4. 基础优先级 /login prio
+  手动时段安排不改动优先级/时段数据, 只是在调用排序上过滤:
+    被 promote 的账号最先被尝试, 被 demote 的账号最后被尝试 (仍留作备用槽)。
+  已知坏账号自动后排: 账号在 FAILOVER_DOWN_WINDOW(默认1小时, 秒)内失败过,
+    会被自动排到回退链末尾(即使被 promote), 避免在坏账号上白等; 窗口过后恢复。
+    用 /config set FAILOVER_DOWN_WINDOW <秒> 调整。
+  动态路由: 监控数据来自 /hibernate task add account_check --account <名称> 的
+  周期性检查 + 每次真实请求的成功/失败/延迟。动态学习时段自动填充未被手动
+  时段覆盖的时间; 手动时段安排与手动时段优先级永远压过动态学习结果。
   main 账号绑定 .env 文件，修改后自动同步。
   示例:
     /login add deepseek https://api.deepseek.com/v1 sk-xxx deepseek-chat
     /login add openai https://api.openai.com/v1 sk-yyy gpt-4o
     /login prio openai 0
+    /login schedule add 08:00 20:00 deepseek promote
+    /login schedule add 20:00 08:00 backup demote
     /login timeslot backup 08:00 20:00 0
+    /login dynamic on
+    /config set FAILOVER_DOWN_WINDOW 86400
     /login test deepseek openai
     /login swap deepseek
     /login rename deepseek ds
@@ -1125,7 +1164,10 @@ def _login_list(mgr):
         print("\n  尚未配置任何 API 账号。")
         print("  使用 /login add <名称> <Base URL> <API Key> <模型名> 添加第一个账号。")
         return
+    from models.api_accounts import is_known_down, _known_down_window
+    window = _known_down_window()
     print("\n  [bold]已配置的 API 账号 (按当前时段优先级排序)[/]")
+    print(f"  [dim]已知坏账号自动后排窗口: {window}s ({window//3600}h), 用 /config set FAILOVER_DOWN_WINDOW <秒> 调整[/]")
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
     table.add_column("优先级", justify="right")
     table.add_column("名称", style="bold")
@@ -1136,13 +1178,21 @@ def _login_list(mgr):
     table.add_column("时段优先级", style="dim")
     table.add_column("状态", justify="center")
     for acc in accounts:
-        status = "[green]启用[/]" if acc.get("enabled") else "[red]禁用[/]"
+        if acc.get("enabled"):
+            if is_known_down(acc.get("name", "")):
+                status = "[red]近期失败[/]"
+            else:
+                status = "[green]启用[/]"
+        else:
+            status = "[dim]禁用[/]"
         key_masked = f"{acc.get('api_key','')[:4]}...{acc.get('api_key','')[-4:]}" if acc.get("api_key") else ""
         bk = acc.get("backup_api_key", "")
         bk_masked = f"{bk[:4]}...{bk[-4:]}" if bk else ""
         slots = acc.get("time_slots") or []
-        slot_str = " / ".join(f"{s.get('start','')}-{s.get('end','')}:{s.get('priority','')}"
-                              for s in slots) if slots else ""
+        slot_str = " / ".join(
+            f"{s.get('start','')}-{s.get('end','')}:{s.get('priority','')}"
+            + ("[d]" if s.get("source") == "dynamic" else "")
+            for s in slots) if slots else ""
         table.add_row(str(acc.get("priority", "")), acc.get("name", "?"),
                       acc.get("base_url", ""), acc.get("model", ""),
                       key_masked, bk_masked, slot_str, status)
@@ -1163,7 +1213,7 @@ def _login_add(mgr, parts: list[str]):
 
 
 def _cmd_login_timeslot(mgr, parts: list[str]):
-    """管理账号的时段优先级"""
+    """管理账号的手动时段优先级"""
     if len(parts) < 2:
         print("  用法: /login timeslot <名称> [<HH:MM> <HH:MM> <优先级> | remove <HH:MM> <HH:MM> | clear]")
         print("  示例: /login timeslot backup 08:00 20:00 0")
@@ -1174,16 +1224,18 @@ def _cmd_login_timeslot(mgr, parts: list[str]):
     if len(parts) == 2:
         slots = mgr.list_time_slots(name)
         if not slots:
-            print(f"  账号 '{name}' 没有配置时段优先级")
+            print(f"  账号 '{name}' 没有配置手动时段优先级")
             return
         print(f"\n  账号 '{name}' 时段优先级:")
         table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
         table.add_column("开始", justify="right")
         table.add_column("结束", justify="right")
         table.add_column("优先级", justify="right")
+        table.add_column("来源", style="dim")
         for s in slots:
+            src = "手动" if s.get("source") != "dynamic" else "动态"
             table.add_row(str(s.get("start", "")), str(s.get("end", "")),
-                          str(s.get("priority", "")))
+                          str(s.get("priority", "")), src)
         console.print(table)
         print()
         return
@@ -1209,6 +1261,177 @@ def _cmd_login_timeslot(mgr, parts: list[str]):
             return
         ok, msg = mgr.set_time_slot(name, parts[2], parts[3], priority)
         print(f"  {'✓' if ok else '✗'} {msg}")
+
+
+def _cmd_login_schedule(mgr, parts: list[str]):
+    """手动时段安排 — 优先级系统的过滤层: 时段内提优/降级某账号"""
+    sub = parts[1].lower() if len(parts) > 1 else ""
+
+    if len(parts) <= 2 or sub in ("list", "show"):
+        rules = mgr.list_schedule()
+        if not rules:
+            print("  没有手动时段安排")
+            return
+        print("\n  手动时段安排 (优先级系统的过滤层):")
+        print("    promote = 时段内提优到最高   demote = 时段内压到最低(仍作备用槽)")
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("开始", justify="right")
+        table.add_column("结束", justify="right")
+        table.add_column("账号", style="bold")
+        table.add_column("动作")
+        for r in sorted(rules, key=lambda x: (x.get("start", ""), x.get("end", ""))):
+            action = r.get("action", "promote")
+            label = "[green]提优[/]" if action == "promote" else "[red]降级[/]"
+            table.add_row(r.get("start", ""), r.get("end", ""),
+                          r.get("account", ""), label)
+        console.print(table)
+        print()
+        return
+
+    if sub in ("clear", "removeall"):
+        ok, msg = mgr.clear_schedule()
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub == "add":
+        if len(parts) < 5:
+            print("  用法: /login schedule add <HH:MM> <HH:MM> <账号> <promote|demote>")
+            return
+        action = parts[5] if len(parts) > 5 else "promote"
+        ok, msg = mgr.add_schedule(parts[2], parts[3], parts[4], action)
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    elif sub == "remove":
+        if len(parts) < 5:
+            print("  用法: /login schedule remove <HH:MM> <HH:MM> <账号>")
+            return
+        ok, msg = mgr.remove_schedule(parts[2], parts[3], parts[4])
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    else:
+        print("  用法: /login schedule [add <HH:MM> <HH:MM> <账号> <promote|demote> |"
+              " remove <HH:MM> <HH:MM> <账号> | clear]")
+
+
+def _cmd_login_dynamic(mgr, parts: list[str]):
+    """动态账户路由 — 基于监控数据自动安排不同时段优先使用不同账号"""
+    from models.dynamic_router import get_dynamic_router
+    router = get_dynamic_router()
+
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if sub in ("", "status", "show"):
+        _dynamic_show(router)
+    elif sub == "on":
+        router.set_enabled(True)
+        res = router.recompute()
+        print(f"  ✓ 动态路由已启用, 立即重算: 写入 {res.get('applied', 0)} 个账号的时段")
+        if res.get("applied", 0) == 0:
+            print("  提示: 尚无足够监控数据。可用 /hibernate task add account_check --account <名称>")
+            print("        安排周期性检查，监控数据积累后执行 /login dynamic rebuild 生效。")
+    elif sub == "off":
+        router.set_enabled(False)
+        cleared = 0
+        for name in mgr.names():
+            ok, _ = mgr.clear_dynamic_slots(name)
+            cleared += 1 if ok else 0
+        router.flush()
+        print(f"  ✓ 动态路由已关闭，已移除 {cleared} 个账号的学习时段（手动时段保留）")
+    elif sub in ("rebuild", "recompute", "learn"):
+        if not router.is_enabled():
+            print("  ✗ 动态路由未启用，先执行 /login dynamic on")
+            return
+        res = router.recompute()
+        print(f"  ✓ 已基于最新监控数据重算: 写入 {res.get('applied', 0)} 个账号的时段")
+    elif sub in ("clear", "reset"):
+        router.clear()
+        print("  ✓ 监控历史与学习时段已清空（手动时段保留）")
+    elif sub == "flush":
+        router.flush()
+        print("  ✓ 缓存监控数据已写入磁盘")
+    else:
+        print("""
+  /login dynamic 命令用法 (基于监控数据自动安排时段账号):
+    /login dynamic               查看动态路由状态 + 学习时段安排
+    /login dynamic on            启用动态路由 (每次维护后自动重算)
+    /login dynamic off           关闭动态路由 (移除学习时段)
+    /login dynamic rebuild       立即用最新监控数据重算
+    /login dynamic clear         清空监控历史与学习时段
+    /login dynamic flush         缓存监控数据写入磁盘
+
+  监控数据来源:
+    - /hibernate task add account_check --account <名称> 周期性检查
+    - 每次真实请求的成功/失败/延迟 (FailoverChat)
+  优先级层级 (过滤层): /login schedule (promote/demote) > /login timeslot 手动时段
+              > /login dynamic 动态学习 > /login prio 基础优先级
+""")
+
+
+def _dynamic_show(router):
+    mgr = router._manager()
+    stats = router.stats()
+    params = router.params()
+
+    mode = "[green]启用[/]" if stats["enabled"] else "[red]关闭[/]"
+    print(f"\n  动态路由: {mode}")
+    print(f"  监控样本: {stats['observations']}  (成功 {stats['ok']})"
+          f"  来源: {stats.get('by_source', {})}")
+    print(f"  学习参数: 窗口 ±{params['window']}h, 最少观察 {params['min_obs']},"
+          f" 有效 {params['max_age_days']} 天")
+
+    # 手动时段安排（优先级系统的过滤层: promote/demote）
+    schedule = mgr.list_schedule()
+    if schedule:
+        print("\n  [bold]手动时段安排 (过滤层: 提优/降级)[/]")
+        t3 = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        t3.add_column("开始", justify="right")
+        t3.add_column("结束", justify="right")
+        t3.add_column("账号", style="bold")
+        t3.add_column("动作")
+        for r in sorted(schedule, key=lambda x: (x.get("start", ""), x.get("end", ""))):
+            action = r.get("action", "promote")
+            label = "[green]提优[/]" if action == "promote" else "[red]降级[/]"
+            t3.add_row(r.get("start", ""), r.get("end", ""),
+                       r.get("account", ""), label)
+        console.print(t3)
+
+    print("\n  [bold]账号时段安排[/]")
+    accounts = mgr.list_accounts()
+    if not accounts:
+        print("  尚未配置任何 API 账号。")
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("账号", style="bold")
+    table.add_column("基础优先级", justify="right")
+    table.add_column("手动时段", style="dim")
+    table.add_column("动态学习时段", style="dim")
+    for acc in accounts:
+        manual = [s for s in acc.get("time_slots") or []
+                  if s.get("source") != "dynamic"]
+        dynamic = [s for s in acc.get("time_slots") or []
+                   if s.get("source") == "dynamic"]
+        manual_str = " / ".join(f"{s.get('start','')}-{s.get('end','')}:{s.get('priority','')}"
+                                for s in manual) if manual else "-"
+        dynamic_str = " / ".join(f"{s.get('start','')}-{s.get('end','')}:{s.get('priority','')}"
+                                 for s in dynamic) if dynamic else "-"
+        table.add_row(acc.get("name", "?"), str(acc.get("priority", "")),
+                      manual_str, dynamic_str)
+    console.print(table)
+
+    print("\n  [bold]时段 → 账号排序 (动态学习, 仅显示有数据时段)[/]")
+    plan = router.plan()
+    rows = []
+    for h in range(24):
+        ranked = plan.get(h) or []
+        if not ranked:
+            continue
+        order = " > ".join(f"{name}(P{i})" for name, i in ranked[:3])
+        rows.append((f"{h:02d}:00-{h:02d}:59", order))
+    if rows:
+        t2 = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        t2.add_column("时段")
+        t2.add_column("账号排序 (优先级)")
+        for start, order in rows:
+            t2.add_row(start, order)
+        console.print(t2)
+    else:
+        print("  暂无足够监控数据，可用 /login dynamic rebuild 或等待 account_check 积累")
+    print()
 
 
 def _cmd_help():
@@ -1239,7 +1462,7 @@ def _cmd_help():
     /persona distill <角色卡名>   立即启动人格蒸馏
     /persona materials <角色卡名> 列出蒸馏素材
     /persona rollback <角色卡名> 列出备份快照并回滚
-    /login       管理多个 OpenAI 兼容 API 账号 (add/remove/prio/enable/test)
+    /login       管理多个 OpenAI 兼容 API 账号 (add/remove/prio/enable/timeslot/schedule/dynamic)
     /hibernate check             查看待机策略+活跃度分布+任务安排
     /hibernate archive <时间>    设定下次整理时间 (now / 7d / 3h / 30m / every <时长>)
     /hibernate sleep             立刻进入待机
@@ -1259,6 +1482,7 @@ def _cmd_help():
     /agent bind <AgentUID> <用户ID>     绑定 Agent 到用户
     /agent unbind <AgentUID>            解除绑定
     /stop       安全停止服务器 (等同于 Ctrl+C)
+    /reboot     自动重启控制台 (优雅停止后以同一命令重新启动)
     /help       显示此帮助信息
 
   其他输入将被转发给驻守模型 (如果已启用)。
@@ -1934,6 +2158,14 @@ def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, conf
 
     if cmd == "/stop":
         print("  正在停止服务器...")
+        if shutdown_event:
+            shutdown_event.set()
+        return
+
+    if cmd == "/reboot":
+        global _REBOOT_REQUESTED
+        _REBOOT_REQUESTED = True
+        print("  正在自动重启控制台...")
         if shutdown_event:
             shutdown_event.set()
         return
@@ -2952,6 +3184,15 @@ def main():
         except Exception:
             _log.warning("Operation failed", exc_info=True)
         console.print("\n[yellow]Shutting down...[/]")
+
+        # /reboot: 停止后自动重启控制台（os.execv 用同一命令行重建进程）
+        global _REBOOT_REQUESTED
+        if _REBOOT_REQUESTED:
+            console.print("[green]正在重启控制台...[/]")
+            try:
+                _restart_process()
+            except Exception as e:
+                console.print(f"[red]重启失败: {e}[/]")
 
 
 if __name__ == "__main__":

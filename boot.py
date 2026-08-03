@@ -152,10 +152,11 @@ def _synthesize_tts_lines(text: str) -> list[dict]:
              and any(c.isalpha() or "\u4e00" <= c <= "\u9fff" for c in l.strip())]
     if not lines:
         return []
+    processed_all = _tts_process_model.process_tts_batch(lines) if _tts_process_model else lines
     results = []
     for i, line in enumerate(lines):
         try:
-            processed = _tts_process_model.process_tts_text(line) if _tts_process_model else line
+            processed = processed_all[i] if i < len(processed_all) else line
             params = tts_profile_mgr.build_params(processed)
             audio_data = tts_client.tts(**params)
             results.append({"index": i, "total": len(lines), "text": line,
@@ -701,6 +702,12 @@ def create_application():
     init_heartbeat_api(db, task_manager, _auth_manager, engine)
     # 初始化视觉感知协调层（桥接本地客户端摄像头 ↔ 后端 VisionModel/场景变化）
     init_vision_api(db, engine, _auth_manager)
+    # 后台预热 VLM（摊薄首次 look_around 的冷启动，非阻塞）
+    try:
+        from api.vision import spawn_vision_warmup
+        spawn_vision_warmup()
+    except Exception:
+        _root_logger.debug("VLM 预热启动失败（忽略）", exc_info=True)
     _t("DSNEngine")
 
     # ── 语义缓存系统 (L1/L2/L3) ──

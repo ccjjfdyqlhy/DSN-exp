@@ -55,6 +55,43 @@ def init_vision_api(db=None, engine=None, auth_manager=None):
     logger.info("Vision API 已初始化 (coordinator=%s)", type(coordinator).__name__)
 
 
+# 1x1 PNG（预热用极小图片，避免真实摄像头参与）
+_TINY_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+             "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
+def warmup_vision_model():
+    """后台预热 VLM：启动时发一次低 token dummy 请求，摊薄首次 look_around 的冷启动推理。
+
+    在独立 daemon 线程中运行，不阻塞启动流程；失败静默忽略。
+    """
+    try:
+        from config import Config
+        if not getattr(Config, "VISION_WARMUP", True):
+            return
+        if not getattr(Config, "VISION_ENABLED", True):
+            return
+        from models.clients import VisionModel
+        vm = VisionModel()
+        vm.ask(
+            data_url=_TINY_PNG,
+            prompt="这是一张 1x1 测试图。请只回复一个词：ok。",
+            max_tokens=8,
+            temperature=0.0,
+        )
+        logger.info("VisionModel 预热完成 (model=%s)", vm.model_name)
+    except Exception as e:
+        logger.debug("VisionModel 预热失败（不影响运行）: %s", e)
+
+
+def spawn_vision_warmup():
+    """以后台线程方式启动 VLM 预热（幂等）。"""
+    import threading
+    t = threading.Thread(target=warmup_vision_model, daemon=True,
+                         name="vision-warmup")
+    t.start()
+
+
 class VisionCoordinator:
     """按需视觉请求的内存协调器（线程安全）。
 
@@ -65,7 +102,7 @@ class VisionCoordinator:
       - wait: look_around 阻塞直到帧到达或超时
     """
 
-    REQUEST_TIMEOUT = 20.0     # look_around 阻塞等待客户端帧的超时秒数
+    REQUEST_TIMEOUT = 8.0     # look_around 阻塞等待客户端帧的超时秒数（客户端离线时快速兜底）
     _GC_MAX_AGE = 120.0        # 过期请求清理阈值
 
     def __init__(self):
