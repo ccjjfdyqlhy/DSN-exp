@@ -649,6 +649,19 @@ class ChatPipeline:
         if hint:
             ctx.system_prompt += "\n\n" + hint
 
+        # toolbox 模式引导：模型需先调用 toolbox 激活工具
+        try:
+            from config import Config
+            if (getattr(Config, "TOOLBOX_ENABLED", True)
+                    and getattr(Config, "TOOL_CALL_MODE", "native") in ("native", "auto")):
+                ctx.system_prompt += (
+                    "\n\n【工具激活】你有一个名为 toolbox 的工具。开始处理用户请求前，"
+                    "先调用它一次性激活你需要的全部工具（例如 skill-visual_perception-look_around）。"
+                    "激活后即可在后续轮次直接调用这些工具；工具很多时不要把它们全部激活。"
+                )
+        except Exception:
+            pass
+
     # ---- PRE_PROCESS 图片并行 ----
 
     async def _dispatch_pre_process(self, ctx: PluginContext) -> PluginContext:
@@ -775,24 +788,35 @@ class ChatPipeline:
         results = []
         total = len(lines)
         logger.info("[TTS-DEBUG] ===== _synthesize_lines_sync 开始, total=%d 行, t=%.3f =====", total, time.perf_counter())
+
+        # ── 批量 TTS 预处理：把逐行 LLM 调用合并为一次（首行流式时走本地快路径）──
+        processed_lines = []
+        if self._tts_process_model is not None:
+            fast_first = True
+            try:
+                fast_first = bool(Config.TTS_FAST_FIRST_LINE)
+            except Exception:
+                fast_first = True
+            if fast_first and tts_q is not None:
+                # 流式：首行用本地正则快路径尽快出音，其余行合并为一次 LLM 调用
+                local = getattr(self._tts_process_model, "_local_preprocess", None)
+                first = local(lines[0]) if callable(local) else lines[0]
+                logger.info("[TTS-DEBUG] TTS 预处理: 首行本地快路径, 其余 %d 行批量 LLM, t=%.3f",
+                            total - 1, time.perf_counter())
+                rest = self._tts_process_model.process_tts_batch(lines[1:]) if total > 1 else []
+                processed_lines = [first] + rest
+            else:
+                logger.info("[TTS-DEBUG] TTS 预处理: 批量 process_tts_batch(%d 行), t=%.3f",
+                            total, time.perf_counter())
+                processed_lines = self._tts_process_model.process_tts_batch(lines)
+        else:
+            processed_lines = list(lines)
+
         for i, line in enumerate(lines):
             logger.info("[TTS-DEBUG] TTS 行 %d/%d: 开始合成, 文本前40字=%r, t=%.3f", i + 1, total, line[:40], time.perf_counter())
             t_tts_start = time.perf_counter()
             try:
-                processed_line = line
-                if self._tts_process_model is not None:
-                    fast_first = False
-                    try:
-                        fast_first = bool(Config.TTS_FAST_FIRST_LINE)
-                    except Exception:
-                        fast_first = True
-                    if fast_first and tts_q is not None:
-                        local = getattr(self._tts_process_model, "_local_preprocess", None)
-                        processed_line = local(line) if callable(local) else line
-                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 local_preprocess 快路径 (流式), t=%.3f", i + 1, total, time.perf_counter())
-                    else:
-                        processed_line = self._tts_process_model.process_tts_text(line)
-                        logger.info("[TTS-DEBUG] TTS 行 %d/%d: 使用 process_tts_text (可能 LLM), t=%.3f", i + 1, total, time.perf_counter())
+                processed_line = processed_lines[i] if i < len(processed_lines) else line
                 params = self._tts_profile_mgr.build_params(processed_line) if self._tts_profile_mgr else {
                     "text": processed_line, "text_lang": "zh",
                     "ref_audio_path": "", "prompt_lang": "en", "prompt_text": "",

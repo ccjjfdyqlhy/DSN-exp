@@ -275,9 +275,16 @@ class MaintenanceSystem:
             if self._should_drain_hibernate():
                 self._drain_hibernate()
             idle_min = self.tracker.minutes_since_last_request()
-            if config.IDLE_TIMEOUT_MINUTES > 0 and idle_min >= config.IDLE_TIMEOUT_MINUTES:
+            # 配置了手动重复周期时保持活跃，不进入自动待机（周期性检修不能停）
+            if config.IDLE_TIMEOUT_MINUTES > 0 and idle_min >= config.IDLE_TIMEOUT_MINUTES \
+                    and not self._maint_interval_seconds:
                 self._enter_standby()
         elif self.state.state == ServerState.STANDBY:
+            # 待机状态下仍按调度执行定时检修，避免空闲后检修停止
+            if self._should_start_maintenance():
+                self._drain_hibernate()
+                self._begin_maintenance()
+                return
             self._drain_hibernate()
 
     # ── 调度决策 ──
@@ -393,11 +400,26 @@ class MaintenanceSystem:
         logger.info("维护完成: %d/%d 成功", success_count, len(results))
         self.tracker.save()
         self.state.transition(ServerState.READY)
+        # 维护后若跑了账号检查，重算动态路由时段（自动启用时才写）
+        try:
+            self._recompute_dynamic_router()
+        except Exception:
+            logger.exception("维护后重算动态路由失败")
         for cb in self._on_maintenance_done:
             try:
                 cb(results)
             except Exception:
                 logger.exception("maintenance_done 回调异常")
+
+    def _recompute_dynamic_router(self) -> None:
+        """账号检查任务完成后，让动态路由基于最新监控数据重算时段。"""
+        from models.dynamic_router import get_dynamic_router
+        router = get_dynamic_router()
+        if router.is_enabled():
+            res = router.recompute()
+            logger.info("动态路由重算: %s", res)
+        else:
+            router.flush()
 
     def _enter_standby(self) -> None:
         if not self.state.transition(ServerState.STANDBY):

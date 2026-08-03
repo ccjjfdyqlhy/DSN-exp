@@ -61,10 +61,11 @@ def test_standby_to_ready():
 
 
 def test_standby_to_maint():
-    """STANDBY → MAINTENANCE 非法"""
+    """STANDBY → MAINTENANCE 允许（待机时定时检修仍可进行）"""
     sm = ServerStateMachine()
     sm.transition(ServerState.STANDBY)
-    assert not sm.transition(ServerState.MAINTENANCE)
+    assert sm.transition(ServerState.MAINTENANCE)
+    assert sm.state == ServerState.MAINTENANCE
 
 
 def test_on_transition_callback():
@@ -406,6 +407,45 @@ def test_system_maint_interval_persistence(tmp_path):
         ms2 = MaintenanceSystem()
         assert ms2.get_maint_interval() == 7200
         assert ms2._next_maint_at is not None
+    finally:
+        msys._TASK_CONFIG_FILE = orig
+
+
+def test_interval_prevents_auto_standby(tmp_path):
+    """配置手动重复周期时，空闲也不进入自动待机（周期性检修不能停）"""
+    from datetime import timedelta
+    from unittest import mock
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        ms.set_maint_interval(300)
+        # 维护未到期
+        ms._next_maint_at = datetime.now() + timedelta(seconds=9999)
+        with mock.patch.object(ms.tracker, 'minutes_since_last_request',
+                               return_value=999):
+            ms._on_tick()
+        assert ms.state.state == ServerState.READY, "设置了手动周期不应进入自动待机"
+    finally:
+        msys._TASK_CONFIG_FILE = orig
+
+
+def test_standby_runs_scheduled_maintenance(tmp_path):
+    """待机状态下，定时检修到点仍会进入维护（修复空闲后检修停止）"""
+    import maintenance.system as msys
+    orig = msys._TASK_CONFIG_FILE
+    msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
+    try:
+        ms = MaintenanceSystem()
+        assert ms.trigger_standby()
+        assert ms.state.state == ServerState.STANDBY
+        # 手动周期到点（start_now → _next_maint_at = now）
+        ok, _ = ms.set_maint_interval(300, start_now=True)
+        assert ok
+        ms._on_tick()
+        assert ms.state.state == ServerState.MAINTENANCE, \
+            f"待机时定时检修应触发维护，实际 {ms.state.state.value}"
     finally:
         msys._TASK_CONFIG_FILE = orig
 

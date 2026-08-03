@@ -22,6 +22,8 @@ class TodoItem:
     status: str = "pending"       # pending | in_progress | completed | failed
     sub_agent_id: str = ""        # 子代理 task_id (如果并行执行)
     sub_agent_model: str = ""     # 子代理使用的模型
+    sub_agent_prompt: str = ""    # 主模型(assigner)书写的子代理 system prompt
+    needs_sub_agent: Optional[bool] = None   # 主模型(assigner)决定是否派子代理
     result: str = ""
     error: str = ""
     priority: int = 0
@@ -96,6 +98,8 @@ class TodoStore:
                     priority=item.get("priority", 0),
                     dependencies=item.get("dependencies", []),
                     sub_agent_model=item.get("sub_agent_model", ""),
+                    sub_agent_prompt=item.get("sub_agent_prompt", ""),
+                    needs_sub_agent=item.get("needs_sub_agent"),
                 )
                 for i, item in enumerate(items)
             ]
@@ -194,6 +198,8 @@ class TodoStore:
                     "status": it.status,
                     "sub_agent_id": it.sub_agent_id,
                     "sub_agent_model": it.sub_agent_model,
+                    "sub_agent_prompt": it.sub_agent_prompt,
+                    "needs_sub_agent": it.needs_sub_agent,
                     "result": it.result,
                     "error": it.error,
                     "priority": it.priority,

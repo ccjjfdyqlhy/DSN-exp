@@ -5,6 +5,7 @@ import datetime
 import os
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,6 +18,7 @@ from models.api_accounts import (
     build_failover_chat,
     get_api_manager,
     reset_api_manager,
+    is_known_down,
 )
 import models.api_accounts as ma_module
 import models.clients as clients_mod
@@ -28,6 +30,13 @@ def _fresh_manager():
     # 移除自动导入的 .env 主账号，确保测试不依赖外部环境
     mgr._accounts.pop("main", None)
     return mgr, path
+
+
+def _patch_recording():
+    """FailoverChat 测试禁用监控观察记录，避免污染真实 .dsn/api_monitor.json"""
+    return mock.patch.object(
+        ma_module.FailoverChat, "_record_observation",
+        staticmethod(lambda *a, **k: None))
 
 
 class _FakeOA:
@@ -95,31 +104,32 @@ def test_failover_fallback():
     print("=== FailoverChat 自动回退 ===")
     orig = clients_mod.OpenAIChat
     clients_mod.OpenAIChat = _FakeOA
-    try:
-        fc = FailoverChat([
-            APIAccount(name="a1", api_key="sk-bad", model="m1", priority=0),
-            APIAccount(name="a2", api_key="sk-good", model="m2", priority=1),
-        ])
-        reply = fc.send_message("hi")
-        assert "sk-good" in reply
-        assert fc.active_account == "a2"
-        assert fc.last_model == "m2"
-        assert len(fc.messages) == 2  # user + assistant
-
-        # 全部失败 → 抛 RuntimeError
-        fc3 = FailoverChat([APIAccount(name="x", api_key="sk-bad", model="m", priority=0)])
+    with _patch_recording():
         try:
-            fc3.send_message("hi")
-            assert False, "should raise"
-        except RuntimeError:
-            pass
+            fc = FailoverChat([
+                APIAccount(name="a1", api_key="sk-bad", model="m1", priority=0),
+                APIAccount(name="a2", api_key="sk-good", model="m2", priority=1),
+            ])
+            reply = fc.send_message("hi")
+            assert "sk-good" in reply
+            assert fc.active_account == "a2"
+            assert fc.last_model == "m2"
+            assert len(fc.messages) == 2  # user + assistant
 
-        # 首个成功 → 无回退
-        fc4 = FailoverChat([APIAccount(name="ok", api_key="sk-good", model="m", priority=0)])
-        assert fc4.send_message("hello") == "hello from sk-good"
-        assert fc4.active_account == "ok"
-    finally:
-        clients_mod.OpenAIChat = orig
+            # 全部失败 → 抛 RuntimeError
+            fc3 = FailoverChat([APIAccount(name="x", api_key="sk-bad", model="m", priority=0)])
+            try:
+                fc3.send_message("hi")
+                assert False, "should raise"
+            except RuntimeError:
+                pass
+
+            # 首个成功 → 无回退
+            fc4 = FailoverChat([APIAccount(name="ok", api_key="sk-good", model="m", priority=0)])
+            assert fc4.send_message("hello") == "hello from sk-good"
+            assert fc4.active_account == "ok"
+        finally:
+            clients_mod.OpenAIChat = orig
     print("  PASSED")
 
 
@@ -170,36 +180,37 @@ def test_backup_token_failover():
     print("=== 备用 Token 自动顶上 ===")
     orig = clients_mod.OpenAIChat
     clients_mod.OpenAIChat = _FakeOA
-    try:
-        # 主 Token 失效 → 备用 Token 顶上（同端点）
-        fc = FailoverChat([
-            APIAccount(name="deepseek", api_key="sk-bad", backup_api_key="sk-good",
-                       model="m1", priority=0),
-        ])
-        reply = fc.send_message("hi")
-        assert "sk-good" in reply
-        assert fc.active_account == "deepseek(备用)", fc.active_account
-
-        # 主 Token 正常 → 不用备用
-        fc2 = FailoverChat([
-            APIAccount(name="deepseek", api_key="sk-good", backup_api_key="sk-backup",
-                       model="m1", priority=0),
-        ])
-        assert fc2.send_message("hi") == "hello from sk-good"
-        assert fc2.active_account == "deepseek"
-
-        # 主+备用都失效 → 抛错
-        fc3 = FailoverChat([
-            APIAccount(name="ds", api_key="sk-bad", backup_api_key="sk-backup-bad",
-                       model="m1", priority=0),
-        ])
+    with _patch_recording():
         try:
-            fc3.send_message("hi")
-            assert False, "should raise"
-        except RuntimeError:
-            pass
-    finally:
-        clients_mod.OpenAIChat = orig
+            # 主 Token 失效 → 备用 Token 顶上（同端点）
+            fc = FailoverChat([
+                APIAccount(name="deepseek", api_key="sk-bad", backup_api_key="sk-good",
+                           model="m1", priority=0),
+            ])
+            reply = fc.send_message("hi")
+            assert "sk-good" in reply
+            assert fc.active_account == "deepseek(备用)", fc.active_account
+
+            # 主 Token 正常 → 不用备用
+            fc2 = FailoverChat([
+                APIAccount(name="deepseek", api_key="sk-good", backup_api_key="sk-backup",
+                           model="m1", priority=0),
+            ])
+            assert fc2.send_message("hi") == "hello from sk-good"
+            assert fc2.active_account == "deepseek"
+
+            # 主+备用都失效 → 抛错
+            fc3 = FailoverChat([
+                APIAccount(name="ds", api_key="sk-bad", backup_api_key="sk-backup-bad",
+                           model="m1", priority=0),
+            ])
+            try:
+                fc3.send_message("hi")
+                assert False, "should raise"
+            except RuntimeError:
+                pass
+        finally:
+            clients_mod.OpenAIChat = orig
     print("  PASSED")
 
 
@@ -346,8 +357,206 @@ def test_time_slots_persistence():
     mgr.set_time_slot("ts", "09:00", "17:00", 2)
     mgr2 = APIManager(path=path)
     acc = mgr2.get("ts")
-    assert acc.time_slots == [{"start": "09:00", "end": "17:00", "priority": 2}]
+    assert acc.time_slots == [{"start": "09:00", "end": "17:00",
+                               "priority": 2, "source": "manual"}]
     assert acc.effective_priority(datetime.datetime(2026, 1, 1, 12, 0)) == 2
+    print("  PASSED")
+
+
+def test_manual_beats_dynamic():
+    print("=== 手动时段优先于动态时段 ===")
+    mgr, _ = _fresh_manager()
+    mgr.add("a", "http://x/v1", "sk-a", "m", priority=50)
+    mgr.add("b", "http://x/v1", "sk-b", "m", priority=10)
+
+    # 手动时段: a 在 08:00-20:00 优先级 0
+    mgr.set_time_slot("a", "08:00", "20:00", 0)
+    # 动态学习时段: a 在 08:00-20:00 优先级 3（应被手动覆盖）
+    mgr.set_dynamic_slots("a", [
+        {"start": "08:00", "end": "20:00", "priority": 3, "source": "dynamic"}])
+
+    acc = mgr.get("a")
+    # 白天命中手动时段 0，而非动态 3
+    assert acc.effective_priority(datetime.datetime(2026, 1, 1, 10, 0)) == 0
+    # 夜间无任何时段 → 回退基础优先级
+    assert acc.effective_priority(datetime.datetime(2026, 1, 1, 23, 0)) == 50
+
+    # 动态时段可整体清除，保留手动
+    ok, msg = mgr.clear_dynamic_slots("a")
+    assert ok
+    assert all(s.get("source") != "dynamic" for s in mgr.get("a").time_slots)
+    assert len(mgr.get("a").time_slots) == 1
+    print("  PASSED")
+
+
+def test_manual_schedule_overrides():
+    print("=== 手动时段安排(过滤层) promote/demote ===")
+    mgr, path = _fresh_manager()
+    mgr.add("a", "http://x/v1", "sk-a", "m", priority=50)
+    mgr.add("b", "http://x/v1", "sk-b", "m", priority=0)  # b 基础优先级更高
+
+    # 08:00-20:00 promote a → 提到最高
+    ok, msg = mgr.add_schedule("08:00", "20:00", "a", "promote")
+    assert ok, msg
+    # 非法动作 / 时间 / 不存在账号被拒绝
+    assert not mgr.add_schedule("08:00", "20:00", "a", "bogus")[0]
+    assert not mgr.add_schedule("bad", "20:00", "a", "promote")[0]
+    assert not mgr.add_schedule("08:00", "20:00", "nope", "promote")[0]
+
+    acc_a = mgr.get("a")
+    acc_b = mgr.get("b")
+    noon = datetime.datetime(2026, 1, 1, 12, 0)
+    night = datetime.datetime(2026, 1, 1, 22, 0)
+
+    # 白天: a 被 promote → 最高（哪怕 b 基础优先级 0 < a 的 50）
+    assert acc_a.effective_priority(noon) < acc_b.effective_priority(noon)
+    assert acc_a.effective_priority(noon) < 0  # 提优哨兵
+
+    # 夜间: 无安排命中 → 恢复优先级排序，b 在前
+    assert acc_a.effective_priority(night) == 50
+    assert acc_b.effective_priority(night) == 0
+
+    # enabled_accounts() 用真实时钟 — 分别 mock 到中午/夜间验证排序
+    class _FakeDT(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls._fixed
+
+    _FakeDT._fixed = noon
+    with mock.patch.object(ma_module.datetime, "datetime", _FakeDT):
+        enabled = [x.name for x in mgr.enabled_accounts()]
+    assert enabled[0] == "a", enabled
+
+    _FakeDT._fixed = night
+    with mock.patch.object(ma_module.datetime, "datetime", _FakeDT):
+        enabled_night = [x.name for x in mgr.enabled_accounts()]
+    assert enabled_night[0] == "b", enabled_night
+
+    # 跨午夜 promote b
+    ok, _ = mgr.add_schedule("22:00", "06:00", "b", "promote")
+    assert ok
+    assert acc_b.effective_priority(datetime.datetime(2026, 1, 1, 23, 30)) < 0
+    assert acc_b.effective_priority(datetime.datetime(2026, 1, 1, 3, 0)) < 0
+
+    # 持久化: 新 manager 从磁盘恢复安排
+    mgr2 = APIManager(path=path)
+    rules = mgr2.list_schedule()
+    assert any(r["account"] == "a" and r["start"] == "08:00"
+               and r.get("action") == "promote" for r in rules)
+    assert mgr2.get("a").effective_priority(noon) < 0
+
+    # 移除
+    ok, msg = mgr.remove_schedule("08:00", "20:00", "a")
+    assert ok, msg
+    assert mgr.get("a").effective_priority(noon) == 50
+    ok, msg = mgr.clear_schedule()
+    assert ok
+    assert mgr.list_schedule() == []
+    print("  PASSED")
+
+
+def test_manual_schedule_demote():
+    print("=== 手动时段安排 demote = 压到最低但仍作备用槽 ===")
+    mgr, _ = _fresh_manager()
+    mgr.add("a", "http://x/v1", "sk-a", "m", priority=0)
+    mgr.add("b", "http://x/v1", "sk-b", "m", priority=50)
+
+    ok, msg = mgr.add_schedule("08:00", "20:00", "a", "demote")
+    assert ok, msg
+
+    acc_a = mgr.get("a")
+    acc_b = mgr.get("b")
+    noon = datetime.datetime(2026, 1, 1, 12, 0)
+
+    # 白天: a 被压到最低 → b 优先
+    assert acc_a.effective_priority(noon) > acc_b.effective_priority(noon)
+    assert acc_a.effective_priority(noon) > 10 ** 11  # 降级哨兵
+    assert acc_b.effective_priority(noon) == 50
+
+    # 排序: b 在前，a 在最后但仍在列表中 (备用槽)
+    class _FakeDT(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.datetime(2026, 1, 1, 12, 0)
+
+    with mock.patch.object(ma_module.datetime, "datetime", _FakeDT):
+        enabled = [x.name for x in mgr.enabled_accounts()]
+    assert enabled == ["b", "a"], enabled
+    print("  PASSED")
+
+
+def _fresh_router():
+    """把全局动态路由指向临时监控文件，返回其引用"""
+    import models.dynamic_router as dr
+    orig = dr._MONITOR_FILE
+    dr._MONITOR_FILE = os.path.join(tempfile.mkdtemp(), "monitor.json")
+    from models.dynamic_router import reset_dynamic_router, get_dynamic_router
+    reset_dynamic_router()
+    return get_dynamic_router(), orig
+
+
+def test_known_down_defers_account():
+    print("=== 已知坏账号自动后排 (promote 默认保留) ===")
+    import time
+    orig = _fresh_router()[1]
+    try:
+        mgr, _ = _fresh_manager()
+        mgr.add("good", "http://x/v1", "sk-good", "m", priority=1)
+        mgr.add("dead", "http://x/v1", "sk-dead", "m", priority=50)
+        mgr.add("slow", "http://x/v1", "sk-slow", "m", priority=0)
+        # promote dead 作为默认提优
+        mgr.add_schedule("00:00", "23:59", "dead", "promote")
+        from models.dynamic_router import get_dynamic_router
+        r = get_dynamic_router()
+        now = time.time()
+        r.record("dead", False, 10000, source="request", ts=now - 60)
+        r.record("dead", False, 10000, source="request", ts=now - 120)
+
+        # 未失败时 promote 生效: dead 优先级被提到最高
+        assert mgr.get("dead").effective_priority(
+            datetime.datetime(2026, 1, 1, 12, 0)) < 0
+        # 但 dead 近期失败 → 自动排到最后; 健康账号按优先级在前
+        order = [a.name for a in mgr.enabled_accounts()]
+        assert order == ["slow", "good", "dead"], order
+        # FailoverChat 回退链同样
+        fc = FailoverChat(mgr.enabled_accounts())
+        assert fc._account_names == ["slow", "good", "dead"], fc._account_names
+    finally:
+        from models.dynamic_router import reset_dynamic_router
+        reset_dynamic_router()
+        import models.dynamic_router as dr
+        dr._MONITOR_FILE = orig
+    print("  PASSED")
+
+
+def test_known_down_window_configurable():
+    print("=== 已知坏窗口可配置: 窗口外失败不排后 ===")
+    import time
+    orig = _fresh_router()[1]
+    try:
+        mgr, _ = _fresh_manager()
+        mgr.add("a", "http://x/v1", "sk-a", "m", priority=0)
+        mgr.add("b", "http://x/v1", "sk-b", "m", priority=1)
+        from models.dynamic_router import get_dynamic_router
+        r = get_dynamic_router()
+        now = time.time()
+        r.record("b", False, 10000, source="request", ts=now - 100)  # 100 秒前失败
+
+        # 默认窗口 3600s → b 被标记为已知坏
+        assert is_known_down("b") is True
+        # 把窗口调小到 60s → 100 秒前的失败已过期, b 恢复
+        from config import Config
+        old = getattr(Config, "FAILOVER_DOWN_WINDOW", 3600)
+        try:
+            setattr(Config, "FAILOVER_DOWN_WINDOW", 60)
+            assert is_known_down("b") is False
+        finally:
+            setattr(Config, "FAILOVER_DOWN_WINDOW", old)
+    finally:
+        from models.dynamic_router import reset_dynamic_router
+        reset_dynamic_router()
+        import models.dynamic_router as dr
+        dr._MONITOR_FILE = orig
     print("  PASSED")
 
 
@@ -365,4 +574,9 @@ if __name__ == "__main__":
     test_set_api_key()
     test_time_slots()
     test_time_slots_persistence()
+    test_manual_beats_dynamic()
+    test_manual_schedule_overrides()
+    test_manual_schedule_demote()
+    test_known_down_defers_account()
+    test_known_down_window_configurable()
     print("\nALL API ACCOUNTS TESTS PASSED")

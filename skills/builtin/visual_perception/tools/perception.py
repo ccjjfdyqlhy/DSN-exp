@@ -12,6 +12,9 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
@@ -27,6 +30,11 @@ class VisualPerceptionTool:
     """
 
     _ctx: dict = {}  # 运行时注入
+
+    # 短时去重缓存: "camera|focus" -> (ts, result)。短时间内重复 look_around 直接复用，
+    # 避免同一轮 agent 循环内重复触发昂贵的"抓帧 + 多摄像头 VLM 推理"。
+    _look_cache: dict[str, tuple[float, dict]] = {}
+    _look_cache_lock = threading.Lock()
 
     def __init__(self):
         pass
@@ -61,6 +69,13 @@ class VisualPerceptionTool:
         # 首次/全部: 枚举全部摄像头；否则按逻辑名抓单台
         request_camera = camera if camera not in ("", "all", "all_cameras") else "all"
 
+        # 短时去重：同一 focus+camera 在去重窗口内重复观察 → 直接复用上次结果
+        cached = self._get_look_cache(request_camera, focus)
+        if cached is not None:
+            logger.info("look_around: 命中短时去重缓存 (camera=%r, focus=%r)，直接复用",
+                        request_camera, focus or "全面")
+            return cached
+
         # 发起 on-demand 请求并阻塞等待客户端回传帧
         request_id = coord.create_request(focus=focus, uid=0, camera=request_camera)
         logger.info("look_around: 已发起视觉请求 %s (camera=%r), 阻塞等待客户端帧...",
@@ -82,21 +97,9 @@ class VisualPerceptionTool:
                 "camera": request_camera,
             }
 
-        # 逐台抓帧交给视觉模型描述
+        # 逐台抓帧交给视觉模型描述（多摄像头并行推理，按逻辑名保序）
         prompt = self._build_vision_prompt(focus)
-        cameras_desc = []
-        for logical_name, data_url in sorted(frames.items()):
-            description = self._describe_frame(data_url, prompt, logical_name)
-            note = ""
-            try:
-                note = coord.list_cameras_note(logical_name)
-            except Exception:
-                pass
-            cameras_desc.append({
-                "logical_name": logical_name,
-                "description": description,
-                "note": note,
-            })
+        cameras_desc = self._describe_frames_parallel(frames, prompt, coord)
 
         # 单摄像头时保持向后兼容的顶层字段；多摄像头时返回列表
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -117,6 +120,7 @@ class VisualPerceptionTool:
 
         visual_prompt = self._build_visual_prompt(result, now)
         result["visual_prompt"] = visual_prompt
+        self._store_look_cache(request_camera, focus, result)
         logger.info("视觉感知完成: %d 台摄像头", len(cameras_desc))
         return result
 
@@ -143,6 +147,72 @@ class VisualPerceptionTool:
         except Exception as e:
             logger.error("VisionModel 分析失败 (camera=%s): %s", logical_name, e)
             return "（视觉分析失败）"
+
+    def _describe_camera(self, data_url: str, prompt: str, logical_name: str,
+                         coord) -> dict[str, Any]:
+        """描述单台摄像头 + 附带备注（供并行调用）。"""
+        description = self._describe_frame(data_url, prompt, logical_name)
+        note = ""
+        try:
+            note = coord.list_cameras_note(logical_name)
+        except Exception:
+            pass
+        return {
+            "logical_name": logical_name,
+            "description": description,
+            "note": note,
+        }
+
+    def _describe_frames_parallel(self, frames: dict[str, str], prompt: str, coord
+                                  ) -> list[dict[str, Any]]:
+        """并行描述多台摄像头帧，按逻辑名保序返回。"""
+        items = sorted(frames.items())
+        if len(items) <= 1:
+            return [self._describe_camera(data_url, prompt, ln, coord) for ln, data_url in items]
+        results: list[dict[str, Any]] = []
+        workers = min(len(items), 4)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="vision-vlm") as ex:
+            futures = {
+                ex.submit(self._describe_camera, data_url, prompt, ln, coord): ln
+                for ln, data_url in items
+            }
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    ln = futures[fut]
+                    logger.error("并行视觉描述失败 (camera=%s): %s", ln, e)
+                    results.append({
+                        "logical_name": ln,
+                        "description": "（视觉分析失败）",
+                        "note": "",
+                    })
+        results.sort(key=lambda c: c["logical_name"])
+        return results
+
+    def _get_look_cache(self, camera: str, focus: str) -> dict | None:
+        """命中短时去重缓存则返回结果副本，否则 None。窗口由 Config 控制。"""
+        try:
+            from config import Config
+            window = float(getattr(Config, "VISION_LOOK_AROUND_DEDUP", 10))
+        except Exception:
+            window = 10.0
+        if window <= 0:
+            return None
+        key = f"{camera}|{focus or ''}"
+        with self._look_cache_lock:
+            entry = self._look_cache.get(key)
+            if not entry:
+                return None
+            ts, result = entry
+            if time.time() - ts > window:
+                self._look_cache.pop(key, None)
+                return None
+            return dict(result)
+
+    def _store_look_cache(self, camera: str, focus: str, result: dict) -> None:
+        with self._look_cache_lock:
+            self._look_cache[f"{camera}|{focus or ''}"] = (time.time(), result)
 
     def _build_visual_prompt(self, result: dict, now: str) -> str:
         """构建第一人称"你看到"提示，注入主模型。"""

@@ -19,6 +19,9 @@ def _env_int(key: str, default: str) -> int:
 # 主开关
 MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", "true")
 HIBERNATE_MAX_QUEUE = _env_int("HIBERNATE_MAX_QUEUE", "100")
+# 挂起任务节流：同一用户的同类任务最小执行间隔（秒），避免每轮对话都触发本地 GPU 推理
+HIBERNATE_PERSONALITY_COOLDOWN = _env_int("HIBERNATE_PERSONALITY_COOLDOWN", "30")
+HIBERNATE_MEMORY_COOLDOWN = _env_int("HIBERNATE_MEMORY_COOLDOWN", "60")
 
 # 调度策略
 SCHEDULE_STRATEGY = _env("MAINTENANCE_SCHEDULE_STRATEGY", "predictive")  # fixed / predictive / manual

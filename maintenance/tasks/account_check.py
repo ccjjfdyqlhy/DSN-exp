@@ -35,10 +35,22 @@ class AccountCheckTask(MaintenanceTask):
             return {"success": False, "error": f"无法获取账号管理器: {e}"}
 
         reporter(TaskProgress(current=1, total=1, message=f"测试账号 '{self.account_id}'..."))
+        import time
+        t0 = time.time()
         ok, msg = mgr.test(self.account_id, timeout=30)
+        latency_ms = (time.time() - t0) * 1000
         logger.info("账号检查 %s: %s", self.account_id, msg)
+
+        # 记录监控观察（供 /login dynamic 学习）
+        try:
+            from models.dynamic_router import get_dynamic_router
+            get_dynamic_router().record(self.account_id, ok, latency_ms, source="check")
+        except Exception as e:
+            logger.warning("记录账号监控观察失败: %s", e)
+
         return {
             "success": ok,
-            "stats": {"account": self.account_id, "detail": msg},
+            "stats": {"account": self.account_id, "detail": msg,
+                      "latency_ms": round(latency_ms, 1)},
             "message": msg,
         }
