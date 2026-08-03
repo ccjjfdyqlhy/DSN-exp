@@ -27,9 +27,9 @@ Most "AI assistants" are chat widgets bolted onto a cloud service. DSN-exp is th
 
 - **Input**: Microphone → ASR (FunASR paraformer) → ASR Filter (1B classifier kills noise) → AI
 - **Output**: AI → streaming TTS (GPT-SoVITS) per sentence → plays before the next sentence finishes
-- **Proactive**: Heartbeat polls every 5s — reminders, alarms, even camera scene changes trigger AI to speak unprompted
+- **Proactive**: Heartbeat polls every 2s — reminders, alarms, even camera scene changes trigger AI to speak unprompted
 - **Sensing Mode**: Continuous voice call — AI switches to short, colloquial responses, silence means listening
-- **Everything talkable**: 54+ skills, memory queries, alarm CRUD, music control, system ops — all through speech
+- **Everything talkable**: 50+ skills, 100+ tools, memory queries, alarm CRUD, music control, system ops — all through speech
 
 **It doesn't wait for you to type. It lives in the same room. Not a cloud service. Not SaaS. A mind waking up from your own hard drive.**
 
@@ -100,7 +100,7 @@ graph TB
     end
 
     subgraph Proactive["🔔 Proactive System"]
-        HB["Heartbeat 5s"]
+        HB["Heartbeat 2s"]
         RM["Reminders · Alarms"]
         CV["CameraWatcher · Vision"]
     end
@@ -134,12 +134,14 @@ graph TB
 - **Streaming TTS**: GPT-SoVITS per-sentence synthesis, plays as AI generates — no silence gaps
 - **Multi-voice Profiles**: Switch voices at runtime, per-profile GPT/SoVITS weights
 - **Sensing Mode**: Continuous conversation — AI drops markdown, uses colloquial short sentences, silence means "still listening"
-- **TTS Preprocessing**: LLM-cleaner converts "AI 3秒后处理 HTTP 请求" → "人工智能三秒后处理超文本传输协议请求"
+- **TTS Preprocessing**: LLM-cleaner converts "AI 3秒后处理 HTTP 请求" → "人工智能三秒后处理超文本传输协议请求" — all lines are cleaned in a **single batched call** instead of one LLM round-trip per line (the first streaming line still uses a fast regex path)
 - **Semantic Audio Cache**: L1 static + L2 vector + L3 slot — reuses synthesized audio for repeated queries
 
 ### 💬 Smart Chat
 - **Dual Backend**: OpenAI-compatible API (DeepSeek/Zhipu/OpenAI) + local LMStudio
-- **Native Tool Call**: OpenAI Function Calling, 54+ tools at your fingertips
+- **Native Tool Call**: OpenAI Function Calling, 100+ tools at your fingertips
+- **Toolbox Mode**: Two-stage tool activation — the first round sends only a `toolbox` index, activated tools' schemas are attached afterwards. With ~100 tools this cuts per-task prompt tokens by ~69% (first round ~4.7k vs ~10.9k full). Ask "what can you do?" and the AI answers straight from the index without activating anything
+- **History Trimming**: `MODEL_MAX_HISTORY` (default 12) caps conversation history so prompts stay small
 - **Streaming Output**: Real-time generation, speaks as it types
 - **Semantic Cache**: L1 static + L2 vector + L3 slot — intercepts duplicate requests
 
@@ -154,6 +156,7 @@ graph TB
 - **Distillation Engine**: Extracts personality traits from conversations, generates 50-dim vectors
 - **Dynamic Synthesis**: Generates prompts based on current mood and context
 - **Personality Dimensions**: Social, thinking, emotion, interests, behavior, values...
+- **Background Throttling**: In `fastcache` mode, mood analysis and memory summarization run as deferred background tasks with per-user cooldowns, so local GPU inference doesn't fight the main reply
 
 ### 🌍 World System
 - **World Engine**: Weather, time, location change automatically
@@ -179,7 +182,7 @@ graph TB
 - **Skill Distillation**: Learns from usage, optimizes tool calls
 
 ### ⏰ Proactive Notification System
-- **Heartbeat**: Every 5s the voice client polls for pending notifications
+- **Heartbeat**: Every 2s the voice client polls for pending notifications
 - **Reminders**: Countdown, daily plan, periodic cron, habits — all fire AI + TTS
 - **Alarms**: Full CRUD, weekly schedules, dismiss with voice command
 - **Active Vision**: CameraWatcher captures frames → VisionModel detects scene changes → AI decides to speak
@@ -189,6 +192,7 @@ graph TB
 - **Async Tasks**: Slow tools run in background
 - **Heartbeat Polling**: Frontend polls for async results
 - **Real-time Feedback**: Per-step TTS progress in Agent loop
+- **Step-limit Report**: If the Agent burns through all steps while still executing tools, one extra round summarizes the tool results to the user instead of stopping silently
 
 ### 🖼️ Vision System
 - **VisionModel**: General vision model (GLM-4.6V / GPT-4V)
@@ -196,6 +200,11 @@ graph TB
 - **VISION_OVERRIDE**: Takes over OCR + 2md pipeline, generates Markdown directly
 - **Image Analysis**: `describe_image` tool supports local images
 - **Active Vision**: Background CameraWatcher for proactive scene awareness
+- **Parallel Multi-Camera**: `look_around` describes every camera in parallel (results ordered by logical name), halving multi-cam latency
+- **On-Demand Frame Cache**: The client caches the latest frame per camera; vision requests reuse fresh frames with no re-open latency, and the heartbeat dropped to 2s so requests are picked up almost instantly
+- **VLM Warmup**: A background dummy request at boot removes the first-call cold start (first VLM inference can otherwise take ~9s)
+- **Look-around Dedup**: Repeated `look_around` within a short window reuses the last result instead of re-running capture + inference
+- **Fail-fast Fallback**: If the client is offline, `look_around` returns a fallback after 8s (was 20s) instead of hanging the whole reply
 
 ### 🔐 Auth System
 | Layer | Method | Priority | Use Case |
@@ -447,7 +456,7 @@ Microphone → PCM 16kHz → FunASR (VAD + Recognition) → ASR Filter (FORWARD/
 - **FunASR**: paraformer-zh model, VAD with fsmn-vad, punctuation with ct-punc-c, configurable device (CUDA/CPU)
 - **ASR Filter**: 1B LMStudio model classifies input as dialog vs noise, prevents false triggers, maintains 20-round conversation history
 - **GPT-SoVITS TTS**: Streaming synthesis via REST API, supports parallel/serial architectures, multi-profile voice switching
-- **TTS Preprocessor**: Two-stage cleanup — regex strips markdown, LLM converts numerals/abbreviations to natural speech
+- **TTS Preprocessor**: Two-stage cleanup — regex strips markdown, LLM converts numerals/abbreviations to natural speech. Lines are processed in one batched call (first streaming line uses a local regex fast path)
 - **Semantic Audio Cache**: L1 static phrase + L2 vector semantic + L3 slot registry
 
 ### 🔄 ChatPipeline
@@ -545,7 +554,7 @@ tools:
 ```
 (wall clock ticks) → TaskManager triggers → task_notifications table
                                                     ↓
-HeartbeatPoller (5s) → GET /api/heartbeat → has_notification?
+HeartbeatPoller (2s) → GET /api/heartbeat → has_notification?
                                                     ├── yes → build prompt → AI reply → TTS → speak
                                                     └── no  → sleep
 ```
@@ -701,6 +710,30 @@ NARRATIVE_ENABLED=true
 
 # Semantic cache
 SEMANTIC_CACHE_ENABLED=true
+```
+
+### Performance & Perception Tuning
+```bash
+# Toolbox: send only the toolbox index first, attach activated tool schemas later
+TOOLBOX_ENABLED=true
+
+# Cap main-model history (non-system messages kept)
+MODEL_MAX_HISTORY=12
+
+# Agent max steps; a final report round is always issued if steps run out mid-task
+AGENT_MAX_STEPS=15
+
+# Vision: warm the VLM at boot, dedup repeated look_around within the window (s)
+VISION_WARMUP=true
+VISION_LOOK_AROUND_DEDUP=10
+
+# Client-side (minimal.py): heartbeat interval (s) and cached-frame freshness (s)
+#   DSN_HEARTBEAT_INTERVAL=2
+#   DSN_FRAME_CACHE_MAX_AGE=3
+
+# Background throttling for local-GPU tasks (s)
+HIBERNATE_PERSONALITY_COOLDOWN=30
+HIBERNATE_MEMORY_COOLDOWN=60
 ```
 
 ### Full Config Reference

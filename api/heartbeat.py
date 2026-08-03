@@ -362,7 +362,10 @@ def _inject_vision_fields(response):
     try:
         from api.vision import coordinator as _coord
         if _coord is not None:
-            uid = g.user.get("uid", 0) if g.user else 0
+            # after_request 也会在认证失败(401/503)时运行，此时 g.user 未设置，
+            # 必须用 getattr 安全读取，否则 AttributeError 会覆盖原始响应
+            user = getattr(g, "user", None)
+            uid = user.get("uid", 0) if user else 0
             vr = _coord.pending_for_uid(uid)
             if vr:
                 data["vision_request"] = vr
