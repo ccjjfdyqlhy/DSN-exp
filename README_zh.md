@@ -27,9 +27,9 @@
 
 - **输入**：麦克风 → ASR (FunASR paraformer) → ASR 过滤 (1B 分类器滤除环境噪音) → AI
 - **输出**：AI → 流式 TTS (GPT-SoVITS)，每句话边生成边播，不等整段合成完
-- **主动**：心跳每 5 秒轮询——提醒、闹钟、甚至摄像头看到场景变化，AI 都会主动开口
+- **主动**：心跳每 2 秒轮询——提醒、闹钟、甚至摄像头看到场景变化，AI 都会主动开口
 - **感知通话模式**：连续对话，AI 切换为口语短句风格，沉默 = 还在听
-- **万物皆可说**：54+ 技能、记忆检索、闹钟管理、音乐控制、系统操作——全用嘴完成
+- **万物皆可说**：50+ 技能、100+ 工具、记忆检索、闹钟管理、音乐控制、系统操作——全用嘴完成
 
 **它不等着你打字。它跟你待在同一个房间里。不是云服务。不是 SaaS。一个在你硬盘上苏醒的智能体。**
 
@@ -100,7 +100,7 @@ graph TB
     end
 
     subgraph Proactive["🔔 主动通知系统"]
-        HB["心跳 5s"]
+        HB["心跳 2s"]
         RM["提醒 · 闹钟"]
         CV["CameraWatcher · 视觉"]
     end
@@ -134,12 +134,14 @@ graph TB
 - **流式 TTS**：GPT-SoVITS 逐句合成，AI 说一句播一句，没有沉默空档
 - **多音色切换**：运行中切换 TTS Profile，每套独立 GPT/SoVITS 权重
 - **感知通话模式**：连续对话——AI 自动去掉 Markdown，改用口语短句，沉默 = 还在听
-- **TTS 预处理**：LLM 清理文本，"AI 3秒后处理 HTTP 请求" → "人工智能三秒后处理超文本传输协议请求"
+- **TTS 预处理**：LLM 清理文本，"AI 3秒后处理 HTTP 请求" → "人工智能三秒后处理超文本传输协议请求"——所有行在**一次批量调用**里完成（流式时首行仍走本地正则快路径），不再逐行串行调用 LLM
 - **语义音频缓存**：L1 静态 + L2 向量 + L3 槽位——重复查询直接命中缓存音频
 
 ### 💬 智能对话
 - **双后端支持**：OpenAI兼容API (DeepSeek/智谱/OpenAI) + 本地LMStudio
-- **原生Tool Call**：OpenAI Function Calling，54+工具一键调用
+- **原生Tool Call**：OpenAI Function Calling，100+工具一键调用
+- **工具箱模式**：两阶段工具激活——首轮只发一个 `toolbox` 索引工具，激活后才附带具体工具 schema。约 100 个工具时单任务 prompt token 可省 ~69%（首轮 ~4.7k vs 全量 ~10.9k）。问"你能做什么"时直接按索引回答，无需激活任何工具
+- **历史裁剪**：`MODEL_MAX_HISTORY`（默认12）限制对话历史条数，保持 prompt 精简
 - **流式输出**：实时生成，边说边播
 - **语义缓存**：L1静态+L2向量+L3槽位，拦截重复请求
 
@@ -154,6 +156,7 @@ graph TB
 - **蒸馏引擎**：从对话中提取性格特征，生成50维向量
 - **动态合成**：基于当前情绪和语境动态生成提示词
 - **性格维度**：社交、思维、情感、兴趣、行为、价值观...
+- **后台节流**：`fastcache` 模式下，情绪分析与记忆摘要作为延迟后台任务执行，带同用户冷却间隔，避免本地 GPU 推理与主回复争抢
 
 ### 🌍 世界系统
 - **世界引擎**：天气、时间、地点自动变化
@@ -179,7 +182,7 @@ graph TB
 - **技能蒸馏**：从使用中学习，优化调用
 
 ### ⏰ 主动通知系统
-- **心跳轮询**：客户端每 5 秒 polling，随时接收 AI 主动消息
+- **心跳轮询**：客户端每 2 秒 polling，随时接收 AI 主动消息
 - **提醒系统**：倒计时、每日计划、Cron 周期、习惯打卡——到期自动 AI+TTS 播报
 - **闹钟系统**：完整增删改查，按周循环，语音 dismiss
 - **主动视觉**：CameraWatcher 后台抓帧 → VisionModel 分析场景变化 → AI 自主决定是否开口
@@ -189,6 +192,7 @@ graph TB
 - **异步任务**：慢速工具后台执行
 - **心跳轮询**：前端轮询获取异步结果
 - **实时反馈**：Agent循环每步骤实时TTS进度
+- **超步数汇报**：Agent 用完全部步数仍在执行工具时，追加一轮把工具结果总结给用户，而不是无声终止
 
 ### 🖼️ 视觉系统
 - **VisionModel**：通用视觉模型 (GLM-4.6V/GPT-4V)
@@ -196,6 +200,11 @@ graph TB
 - **VISION_OVERRIDE**：接管OCR+2md管线，直接生成Markdown
 - **图片分析**：`describe_image`工具支持本地图片
 - **主动视觉**：后台 CameraWatcher 线程实现场景感知
+- **多摄像头并行**：`look_around` 并行描述所有摄像头（按逻辑名保序），多摄延迟减半
+- **按需帧缓存**：客户端缓存每台摄像头最近一帧，视觉请求零等待复用；心跳降到 2s，请求几乎即时送达
+- **VLM 预热**：启动时后台发一次 dummy 请求，消除首次推理冷启动（首次 VLM 推理可能 ~9s）
+- **look_around 去重**：短窗口内重复观察直接复用上次结果，不再重复抓帧+推理
+- **快速兜底**：客户端离线时 `look_around` 8s 内返回兜底（原 20s），不再拖住整条回复
 
 ### 🔐 认证系统
 | 层级 | 方法 | 优先级 | 使用场景 |
@@ -447,7 +456,7 @@ DSN-exp/
 - **FunASR**：paraformer-zh 模型，fsmn-vad 做静音检测，ct-punc-c 做标点恢复，支持 CUDA/CPU
 - **ASR 过滤器**：1B 参数 LMStudio 模型分类语音为对话或噪音，维护 20 轮对话历史防误判
 - **GPT-SoVITS TTS**：通过 REST API 流式合成，支持并行/串行架构，多音色切换
-- **TTS 预处理器**：两级清理——正则去 Markdown，LLM 转换数字/缩写到自然语音
+- **TTS 预处理器**：两级清理——正则去 Markdown，LLM 转换数字/缩写到自然语音；多行合并为一次批量调用（流式首行走本地正则快路径）
 - **语义音频缓存**：L1 静态语素 + L2 向量语义 + L3 槽位注册
 
 ### 🔄 ChatPipeline 对话管道
@@ -545,7 +554,7 @@ tools:
 ```
 (时钟滴答) → TaskManager 触发 → task_notifications 表
                                         ↓
-HeartbeatPoller (5s) → GET /api/heartbeat → has_notification?
+HeartbeatPoller (2s) → GET /api/heartbeat → has_notification?
                                         ├── 是 → 构建提示词 → AI 回复 → TTS → 播报
                                         └── 否 → 继续休眠
 ```
@@ -563,6 +572,7 @@ HeartbeatPoller (5s) → GET /api/heartbeat → has_notification?
 - **异步任务**：慢速工具后台执行
 - **心跳轮询**：前端轮询获取结果
 - **实时反馈**：每步骤TTS进度推送
+- **超步数汇报**：步数用尽且工具未结束时不无声终止，追加一轮把结果总结给用户
 
 **工作流程：**
 ```
@@ -701,6 +711,30 @@ NARRATIVE_ENABLED=true
 
 # 语义缓存
 SEMANTIC_CACHE_ENABLED=true
+```
+
+### 性能与感知调优
+```bash
+# 工具箱：首轮只发 toolbox 索引，激活后才附带具体工具 schema
+TOOLBOX_ENABLED=true
+
+# 主模型历史条数上限（非 system 消息）
+MODEL_MAX_HISTORY=12
+
+# Agent 最大步数；步数用尽但任务未结束时会自动追加一轮向用户汇报
+AGENT_MAX_STEPS=15
+
+# 视觉：启动预热 VLM、look_around 短时去重窗口（秒）
+VISION_WARMUP=true
+VISION_LOOK_AROUND_DEDUP=10
+
+# 客户端侧 (minimal.py)：心跳间隔(秒)、缓存帧新鲜度(秒)
+#   DSN_HEARTBEAT_INTERVAL=2
+#   DSN_FRAME_CACHE_MAX_AGE=3
+
+# 本地 GPU 后台任务节流（秒）
+HIBERNATE_PERSONALITY_COOLDOWN=30
+HIBERNATE_MEMORY_COOLDOWN=60
 ```
 
 ### 完整配置列表
