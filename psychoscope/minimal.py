@@ -1248,6 +1248,15 @@ class DSNClient:
                 print(f"\n  \u26d4 任务已取消 [{tid[:8]}]")
                 continue
 
+            if status == "tool_error":
+                # 工具调用失败 → 经 VLC 播报错误提示音（低音×2），盲打可感知
+                tool = data.get("tool", "")
+                err = data.get("error", "")
+                _play_beep(self, 220)
+                _play_beep(self, 220)
+                print(f"\n  \u26a0\ufe0f 工具出错: {tool} — {err}")
+                continue
+
             if status == "heartbeat":
                 continue
 

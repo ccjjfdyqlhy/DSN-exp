@@ -150,15 +150,19 @@ class SkillRegistry:
                       or tool_spec.get("class", ""))
         if not module_path or not class_name:
             return None
-        cache_key = f"{module_path}.{class_name}"
-        if cache_key in self._tool_class_cache:
-            return self._tool_class_cache[cache_key]
 
         parts = module_path.split(".")
         file_name = parts[-1] + ".py"
         sub = "/".join(parts[:-1])
         file_path = (Path(skill_dir) / sub / file_name
                      if sub else Path(skill_dir) / "tools" / file_name)
+        # 类缓存键必须包含技能目录，避免不同技能声明相同的 module/class 字符串时
+        # 相互污染实例（例如 system 与 plan 都声明 "tools.plan_tools.PlanTools"，
+        # 但二者的 PlanTools 方法集不同）。
+        cache_key = f"{Path(skill_dir).resolve()}:{module_path}:{class_name}"
+        if cache_key in self._tool_class_cache:
+            return self._tool_class_cache[cache_key]
+
         if not file_path.exists():
             logger.warning("工具文件不存在: %s", file_path)
             return None

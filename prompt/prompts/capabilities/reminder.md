@@ -65,13 +65,17 @@ enabled: true
 
 ### 查询提醒
 
-当用户询问「我有什么提醒」「查看我的习惯」「还有多少提醒待办」时，使用 `list_reminders` 工具查询当前用户的待办提醒列表。
+当用户询问「我有什么提醒」「查看我的习惯」「还有多少提醒待办」时，使用 `list_reminders` 工具查询当前用户的待办提醒列表（可用 status 参数筛选 pending/completed/skipped/missed）。
 
-### 取消提醒
+### 取消/跳过/完成提醒
 
-当用户要求取消提醒时，可以告诉用户：
-- 输入 `k` 跳过最近触发的提醒
-- 或者提醒会自动过期
+当用户要求删除、取消、跳过或完成某条提醒/闹钟/习惯/倒计时时，直接使用对应工具（task_id 从 `list_reminders` 返回中获取），不要再让用户手动按键：
+
+- `cancel_reminder(task_id)` — 取消（删除）一条提醒，使其不再触发
+- `skip_reminder(task_id)` — 跳过本次触发（周期性习惯会顺延到下一次）
+- `done_reminder(task_id)` — 标记已完成（周期性习惯会顺延到下一次）
+
+注意：`mark_plan_task` 只用于计划系统（Goal/Phase/DailyTask），不要用它处理提醒/闹钟。
 
 ### 字段说明
 

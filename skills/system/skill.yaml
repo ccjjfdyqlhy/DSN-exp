@@ -161,7 +161,7 @@ tools:
 
   - name: list_reminders
     display_name: "查询提醒"
-    description: "查询当前用户的所有待办提醒/习惯/倒计时任务。当用户问「我有什么提醒」「查看提醒」「还有多少提醒」「我的习惯」等时使用此工具。返回 pending/completed/skipped 状态的提醒列表。"
+    description: "查询当前用户的所有待办提醒/习惯/倒计时任务。当用户问「我有什么提醒」「查看提醒」「还有多少提醒」「我的习惯」等时使用此工具。返回 pending/completed/skipped 状态的提醒列表。要删除/跳过/完成某条提醒时，用 cancel_reminder / skip_reminder / done_reminder。"
     module: "tools.task_tools"
     class: "TaskTools"
     methods:
@@ -173,6 +173,48 @@ tools:
             description: "任务状态筛选: pending (待办), completed (已完成), skipped (已跳过), missed (已错过)"
             required: false
             default: "pending"
+
+  - name: cancel_reminder
+    display_name: "取消提醒"
+    description: "取消（删除）一条提醒/闹钟/习惯/倒计时任务，使其不再触发。用户说「删掉提醒」「取消闹钟」「去掉这个提醒」「不要这个闹钟了」等均使用此工具。task_id 从 list_reminders 的返回中获取。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: cancel_reminder
+        description: "取消一条提醒任务"
+        parameters:
+          task_id:
+            type: string
+            description: "提醒任务 ID（来自 list_reminders）"
+            required: true
+
+  - name: skip_reminder
+    display_name: "跳过提醒"
+    description: "跳过一条提醒的本次触发；若是周期性习惯，会顺延到下一次。用户说「跳过这次提醒」「今天别响」「推迟一次」等均使用此工具。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: skip_reminder
+        description: "跳过提醒本次触发"
+        parameters:
+          task_id:
+            type: string
+            description: "提醒任务 ID（来自 list_reminders）"
+            required: true
+
+  - name: done_reminder
+    display_name: "完成提醒"
+    description: "标记一条提醒为已完成；若是周期性习惯，会顺延到下一次。用户说「这条提醒完成了」「搞定这个提醒」等可使用此工具。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: done_reminder
+        description: "标记提醒已完成"
+        parameters:
+          task_id:
+            type: string
+            description: "提醒任务 ID（来自 list_reminders）"
+            required: true
 
   - name: create_reasoner
     display_name: "推理任务"
@@ -316,18 +358,18 @@ tools:
             description: "观察笔记内容"
             required: true
 
-  - name: mark_task
-    display_name: "标记计划"
-    description: "标记计划任务完成或跳过"
+  - name: mark_plan_task
+    display_name: "标记计划任务"
+    description: "标记【学习/生活计划】里的任务完成或跳过（属于 plan 计划系统，不是提醒/闹钟）。若用户说的是提醒、闹钟、习惯、倒计时，请用 list_reminders + cancel_reminder / skip_reminder / done_reminder，不要用本工具。"
     module: "tools.plan_tools"
     class: "PlanTools"
     methods:
-      - name: mark_task
-        description: "标记任务状态"
+      - name: mark_plan_task
+        description: "标记计划任务状态"
         parameters:
           task_id:
             type: string
-            description: "任务 ID"
+            description: "计划任务 ID"
             required: true
           action:
             type: string
