@@ -160,7 +160,11 @@ def chat_stream_send():
         user_id = g.user["uid"]
         chat_id = data.get("chat_id")
         if not chat_id:
-            chat_id = db.create_chat(user_id, data.get("chat_name", "dual"))
+            from config import Config
+            if Config.CHAT_RESUME_LATEST:
+                chat_id = db.get_latest_chat(user_id)
+            if not chat_id:
+                chat_id = db.create_chat(user_id, data.get("chat_name", "dual"))
 
         def dual_generate():
             yield from coordinator.process_stream(
@@ -346,7 +350,11 @@ def asr_passthrough():
         user_id = g.user["uid"]
         chat_id = data.get("chat_id")
         if not chat_id:
-            chat_id = db.create_chat(user_id, data.get("chat_name", "dual"))
+            from config import Config
+            if Config.CHAT_RESUME_LATEST:
+                chat_id = db.get_latest_chat(user_id)
+            if not chat_id:
+                chat_id = db.create_chat(user_id, data.get("chat_name", "dual"))
 
         def dual_generate():
             yield from coordinator.process_stream(

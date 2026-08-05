@@ -882,7 +882,10 @@ class DSNEngine:
                                               exclude_types=kwargs.pop("_exclude_types", ["instant"]))
 
         if chat_id is None and self.db:
-            chat_id = self.db.create_chat(user_id, chat_name)
+            if Config.CHAT_RESUME_LATEST:
+                chat_id = self.db.get_latest_chat(user_id)
+            if not chat_id:
+                chat_id = self.db.create_chat(user_id, chat_name)
 
         ctx = self.build_context(
             user_id=user_id, message=message,
@@ -921,7 +924,10 @@ class DSNEngine:
                                                 exclude_types=kwargs.pop("_exclude_types", ["instant"]))
 
         if chat_id is None and self.db:
-            chat_id = self.db.create_chat(user_id, chat_name)
+            if Config.CHAT_RESUME_LATEST:
+                chat_id = self.db.get_latest_chat(user_id)
+            if not chat_id:
+                chat_id = self.db.create_chat(user_id, chat_name)
 
         ctx = self.build_context(
             user_id=user_id, message=message,
