@@ -8,6 +8,7 @@ import logging
 import locale
 import re as _re
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 from enum import Enum
@@ -91,7 +92,7 @@ class Task:
             priority = TaskPriority(priority_value)
         else:
             priority = TaskPriority[priority_value] if isinstance(priority_value, str) else TaskPriority.NORMAL
-        
+
         task = cls(
             task_id=data["task_id"],
             task_type=TaskType(data["task_type"]),
@@ -99,19 +100,32 @@ class Task:
             chat_id=data["chat_id"],
             params=data["params"],
             priority=priority,
-            scheduled_time=datetime.fromisoformat(data["scheduled_time"]) if data.get("scheduled_time") else None,
+            scheduled_time=cls._parse_local_dt(data.get("scheduled_time")),
             interval_seconds=data.get("interval_seconds", 0),
         )
         task.status = TaskStatus(data["status"])
-        task.created_at = datetime.fromisoformat(data["created_at"])
+        task.created_at = cls._parse_local_dt(data["created_at"]) or datetime.now()
         task.skip_count = data.get("skip_count", 0)
         if data.get("started_at"):
-            task.started_at = datetime.fromisoformat(data["started_at"])
+            task.started_at = cls._parse_local_dt(data["started_at"])
         if data.get("completed_at"):
-            task.completed_at = datetime.fromisoformat(data["completed_at"])
+            task.completed_at = cls._parse_local_dt(data["completed_at"])
         task.result = data.get("result")
         task.error = data.get("error")
         return task
+
+    @staticmethod
+    def _parse_local_dt(value) -> Optional[datetime]:
+        """解析 ISO 时间字符串为本地无时区 datetime（兼容库内混存的带/不带时区数据）。"""
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except (ValueError, TypeError):
+            return None
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
 
 
 class TaskManager:
@@ -200,7 +214,20 @@ class TaskManager:
                     FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
                 )
             """)
-            
+
+            # 创建正计时表（每用户最多一个）
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS stopwatches (
+                    user_id     INTEGER PRIMARY KEY,
+                    label       TEXT DEFAULT '',
+                    status      TEXT NOT NULL DEFAULT 'running',
+                    started_at  REAL,
+                    accumulated REAL DEFAULT 0,
+                    created_at  TEXT DEFAULT (datetime('now', 'localtime')),
+                    updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
+                )
+            """)
+
             conn.commit()
             self.logger.info("任务数据库表初始化完成")
         except Exception as e:
@@ -229,7 +256,7 @@ class TaskManager:
                         "params": params,
                         "priority": row["priority"],
                         "scheduled_time": row["scheduled_time"],
-                        "interval_seconds": row.get("interval_seconds", 0),
+                        "interval_seconds": row["interval_seconds"],
                         "status": row["status"],
                         "created_at": row["created_at"],
                         "started_at": row["started_at"],
@@ -238,7 +265,7 @@ class TaskManager:
                         "error": row["error"]
                     }
                     task = Task.from_dict(task_data)
-                    task.skip_count = row.get("skip_count", 0)
+                    task.skip_count = row["skip_count"]
                     self.tasks[task.task_id] = task
                     self._user_task_index.setdefault(task.user_id, set()).add(task.task_id)
 
@@ -922,7 +949,119 @@ class TaskManager:
         """获取任务信息"""
         with self.lock:
             return self.tasks.get(task_id)
-    
+
+    # ── 正计时（Stopwatch）：每用户仅允许一个 ──
+
+    def start_stopwatch(self, user_id: int, label: str = "") -> dict:
+        """开始（或重置）该用户的正计时。若已存在则覆盖重置，保证每用户只有一个。"""
+        now = time.time()
+        conn = self.db._get_connection()
+        conn.execute(
+            "INSERT INTO stopwatches (user_id, label, status, started_at, accumulated, created_at, updated_at) "
+            "VALUES (?, ?, 'running', ?, 0, datetime('now','localtime'), datetime('now','localtime')) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "label=excluded.label, status='running', started_at=excluded.started_at, "
+            "accumulated=0, updated_at=datetime('now','localtime')",
+            (user_id, label, now),
+        )
+        conn.commit()
+        self.logger.info("start_stopwatch: uid=%d label=%s", user_id, label)
+        return {"success": True, "status": "running", "label": label,
+                "elapsed_seconds": 0, "elapsed_text": self._format_stopwatch_elapsed(0)}
+
+    def get_stopwatch(self, user_id: int) -> dict:
+        """查询该用户当前正计时的读数与状态。"""
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT * FROM stopwatches WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return {"success": False, "error": "当前没有进行中的正计时，请先开始"}
+        elapsed = self._stopwatch_elapsed(row)
+        return {"success": True, "status": row["status"], "label": row["label"] or "",
+                "elapsed_seconds": round(elapsed, 1),
+                "elapsed_text": self._format_stopwatch_elapsed(elapsed)}
+
+    def pause_stopwatch(self, user_id: int) -> dict:
+        """暂停当前正计时；已暂停时仅返回当前读数。"""
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT * FROM stopwatches WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return {"success": False, "error": "当前没有进行中的正计时，请先开始"}
+        if row["status"] == "paused":
+            elapsed = row["accumulated"] or 0
+            return {"success": True, "status": "paused", "label": row["label"] or "",
+                    "already_paused": True, "elapsed_seconds": round(elapsed, 1),
+                    "elapsed_text": self._format_stopwatch_elapsed(elapsed)}
+        elapsed = self._stopwatch_elapsed(row)
+        conn.execute(
+            "UPDATE stopwatches SET status='paused', started_at=NULL, accumulated=?, "
+            "updated_at=datetime('now','localtime') WHERE user_id = ?",
+            (elapsed, user_id),
+        )
+        conn.commit()
+        return {"success": True, "status": "paused", "label": row["label"] or "",
+                "elapsed_seconds": round(elapsed, 1),
+                "elapsed_text": self._format_stopwatch_elapsed(elapsed)}
+
+    def resume_stopwatch(self, user_id: int) -> dict:
+        """继续已暂停的正计时；正在运行中则仅返回当前读数。"""
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT * FROM stopwatches WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not row:
+            return {"success": False, "error": "当前没有进行中的正计时，请先开始"}
+        if row["status"] == "running":
+            elapsed = self._stopwatch_elapsed(row)
+            return {"success": True, "status": "running", "label": row["label"] or "",
+                    "already_running": True, "elapsed_seconds": round(elapsed, 1),
+                    "elapsed_text": self._format_stopwatch_elapsed(elapsed)}
+        now = time.time()
+        conn.execute(
+            "UPDATE stopwatches SET status='running', started_at=?, "
+            "updated_at=datetime('now','localtime') WHERE user_id = ?",
+            (now, user_id),
+        )
+        conn.commit()
+        elapsed = self._stopwatch_elapsed(
+            {"status": "running", "started_at": now, "accumulated": row["accumulated"] or 0})
+        return {"success": True, "status": "running", "label": row["label"] or "",
+                "elapsed_seconds": round(elapsed, 1),
+                "elapsed_text": self._format_stopwatch_elapsed(elapsed)}
+
+    def delete_stopwatch(self, user_id: int) -> dict:
+        """删除该用户的正计时。"""
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT user_id FROM stopwatches WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        conn.execute("DELETE FROM stopwatches WHERE user_id = ?", (user_id,))
+        conn.commit()
+        if not row:
+            return {"success": False, "error": "当前没有进行中的正计时，无需删除"}
+        return {"success": True}
+
+    def _stopwatch_elapsed(self, row) -> float:
+        """计算当前累计秒数：暂停时取 accumulated，运行时加上本次运行段。"""
+        accumulated = row["accumulated"] or 0
+        if row["status"] == "running" and row["started_at"]:
+            accumulated += time.time() - row["started_at"]
+        return max(0.0, accumulated)
+
+    @staticmethod
+    def _format_stopwatch_elapsed(seconds: float) -> str:
+        seconds = int(seconds)
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}小时{m:02d}分{s:02d}秒"
+        if m:
+            return f"{m}分{s:02d}秒"
+        return f"{s}秒"
+
     def shutdown(self):
         """关闭任务管理器"""
         self.running = False

@@ -1172,6 +1172,8 @@ class DSNClient:
         t_first_audio = None
         _last_event = time.time()
         _SSE_WATCHDOG = 60  # 秒，距上次事件超过此值强制退出
+        _saw_completed = False
+        _saw_cancelled = False
 
         for _evt_type, data in iter_sse_lines(resp):
             # 看门狗：太久没收到事件 → 放弃
@@ -1228,6 +1230,8 @@ class DSNClient:
 
             if status == "cancelled":
                 tid = data.get("task_id", "")
+                _saw_cancelled = True
+                _play_beep(self, 220)
                 print(f"\n  \u26d4 任务已取消 [{tid[:8]}]")
                 continue
 
@@ -1265,7 +1269,13 @@ class DSNClient:
 
             elif status == "completed":
                 log.info("[DEBUG_CLI] completed 收到, t=%.4f", time.perf_counter())
+                _saw_completed = True
+                _play_beep(self, 660)
                 break
+        if not _saw_completed and not _saw_cancelled:
+            # 流在没有收到 completed/cancelled 的情况下结束（中断/超时/连接断开）→ 低音提示
+            log.info("[DEBUG_CLI] SSE 流未收到 completed 即结束，播放停止提示音")
+            _play_beep(self, 220)
         return reply if got_text else None, t_first_audio
 
 
@@ -1343,6 +1353,7 @@ class AsyncTaskPoller:
                     error = data.get("error", "")
 
                     if status == "done":
+                        _play_beep(self._client, 660)
                         if reply:
                             print(f"\n  \U0001f4ac {reply}")
                         if audio_b64 and HAS_AUDIO and self._tts_queue is not None:
@@ -1351,6 +1362,7 @@ class AsyncTaskPoller:
                         print(f"  \u2705 异步任务完成 ({task_id[:10]}...)")
 
                     elif status == "failed":
+                        _play_beep(self._client, 220)
                         if error:
                             print(f"\n  \u274c 异步任务失败: {error}")
                         if reply:
@@ -2259,6 +2271,7 @@ def main():
                     _ensure_raw_mode()
                     print("\n  (auto-stopped by silence)")
                     recorder.stop_and_send()
+                    _play_beep(client, 440)
                     print()
                     _ensure_raw_mode()
                     _recording_session = False
@@ -2278,6 +2291,7 @@ def main():
                         if locked:
                             if _recording_session:
                                 recorder.stop_and_send()
+                                _play_beep(client, 440)
                                 _recording_session = False
                                 if _music_was_playing and player.state == "paused":
                                     player.toggle()
@@ -2324,10 +2338,12 @@ def main():
                         if _music_was_playing:
                             player.toggle()
                         print("\n  Recording... (press Enter to stop)")
+                        _play_beep(client, 880)
                         recorder.start()
                         _recording_session = True
                     else:
                         recorder.stop_and_send()
+                        _play_beep(client, 440)
                         _ensure_raw_mode()
                         print()
                         _ensure_raw_mode()
@@ -2340,6 +2356,7 @@ def main():
                 elif ch.lower() == "q":
                     if _recording_session:
                         recorder.stop_and_send()
+                        _play_beep(client, 440)
                         _recording_session = False
                     break
 
