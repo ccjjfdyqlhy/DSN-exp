@@ -703,6 +703,25 @@ class ChatDBManager:
             conn.rollback()
             raise
 
+    def get_latest_chat(self, user_id: int) -> Optional[int]:
+        """返回用户最近使用（最近创建）的聊天会话 id；无则 None。
+
+        用于客户端未带 chat_id 时自动续接最近对话，避免每次都新建聊天
+        导致历史被切成一个个孤立的会话（进而丢失跨天记忆）。
+        """
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT chat_id FROM chats "
+                "WHERE user_id = ? AND chat_name != '__steward__' "
+                "ORDER BY chat_id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            return row["chat_id"] if row else None
+        except sqlite3.Error as e:
+            self.logger.error("查询最近聊天失败: %s", e)
+            return None
+
     def save_chat_history(
         self,
         user_id: int,

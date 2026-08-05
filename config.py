@@ -160,6 +160,8 @@ class Config:
     TOOLBOX_ENABLED = _env("TOOLBOX_ENABLED", "true") == "true"
     # 主模型对话历史裁剪上限（非 system 消息保留条数）；0 = 不裁剪
     MODEL_MAX_HISTORY = max(0, int(_env("MODEL_MAX_HISTORY", "12")))
+    # 客户端未携带 chat_id 时，自动续接该用户最近一个聊天，而不是新建聊天
+    CHAT_RESUME_LATEST = _env("CHAT_RESUME_LATEST", "true").lower() in ("true", "1", "yes", "on")
 
     # ── 文件操作限制 ──
     FILE_READ_MAX_SIZE_MB = max(1, int(_env("FILE_READ_MAX_SIZE_MB", "1")))

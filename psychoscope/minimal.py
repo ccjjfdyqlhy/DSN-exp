@@ -1042,6 +1042,19 @@ class DSNClient:
         return requests.post(f"{self.base}{path}", headers=self._headers(),
                              stream=True, timeout=(10, 120), **kwargs)
 
+    def _set_chat_id(self, chat_id):
+        """更新并持久化 chat_id：一旦从服务端学到就写回配置文件，
+        避免重启后配置丢失 chat_id 导致服务端新建聊天、割裂跨天记忆。"""
+        chat_id = chat_id or None
+        if chat_id and chat_id != self.chat_id:
+            self.chat_id = chat_id
+            try:
+                cfg = load_config()
+                cfg["chat_id"] = chat_id
+                save_config(cfg)
+            except Exception:
+                log.warning("保存 chat_id=%s 到配置失败", chat_id, exc_info=True)
+
     def send_async(self, message: str) -> Optional[str]:
         if not self.api_key or not message.strip():
             return None
@@ -1220,7 +1233,7 @@ class DSNClient:
                 reply = data.get("reply", "")
                 tid = data.get("task_id", "")
                 got_text = True
-                self.chat_id = data.get("chat_id", self.chat_id)
+                self._set_chat_id(data.get("chat_id"))
                 if reply:
                     print(f"\n  \U0001f4ac [{tid[:8]}] {reply}")
                 audio_b64 = data.get("audio_b64", "")
@@ -1241,7 +1254,7 @@ class DSNClient:
             if status == "text_ready":
                 reply = data.get("reply", "")
                 got_text = True
-                self.chat_id = data.get("chat_id", self.chat_id)
+                self._set_chat_id(data.get("chat_id"))
                 log.info("[DEBUG_CLI] text_ready 收到, reply[:60]=%r, t=%.4f", reply[:60], time.perf_counter())
                 if reply:
                     print(f"\n  \U0001f4ac {reply}")
@@ -1358,7 +1371,7 @@ class AsyncTaskPoller:
                             print(f"\n  \U0001f4ac {reply}")
                         if audio_b64 and HAS_AUDIO and self._tts_queue is not None:
                             self._tts_queue.put((reply, audio_b64))
-                        self._client.chat_id = data.get("chat_id", self._client.chat_id)
+                        self._client._set_chat_id(data.get("chat_id"))
                         print(f"  \u2705 异步任务完成 ({task_id[:10]}...)")
 
                     elif status == "failed":
@@ -1612,7 +1625,7 @@ class HeartbeatPoller:
         tlabel = self._type_label(task_type)
 
         if chat_id:
-            self._client.chat_id = chat_id
+            self._client._set_chat_id(chat_id)
 
         if reply:
             print(f"\n  \u23f0 [{tlabel}] {reply}")
@@ -2551,7 +2564,8 @@ def main():
             reminder.stop()
             if _recording_session and recorder.has_frames:
                 recorder.stop_and_send()
-            cfg["chat_id"] = client.chat_id
+            if client.chat_id:
+                cfg["chat_id"] = client.chat_id
             save_config(cfg)
             print("\n  Goodbye")
 
