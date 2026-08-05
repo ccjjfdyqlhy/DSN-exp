@@ -343,8 +343,9 @@ def _inject_vision_fields(response):
     """向 /api/heartbeat 响应注入:
     - vision_request: 当存在待响应的按需 look_around 请求时下发给客户端
     - active_vision: 主动视觉配置 {enabled, interval}，供 minimal.py 自配置周期观测线程
+    - sensing: 闲置时感知配置 {enabled, cooldown, max_record_secs}，供 minimal.py 自配置
 
-    与通知逻辑解耦：无论是否有通知，每次心跳都附带这两个字段。
+    与通知逻辑解耦：无论是否有通知，每次心跳都附带这几个字段。
     """
     if request.path != "/api/heartbeat":
         return response
@@ -384,6 +385,18 @@ def _inject_vision_fields(response):
         changed = True
     except Exception:
         logger.warning("注入 active_vision 配置失败", exc_info=True)
+
+    # 闲置时感知配置（让 minimal.py 自配置闲置监听线程）
+    try:
+        from config import Config
+        data["sensing"] = {
+            "enabled": bool(getattr(Config, "SENSING_ENABLED", False)),
+            "cooldown": int(getattr(Config, "SENSING_COOLDOWN", 60)),
+            "max_record_secs": float(getattr(Config, "SENSING_MAX_RECORD_SECS", 6.0)),
+        }
+        changed = True
+    except Exception:
+        logger.warning("注入 sensing 配置失败", exc_info=True)
 
     if changed:
         response.set_data(json.dumps(data, ensure_ascii=False))

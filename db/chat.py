@@ -253,7 +253,23 @@ class ChatDBManager:
                     "CREATE INDEX IF NOT EXISTS idx_prompt_cache_lookup "
                     "ON prompt_cache(uid, chat_id, category)"
                 )
-                
+
+                # 闲置时感知表 (idle-time sensing events)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sensing_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        chat_id INTEGER DEFAULT NULL,
+                        text TEXT NOT NULL,
+                        source TEXT DEFAULT '',
+                        rms_level REAL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_sensing_events_user_time "
+                             "ON sensing_events(user_id, created_at)")
+
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
             except sqlite3.Error as e:
@@ -356,6 +372,72 @@ class ChatDBManager:
         except sqlite3.Error as e:
             self.logger.error("获取印象分类失败: %s", e)
             return []
+
+    # ═══════════════════════════════════════════
+    # 闲置时感知 (Idle-time Sensing)
+    # ═══════════════════════════════════════════
+
+    def add_sensing_event(self, user_id: int, text: str, source: str = "",
+                          rms_level: float = 0.0, chat_id: int = None) -> int:
+        """记录一条闲置时感知事件（识别出的环境声音文本）。"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO sensing_events (user_id, chat_id, text, source, rms_level) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, chat_id, text, source, rms_level),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.Error as e:
+            self.logger.error("添加闲置时感知事件失败: %s", e)
+            conn.rollback()
+            raise
+
+    def query_sensing_events(self, user_id: int, since: str = "", until: str = "",
+                             limit: int = 20, keyword: str = "") -> list[dict]:
+        """查询指定用户的闲置时感知记录（按时间倒序，始终按 user_id 隔离）。
+
+        :param since:  起始时间 (ISO/YYYY-MM-DD HH:MM:SS)，含该时刻
+        :param until:  结束时间，含该时刻
+        :param limit:  返回条数上限
+        :param keyword: 内容关键词（LIKE 模糊匹配）
+        """
+        conn = self._get_connection()
+        try:
+            query = ("SELECT id, user_id, chat_id, text, source, rms_level, created_at "
+                     "FROM sensing_events WHERE user_id = ?")
+            params: list = [user_id]
+            if since:
+                query += " AND created_at >= ?"
+                params.append(since)
+            if until:
+                query += " AND created_at <= ?"
+                params.append(until)
+            if keyword:
+                query += " AND text LIKE ?"
+                params.append(f"%{keyword}%")
+            query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+            params.append(max(1, int(limit)))
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error as e:
+            self.logger.error("查询闲置时感知事件失败: %s", e)
+            return []
+
+    def get_last_sensing_time(self, user_id: int) -> Optional[str]:
+        """返回用户最近一条闲置时感知记录的时间戳，无记录时返回 None。"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT created_at FROM sensing_events "
+                "WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            return row["created_at"] if row else None
+        except sqlite3.Error as e:
+            self.logger.error("获取最近闲置时感知时间失败: %s", e)
+            return None
 
     def add_or_update_user(self, uid: int, nickname: str) -> None:
         """添加或更新用户信息"""
