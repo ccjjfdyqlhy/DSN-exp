@@ -73,6 +73,60 @@ tools:
             description: "目标时间 (ISO8601)"
             required: true
 
+  - name: start_stopwatch
+    display_name: "开始正计时"
+    description: "开始（或重置）正计时/秒表。用户说「开始计时」「开始正计时」「记个时」「开始秒表」等均使用此工具。每用户只能有一个正计时，若已有则重置覆盖后重新计时。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: start_stopwatch
+        description: "开始或重置正计时"
+        parameters:
+          label:
+            type: string
+            description: "计时名称/备注（可选）"
+            required: false
+
+  - name: get_stopwatch
+    display_name: "查询正计时"
+    description: "查看当前正计时的读数与状态（运行中/已暂停）。用户说「正计时多久了」「计时到多少」「看看计时」「过去多长时间了」等均使用此工具。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: get_stopwatch
+        description: "查询正计时读数"
+        parameters: {}
+
+  - name: pause_stopwatch
+    display_name: "暂停正计时"
+    description: "暂停当前正计时。用户说「暂停计时」「停一下」「暂停秒表」等均使用此工具。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: pause_stopwatch
+        description: "暂停正计时"
+        parameters: {}
+
+  - name: resume_stopwatch
+    display_name: "继续正计时"
+    description: "继续已暂停的正计时。用户说「继续计时」「接着计」「恢复计时」等均使用此工具。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: resume_stopwatch
+        description: "继续正计时"
+        parameters: {}
+
+  - name: delete_stopwatch
+    display_name: "删除正计时"
+    description: "删除当前正计时。用户说「删掉计时」「清除计时」「不要这个计时了」等均使用此工具。"
+    module: "tools.task_tools"
+    class: "TaskTools"
+    methods:
+      - name: delete_stopwatch
+        description: "删除正计时"
+        parameters: {}
+
   - name: create_daily_plan
     display_name: "每日计划"
     description: "创建每日计划触发器"

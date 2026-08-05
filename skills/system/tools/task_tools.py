@@ -97,6 +97,54 @@ class TaskTools:
             priority=1, scheduled_time=next_time)
         return {"task_id": tid}
 
+    # ── 正计时（Stopwatch） ──
+
+    def start_stopwatch(self, label: str = "") -> dict:
+        """开始（或重置）正计时。每用户只能有一个正计时，若已存在则重置覆盖。"""
+        mgr = self._mgr()
+        result = mgr.start_stopwatch(self._uid(), label)
+        result["message"] = "正计时已开始"
+        return result
+
+    def get_stopwatch(self) -> dict:
+        """查询当前正计时的读数与状态（运行中/已暂停）。"""
+        mgr = self._mgr()
+        result = mgr.get_stopwatch(self._uid())
+        if result.get("success"):
+            state = "运行中" if result["status"] == "running" else "已暂停"
+            result["message"] = f"当前正计时：{result['elapsed_text']}（{state}）"
+        return result
+
+    def pause_stopwatch(self) -> dict:
+        """暂停当前正计时。"""
+        mgr = self._mgr()
+        result = mgr.pause_stopwatch(self._uid())
+        if result.get("success"):
+            if result.get("already_paused"):
+                result["message"] = f"正计时已处于暂停状态：{result['elapsed_text']}"
+            else:
+                result["message"] = f"正计时已暂停：{result['elapsed_text']}"
+        return result
+
+    def resume_stopwatch(self) -> dict:
+        """继续已暂停的正计时。"""
+        mgr = self._mgr()
+        result = mgr.resume_stopwatch(self._uid())
+        if result.get("success"):
+            if result.get("already_running"):
+                result["message"] = f"正计时正在运行中：{result['elapsed_text']}"
+            else:
+                result["message"] = f"正计时已继续：{result['elapsed_text']}"
+        return result
+
+    def delete_stopwatch(self) -> dict:
+        """删除当前正计时。"""
+        mgr = self._mgr()
+        result = mgr.delete_stopwatch(self._uid())
+        if result.get("success"):
+            result["message"] = "正计时已删除"
+        return result
+
     # ── 查询提醒 ──
 
     def list_reminders(self, status: str = "pending") -> dict:
