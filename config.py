@@ -89,7 +89,6 @@ class Config:
     REASONER_TIMEOUT = int(_env("REASONER_TIMEOUT", "1200"))
 
     # ==================== 存储配置 ====================
-    DATABASE_PATH = _env("DATABASE_PATH", "DSN_usrdata.db")
     QUESTION_BANK_DB_PATH = _env("QUESTION_BANK_DB_PATH", ".dsn/question_bank.db")
 
     # ── 模型共存管理 ──

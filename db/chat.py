@@ -276,7 +276,6 @@ class ChatDBManager:
                 self.logger.error("初始化数据库表失败: %s", e)
                 conn.rollback()
                 raise
-                raise
 
     # ═══════════════════════════════════════════
     # 用户印象系统 (User Impressions)
