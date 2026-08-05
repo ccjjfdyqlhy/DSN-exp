@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import threading
 import time
 import uuid
@@ -37,11 +36,18 @@ _auth_manager = None
 # 批量扫题等待所有照片入库的兜底超时（秒）
 QUICK_SCAN_BATCH_WAIT = float(os.environ.get("QUICK_SCAN_BATCH_WAIT", "600"))
 
+# 扫题总结调用主模型的超时兜底（秒）：超过则用统计文案回复，避免模型繁忙时卡住任务
+QUICK_SCAN_SUMMARY_TIMEOUT = float(os.environ.get("QUICK_SCAN_SUMMARY_TIMEOUT", "45"))
+
 # ── 批次状态（内存，按用户隔离） ──
 _batch_lock = threading.Lock()
 _batches: dict[int, dict] = {}          # user_id -> batch
 _photo_worker_locks: dict[int, threading.Lock] = {}   # 每用户串行处理照片，避免并发打爆模型/写库
 _photo_worker_locks_guard = threading.Lock()
+
+# 摄像头选择结果缓存（user_id -> logical_name），会话内复用，避免反复跑 VLM/网络
+_select_camera_cache: dict[int, str] = {}
+_select_camera_cache_lock = threading.Lock()
 
 
 def _user_photo_lock(user_id: int) -> threading.Lock:
@@ -100,67 +106,66 @@ def select_camera():
     if not frames:
         return jsonify({"error": "缺少 frames"}), 400
 
+    user_id = g.user.get("uid", 0)
+
+    with _select_camera_cache_lock:
+        cached = _select_camera_cache.get(user_id)
+    if cached:
+        return jsonify({"success": True, "logical_name": cached})
+
     try:
-        logical_name = _choose_document_camera(frames)
+        logical_name = _choose_document_camera(frames, user_id)
     except Exception as e:
         logger.error("选择扫描摄像头失败: %s", e, exc_info=True)
         return jsonify({"success": False, "error": f"选择失败: {e}"}), 500
 
     if not logical_name:
-        return jsonify({"success": False, "error": "主AI未能确定面向文档的摄像头"}), 200
+        return jsonify({"success": False, "error": "未能确定面向文档的摄像头，已回退到默认机位"}), 200
     return jsonify({"success": True, "logical_name": logical_name})
 
 
-def _choose_document_camera(frames: list) -> str:
-    """逐台 VLM 描述 → 主AI 判定哪台正对桌面文档，返回逻辑名；无法确定返回空串。"""
-    from models.clients import VisionModel
-    vm = VisionModel()
+def _choose_document_camera(frames: list, user_id: int = 0) -> str:
+    """逐台 VLM 判定哪台正对桌面文档，返回逻辑名；无法确定返回空串。
 
-    descriptions = []
-    for f in frames:
-        name = (f.get("logical_name") or "").strip()
-        img = f.get("image_data") or ""
-        if not name or not img:
-            continue
+    只调用视觉模型（glm-4.6v 等，毫秒级），不再调用主模型判定——
+    修复此前“主模型选择摄像头失败: 无法在 300s 内获取模型使用权”导致的
+    扫题长时间卡死。结果按用户缓存，后续扫题直接复用。
+    """
+    named = [f.get("logical_name", "").strip() for f in frames if f.get("logical_name")]
+    if not named:
+        return ""
+
+    # 只有一台摄像头：直接使用，省去一轮 VLM 判定
+    if len(named) == 1:
+        chosen = named[0]
+    else:
+        from models.clients import VisionModel
+        vm = VisionModel()
         prompt = (
             "请判断这张摄像头拍摄的画面：画面里是否有桌面上的纸质文档"
             "（试卷/习题册/笔记/书本页面）？"
             "只回答\"是文档\"或\"不是文档\"，再简短说明你看到的物体。"
         )
-        try:
-            desc = vm.ask(data_url=img, prompt=prompt, max_tokens=100, temperature=0.0)
-        except Exception as e:
-            logger.warning("摄像头 %s 画面分析失败: %s", name, e)
-            desc = "（分析失败）"
-        descriptions.append(f"- 摄像头 {name}: {desc}")
+        matches = []
+        for f in frames:
+            name = (f.get("logical_name") or "").strip()
+            img = f.get("image_data") or ""
+            if not name or not img:
+                continue
+            try:
+                desc = vm.ask(data_url=img, prompt=prompt, max_tokens=100, temperature=0.0)
+            except Exception as e:
+                logger.warning("摄像头 %s 画面分析失败: %s", name, e)
+                desc = ""
+            logger.info("摄像头 %s 文档判定: %r", name, (desc or "")[:80])
+            if desc and "是文档" in desc and "不是文档" not in desc:
+                matches.append(name)
+        chosen = matches[0] if matches else ""
 
-    if not descriptions:
-        return ""
-
-    from boot import create_chat_client
-    chat = create_chat_client("fast")
-    prompt = (
-        "下面是多台摄像头拍摄画面的描述。其中一台摄像头正对着桌面上的纸质文档"
-        "（试卷/习题/笔记）。\n"
-        "请判断哪一台摄像头的画面最可能是桌面文档，只回答该摄像头的逻辑名"
-        "（例如 cam0），不要输出任何其他文字。如果都无法确定，回答\"无法确定\"。\n\n"
-        + "\n".join(descriptions)
-    )
-    try:
-        reply = (chat.send_message(prompt) or "").strip()
-    except Exception as e:
-        logger.error("主模型选择摄像头失败: %s", e)
-        return ""
-    logger.info("主AI 选择扫描摄像头: 回复=%r", reply)
-
-    known = [f.get("logical_name", "").strip() for f in frames if f.get("logical_name")]
-    for name in known:
-        if name and name in reply:
-            return name
-    m = re.search(r"cam\d+|front|back|rear|side|left|right", reply, re.IGNORECASE)
-    if m:
-        return m.group(0)
-    return ""
+    if chosen and user_id:
+        with _select_camera_cache_lock:
+            _select_camera_cache[user_id] = chosen
+    return chosen
 
 
 # ── 批量拍照 ──
@@ -318,13 +323,17 @@ def _finalize_worker(engine, task_id: str, user_id: int, chat_id, batch: dict) -
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        result_ctx = loop.run_until_complete(engine.pipeline.process(ctx))
+        result_ctx = loop.run_until_complete(
+            asyncio.wait_for(engine.pipeline.process(ctx), timeout=QUICK_SCAN_SUMMARY_TIMEOUT))
         reply = result_ctx.reply or ""
         audio_b64 = result_ctx.audio_b64 or ""
         if not reply:
             store.complete(task_id, reply="扫题完成，题目已全部入库。", error="")
         else:
             store.complete(task_id, reply=reply, audio_b64=audio_b64)
+    except asyncio.TimeoutError:
+        logger.warning("扫题总结超时（>%ss），改用统计兜底回复", QUICK_SCAN_SUMMARY_TIMEOUT)
+        store.complete(task_id, reply=_build_fallback_reply(results, errors), error="")
     except Exception as e:
         logger.error("扫题总结任务失败 %s: %s", task_id, e, exc_info=True)
         store.complete(task_id, reply="", error=str(e))
@@ -363,6 +372,24 @@ def _build_batch_message(results: list, errors: list) -> str:
         f"\n\n共计识别 {total_found} 题，成功入库 {total_added} 题。"
         "请向用户简洁汇报本次批量扫题结果（扫了几张、共识别/入库多少题、涉及哪些科目、有无失败照片），"
         "不要逐题罗列。"
+    )
+
+
+def _build_fallback_reply(results: list, errors: list) -> str:
+    """主模型总结超时/失败时的统计兜底回复（不含 TTS 音频，客户端仍会收到提示音）。"""
+    total_found = sum(r.get("questions_found", 0) for r in results)
+    total_added = sum(r.get("questions_added", 0) for r in results)
+    subjects = set()
+    for r in results:
+        for s in r.get("subjects") or []:
+            subjects.add(s)
+    subj_txt = "/".join(sorted(subjects)) if subjects else ""
+    fail_txt = f"，{len(errors)} 张失败" if errors else ""
+    return (
+        f"本次共扫 {len(results) + len(errors)} 张照片{fail_txt}，"
+        f"识别 {total_found} 题，成功入库 {total_added} 题"
+        + (f"（科目：{subj_txt}）" if subj_txt else "")
+        + "。"
     )
 
 

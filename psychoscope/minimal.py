@@ -1284,7 +1284,7 @@ class DSNClient:
 # ════════════════════════════════════════════════════════════════
 
 class AsyncTaskPoller:
-    ASYNC_POLL_INTERVAL = 8
+    ASYNC_POLL_INTERVAL = 3
     ASYNC_POLL_TIMEOUT = 600
 
     def __init__(self, client: DSNClient, tts_queue: queue.Queue):
@@ -2138,25 +2138,25 @@ def _finish_scan_batch(client: DSNClient):
 
 
 def _pick_scan_camera(client: DSNClient, cfg: dict) -> str:
-    """首次扫题: 枚举全部摄像头 → 询问主AI哪台正对桌面文档。失败返回空串。"""
+    """首次扫题: 枚举全部摄像头 → 后端纯 VLM 判定哪台正对桌面文档（不占用主模型）。失败返回空串。"""
     if not HAS_CAMERA or not _enumerate_cameras():
         print("  未检测到可用摄像头，无法扫题")
         return ""
     with _SCAN_CAPTURE_LOCK:
         frames = _capture_all_cameras()
     if not frames:
-        print("  抓帧失败，无法询问主AI")
+        print("  抓帧失败，无法判定扫描摄像头")
         return ""
-    print(f"  已拍摄 {len(frames)} 台摄像头，正在询问主AI选择扫描摄像头...")
+    print(f"  已拍摄 {len(frames)} 台摄像头，正在判定扫描摄像头...")
     try:
         resp = client._http_post("/api/scan/select_camera",
-                                 json={"frames": frames}, timeout=90)
+                                 json={"frames": frames}, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
             cam = (data.get("logical_name") or "").strip()
             if cam:
                 return cam
-            print(f"  \u26a0\ufe0f {data.get('error') or '主AI未能确定扫描摄像头'}")
+            print(f"  \u26a0\ufe0f {data.get('error') or '未能确定扫描摄像头，将使用默认机位'}")
         else:
             print(f"  选择摄像头失败 HTTP {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
@@ -2208,6 +2208,7 @@ def quick_scan(client: DSNClient, cfg: dict):
     一次性调用主模型总结并反馈；首次按下会询问主AI选择扫描摄像头并持久化。
     """
     print("\n  \U0001f4f7 快速扫题...")
+    _play_beep(client, 700)
     threading.Thread(target=_scan_job, args=(client, cfg), daemon=True,
                      name="quick-scan").start()
 

@@ -526,6 +526,9 @@ class DSNEngine:
             # 注入系统技能依赖
             self._inject_system_skill_deps()
 
+            # 注入题库技能依赖（_tm/_store）
+            self._inject_question_bank_deps()
+
             self._inject_v3_to_exa_evolution()
         except Exception as e:
             self._logger.warning("Skills 加载失败: %s", e)
@@ -563,6 +566,32 @@ class DSNEngine:
             self._logger.info("系统技能依赖注入完成")
         except Exception as e:
             self._logger.warning("系统技能依赖注入失败: %s", e)
+
+    def _inject_question_bank_deps(self):
+        """注入题库运行时依赖到 question_bank 技能工具实例（_tm/_store）。
+
+        修复：question_bank 工具在注册时以 template_manager=None/question_store=None
+        实例化（skills/registry.py），若不入库依赖注入则所有工具调用都会抛
+        AttributeError（'NoneType' object has no attribute ...），用户侧表现为
+        “题库不可用/找不到模板科目表”。
+        """
+        try:
+            if not self.skill_registry or not self.template_manager or not self.question_store:
+                return
+            count = 0
+            for key, instance in list(self.skill_registry._tool_instances.items()):
+                if not key.startswith("question_bank."):
+                    continue
+                if hasattr(instance, "_tm") and getattr(instance, "_tm", None) is None:
+                    instance._tm = self.template_manager
+                    count += 1
+                if hasattr(instance, "_store") and getattr(instance, "_store", None) is None:
+                    instance._store = self.question_store
+                    count += 1
+            if count:
+                self._logger.info("题库技能依赖注入完成: 注入 %d 个属性", count)
+        except Exception as e:
+            self._logger.warning("题库技能依赖注入失败: %s", e)
 
     def _inject_v3_to_exa_evolution(self):
 
@@ -1227,6 +1256,11 @@ def create_engine_with_defaults(
     if task_manager:
         engine.task_manager = task_manager
 
+    if question_store:
+        engine.question_store = question_store
+    if template_manager:
+        engine.template_manager = template_manager
+
     # PromptEngine
     _prompt_dir = _os.path.join(_os.path.dirname(__file__), "prompt")
     lib = PromptLibrary()
@@ -1401,5 +1435,6 @@ def create_engine_with_defaults(
         engine._logger.warning("以下插件未能加载（可能缺少依赖）: %s", sorted(failed))
 
     engine._init_pipeline()
+    engine._inject_question_bank_deps()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")
     return engine
