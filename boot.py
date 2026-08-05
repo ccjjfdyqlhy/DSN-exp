@@ -22,6 +22,7 @@ from api.vision import vision_bp, init_vision_api
 from api.scan import scan_bp, init_scan_api
 from api.alarm import alarm_bp, init_alarm_api
 from api.study_timetable import study_bp, init_study_timetable_api
+from api.update import update_bp
 from db.plan_store import set_plan_db
 from db.study_timetable import set_study_db
 from db.chat import ChatDBManager
@@ -425,6 +426,7 @@ def create_application():
     app.register_blueprint(vision_bp)
     app.register_blueprint(alarm_bp)
     app.register_blueprint(study_bp)
+    app.register_blueprint(update_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
     from api.agent import agent_bp

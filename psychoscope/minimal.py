@@ -247,6 +247,17 @@ SILENCE_TIMEOUT = 2.0
 MAX_RECORD_SECS = 30
 RMS_THRESHOLD = 0.008
 
+# ── 闲置时感知参数 ──
+# 未按 Enter 录音时，后台监听麦克风。连续 DETECT_FRAMES 帧 RMS 超过阈值即视为一次"响动"，
+# 捕捉到静音/上限后打包上报后端 ASR 存档。阈值略高于正常录音 VAD，避免背景环境噪声误触发。
+SENSING_RMS_THRESHOLD = float(os.environ.get("DSN_SENSING_RMS_THRESHOLD", "0.03"))
+SENSING_DETECT_FRAMES = 3
+SENSING_SILENCE_TIMEOUT = float(os.environ.get("DSN_SENSING_SILENCE_TIMEOUT", "1.5"))
+SENSING_MIN_RECORD_SECS = float(os.environ.get("DSN_SENSING_MIN_RECORD_SECS", "0.4"))
+
+# 麦克风仲裁：录音会话开始时置位，闲置监听立即让出麦克风（PvRecorder 同一设备不支持双开）。
+_SENSING_PAUSE = threading.Event()
+
 # ── 日志：只写文件，不写终端 ──
 
 def setup_logging():
@@ -1446,10 +1457,12 @@ class HeartbeatPoller:
     HEARTBEAT_TIMEOUT = 30
 
     def __init__(self, client: "DSNClient", tts_queue: queue.Queue,
-                 vision_observer: "VisionObserver | None" = None):
+                 vision_observer: "VisionObserver | None" = None,
+                 sensing_monitor: "IdleSensingMonitor | None" = None):
         self._client = client
         self._tts_queue = tts_queue
         self._vision_observer = vision_observer
+        self._sensing_monitor = sensing_monitor
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_triggered: dict[str, dict] = {}
@@ -1531,6 +1544,16 @@ class HeartbeatPoller:
                 log.info("VisionObserver 配置更新: enabled=%s interval=%s camera=%s",
                          av.get("enabled"), av.get("interval"), av.get("camera", ""))
                 self._vision_observer.start()  # 已 start 则 no-op
+
+        # ── 闲置时感知：用 heartbeat 下发的配置自配置 IdleSensingMonitor ──
+        se = data.get("sensing")
+        if se and self._sensing_monitor is not None:
+            if self._sensing_monitor.configure(
+                    se.get("enabled", False), se.get("cooldown", 60),
+                    se.get("max_record_secs", 6.0)):
+                log.info("IdleSensingMonitor 配置更新: enabled=%s cooldown=%s max_record=%s",
+                         se.get("enabled"), se.get("cooldown"), se.get("max_record_secs"))
+                self._sensing_monitor.start()  # 已 start 则 no-op
 
         # ── 按需视觉请求：抓一帧/多帧回传后端，唤醒阻塞中的 look_around ──
         vr = data.get("vision_request")
@@ -1698,10 +1721,15 @@ class VoiceRecorder:
             print("  pvrecorder not installed")
             return
 
+        # 让闲置监听让出麦克风：置位 + 短暂等待，避免同设备双开冲突
+        _SENSING_PAUSE.set()
+        time.sleep(0.15)
+
         try:
             self._recorder = PvRecorder(device_index=self._device_index(), frame_length=512)
         except Exception as e:
             print(f"  Cannot open microphone: {e}")
+            _SENSING_PAUSE.clear()
             return
 
         self._recording = True
@@ -1715,37 +1743,40 @@ class VoiceRecorder:
 
     def stop_and_send(self):
         self._recording = False
-        if not self._frames:
-            return
+        try:
+            if not self._frames:
+                return
 
-        self._stop_event.set()
+            self._stop_event.set()
 
-        if self._recorder:
-            try:
-                self._recorder.stop()
-            except Exception:
-                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
+            if self._recorder:
+                try:
+                    self._recorder.stop()
+                except Exception:
+                    logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
 
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3.0)
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=3.0)
 
-        if self._recorder:
-            try:
-                self._recorder.delete()
-            except Exception:
-                logging.getLogger(__name__).warning("Delete/remove operation failed", exc_info=True)
-            self._recorder = None
+            if self._recorder:
+                try:
+                    self._recorder.delete()
+                except Exception:
+                    logging.getLogger(__name__).warning("Delete/remove operation failed", exc_info=True)
+                self._recorder = None
 
-        dur = time.time() - self._start_time
+            dur = time.time() - self._start_time
 
-        if not self._frames or dur < 0.5:
-            print("  Too short, ignored")
-            return
+            if not self._frames or dur < 0.5:
+                print("  Too short, ignored")
+                return
 
-        audio = np.concatenate(self._frames)
-        b64 = raw_pcm_to_wav_b64(audio)
-        self._sent_frames = self._frames
-        self.client.send_audio_async(b64)
+            audio = np.concatenate(self._frames)
+            b64 = raw_pcm_to_wav_b64(audio)
+            self._sent_frames = self._frames
+            self.client.send_audio_async(b64)
+        finally:
+            _SENSING_PAUSE.clear()
 
     def _capture_loop(self):
         try:
@@ -1778,6 +1809,172 @@ class VoiceRecorder:
                 self._recorder.stop()
             except Exception:
                 logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# IdleSensingMonitor — 闲置时感知
+# 未按 Enter 录音时后台监听麦克风，感知到响动 → 捕捉片段 → POST /api/sensing/event
+# 后端 ASR 存档。配置由 heartbeat 响应的 sensing 字段自配置（configure→start）。
+# ════════════════════════════════════════════════════════════════
+
+class IdleSensingMonitor:
+    def __init__(self, client: DSNClient, recorder: VoiceRecorder):
+        self._client = client
+        self._recorder = recorder
+        self._running = False
+        self._enabled = False
+        self._cooldown = 60
+        self._max_record_secs = 6.0
+        self._last_event_ts = 0.0
+        self._thread: Optional[threading.Thread] = None
+
+    def configure(self, enabled: bool, cooldown: int, max_record_secs: float) -> bool:
+        enabled = bool(enabled)
+        cooldown = max(1, int(cooldown or 60))
+        max_record_secs = max(1.0, float(max_record_secs or 6.0))
+        changed = (enabled != self._enabled) or (cooldown != self._cooldown) \
+            or (max_record_secs != self._max_record_secs)
+        self._enabled = enabled
+        self._cooldown = cooldown
+        self._max_record_secs = max_record_secs
+        return changed
+
+    def start(self):
+        if self._running:
+            return
+        if not self._enabled:
+            log.info("IdleSensingMonitor 未启用 (sensing.enabled=false)")
+            return
+        if not HAS_PVRECORDER:
+            log.warning("IdleSensingMonitor: pvrecorder 未安装，无法监听")
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        log.info("IdleSensingMonitor 已启动 (cooldown=%ds, max_record=%.1fs)",
+                 self._cooldown, self._max_record_secs)
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def _loop(self):
+        while self._running:
+            if not self._enabled:
+                time.sleep(1)
+                continue
+            if self._recorder.is_recording or _SENSING_PAUSE.is_set():
+                time.sleep(0.5)
+                continue
+            if time.time() - self._last_event_ts < self._cooldown:
+                time.sleep(0.5)
+                continue
+            audio = self._listen_once()
+            if audio is None:
+                continue
+            self._send_event(audio)
+
+    def _listen_once(self) -> Optional[np.ndarray]:
+        """监听一轮：等触发→捕捉片段→返回音频；无可感知声音/被打断返回 None。"""
+        recorder = None
+        try:
+            recorder = PvRecorder(device_index=VoiceRecorder._device_index(), frame_length=512)
+        except Exception as e:
+            log.warning("IdleSensingMonitor: 打开麦克风失败 %s", e)
+            return None
+
+        capture: list[np.ndarray] = []
+        last_loud_ts = 0.0
+        trigger_ts = 0.0
+        consecutive_loud = 0
+        peak = 0.0
+        try:
+            recorder.start()
+            while self._running:
+                if not self._enabled or self._recorder.is_recording or _SENSING_PAUSE.is_set():
+                    return None
+                frame = recorder.read()
+                samples = np.array(frame, dtype=np.int16).astype(np.float32) / 32768.0
+                energy = float(np.sqrt(np.mean(samples ** 2)))
+                peak = max(peak, energy)
+                now = time.time()
+
+                if trigger_ts == 0.0:
+                    # 触发阶段：连续多帧超阈值才算一次响动，避免单帧噪声误触发
+                    if energy > SENSING_RMS_THRESHOLD:
+                        consecutive_loud += 1
+                    else:
+                        consecutive_loud = 0
+                    if consecutive_loud >= SENSING_DETECT_FRAMES:
+                        trigger_ts = now
+                        last_loud_ts = now
+                        capture.append(samples)  # 把触发帧一并纳入捕捉
+                else:
+                    # 捕捉阶段：从触发开始收集，直到静音超时或达到上限
+                    capture.append(samples)
+                    if energy > SENSING_RMS_THRESHOLD:
+                        last_loud_ts = now
+                    dur = now - trigger_ts
+                    sil = now - last_loud_ts
+                    if sil > SENSING_SILENCE_TIMEOUT or dur >= self._max_record_secs:
+                        break
+        except Exception:
+            log.warning("IdleSensingMonitor: 监听异常", exc_info=True)
+            return None
+        finally:
+            try:
+                recorder.stop()
+            except Exception:
+                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
+            try:
+                recorder.delete()
+            except Exception:
+                logging.getLogger(__name__).warning("Delete/remove operation failed", exc_info=True)
+
+        if trigger_ts == 0.0 or not capture:
+            return None
+        dur = time.time() - trigger_ts
+        if dur < SENSING_MIN_RECORD_SECS:
+            return None
+        audio = np.concatenate(capture)
+        log.info("IdleSensingMonitor: 捕捉到响动 %.1fs (peak_rms=%.3f)",
+                 dur, peak)
+        return audio
+
+    def _send_event(self, audio: np.ndarray):
+        if not self._client.api_key:
+            return
+        b64 = raw_pcm_to_wav_b64(audio)
+        peak = float(np.sqrt(np.mean(np.abs(audio) ** 2))) if len(audio) else 0.0
+        try:
+            resp = self._client._http_post("/api/sensing/event", json={
+                "audio_b64": b64,
+                "source": "sensing",
+                "rms_level": round(peak, 4),
+                "chat_id": self._client.chat_id,
+            }, timeout=30)
+            data = resp.json() if resp.status_code == 200 else {}
+            if resp.status_code == 200:
+                # 无论是否落盘（文本过短/服务端节流），都进入冷却，避免对同一环境音反复上报
+                self._last_event_ts = time.time()
+                if data.get("recorded"):
+                    log.info("IdleSensingMonitor: 已存档 text=%s", data.get("text", "")[:40])
+                else:
+                    log.info("IdleSensingMonitor: 上报被丢弃 (text=%r)",
+                             (data.get("text") or "")[:40])
+            elif resp.status_code == 403:
+                log.info("IdleSensingMonitor: 服务端未启用感知，暂停监听")
+                self._enabled = False
+            else:
+                log.info("IdleSensingMonitor: 上报异常 code=%s recorded=%s",
+                         resp.status_code, data.get("recorded"))
+        except Exception:
+            log.warning("IdleSensingMonitor: 上报失败", exc_info=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2128,8 +2325,10 @@ def main():
 
     # 初始化所有组件
     recorder = VoiceRecorder(client)
+    sensing_mon = IdleSensingMonitor(client, recorder)
     vision_obs = VisionObserver(client)
-    reminder = HeartbeatPoller(client, client._tts_queue, vision_observer=vision_obs)
+    reminder = HeartbeatPoller(client, client._tts_queue, vision_observer=vision_obs,
+                               sensing_monitor=sensing_mon)
     reminder.start()
     async_poller = AsyncTaskPoller(client, client._tts_queue)
     async_poller.start()
@@ -2454,6 +2653,7 @@ def main():
             pass
         finally:
             vision_obs.stop()
+            sensing_mon.stop()
             player.cleanup()
             async_poller.stop()
             reminder.stop()

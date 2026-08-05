@@ -236,6 +236,16 @@ class Config:
     ACTIVE_VISION_PROACTIVE_COOLDOWN = int(_env("ACTIVE_VISION_PROACTIVE_COOLDOWN", "600"))
     ACTIVE_VISION_PERIODIC_NOTIFY_MIN = int(_env("ACTIVE_VISION_PERIODIC_NOTIFY_MIN", "30"))
 
+    # ── 闲置时感知 (idle-time sensing) ──
+    # 主开关：客户端在未按 Enter 录音时持续监听麦克风，感知到响动就捕捉并上报后端 ASR 存档。
+    SENSING_ENABLED = _env_bool("SENSING_ENABLED", "false")
+    # 同一客户端两次上报之间的最小间隔（秒），服务端/客户端都会用它节流。
+    SENSING_COOLDOWN = max(1, int(_env("SENSING_COOLDOWN", "60")))
+    # 单条感知片段的最大时长（秒）。
+    SENSING_MAX_RECORD_SECS = max(1.0, float(_env("SENSING_MAX_RECORD_SECS", "6.0")))
+    # 允许 AI 通过工具查询闲置时感知记录（false 时工具返回未启用）。
+    SENSING_AI_ACCESS_ENABLED = _env_bool("SENSING_AI_ACCESS_ENABLED", "false")
+
     # ═══════════════════════════════════════════════════════════════════════
     # 第七层: 高级功能
     # ═══════════════════════════════════════════════════════════════════════
