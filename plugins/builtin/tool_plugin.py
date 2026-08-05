@@ -95,10 +95,18 @@ class ToolPlugin(Plugin):
                 print("  └─────────────")
 
             # 命名空间路由：skill-{skill_name}-{tool_name}
+            # 兼容点分命名 {skill}.{tool}（模型可能直接按 toolbox 索引 id 调用）
+            skill_name = None
+            tool_name = None
             parts = func_name.split("-", 2)
             if len(parts) >= 3 and parts[0] == "skill":
-                skill_name = parts[1]
-                tool_name = parts[2]
+                skill_name, tool_name = parts[1], parts[2]
+            else:
+                dotted = func_name.split(".", 1)
+                if len(dotted) == 2:
+                    skill_name, tool_name = dotted
+
+            if skill_name and tool_name:
                 try:
                     result_data = self._skill_registry.call_tool(
                         skill_name, tool_name, func_args)

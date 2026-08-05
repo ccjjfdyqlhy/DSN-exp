@@ -504,7 +504,8 @@ class ChatPipeline:
                     break
                 if not new_reply:
                     has_pending = bool(ctx.extra.get("_native_tool_calls", []))
-                    if not has_pending:
+                    has_pending_toolbox = bool(ctx.extra.get("_tag_results", []))
+                    if not has_pending and not has_pending_toolbox:
                         logger.warning("Agent 第 %d 步(native): LLM 返回空且无待处理 tool_calls，终止",
                                        step + 1)
                         break
