@@ -407,6 +407,75 @@ def asr_passthrough():
     )
 
 
+@app.route("/api/sensing/event", methods=["POST"])
+@login_required
+def sensing_event():
+    """闲置时感知上报：minimal.py 未进入录音时捕捉到的环境声音 → ASR → 存档。
+
+    只做识别+存档，不触发 AI 回复（纯 JSON 返回）。用户身份由 API Key 区分。
+    """
+    if not app.config.get("SENSING_ENABLED", False):
+        return jsonify({"error": "Sensing disabled"}), 403
+    if not app.config.get("ASR_ENABLED", False):
+        return jsonify({"error": "ASR disabled"}), 403
+    data = request.get_json()
+    if not data or "audio_b64" not in data:
+        return jsonify({"error": "Missing audio_b64"}), 400
+
+    audio_b64 = data.get("audio_b64", "")
+    if not audio_b64:
+        return jsonify({"error": "Empty audio"}), 400
+    try:
+        audio_bytes = __import__("base64").b64decode(audio_b64)
+    except Exception:
+        return jsonify({"error": "Invalid base64"}), 400
+    if Config.DEBUG_ASR:
+        _save_debug_audio(audio_bytes)
+    audio_bytes = _convert_audio_to_wav(audio_bytes)
+
+    # 服务端节流：cooldown 内重复上报则忽略（客户端也会自我节流）
+    uid = g.user["uid"]
+    cooldown = max(1, int(getattr(Config, "SENSING_COOLDOWN", 60)))
+    last_ts = db.get_last_sensing_time(uid)
+    if last_ts:
+        try:
+            from datetime import datetime
+            last_dt = datetime.strptime(last_ts, "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - last_dt).total_seconds() < cooldown:
+                return jsonify({"success": True, "recorded": False,
+                                "cooldown": True, "text": ""})
+        except Exception:
+            pass
+
+    try:
+        res = asr_model.generate(
+            input=audio_bytes,
+            use_itn=True,
+            batch_size_s=Config.ASR_BATCH_SIZE_SECONDS,
+            language="zh",
+        )
+        recognized_text = res[0].get("text", "").strip() if res else ""
+    except Exception as e:
+        return jsonify({"error": "ASR processing failed"}), 500
+
+    # 丢弃无文本或过短（<3 字）的识别结果，不落盘（多为噪声/环境音误触发）
+    if len(recognized_text) < 3:
+        return jsonify({"success": True, "recorded": False, "text": ""})
+
+    try:
+        event_id = db.add_sensing_event(
+            user_id=uid,
+            text=recognized_text,
+            source=data.get("source", "") or "sensing",
+            rms_level=float(data.get("rms_level", 0.0) or 0.0),
+            chat_id=data.get("chat_id"),
+        )
+    except Exception as e:
+        return jsonify({"error": "Database error"}), 500
+    return jsonify({"success": True, "recorded": True, "event_id": event_id,
+                    "text": recognized_text})
+
+
 # ── 人格系统 V3 ──
 
 @app.route("/api/v3/card/list", methods=["GET"])

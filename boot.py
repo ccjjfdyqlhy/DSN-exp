@@ -20,6 +20,7 @@ from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from api.vision import vision_bp, init_vision_api
 from api.alarm import alarm_bp, init_alarm_api
+from api.update import update_bp
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
 from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
@@ -420,6 +421,7 @@ def create_application():
     app.register_blueprint(heartbeat_bp)
     app.register_blueprint(vision_bp)
     app.register_blueprint(alarm_bp)
+    app.register_blueprint(update_bp)
     from api.async_tasks import async_task_bp
     app.register_blueprint(async_task_bp)
     from api.agent import agent_bp
