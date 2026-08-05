@@ -746,7 +746,13 @@ HIBERNATE_MEMORY_COOLDOWN=60
 
 ## 📄 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+暂未考虑 :/
+
+---
+
+## 链接
+
+[LINUX DO](https://linux.do/) - 下一代技术交流社区
 
 ---
 

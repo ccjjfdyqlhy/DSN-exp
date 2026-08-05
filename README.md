@@ -745,7 +745,13 @@ See [`.env.example`](.env.example) for all configuration options.
 
 ## 📄 License
 
-MIT License — see the [LICENSE](LICENSE) file for details.
+Not planned yet :/
+
+---
+
+## Link
+
+[LINUX DO](https://linux.do/) - The next generation community. Welcome!
 
 ---
 
