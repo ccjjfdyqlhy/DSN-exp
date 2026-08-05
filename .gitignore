@@ -39,3 +39,4 @@ AGENTS.md
 /prototypes/*
 /website/*
 /character_cards/*
+*.distilled.json
