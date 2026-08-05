@@ -1803,7 +1803,7 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [=]     async task      [k] skip reminder")
     print("  [r]     heartbeat       [f] silence alarm")
     print("  [l]     alarm status    [v] list cameras")
-    print("  [g]     select mic")
+    print("  [g]     select mic      [c] quick scan")
     print("  [q/Ctrl+C] quit         [n/m] vol-/+ (music)")
     print("  [d/e/f] prev/toggle/next (music mode)")
     print("=" * 43)
@@ -1880,6 +1880,127 @@ def print_cameras(client: DSNClient = None, save_shots: bool = True):
             else:
                 print(f"    ✗ {c['logical_name']} 抓帧失败")
     print("  --------------------------")
+
+
+# 摄像头同一时刻只允许一个线程抓帧（cv2 同一设备不能并发打开）
+_SCAN_CAPTURE_LOCK = threading.Lock()
+
+# 批量扫题: 客户端在停止按键一段空闲时间后自动结束本批，交由主模型汇总反馈
+SCAN_FINISH_IDLE = float(os.environ.get("DSN_SCAN_FINISH_IDLE", "6"))
+_scan_finish_timer: Optional[threading.Timer] = None
+_scan_finish_lock = threading.Lock()
+_scan_photo_count = 0
+
+
+def _arm_scan_finish(client: DSNClient):
+    """重置/启动批次结束定时器（每成功拍一张照片调用一次）。"""
+    global _scan_finish_timer
+    with _scan_finish_lock:
+        if _scan_finish_timer is not None:
+            _scan_finish_timer.cancel()
+        t = threading.Timer(SCAN_FINISH_IDLE, _finish_scan_batch, args=(client,))
+        t.daemon = True
+        _scan_finish_timer = t
+        t.start()
+
+
+def _finish_scan_batch(client: DSNClient):
+    """空闲超时 → 结束本批扫题, 后端等所有照片入库后一次性让主模型总结反馈。"""
+    global _scan_finish_timer, _scan_photo_count
+    with _scan_finish_lock:
+        _scan_finish_timer = None
+    _scan_photo_count = 0
+    print(f"\n  \U0001f3c1 拍照完成，等待全部识别入库后汇总...")
+    try:
+        resp = client._http_post("/api/scan/finish", json={
+            "chat_id": client.chat_id,
+        }, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            task_id = data.get("task_id")
+            if task_id and client.async_poller is not None:
+                client.async_poller.add_task(task_id)
+            else:
+                print("  本批扫题已结束，等待主模型汇总...")
+        else:
+            print(f"  \u274c 结束扫题失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"  \u274c 结束扫题失败: {e}")
+
+
+def _pick_scan_camera(client: DSNClient, cfg: dict) -> str:
+    """首次扫题: 枚举全部摄像头 → 询问主AI哪台正对桌面文档。失败返回空串。"""
+    if not HAS_CAMERA or not _enumerate_cameras():
+        print("  未检测到可用摄像头，无法扫题")
+        return ""
+    with _SCAN_CAPTURE_LOCK:
+        frames = _capture_all_cameras()
+    if not frames:
+        print("  抓帧失败，无法询问主AI")
+        return ""
+    print(f"  已拍摄 {len(frames)} 台摄像头，正在询问主AI选择扫描摄像头...")
+    try:
+        resp = client._http_post("/api/scan/select_camera",
+                                 json={"frames": frames}, timeout=90)
+        if resp.status_code == 200:
+            data = resp.json()
+            cam = (data.get("logical_name") or "").strip()
+            if cam:
+                return cam
+            print(f"  \u26a0\ufe0f {data.get('error') or '主AI未能确定扫描摄像头'}")
+        else:
+            print(f"  选择摄像头失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"  选择摄像头失败: {e}")
+    return ""
+
+
+def _scan_job(client: DSNClient, cfg: dict):
+    """后台线程: 选定扫描摄像头(仅首次) → 拍照 → 加入当前批次。
+
+    不阻塞主按键循环，可 2s 一张连拍；停止按键 SCAN_FINISH_IDLE 秒后自动结束本批，
+    后端等所有照片异步识别入库完毕后，一次性调用主模型总结反馈。
+    """
+    global _scan_photo_count
+    scan_camera = (cfg.get("scan_camera") or "").strip()
+    if not scan_camera:
+        scan_camera = _pick_scan_camera(client, cfg) or "cam0"
+        cfg["scan_camera"] = scan_camera
+        save_config(cfg)
+        print(f"  \u2705 已选定扫描摄像头: {scan_camera}（下次直接使用）")
+
+    with _SCAN_CAPTURE_LOCK:
+        img = _capture_camera_frame(scan_camera)
+    if not img:
+        print("  \u274c 抓帧失败，无法扫题")
+        return
+
+    try:
+        resp = client._http_post("/api/scan/quick", json={
+            "image_data": img,
+            "camera": scan_camera,
+            "chat_id": client.chat_id,
+        }, timeout=60)
+        if resp.status_code == 200:
+            _scan_photo_count += 1
+            print(f"  \U0001f4f7 已拍照并入本批（第 {_scan_photo_count} 张）")
+            print(f"  继续按 c 拍下一张；约 {int(SCAN_FINISH_IDLE)} 秒不操作自动汇总")
+            _arm_scan_finish(client)
+        else:
+            print(f"  \u274c 扫题提交失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"  \u274c 扫题提交失败: {e}")
+
+
+def quick_scan(client: DSNClient, cfg: dict):
+    """快速扫题（非阻塞）: 拍照并加入当前批次, 拍完后停止操作自动汇总。
+
+    首批拍完（停止 SCAN_FINISH_IDLE 秒）后后端等全部照片识别入库完毕，
+    一次性调用主模型总结并反馈；首次按下会询问主AI选择扫描摄像头并持久化。
+    """
+    print("\n  \U0001f4f7 快速扫题...")
+    threading.Thread(target=_scan_job, args=(client, cfg), daemon=True,
+                     name="quick-scan").start()
 
 
 def toggle_standby(client: DSNClient):
@@ -2293,6 +2414,10 @@ def main():
                         task_id = client.send_async(text)
                         if task_id:
                             async_poller.add_task(task_id)
+
+                # ── c: 快速扫题（拍照 → 识别入库 → 主模型回复）──
+                elif ch.lower() == "c":
+                    quick_scan(client, cfg)
 
                 # ── 音乐模式音量 ──
                 elif ch.lower() == "n":

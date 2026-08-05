@@ -19,6 +19,7 @@ from api.reminder import reminder_bp, init_reminder_api
 from api.plan import plan_bp, init_plan_api
 from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from api.vision import vision_bp, init_vision_api
+from api.scan import scan_bp, init_scan_api
 from api.alarm import alarm_bp, init_alarm_api
 from api.study_timetable import study_bp, init_study_timetable_api
 from db.plan_store import set_plan_db
@@ -430,6 +431,7 @@ def create_application():
     app.register_blueprint(agent_bp)
     from api.music import music_bp
     app.register_blueprint(music_bp)
+    app.register_blueprint(scan_bp)
     _t("认证 + 蓝图 + 数据库")
 
     # ── 数据库 ──
@@ -702,6 +704,8 @@ def create_application():
     init_heartbeat_api(db, task_manager, _auth_manager, engine)
     # 初始化视觉感知协调层（桥接本地客户端摄像头 ↔ 后端 VisionModel/场景变化）
     init_vision_api(db, engine, _auth_manager)
+    # 初始化快速扫题 API（拍照 → VLM 识别入库 → 主模型回复）
+    init_scan_api(_auth_manager)
     # 后台预热 VLM（摊薄首次 look_around 的冷启动，非阻塞）
     try:
         from api.vision import spawn_vision_warmup
