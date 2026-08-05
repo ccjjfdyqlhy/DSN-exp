@@ -187,6 +187,80 @@ class TaskTools:
             logger.error("list_reminders 失败: %s", e)
             return {"reminders": [], "error": str(e)}
 
+    # ── 提醒生命周期：取消/跳过/完成（与 api/reminder.py 语义一致） ──
+
+    def _get_reminder_task(self, task_id: str):
+        """取回任务；校验存在性与归属。返回 (mgr, task) 或 (None, None)。"""
+        mgr = self._mgr()
+        task = mgr.tasks.get(task_id) if task_id else None
+        if not task:
+            return None, None
+        if task.user_id != self._uid():
+            return None, None
+        return mgr, task
+
+    def cancel_reminder(self, task_id: str) -> dict:
+        """取消（删除）一条提醒/习惯/倒计时任务，不再触发。"""
+        from tasks import TaskStatus
+        mgr, task = self._get_reminder_task(task_id)
+        if not task:
+            return {"success": False, "error": f"提醒任务不存在或无权操作: {task_id}"}
+        task.status = TaskStatus.CANCELLED
+        task.completed_at = datetime.now()
+        mgr._save_task(task)
+        logger.info("cancel_reminder: task_id=%s text=%s", task_id,
+                    (task.params.get("text") or "")[:50])
+        return {"success": True, "action": "cancelled", "task_id": task_id,
+                "text": task.params.get("text", ""), "task_type": task.task_type.value}
+
+    def skip_reminder(self, task_id: str) -> dict:
+        """跳过一条提醒的本次触发（习惯任务会顺延到下一次）。"""
+        from tasks import TaskStatus
+        mgr, task = self._get_reminder_task(task_id)
+        if not task:
+            return {"success": False, "error": f"提醒任务不存在或无权操作: {task_id}"}
+        task.status = TaskStatus.SKIPPED
+        task.skip_count += 1
+        task.completed_at = datetime.now()
+        mgr._save_task(task)
+        next_time = None
+        new_id = None
+        if task.task_type == TaskType.HABIT and task.interval_seconds > 0:
+            next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
+            new_id = mgr.create_task(
+                task_type=TaskType.HABIT, user_id=self._uid(), chat_id=task.chat_id,
+                params={"text": task.params.get("text", "")},
+                priority=task.priority, scheduled_time=next_time,
+                interval_seconds=task.interval_seconds)
+        return {"success": True, "action": "skipped", "task_id": task_id,
+                "text": task.params.get("text", ""), "task_type": task.task_type.value,
+                "skip_count": task.skip_count,
+                "next_scheduled": next_time.isoformat() if next_time else None,
+                "next_task_id": new_id}
+
+    def done_reminder(self, task_id: str) -> dict:
+        """标记一条提醒为已完成（习惯任务会顺延到下一次）。"""
+        from tasks import TaskStatus
+        mgr, task = self._get_reminder_task(task_id)
+        if not task:
+            return {"success": False, "error": f"提醒任务不存在或无权操作: {task_id}"}
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = datetime.now()
+        mgr._save_task(task)
+        next_time = None
+        new_id = None
+        if task.task_type == TaskType.HABIT and task.interval_seconds > 0:
+            next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
+            new_id = mgr.create_task(
+                task_type=TaskType.HABIT, user_id=self._uid(), chat_id=task.chat_id,
+                params={"text": task.params.get("text", "")},
+                priority=task.priority, scheduled_time=next_time,
+                interval_seconds=task.interval_seconds)
+        return {"success": True, "action": "completed", "task_id": task_id,
+                "text": task.params.get("text", ""), "task_type": task.task_type.value,
+                "next_scheduled": next_time.isoformat() if next_time else None,
+                "next_task_id": new_id}
+
     # ── 异步推理（走 TaskManager 持久化 + 立即执行） ──
 
     def create_reasoner(self, question: str, context: str = "") -> dict:

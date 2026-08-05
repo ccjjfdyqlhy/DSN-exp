@@ -426,6 +426,18 @@ class ChatPipeline:
             evt["reply"] = reply_text
         q.put(evt)
 
+    @staticmethod
+    def _report_tool_error(ctx: PluginContext, func_name: str, error: str):
+        """向流式前端推送工具执行失败事件（客户端据此播报提示音）。"""
+        q = ctx.extra.get("_agent_progress_queue")
+        if q is None:
+            return
+        q.put({
+            "status": "tool_error",
+            "tool": func_name,
+            "error": str(error)[:200],
+        })
+
     async def _run_agent_loop(self, ctx: PluginContext) -> PluginContext:
         from datetime import datetime
         max_steps = ctx.agent_max_steps or 5
@@ -459,6 +471,10 @@ class ChatPipeline:
                 short = func.rsplit("-", 1)[-1] if "-" in func else func
                 if short:
                     tool_names.append(short)
+                if not r.get("success"):
+                    self._report_tool_error(
+                        ctx, func or r.get("skill", "") or "tool",
+                        r.get("error") or r.get("summary") or "未知错误")
 
             # 检测是否为原生 tool call 结果（有 function 和 tool_call_id 字段）
             has_native_results = any(

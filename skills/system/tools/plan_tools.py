@@ -11,7 +11,7 @@ class PlanTools:
     def __init__(self):
         pass
 
-    def mark_task(self, task_id: str, action: str) -> dict:
+    def mark_plan_task(self, task_id: str, action: str) -> dict:
         eng = self._ctx.get("plan_engine")
         if not eng:
             return {"error": "PlanEngine 未注入"}
