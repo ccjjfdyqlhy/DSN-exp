@@ -14,6 +14,21 @@ logger = logging.getLogger("ToolPlugin")
 _TOOL_RE = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL)
 
 
+def _classify_tool_error(exc: Exception) -> str:
+    """把工具执行异常归类为结构化 error_type，便于前端/模型区分错误原因。"""
+    msg = str(exc) or ""
+    if isinstance(exc, TypeError) and "missing" in msg:
+        return "INVALID_PARAM"
+    if isinstance(exc, ValueError):
+        if "工具不存在" in msg:
+            return "TOOL_NOT_FOUND"
+        if "工具方法不存在" in msg:
+            return "MISSING_METHOD"
+        if "无法解析" in msg:
+            return "UNRESOLVED_NAME"
+    return "EXEC_ERROR"
+
+
 class ToolPlugin(Plugin):
     name = "tool"
     description = "工具调用 — 原生 tool_calls + <tool> 标签降级"
@@ -77,7 +92,8 @@ class ToolPlugin(Plugin):
                     tc.get("function", {}).get("arguments", "{}"))
             except json.JSONDecodeError:
                 results.append({"function": func_name, "tool_call_id": tc["id"],
-                                "success": False, "error": "JSON 解析失败"})
+                                "success": False, "error": "JSON 解析失败",
+                                "error_type": "INVALID_JSON"})
                 logger.warning("  ✗ %s: JSON 解析失败", func_name)
                 continue
 
@@ -137,6 +153,7 @@ class ToolPlugin(Plugin):
                         "tool_call_id": tc["id"],
                         "success": False,
                         "error": str(e),
+                        "error_type": _classify_tool_error(e),
                     })
             else:
                 results.append({
@@ -144,6 +161,7 @@ class ToolPlugin(Plugin):
                     "tool_call_id": tc.get("id", ""),
                     "success": False,
                     "error": f"无法解析工具名: {func_name}",
+                    "error_type": "UNRESOLVED_NAME",
                 })
                 logger.warning("  ✗ %s: 无法解析", func_name)
 
@@ -187,7 +205,8 @@ class ToolPlugin(Plugin):
                 tool_data = json.loads(match.group(1).strip())
             except json.JSONDecodeError as e:
                 results.append({"tag": "<tool>", "success": False,
-                                "summary": f"JSON 解析: {e}"})
+                                "summary": f"JSON 解析: {e}",
+                                "error_type": "INVALID_JSON"})
                 continue
 
             skill_name = tool_data.get("skill", "")
@@ -204,7 +223,8 @@ class ToolPlugin(Plugin):
                                 "skill": skill_name, "params": params})
             except Exception as e:
                 results.append({"tag": "<tool>", "success": False,
-                                "summary": str(e)})
+                                "summary": str(e),
+                                "error_type": _classify_tool_error(e)})
 
         ctx.reply = _TOOL_RE.sub("", ctx.reply).strip()
         if results:
