@@ -386,6 +386,19 @@ def _inject_vision_fields(response):
     except Exception:
         logger.warning("注入 active_vision 配置失败", exc_info=True)
 
+    # 实时监控流推送配置：webUI 有本地摄像头流订阅时，让 minimal.py 周期推帧。
+    # 无人观看时不推送，避免无谓的抓帧和网络开销。
+    try:
+        from api.vision import stream_service as _stream_svc
+        if _stream_svc is not None:
+            data["streams"] = {
+                "enabled": _stream_svc.has_local_subscribers(),
+                "interval": float(getattr(Config, "STREAM_LOCAL_INTERVAL", 2.0)),
+            }
+            changed = True
+    except Exception:
+        logger.warning("注入 streams 推送配置失败", exc_info=True)
+
     # 闲置时感知配置（让 minimal.py 自配置闲置监听线程）
     # 兼容：sensing.enabled 沿用旧字段（其聆听能力现由 tracking 子系统提供），
     # 同时下发 tracking 配置供 tracking 聆听器自配置。
