@@ -1,9 +1,0 @@
-name: active_vision
-description: 主动视觉感知 v2 — 周期性摄像头观察
-enabled: true
-class: "plugins.builtin.active_vision_plugin:ActiveVisionPlugin"
-hooks:
-  - hook: PRE_PROCESS
-    priority: 26
-dependencies:
-  db: required

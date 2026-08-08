@@ -5,6 +5,20 @@
 
 ## 最新更新
 
+**主动视觉重构为 tracking 子系统服务 + 跟踪日志分天存储**  
+删除 `plugins/builtin/active_vision_plugin.py` 及其 yaml（不再用插件形式）。新建 `tracking/vision_observe.py` 的 `VisionObservationService`——与闲时感知语音类似：接收客户端帧 → 保存照片到媒体库（按天/用户/类型）→ `record_photo` + VisionModel 生成描述 → `record_text` 写入文本日志（`【视觉】`前缀）→ 场景变化检测写 task_notifications。`/api/vision/observation` 改为调用该服务。同时 `TrackingStore` 改为**按天分表**存储：事件落在 `tracking_events_YYYYMMDD`（每天一个独立单元，与媒体按天分目录一致），查询跨天聚合并按时间范围路由。
+
+**打卡系统（Check-in）**  
+新增基于 tracking 的每日打卡系统：minimal.py 按 `[d]` 用"AI 备注为主摄像头"录像 + 麦克风录音，再按停止上传后端 `/api/checkin/record` 合并存档。打卡日按凌晨4点边界归并，每天多次打卡、最早一次为有效打卡。音频 ASR 后以 `【打卡】` 前缀写入 tracking 用户日志。新增 `checkins` 表与 `api/checkin.py`（record/status/history）。前端按键：`[d]` 打卡、`[c]` 打卡状态。
+- **主 AI 查询**：`TrackingTools.query_checkin_stats` 让 AI 随时查询累计/连续打卡天数、今日状态。
+- **Web Admin 打卡日历**：`web_admin` 新增「打卡日历」面板——大字体连续打卡天数 + 本月打卡日历，点击打卡日可查看当日视频并播放（带 Range 支持的 `/api/admin/checkin/video`）。
+
+**tracking 访问安全加固**  
+AI 对用户跟踪系统为**只读 + 仅文本**：移除 `add_text_entry`/`add_file_entry` 写工具；AI 查询结果剥离全部文件路径（`media_path` 等），只返回文本（含音频 ASR 文本、`【打卡】` 记录）。多模态记录的 payload 统一为文本描述，路径只存 meta。闲时感知仅主动记录音频；模态转换只对音频 ASR，视频/图片/文件原样存档。
+
+**用户跟踪系统（tracking, infra）**  
+新增独立 `tracking/` 包：一个通过不断观察建模用户作息规律 / 生活节奏 / 项目进度的个人日志系统。包含 `TrackingStore`（统一 `tracking_events` + `tracking_models` 表）、`TrackingEngine`（观察聚合 + `model_routines`/`model_progress` 建模）、`AudioListeningMonitor`（聆听，从原 `IdleSensingMonitor` 抽取）、`VisionCapture`（拍照/录像 infra 原语）、`TrackingTools`（AI 技能查询）。闲时感知（仅音频）改依赖 tracking 的聆听能力，`minimal.py` 的 `IdleSensingMonitor` 退化为薄适配器；旧 `sensing_events` 表保留并回写兼容。新增技能 `query_observations`/`model_routines`/`model_progress`。拍照/录像尚未接入闲时感知。
+
 **VisionModel + VISION_OVERRIDE 文档管线重构 + Agent 步骤实时 TTS**  
 VisionModel：通用视觉多模态模型客户端（GLM-4.6V / GPT-4V），支持 `ask`、`classify_image`、`ocr_md`。VISION_OVERRIDE：启用后用 VisionModel 接管 OCR + 2md 整条管线，直接生成 Markdown + `.hmd` + `.md`。`process_scan` 自动兼容字符串路径，新增零参数 `process_last_scan`、`describe_image` 工具、`workspace_file find` 递归搜索。Agent 循环每步骤实时 TTS 进度反馈，用户不再等沉默期。移除废弃的 `start_ssp`/`stop_ssp`。
 
@@ -20,6 +34,8 @@ VisionModel：通用视觉多模态模型客户端（GLM-4.6V / GPT-4V），支�
 - [ ] 多 Agent 支持（1 用户多 Agent）
 - [ ] 视觉感知系统增强：CameraWatcher 后台抓帧 + 环境注入
 - [ ] VISION_OVERRIDE 体验打磨：更多视觉模型后端支持
+- [ ] 用户跟踪系统：把拍照/录像接入闲时感知（当前仅音频接入）
+- [ ] 用户跟踪系统：LLM 语义建模作息/项目进度，替代启发式统计
 
 
 ## 议题

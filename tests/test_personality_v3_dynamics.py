@@ -214,32 +214,50 @@ def test_end_to_end_v3_pipeline():
     pv3.set_personality_model(MockChat())
     card = pv3.load_default_card()
     pv3.upload_card(card)
-    pv3.ensure_user_bound(1)
 
-    prev_aff = None
-    for msg in ["你太厉害了！", "谢谢", "真棒", "好强"]:
-        r = pv3.analyze_interaction(1, msg, "不客气。")
-        assert r is not None
-        prev_aff = r.new_affinity
-        assert r.new_affinity > 0
+    # 蒸馏产物写在真实 character_cards/ 下，测试结束后清理，避免污染环境
+    distilled_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "character_cards", "exa.distilled.json")
+    existed_before = os.path.exists(distilled_path)
 
-    st = pv3.get_personality_status(1)
-    print(f"  aff={st['affinity_value']:.2f} level={st['affinity_level']['label']} "
-          f"evidence={st['evidence_total']} maturity={st['maturity']}")
-    assert st["total_interactions"] == 4
-    assert st["evidence_total"] >= 4
-    assert st["maturity"] >= 0.0
-    # L5: 审计事件流已记录
-    events = st.get("recent_events", [])
-    print(f"  recent_events={len(events)} first_rule={events[0]['rule_id'] if events else 'N/A'}")
-    assert len(events) >= 4
-    assert events[0]["card_id"] == "exa"
-    assert events[0]["affinity_delta"] != 0.0
-    # L4: 稳定特质中心 = 演化后的证据 mu（经 consolidate 后仍保留）
-    snap = pv3._state_manager.get_current_snapshot(1)
-    assert snap.stable_indicator_vector, "stable_indicator_vector 不应为空"
-    assert snap.stable_indicator_vector.get("F4", 0.5) >= 0.5
-    print("  PASSED")
+    try:
+        pv3.ensure_user_bound(1)
+        # 核心行为：登录/绑定阶段不得触发蒸馏（新用户无对话，不应生成产物）
+        assert not os.path.exists(distilled_path), \
+            "ensure_user_bound 不应触发蒸馏（新用户无对话）"
+
+        # 端到端链路需要蒸馏产物：显式执行一次蒸馏
+        pv3.set_distillation_model(main_chat=MockChat())
+        assert pv3.distill("exa") is not None
+
+        prev_aff = None
+        for msg in ["你太厉害了！", "谢谢", "真棒", "好强"]:
+            r = pv3.analyze_interaction(1, msg, "不客气。")
+            assert r is not None
+            prev_aff = r.new_affinity
+            assert r.new_affinity > 0
+
+        st = pv3.get_personality_status(1)
+        print(f"  aff={st['affinity_value']:.2f} level={st['affinity_level']['label']} "
+              f"evidence={st['evidence_total']} maturity={st['maturity']}")
+        assert st["total_interactions"] == 4
+        assert st["evidence_total"] >= 4
+        assert st["maturity"] >= 0.0
+        # L5: 审计事件流已记录
+        events = st.get("recent_events", [])
+        print(f"  recent_events={len(events)} first_rule={events[0]['rule_id'] if events else 'N/A'}")
+        assert len(events) >= 4
+        assert events[0]["card_id"] == "exa"
+        assert events[0]["affinity_delta"] != 0.0
+        # L4: 稳定特质中心 = 演化后的证据 mu（经 consolidate 后仍保留）
+        snap = pv3._state_manager.get_current_snapshot(1)
+        assert snap.stable_indicator_vector, "stable_indicator_vector 不应为空"
+        assert snap.stable_indicator_vector.get("F4", 0.5) >= 0.5
+        print("  PASSED")
+    finally:
+        if os.path.exists(distilled_path) and not existed_before:
+            os.remove(distilled_path)
 
 
 if __name__ == "__main__":
