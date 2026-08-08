@@ -387,16 +387,25 @@ def _inject_vision_fields(response):
         logger.warning("注入 active_vision 配置失败", exc_info=True)
 
     # 闲置时感知配置（让 minimal.py 自配置闲置监听线程）
+    # 兼容：sensing.enabled 沿用旧字段（其聆听能力现由 tracking 子系统提供），
+    # 同时下发 tracking 配置供 tracking 聆听器自配置。
     try:
         from config import Config
+        _sens_enabled = bool(getattr(Config, "SENSING_ENABLED", False))
+        _trk_enabled = bool(getattr(Config, "TRACKING_ENABLED", _sens_enabled))
         data["sensing"] = {
-            "enabled": bool(getattr(Config, "SENSING_ENABLED", False)),
+            "enabled": _sens_enabled,
+            "cooldown": int(getattr(Config, "SENSING_COOLDOWN", 60)),
+            "max_record_secs": float(getattr(Config, "SENSING_MAX_RECORD_SECS", 6.0)),
+        }
+        data["tracking"] = {
+            "enabled": _trk_enabled,
             "cooldown": int(getattr(Config, "SENSING_COOLDOWN", 60)),
             "max_record_secs": float(getattr(Config, "SENSING_MAX_RECORD_SECS", 6.0)),
         }
         changed = True
     except Exception:
-        logger.warning("注入 sensing 配置失败", exc_info=True)
+        logger.warning("注入 sensing/tracking 配置失败", exc_info=True)
 
     if changed:
         response.set_data(json.dumps(data, ensure_ascii=False))

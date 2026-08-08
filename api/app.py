@@ -468,14 +468,37 @@ def sensing_event():
     if len(recognized_text) < 3:
         return jsonify({"success": True, "recorded": False, "text": ""})
 
+    # 优先写入统一跟踪系统 (tracking) 事件表，并回写旧 sensing_events 兼容旧查询；
+    # 若 tracking 引擎未初始化则退回直接写 sensing_events。
+    # 同时把真实音频 WAV 存入用户媒体库，作为完整的多模态日记记录。
+    event_id = 0
+    audio_saved_path = None
     try:
-        event_id = db.add_sensing_event(
-            user_id=uid,
-            text=recognized_text,
-            source=data.get("source", "") or "sensing",
-            rms_level=float(data.get("rms_level", 0.0) or 0.0),
-            chat_id=data.get("chat_id"),
-        )
+        _tracking = app.config.get("TRACKING_ENGINE")
+        if _tracking is not None:
+            if getattr(Config, "TRACKING_SAVE_AUDIO", True):
+                try:
+                    audio_saved_path = _tracking.media.save_audio(
+                        audio_bytes, sample_rate=16000, uid=uid)
+                except Exception:
+                    audio_saved_path = None
+            event_id = _tracking.record_audio(
+                user_id=uid,
+                text=recognized_text,
+                source=data.get("source", "") or "sensing",
+                rms_level=float(data.get("rms_level", 0.0) or 0.0),
+                chat_id=data.get("chat_id"),
+                audio_path=audio_saved_path,
+                write_legacy=True,
+            )
+        else:
+            event_id = db.add_sensing_event(
+                user_id=uid,
+                text=recognized_text,
+                source=data.get("source", "") or "sensing",
+                rms_level=float(data.get("rms_level", 0.0) or 0.0),
+                chat_id=data.get("chat_id"),
+            )
     except Exception as e:
         return jsonify({"error": "Database error"}), 500
     return jsonify({"success": True, "recorded": True, "event_id": event_id,

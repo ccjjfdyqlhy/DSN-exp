@@ -1481,12 +1481,165 @@ def _cmd_help():
     /agent list                         列出所有 Agent 绑定关系
     /agent bind <AgentUID> <用户ID>     绑定 Agent 到用户
     /agent unbind <AgentUID>            解除绑定
+    /webcam list                        列出远程摄像头 (webcam)
+    /webcam add <url> [逻辑名] [--note 备注]  添加远程摄像头 (RTSP/HTTP)
+    /webcam remove <逻辑名>             删除远程摄像头
+    /webcam note <逻辑名> <备注>        写备注
+    /webcam test <逻辑名|url>           测试连通性
+    /webcam snapshot <逻辑名> [目录]    抓一帧保存为 JPEG
     /stop       安全停止服务器 (等同于 Ctrl+C)
     /reboot     自动重启控制台 (优雅停止后以同一命令重新启动)
     /help       显示此帮助信息
 
   其他输入将被转发给驻守模型 (如果已启用)。
 """)
+
+
+def _get_webcam_manager():
+    """获取 WebCamManager：优先用运行时协调器注入的实例，否则独立加载同一配置文件。"""
+    try:
+        from api.vision import coordinator
+        if coordinator is not None and coordinator.webcam_manager is not None:
+            return coordinator.webcam_manager
+    except Exception:
+        pass
+    try:
+        from tracking.webcam import WebCamManager
+        from config import Config
+        return WebCamManager(path=getattr(Config, "WEBCAM_CONFIG_PATH", "") or None)
+    except Exception:
+        return None
+
+
+def _cmd_webcam(args: str):
+    """远程摄像头 (webcam) 管理: list / add / remove / note / enable / disable / test / reload / snapshot"""
+    mgr = _get_webcam_manager()
+    if mgr is None:
+        print("  错误: 远程摄像头管理不可用（WebCamManager 加载失败）")
+        return
+    parts = args.split()
+    sub = parts[0].lower() if parts else ""
+    if sub not in ("list", "add", "remove", "note", "enable", "disable",
+                   "test", "reload", "snapshot"):
+        print("""
+  /webcam 命令用法:
+    /webcam list                        列出所有远程摄像头
+    /webcam add <url> [逻辑名] [--note 备注]   添加远程摄像头 (先测试连通性)
+         支持 rtsp:// 或 http(s):// (MJPEG / 单帧快照)，如
+         /webcam add rtsp://192.168.1.50:554/stream1 door --note 门口
+    /webcam remove <逻辑名>             删除远程摄像头
+    /webcam note <逻辑名> <备注>        写备注
+    /webcam enable <逻辑名>             启用
+    /webcam disable <逻辑名>            禁用 (不出现在列表/不参与抓帧)
+    /webcam test <逻辑名|url>           测试连通性
+    /webcam reload                      从配置文件重新加载
+    /webcam snapshot <逻辑名> [目录]    抓一帧保存为 JPEG
+
+  添加成功后，AI 可通过 look_around(camera=逻辑名) / list_cameras / set_camera_note
+  像调用本地物理摄像头一样调用远程摄像头。
+""")
+        return
+
+    if sub == "list":
+        cams = mgr.list()
+        if not cams:
+            print("  （暂无远程摄像头，可用 /webcam add <url> 添加）")
+            return
+        print(f"\n  共 {len(cams)} 个远程摄像头:")
+        print(f"  {'逻辑名':<14} {'状态':<6} {'索引':<8} 备注 / 地址")
+        for c in cams:
+            state = "启用" if c.get("enabled") else "禁用"
+            note = c.get("note") or ""
+            url = c.get("redacted_url") or c.get("url") or ""
+            suffix = f"  [{note}]" if note else ""
+            print(f"  {c['logical_name']:<14} {state:<6} {c.get('index', '-'):<8} {url}{suffix}")
+        print()
+        return
+
+    if sub == "reload":
+        ok = mgr.load()
+        print(f"  {'✓' if ok else '✗'} 已重新加载配置文件，现有 {mgr.count()} 台远程摄像头")
+        return
+
+    if sub == "add":
+        if len(parts) < 2:
+            print("  用法: /webcam add <url> [逻辑名] [--note 备注]")
+            return
+        url = parts[1]
+        name = ""
+        note = ""
+        rest = parts[2:]
+        # 解析 [逻辑名] [--note xxx]
+        if rest:
+            if rest[0].lower() == "--note":
+                note = " ".join(rest[1:]) if len(rest) > 1 else ""
+            else:
+                name = rest[0]
+                if len(rest) > 1 and rest[1].lower() == "--note":
+                    note = " ".join(rest[2:]) if len(rest) > 2 else ""
+        print(f"  正在测试连通性: {mgr._redact(url)} (可能等待数秒)...")
+        res = mgr.add(url, name=name, note=note, test=True)
+        if res.get("ok"):
+            print(f"  ✓ 已添加远程摄像头: {res['logical_name']} → {mgr._redact(url)}")
+            print(f"    AI 可调用 look_around(camera=\"{res['logical_name']}\") 观察该摄像头")
+        else:
+            print(f"  ✗ 添加失败: {res.get('error', '未知错误')}")
+        return
+
+    if sub == "remove":
+        if len(parts) < 2:
+            print("  用法: /webcam remove <逻辑名>")
+            return
+        res = mgr.remove(parts[1])
+        print(f"  {'✓' if res.get('ok') else '✗'} {res.get('error', f'已删除 {parts[1]}')}")
+        return
+
+    if sub == "note":
+        if len(parts) < 3:
+            print("  用法: /webcam note <逻辑名> <备注>")
+            return
+        res = mgr.set_note(parts[1], " ".join(parts[2:]))
+        print(f"  {'✓' if res.get('ok') else '✗'} {res.get('error', f'备注已更新: {parts[1]}')}")
+        return
+
+    if sub in ("enable", "disable"):
+        if len(parts) < 2:
+            print(f"  用法: /webcam {sub} <逻辑名>")
+            return
+        res = mgr.set_enabled(parts[1], sub == "enable")
+        print(f"  {'✓' if res.get('ok') else '✗'} {res.get('error', f'已{sub} {parts[1]}')}")
+        return
+
+    if sub == "test":
+        if len(parts) < 2:
+            print("  用法: /webcam test <逻辑名|url>")
+            return
+        target = parts[1]
+        url = target
+        if mgr.is_webcam(target):
+            cam = mgr.get(target)
+            url = cam.url
+        print(f"  正在测试: {mgr._redact(url)} ...")
+        res = mgr.test(url)
+        if res.get("ok"):
+            print(f"  ✓ 连通正常 ({res.get('width', '?')}x{res.get('height', '?')})")
+        else:
+            print(f"  ✗ 连接失败: {res.get('error', '未知错误')}")
+        return
+
+    if sub == "snapshot":
+        if len(parts) < 2:
+            print("  用法: /webcam snapshot <逻辑名> [保存目录]")
+            return
+        name = parts[1]
+        save_dir = parts[2] if len(parts) > 2 else ".dsn/webcam_snapshots"
+        print(f"  正在抓帧 {name} ...")
+        path = mgr.snapshot(name, save_dir)
+        if path:
+            print(f"  ✓ 快照已保存: {path}")
+        else:
+            print(f"  ✗ 抓帧失败（摄像头不可用或超时）")
+        return
 
 
 def _cmd_plugin(plugin_manager, name: str = None):
@@ -2247,6 +2400,10 @@ def _h_timer(am, db, pm, pe, cc, pv, arg):
     state = "开启" if enabled else "关闭"
     print(f"  ⏱ 管线阶段计时已{state}")
     print(f"  后续每次请求将在后端控制台输出各阶段耗时")
+
+
+def _h_webcam(am, db, pm, pe, cc, pv, arg):
+    _cmd_webcam(arg)
 
 
 _CMD_TABLE = {

@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime, date, timedelta
 from io import StringIO
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response, send_file
 from config import Config
 
 logger = logging.getLogger("web_admin")
@@ -172,6 +172,89 @@ def api_users():
         result = [{"uid": u["uid"], "display_name": u["display_name"],
                     "is_admin": u.get("is_admin", False)} for u in users]
     return jsonify({"users": result})
+
+@admin_bp.route("/checkin/calendar", methods=["GET"])
+def api_checkin_calendar():
+    """打卡日历数据：连续天数、累计天数、某月打卡日及媒体列表。"""
+    db = DB()
+    if not db:
+        return jsonify({"error": "DB unavailable"}), 503
+    try:
+        uid = int(request.args.get("uid", 0) or 0)
+    except Exception:
+        uid = 0
+    if not uid:
+        return jsonify({"error": "缺少 uid"}), 400
+    try:
+        year = int(request.args.get("year", datetime.now().year))
+        month = int(request.args.get("month", datetime.now().month))
+    except Exception:
+        year, month = datetime.now().year, datetime.now().month
+
+    total_days = db.count_checkin_days(uid)
+    streak = db.compute_checkin_streak(uid)
+    month_data = db.checkin_month(uid, year, month)
+    today = db.checkin_date_for(datetime.now())
+    today_rec = db.get_today_checkin(uid, today)
+    return jsonify({
+        "total_days": total_days,
+        "streak": streak,
+        "year": year,
+        "month": month,
+        "today_checked": today_rec is not None,
+        "today_checkin_time": (today_rec or {}).get("checkin_time", ""),
+        "days": month_data,
+    })
+
+
+@admin_bp.route("/checkin/video", methods=["GET"])
+def api_checkin_video():
+    """提供打卡视频文件播放（支持 HTTP Range，供 <video> 拖动进度）。"""
+    db = DB()
+    if not db:
+        return jsonify({"error": "DB unavailable"}), 503
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "缺少 path"}), 400
+    p = Path(path)
+    if not p.is_file():
+        return jsonify({"error": "文件不存在"}), 404
+    # 只允许访问 tracking 媒体目录下的文件（安全限制）
+    from config import Config as _Cfg
+    media_root = Path(getattr(_Cfg, "TRACKING_MEDIA_ROOT", ".dsn/tracking_media")).resolve()
+    try:
+        p_resolved = p.resolve()
+        media_root_str = str(media_root)
+        if not str(p_resolved).startswith(media_root_str):
+            return jsonify({"error": "越权访问"}), 403
+    except Exception:
+        pass
+
+    range_header = request.headers.get("Range", "")
+    size = p.stat().st_size
+    if range_header and range_header.startswith("bytes="):
+        try:
+            start_s, _, end_s = range_header[6:].partition("-")
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+            if start > end or start >= size:
+                return Response(status=416)
+            end = min(end, size - 1)
+            length = end - start + 1
+            data = p.read_bytes()[start:end + 1]
+            return Response(
+                data,
+                status=206,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(length),
+                    "Content-Type": "video/mp4",
+                },
+            )
+        except Exception as e:
+            logger.warning("视频 Range 解析失败: %s", e)
+    return send_file(str(p), mimetype="video/mp4")
 
 @admin_bp.route("/plugins", methods=["GET"])
 def api_plugins():
