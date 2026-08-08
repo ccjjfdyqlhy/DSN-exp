@@ -75,9 +75,22 @@ def add_cors_headers(response):
     return response
 
 
+def is_exempt_from_maintenance(path: str) -> bool:
+    """维护期间放行的基础设施请求路径判断。
+
+    - /api/maintenance/      维护系统自身的查询/控制 API
+    - /api/heartbeat         客户端心跳（持续同步提醒/视觉/流配置）
+    - /api/vision/           视觉与实时监控链路（抓帧回传 / 流推送 / 摄像头编目）
+                            —— 视频流是基础监控设施，不应受 maint 状态影响而中断
+    """
+    return (path.startswith("/api/maintenance/")
+            or path.startswith("/api/heartbeat")
+            or path.startswith("/api/vision/"))
+
+
 @app.before_request
 def check_maintenance():
-    if request.path.startswith("/api/maintenance/"):
+    if is_exempt_from_maintenance(request.path):
         return None
     ms = app.config.get("MAINTENANCE_SYSTEM")
     if ms is None:
@@ -468,14 +481,37 @@ def sensing_event():
     if len(recognized_text) < 3:
         return jsonify({"success": True, "recorded": False, "text": ""})
 
+    # 优先写入统一跟踪系统 (tracking) 事件表，并回写旧 sensing_events 兼容旧查询；
+    # 若 tracking 引擎未初始化则退回直接写 sensing_events。
+    # 同时把真实音频 WAV 存入用户媒体库，作为完整的多模态日记记录。
+    event_id = 0
+    audio_saved_path = None
     try:
-        event_id = db.add_sensing_event(
-            user_id=uid,
-            text=recognized_text,
-            source=data.get("source", "") or "sensing",
-            rms_level=float(data.get("rms_level", 0.0) or 0.0),
-            chat_id=data.get("chat_id"),
-        )
+        _tracking = app.config.get("TRACKING_ENGINE")
+        if _tracking is not None:
+            if getattr(Config, "TRACKING_SAVE_AUDIO", True):
+                try:
+                    audio_saved_path = _tracking.media.save_audio(
+                        audio_bytes, sample_rate=16000, uid=uid)
+                except Exception:
+                    audio_saved_path = None
+            event_id = _tracking.record_audio(
+                user_id=uid,
+                text=recognized_text,
+                source=data.get("source", "") or "sensing",
+                rms_level=float(data.get("rms_level", 0.0) or 0.0),
+                chat_id=data.get("chat_id"),
+                audio_path=audio_saved_path,
+                write_legacy=True,
+            )
+        else:
+            event_id = db.add_sensing_event(
+                user_id=uid,
+                text=recognized_text,
+                source=data.get("source", "") or "sensing",
+                rms_level=float(data.get("rms_level", 0.0) or 0.0),
+                chat_id=data.get("chat_id"),
+            )
     except Exception as e:
         return jsonify({"error": "Database error"}), 500
     return jsonify({"success": True, "recorded": True, "event_id": event_id,

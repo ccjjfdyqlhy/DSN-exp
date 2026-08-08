@@ -270,6 +270,27 @@ class ChatDBManager:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_sensing_events_user_time "
                              "ON sensing_events(user_id, created_at)")
 
+                # 打卡表 (check-in / attendance)
+                # checkin_date 为按"凌晨4点边界"归并的打卡日期 (YYYY-MM-DD)；
+                # 同一天多次打卡，保留最早一次为有效打卡，其余为附加记录。
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS checkins (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        checkin_date TEXT NOT NULL,          -- 4点边界归并的日期
+                        checkin_time TEXT NOT NULL,          -- 本次打卡时刻 (HH:MM:SS)
+                        media_path TEXT DEFAULT '',          -- 合并后的视频/音频存档路径
+                        video_path TEXT DEFAULT '',
+                        audio_path TEXT DEFAULT '',
+                        text TEXT DEFAULT '',                -- 【打卡】+ ASR 文本
+                        is_valid INTEGER DEFAULT 1,          -- 是否当日有效打卡（最早一次=1）
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(uid) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_checkins_user_date "
+                             "ON checkins(user_id, checkin_date)")
+
                 conn.commit()
                 self.logger.info("数据库表初始化完成")
             except sqlite3.Error as e:
@@ -438,6 +459,154 @@ class ChatDBManager:
         except sqlite3.Error as e:
             self.logger.error("获取最近闲置时感知时间失败: %s", e)
             return None
+
+    # ═══════════════════════════════════════════
+    # 打卡系统 (Check-in / Attendance)
+    # ═══════════════════════════════════════════
+
+    @staticmethod
+    def checkin_date_for(dt) -> str:
+        """按"凌晨4点边界"归并日期：当天 0:00-3:59:59 属于前一天。
+        例：2026-08-08 03:00 → '2026-08-07'；2026-08-08 04:00 → '2026-08-08'。
+        """
+        from datetime import timedelta
+        if dt.hour < 4:
+            dt = dt - timedelta(days=1)
+        return dt.strftime("%Y-%m-%d")
+
+    def add_checkin(self, user_id: int, checkin_date: str, checkin_time: str,
+                    media_path: str = "", video_path: str = "", audio_path: str = "",
+                    text: str = "") -> int:
+        """写入一条打卡记录。
+
+        同一天内：若该日尚无记录，则本条为有效打卡 (is_valid=1)；否则为附加记录 (is_valid=0)。
+        返回打卡记录 id。
+        """
+        conn = self._get_connection()
+        try:
+            existing = conn.execute(
+                "SELECT id FROM checkins WHERE user_id=? AND checkin_date=? LIMIT 1",
+                (user_id, checkin_date),
+            ).fetchone()
+            is_valid = 1 if existing is None else 0
+            cursor = conn.execute(
+                "INSERT INTO checkins (user_id, checkin_date, checkin_time, media_path, "
+                "video_path, audio_path, text, is_valid) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, checkin_date, checkin_time, media_path,
+                 video_path, audio_path, text, is_valid),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.Error as e:
+            self.logger.error("添加打卡记录失败: %s", e)
+            conn.rollback()
+            raise
+
+    def get_today_checkin(self, user_id: int, checkin_date: str) -> Optional[dict]:
+        """查询某打卡日（4点边界）的有效打卡记录（最早一次），无则返回 None。"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id, user_id, checkin_date, checkin_time, media_path, video_path, "
+                "audio_path, text, is_valid, created_at FROM checkins "
+                "WHERE user_id=? AND checkin_date=? ORDER BY is_valid DESC, id ASC LIMIT 1",
+                (user_id, checkin_date),
+            ).fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            self.logger.error("查询今日打卡失败: %s", e)
+            return None
+
+    def get_valid_checkin_time(self, user_id: int, checkin_date: str) -> Optional[str]:
+        """返回某打卡日最早一次（有效）打卡时刻 HH:MM:SS；无则 None。"""
+        row = self.get_today_checkin(user_id, checkin_date)
+        return row["checkin_time"] if row else None
+
+    def count_checkin_days(self, user_id: int) -> int:
+        """统计用户历史有效打卡天数（连续/累计，按打卡日去重）。"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT checkin_date) AS n FROM checkins "
+                "WHERE user_id=? AND is_valid=1",
+                (user_id,),
+            ).fetchone()
+            return int(row["n"]) if row else 0
+        except sqlite3.Error as e:
+            self.logger.error("统计打卡天数失败: %s", e)
+            return 0
+
+    def query_checkins(self, user_id: int, limit: int = 30) -> list[dict]:
+        """查询用户打卡历史（按时间倒序）。"""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, user_id, checkin_date, checkin_time, media_path, video_path, "
+                "audio_path, text, is_valid, created_at FROM checkins "
+                "WHERE user_id=? ORDER BY id DESC LIMIT ?",
+                (user_id, max(1, int(limit))),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error as e:
+            self.logger.error("查询打卡历史失败: %s", e)
+            return []
+
+    def checkin_dates_set(self, user_id: int, limit: int = 1000) -> set[str]:
+        """返回用户全部有效打卡日（去重 set），供连续天数/日历计算。"""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT checkin_date FROM checkins "
+                "WHERE user_id=? AND is_valid=1 ORDER BY checkin_date DESC LIMIT ?",
+                (user_id, max(1, int(limit))),
+            ).fetchall()
+            return {r["checkin_date"] for r in rows}
+        except sqlite3.Error as e:
+            self.logger.error("获取打卡日期集合失败: %s", e)
+            return set()
+
+    def compute_checkin_streak(self, user_id: int) -> int:
+        """计算用户当前连续打卡天数。
+
+        以"今天"（自然日）为基准，按 checkin_date 从今天往前数连续天数；
+        若今天未打卡则从昨天往前数（保持"截至最近一次"的连续）。
+        """
+        from datetime import datetime, timedelta
+        dates = self.checkin_dates_set(user_id)
+        if not dates:
+            return 0
+        today = datetime.now().date()
+        streak = 0
+        # 若今天没打，则从昨天开始数（允许"昨天已连续、今天待打"的连续显示）
+        cursor = today if today.isoformat() in dates else (today - timedelta(days=1))
+        while cursor.isoformat() in dates:
+            streak += 1
+            cursor -= timedelta(days=1)
+        return streak
+
+    def checkin_month(self, user_id: int, year: int, month: int) -> list[dict]:
+        """查询某月的打卡日及其媒体列表（供日历面板）。
+
+        返回按 checkin_date 聚合：{date, checkins: [{id, checkin_time, media_path,
+        video_path, audio_path, text}]}。
+        """
+        prefix = f"{year:04d}-{month:02d}-"
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, user_id, checkin_date, checkin_time, media_path, video_path, "
+                "audio_path, text, is_valid, created_at FROM checkins "
+                "WHERE user_id=? AND checkin_date LIKE ? ORDER BY checkin_time ASC, id ASC",
+                (user_id, prefix + "%"),
+            ).fetchall()
+            by_date: dict[str, list[dict]] = {}
+            for r in rows:
+                by_date.setdefault(r["checkin_date"], []).append(dict(r))
+            return [{"date": d, "checkins": lst} for d, lst in sorted(by_date.items())]
+        except sqlite3.Error as e:
+            self.logger.error("查询打卡日历失败: %s", e)
+            return []
 
     def add_or_update_user(self, uid: int, nickname: str) -> None:
         """添加或更新用户信息"""
