@@ -236,6 +236,9 @@ class Config:
     WEBCAM_FRAME_TIMEOUT = float(_env("WEBCAM_FRAME_TIMEOUT", "8"))
     # 多台 webcam 并发抓帧的线程上限
     WEBCAM_MAX_FRAMES = int(_env("WEBCAM_MAX_FRAMES", "4"))
+    # 本地摄像头实时监控流的推送间隔（秒）：webUI 有本地流订阅时
+    # 心跳下发该值，minimal.py StreamPusher 按此周期抓帧推送到后端
+    STREAM_LOCAL_INTERVAL = float(_env("STREAM_LOCAL_INTERVAL", "2.0"))
 
     # ── 主动视觉感知 ──
     ACTIVE_VISION_ENABLED = _env("ACTIVE_VISION_ENABLED", "false").lower() == "true"

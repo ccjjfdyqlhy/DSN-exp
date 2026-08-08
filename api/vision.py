@@ -43,6 +43,8 @@ _auth_manager = None
 
 # 模块级单例协调器（init_vision_api 时创建，被 skill/heartbeat 懒读取）
 coordinator: Optional["VisionCoordinator"] = None
+# 模块级实时监控流服务（webUI MJPEG 流；heartbeat 据此下发本地推送配置）
+stream_service = None
 
 
 def init_vision_api(db=None, engine=None, auth_manager=None, webcams=None):
@@ -51,7 +53,7 @@ def init_vision_api(db=None, engine=None, auth_manager=None, webcams=None):
     :param webcams: 可选 WebCamManager 实例；提供后远程网络摄像头
                     与本地物理摄像头统一编目，AI 可同样调用。
     """
-    global _db, _engine, _auth_manager, coordinator
+    global _db, _engine, _auth_manager, coordinator, stream_service
     _db = db
     _engine = engine
     _auth_manager = auth_manager
@@ -59,6 +61,11 @@ def init_vision_api(db=None, engine=None, auth_manager=None, webcams=None):
         coordinator = VisionCoordinator()
     if webcams is not None:
         coordinator.register_webcam_manager(webcams)
+    # 实时监控流服务：webUI 监控页的 MJPEG 流 + 本地客户端推送帧入口
+    if stream_service is None:
+        from api.stream import VisionStreamingService
+        stream_service = VisionStreamingService(coordinator)
+        stream_service.start()
     logger.info("Vision API 已初始化 (coordinator=%s, webcams=%s)",
                 type(coordinator).__name__,
                 webcams.count() if webcams is not None else "N/A")
@@ -456,6 +463,29 @@ def vision_observation():
         return jsonify({"success": False, "error": str(e)}), 500
 
     return jsonify(result)
+
+
+@vision_bp.route("/api/vision/stream-frame", methods=["POST"])
+def vision_stream_frame():
+    """接收 minimal.py StreamPusher 推送的本地摄像头实时帧 → 写入监控流会话。
+
+    与 /api/vision/frame（on-demand 回传）隔离：本端点只服务 webUI 实时监控，
+    不经过 VisionCoordinator，不影响 look_around。
+    body: {"frames": [{logical_name, index, image_data}, ...]}
+    """
+    global stream_service
+    if stream_service is None:
+        return jsonify({"success": False, "error": "监控流服务不可用"}), 503
+    data = request.get_json(silent=True) or {}
+    frames = data.get("frames") or []
+    if not isinstance(frames, list):
+        return jsonify({"success": False, "error": "frames 需为数组"}), 400
+    try:
+        n = stream_service.ingest_frames(frames)
+    except Exception as e:
+        logger.error("接收监控流帧失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, "accepted": n})
 
 
 @vision_bp.route("/api/vision/frame", methods=["POST"])

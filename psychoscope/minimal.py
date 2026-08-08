@@ -666,6 +666,24 @@ def raw_pcm_to_wav_bytes(samples: np.ndarray, sr: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
+# ── 摄像头设备级访问锁 ──
+# StreamPusher（实时监控流）、VisionObserver（周期主动视觉）、心跳 on-demand
+# 回传（look_around）可能并发抓帧。cv2.VideoCapture 对同一本地设备并发打开
+# 经常失败/阻塞，导致抓帧失败、视频流断流。按 device_id 加锁串行化同一设备，
+# 不同设备仍可并行抓帧。
+_CAPTURE_LOCKS: dict[int, threading.Lock] = {}
+_CAPTURE_LOCKS_GUARD = threading.Lock()
+
+
+def _device_lock(device_id: int) -> threading.Lock:
+    with _CAPTURE_LOCKS_GUARD:
+        lock = _CAPTURE_LOCKS.get(device_id)
+        if lock is None:
+            lock = threading.Lock()
+            _CAPTURE_LOCKS[device_id] = lock
+        return lock
+
+
 def _capture_camera_frame(camera: str | int | None = None) -> Optional[str]:
     """本地 cv2 抓一帧 → JPEG(q75) → base64 data URL。失败返回 None。
 
@@ -677,12 +695,13 @@ def _capture_camera_frame(camera: str | int | None = None) -> Optional[str]:
         return None
     device_id = _resolve_camera(camera)
     try:
-        cap = _open_camera(device_id)
-        if not cap.isOpened():
-            log.warning("摄像头无法打开 (device_id=%s)", device_id)
-            return None
-        ret, frame = cap.read()
-        cap.release()
+        with _device_lock(device_id):
+            cap = _open_camera(device_id)
+            if not cap.isOpened():
+                log.warning("摄像头无法打开 (device_id=%s)", device_id)
+                return None
+            ret, frame = cap.read()
+            cap.release()
         if not ret:
             log.warning("摄像头读取画面失败")
             return None
@@ -1495,6 +1514,99 @@ class VisionObserver:
 
 
 # ════════════════════════════════════════════════════════════════
+# StreamPusher — 实时监控流推送：本机摄像头周期推帧 → webUI 实时画面
+# ════════════════════════════════════════════════════════════════
+
+class StreamPusher:
+    """响应 heartbeat 下发的 streams 配置，周期抓帧推送后端（供 webUI 监控页）。
+
+    与 on-demand（vision_request / look_around）完全隔离：
+    - 推送走独立端点 /api/vision/stream-frame，不占用请求-响应通道，
+      不会饿死 look_around
+    - 仅当后端 webUI 有本地摄像头流订阅时下发 enabled=true，客户端才推帧；
+      无人观看时后端下发 enabled=false，客户端停止，零开销
+    """
+
+    def __init__(self, client: "DSNClient"):
+        self._client = client
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._enabled = False
+        self._interval = 2.0
+        self._fail_count = 0
+        self._lock = threading.Lock()
+
+    def configure(self, enabled: bool, interval: float = 2.0) -> bool:
+        """更新配置；返回配置是否发生变化（供心跳判断是否需要启停）。"""
+        enabled = bool(enabled)
+        interval = float(interval or 2.0)
+        changed = (enabled != self._enabled) or (interval != self._interval)
+        self._enabled = enabled
+        self._interval = interval
+        return changed
+
+    def start(self):
+        with self._lock:
+            if self._running:
+                return
+            if not self._enabled:
+                log.info("StreamPusher 未启用 (streams.enabled=false)")
+                return
+            if not HAS_CAMERA:
+                log.warning("StreamPusher: opencv-python 未安装，无法推帧")
+                return
+            self._running = True
+            self._fail_count = 0
+            self._thread = threading.Thread(target=self._loop, daemon=True,
+                                            name="stream-pusher")
+            self._thread.start()
+        log.info("StreamPusher 已启动 (interval=%.1fs)", self._interval)
+
+    def stop(self):
+        with self._lock:
+            self._running = False
+            t = self._thread
+        if t:
+            # 线程可能正卡在抓帧/推送中，join 超时后仍让其自愈退出
+            # （_loop 会在下一轮检查 _running）；不阻塞心跳线程太久。
+            t.join(timeout=3)
+            if t.is_alive():
+                log.warning("StreamPusher: 线程未及时退出（可能在抓帧中），等待自愈")
+            with self._lock:
+                if self._thread is t:
+                    self._thread = None
+
+    def _loop(self):
+        while self._running:
+            try:
+                frames = _capture_all_cameras()
+                if frames:
+                    resp = self._client._http_post(
+                        "/api/vision/stream-frame",
+                        json={"frames": frames}, timeout=20)
+                    if resp.status_code == 200:
+                        self._fail_count = 0
+                        log.debug("StreamPusher: 已推送 %d 帧", len(frames))
+                    else:
+                        self._fail_count += 1
+                        log.debug("StreamPusher: 后端拒绝推送 HTTP %d",
+                                  resp.status_code)
+                else:
+                    self._fail_count = 0   # 无摄像头不视为失败
+            except Exception:
+                self._fail_count += 1
+                log.warning("StreamPusher: 推送失败", exc_info=True)
+            # 失败退避：连续失败时指数退避（最多 ~30s），
+            # 避免后端维护/网络异常期间高频刷屏；成功或恢复后自动回到正常间隔
+            backoff = min(30, (1 << min(self._fail_count, 5)) - 1) if self._fail_count else 0
+            # 可被 stop 中断的间隔等待
+            for _ in range(max(1, int(self._interval)) + backoff):
+                if not self._running:
+                    return
+                time.sleep(1)
+
+
+# ════════════════════════════════════════════════════════════════
 # HeartbeatPoller — 心跳 + 提醒轮询
 # ════════════════════════════════════════════════════════════════
 
@@ -1504,11 +1616,13 @@ class HeartbeatPoller:
 
     def __init__(self, client: "DSNClient", tts_queue: queue.Queue,
                  vision_observer: "VisionObserver | None" = None,
-                 sensing_monitor: "IdleSensingMonitor | None" = None):
+                 sensing_monitor: "IdleSensingMonitor | None" = None,
+                 stream_pusher: "StreamPusher | None" = None):
         self._client = client
         self._tts_queue = tts_queue
         self._vision_observer = vision_observer
         self._sensing_monitor = sensing_monitor
+        self._stream_pusher = stream_pusher
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_triggered: dict[str, dict] = {}
@@ -1601,6 +1715,18 @@ class HeartbeatPoller:
                 log.info("IdleSensingMonitor 配置更新: enabled=%s cooldown=%s max_record=%s",
                          se.get("enabled"), se.get("cooldown"), se.get("max_record_secs"))
                 self._sensing_monitor.start()  # 已 start 则 no-op
+
+        # ── 实时监控流推送：webUI 有本地摄像头流订阅时周期推帧到后端 ──
+        st = data.get("streams")
+        if st and self._stream_pusher is not None:
+            if self._stream_pusher.configure(
+                    st.get("enabled", False), st.get("interval", 2.0)):
+                log.info("StreamPusher 配置更新: enabled=%s interval=%s",
+                         st.get("enabled"), st.get("interval"))
+                if st.get("enabled"):
+                    self._stream_pusher.start()
+                else:
+                    self._stream_pusher.stop()
 
         # ── 按需视觉请求：抓一帧/多帧回传后端，唤醒阻塞中的 look_around ──
         vr = data.get("vision_request")
@@ -2439,8 +2565,9 @@ def main():
     sensing_mon = IdleSensingMonitor(client, recorder)
     checkin_rec = CheckinRecorder(client)
     vision_obs = VisionObserver(client)
+    stream_pusher = StreamPusher(client)
     reminder = HeartbeatPoller(client, client._tts_queue, vision_observer=vision_obs,
-                               sensing_monitor=sensing_mon)
+                               sensing_monitor=sensing_mon, stream_pusher=stream_pusher)
     reminder.start()
     async_poller = AsyncTaskPoller(client, client._tts_queue)
     async_poller.start()

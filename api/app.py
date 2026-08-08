@@ -75,9 +75,22 @@ def add_cors_headers(response):
     return response
 
 
+def is_exempt_from_maintenance(path: str) -> bool:
+    """维护期间放行的基础设施请求路径判断。
+
+    - /api/maintenance/      维护系统自身的查询/控制 API
+    - /api/heartbeat         客户端心跳（持续同步提醒/视觉/流配置）
+    - /api/vision/           视觉与实时监控链路（抓帧回传 / 流推送 / 摄像头编目）
+                            —— 视频流是基础监控设施，不应受 maint 状态影响而中断
+    """
+    return (path.startswith("/api/maintenance/")
+            or path.startswith("/api/heartbeat")
+            or path.startswith("/api/vision/"))
+
+
 @app.before_request
 def check_maintenance():
-    if request.path.startswith("/api/maintenance/"):
+    if is_exempt_from_maintenance(request.path):
         return None
     ms = app.config.get("MAINTENANCE_SYSTEM")
     if ms is None:
