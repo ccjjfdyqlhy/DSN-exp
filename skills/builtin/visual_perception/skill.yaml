@@ -25,7 +25,7 @@ tools:
             required: false
           camera:
             type: string
-            description: "目标摄像头逻辑名（可选，如 cam0 / cam1 / front）。首次调用时留空或填 'all' 会枚举所有摄像头并逐台描述；之后可按逻辑名单独调用某台"
+            description: "目标摄像头逻辑名（可选，如 cam0 / cam1 / front；也可以是后端添加的远程摄像头逻辑名，如 door / webcam0）。首次调用时留空或填 'all' 会枚举所有摄像头（本地+远程）并逐台描述；之后可按逻辑名单独调用某台。用 list_cameras 可查看全部可用的摄像头及备注"
             required: false
 
   - name: set_camera_note

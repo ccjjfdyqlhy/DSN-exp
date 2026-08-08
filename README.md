@@ -208,6 +208,25 @@ graph TB
 - **Look-around Dedup**: Repeated `look_around` within a short window reuses the last result instead of re-running capture + inference
 - **Fail-fast Fallback**: If the client is offline, `look_around` returns a fallback after 8s (was 20s) instead of hanging the whole reply
 
+### 👀 User Tracking System (infra)
+- **定位**: A personal behavior diary that models your routines / rhythm / project progress by continuously observing
+- **多模态记录**: photo (image) / video / audio / file / text — all recorded via `MediaManager` into user-isolated `tracking_events`
+- **独立加密库**: stored in a separate `tracking.db`; `payload`/`meta` AES-256-GCM encrypted (per-user derived keys)
+- **搜索**: keyword + time-range + type search (`search_events`)
+- **聆听**: `AudioListeningMonitor` captures ambient sound → ASR → archived; idle-time sensing audio depends on this (optional real-WAV saving via `TRACKING_SAVE_AUDIO`)
+- **观看**: `VisionCapture` infra primitives — photo / video / active audio capture
+- **建模**: Aggregates observations into `tracking_models` (rhythm / progress) with heuristic stats
+- **AI 技能**: `query_observations` / `query_models` / `model_routines` / `model_progress` / `query_checkin_stats` — **read-only, text-only** (all file paths stripped), strictly user-isolated, gated by `TRACKING_AI_ACCESS_ENABLED`
+- **闲时感知**: only actively records audio; only audio gets ASR-transcribed, other modalities archived as-is
+
+### 📅 Check-in System (打卡)
+- **每日主动记录**: press `[d]` → record with the "AI-noted primary camera" + mic → press again → upload & archive
+- **坚持打卡**: check-in day bucketed by 4am boundary; multiple check-ins/day, earliest is the valid one
+- **tracking 联动**: video/audio archived via `MediaManager`; ASR text written to tracking log with `【打卡】` prefix
+- **端点**: `POST /api/checkin/record`, `GET /api/checkin/status`, `GET /api/checkin/history`
+- **主 AI 查询**: `query_checkin_stats` tool — total days / streak / today status
+- **Web Admin 打卡日历**: big-font streak + monthly calendar; click a check-in day to view & play its videos
+
 ### 🔐 Auth System
 | Layer | Method | Priority | Use Case |
 |-------|--------|----------|----------|
@@ -333,7 +352,6 @@ DSN-exp/
 │   │       ├── tts_plugin.py       # TTS synthesis
 │   │       ├── tts_profile.py      # TTS profile management
 │   │       ├── asr_filter_plugin.py # ASR voice filter
-│   │       ├── active_vision_plugin.py # Camera watcher
 │   │       └── ...
 │   │   └── custom/             # Custom plugins
 │
@@ -402,6 +420,16 @@ DSN-exp/
 │   ├── document/               # Document processing (.hmd)
 │   └── models/clients.py       # VisionModel + OCRModel
 │
+├── 👀 User Tracking System (infra)
+│   ├── tracking/
+│   │   ├── core.py             # TrackingEngine — 多模态记录聚合 + 作息/进度建模
+│   │   ├── store.py            # TrackingStore — 按天分表存储 (tracking_events_YYYYMMDD)
+│   │   ├── media.py            # MediaManager — 拍照/录像/录音/文件 媒体按天落盘管理
+│   │   ├── audio_listen.py     # AudioListeningMonitor — 聆听（闲时感知音频依赖）
+│   │   ├── vision_capture.py   # VisionCapture — 拍照 / 录像 / 主动录音 (infra)
+│   │   ├── vision_observe.py   # VisionObservationService — 主动视觉（照片+VisionModel描述→日志）
+│   │   └── tools.py            # TrackingTools — AI 技能查询（只读）
+│
 ├── 🎤 Audio System
 │   ├── audio/infer.py          # VocalExp — GPT-SoVITS client
 │   └── TTS_profiles/           # TTS voice profiles
@@ -409,7 +437,8 @@ DSN-exp/
 ├── 🗣️ Voice API
 │   ├── api/app.py              # ASR recognize + passthrough endpoints
 │   ├── api/heartbeat.py        # Heartbeat notification polling
-│   └── api/alarm.py            # Alarm CRUD + dismiss
+│   ├── api/alarm.py            # Alarm CRUD + dismiss
+│   └── api/checkin.py          # Check-in (打卡) record/status/history
 │
 ├── 🖥️ Frontend Clients
 │   ├── psychoscope/

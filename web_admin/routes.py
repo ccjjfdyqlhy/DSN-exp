@@ -11,12 +11,113 @@ from pathlib import Path
 from datetime import datetime, date, timedelta
 from io import StringIO
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response, send_file
 from config import Config
 
 logger = logging.getLogger("web_admin")
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
+
+# ── 实时监控影像流 ──
+# 优先复用 api.vision 模块级单例（boot.py 的 init_vision_api 已创建并启动，
+# 与 heartbeat 下发的 streams 推送配置共享状态）；异常时兜底独立创建。
+
+
+def _get_stream_service():
+    try:
+        from api.vision import stream_service as _ss
+        if _ss is not None:
+            return _ss
+    except Exception:
+        pass
+    try:
+        from api.vision import coordinator
+        from api.stream import VisionStreamingService
+        svc = VisionStreamingService(coordinator)
+        svc.start()
+        return svc
+    except Exception:
+        return None
+
+
+@admin_bp.route("/vision/streams", methods=["GET"])
+def api_vision_streams():
+    """列出所有可监控摄像头（本地 + 远程），供监控页渲染。"""
+    from api.vision import coordinator
+    if coordinator is None:
+        return jsonify({"streams": [], "error": "VisionCoordinator 不可用"}), 503
+    try:
+        cams = coordinator.list_cameras()
+    except Exception as e:
+        logger.warning("列出监控摄像头失败: %s", e)
+        return jsonify({"streams": [], "error": str(e)}), 500
+    streams = []
+    svc = _get_stream_service()
+    for c in cams:
+        if c.get("kind") == "webcam" and not c.get("enabled", True):
+            continue  # 禁用的远程摄像头不展示
+        kind = c.get("kind", "local")
+        online = True
+        if kind == "local":
+            # 在线判定以最近收到推帧为准（svc.camera_online），
+            # 避免依赖客户端启动上报的 last_seen（会过期导致永远离线）
+            online = bool(svc and svc.camera_online(c["logical_name"]))
+        streams.append({
+            "logical_name": c["logical_name"],
+            "kind": kind,
+            "note": c.get("note", ""),
+            "online": online,
+            "url": c.get("url", ""),
+            "index": c.get("index"),
+        })
+    return jsonify({"streams": streams, "count": len(streams)})
+
+
+@admin_bp.route("/vision/stream/<path:name>", methods=["GET"])
+def api_vision_stream(name):
+    """单台摄像头的 MJPEG 实时流。webUI 用 <img> 直接引用。"""
+    from api.vision import coordinator
+    if coordinator is None:
+        return jsonify({"error": "VisionCoordinator 不可用"}), 503
+    svc = _get_stream_service()
+    if svc is None:
+        return jsonify({"error": "监控流服务不可用"}), 503
+    gen = svc.serve(name)
+    if gen is None:
+        return jsonify({"error": f"未知摄像头: {name}"}), 404
+    return Response(gen, mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@admin_bp.route("/vision/webcams", methods=["POST", "DELETE"])
+def api_admin_webcams():
+    """监控页用的远程摄像头管理代理（复用 admin 认证）。
+
+    POST  {url, name?, note?, test?}  添加
+    DELETE {name}                      删除
+    """
+    from api.vision import coordinator
+    if coordinator is None or coordinator.webcam_manager is None:
+        return jsonify({"error": "远程摄像头管理不可用（WebCamManager 未注入）"}), 503
+    mgr = coordinator.webcam_manager
+    data = request.get_json(silent=True) or {}
+    if request.method == "POST":
+        res = mgr.add(
+            url=data.get("url", ""),
+            name=data.get("name", ""),
+            note=data.get("note", ""),
+            test=bool(data.get("test", True)),
+        )
+        if not res.get("ok"):
+            return jsonify({"success": False, "error": res.get("error", "添加失败")}), 400
+        return jsonify({"success": True, "logical_name": res["logical_name"]})
+    # DELETE
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "缺少 name"}), 400
+    res = mgr.remove(name)
+    if not res.get("ok"):
+        return jsonify({"success": False, "error": res.get("error", "删除失败")}), 404
+    return jsonify({"success": True})
 
 def _import_main_components():
     from api import app as app_module
@@ -172,6 +273,89 @@ def api_users():
         result = [{"uid": u["uid"], "display_name": u["display_name"],
                     "is_admin": u.get("is_admin", False)} for u in users]
     return jsonify({"users": result})
+
+@admin_bp.route("/checkin/calendar", methods=["GET"])
+def api_checkin_calendar():
+    """打卡日历数据：连续天数、累计天数、某月打卡日及媒体列表。"""
+    db = DB()
+    if not db:
+        return jsonify({"error": "DB unavailable"}), 503
+    try:
+        uid = int(request.args.get("uid", 0) or 0)
+    except Exception:
+        uid = 0
+    if not uid:
+        return jsonify({"error": "缺少 uid"}), 400
+    try:
+        year = int(request.args.get("year", datetime.now().year))
+        month = int(request.args.get("month", datetime.now().month))
+    except Exception:
+        year, month = datetime.now().year, datetime.now().month
+
+    total_days = db.count_checkin_days(uid)
+    streak = db.compute_checkin_streak(uid)
+    month_data = db.checkin_month(uid, year, month)
+    today = db.checkin_date_for(datetime.now())
+    today_rec = db.get_today_checkin(uid, today)
+    return jsonify({
+        "total_days": total_days,
+        "streak": streak,
+        "year": year,
+        "month": month,
+        "today_checked": today_rec is not None,
+        "today_checkin_time": (today_rec or {}).get("checkin_time", ""),
+        "days": month_data,
+    })
+
+
+@admin_bp.route("/checkin/video", methods=["GET"])
+def api_checkin_video():
+    """提供打卡视频文件播放（支持 HTTP Range，供 <video> 拖动进度）。"""
+    db = DB()
+    if not db:
+        return jsonify({"error": "DB unavailable"}), 503
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "缺少 path"}), 400
+    p = Path(path)
+    if not p.is_file():
+        return jsonify({"error": "文件不存在"}), 404
+    # 只允许访问 tracking 媒体目录下的文件（安全限制）
+    from config import Config as _Cfg
+    media_root = Path(getattr(_Cfg, "TRACKING_MEDIA_ROOT", ".dsn/tracking_media")).resolve()
+    try:
+        p_resolved = p.resolve()
+        media_root_str = str(media_root)
+        if not str(p_resolved).startswith(media_root_str):
+            return jsonify({"error": "越权访问"}), 403
+    except Exception:
+        pass
+
+    range_header = request.headers.get("Range", "")
+    size = p.stat().st_size
+    if range_header and range_header.startswith("bytes="):
+        try:
+            start_s, _, end_s = range_header[6:].partition("-")
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+            if start > end or start >= size:
+                return Response(status=416)
+            end = min(end, size - 1)
+            length = end - start + 1
+            data = p.read_bytes()[start:end + 1]
+            return Response(
+                data,
+                status=206,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(length),
+                    "Content-Type": "video/mp4",
+                },
+            )
+        except Exception as e:
+            logger.warning("视频 Range 解析失败: %s", e)
+    return send_file(str(p), mimetype="video/mp4")
 
 @admin_bp.route("/plugins", methods=["GET"])
 def api_plugins():
