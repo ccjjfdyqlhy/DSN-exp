@@ -174,7 +174,6 @@ async def _dispatch_filtered(self, hook, ctx, plugin_filter):
 |----------|------|------|------|
 | 15 | `world` | `world/plugin.py` | 注入世界状态 + 命运提示 + 预叙事 |
 | 22 | `impression` | `plugins/builtin/impression_plugin.py` | 注入用户印象 |
-| 26 | `active_vision` | `plugins/builtin/active_vision_plugin.py` | 注入视觉观察 |
 | 28 | `vision` | `plugins/builtin/vision_plugin.py` | 图片→文字描述（并行路径） |
 | 30 | `memory` | `plugins/builtin/memory_plugin.py` | 记忆注入组装 full_history |
 | 39 | `notebook` | `plugins/builtin/notebook/notebook_plugin.py` | 定期提示写观察笔记 |
@@ -320,7 +319,6 @@ engine.plugin_manager.register(ScriptPlugin(engine=..., ...))
 | `script_ooc`, `script_ooc_soft`, `script_ooc_redirect`, `script_replayed`, `script_progressed`, `script_completed`, `script_key_points`, `chapter_advanced` | ScriptPlugin | 剧本状态 |
 | `world_snapshot`, `world_activated`, `pre_narrative`, `narrative`, `narrative_speaker`, `_action_narrator` | WorldPlugin | 世界状态 |
 | `impression_count`, `suggest_ssp` | ImpressionPlugin | 印象计数 |
-| `active_vision_observation` | ActiveVisionPlugin | 最新视觉观察 |
 | `image_description`, `image_data_url` | VisionPlugin | 图片描述 |
 | `confirm_requested` | ToolPlugin | 确认请求信号 |
 | `ssp_active`, `ssp_stopped`, `ssp_requested` | SSPPlugin (未注册) | SSP 状态 |

@@ -654,6 +654,18 @@ def raw_pcm_to_wav_b64(samples: np.ndarray, sr: int = SAMPLE_RATE) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def raw_pcm_to_wav_bytes(samples: np.ndarray, sr: int = SAMPLE_RATE) -> bytes:
+    """把 PCM float 样本数组编码为 WAV 字节（用于上传打卡音频）。"""
+    int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(int_samples.tobytes())
+    return buf.getvalue()
+
+
 def _capture_camera_frame(camera: str | int | None = None) -> Optional[str]:
     """本地 cv2 抓一帧 → JPEG(q75) → base64 data URL。失败返回 None。
 
@@ -1579,8 +1591,9 @@ class HeartbeatPoller:
                          av.get("enabled"), av.get("interval"), av.get("camera", ""))
                 self._vision_observer.start()  # 已 start 则 no-op
 
-        # ── 闲置时感知：用 heartbeat 下发的配置自配置 IdleSensingMonitor ──
-        se = data.get("sensing")
+        # ── 闲置时感知（聆听）：用 heartbeat 下发的 tracking/sensing 配置自配置 ──
+        # 聆听能力现由 tracking 子系统（用户跟踪系统 infra）提供，优先用 tracking 配置。
+        se = data.get("tracking") or data.get("sensing")
         if se and self._sensing_monitor is not None:
             if self._sensing_monitor.configure(
                     se.get("enabled", False), se.get("cooldown", 60),
@@ -1846,139 +1859,74 @@ class VoiceRecorder:
 
 
 # ════════════════════════════════════════════════════════════════
-# IdleSensingMonitor — 闲置时感知
-# 未按 Enter 录音时后台监听麦克风，感知到响动 → 捕捉片段 → POST /api/sensing/event
-# 后端 ASR 存档。配置由 heartbeat 响应的 sensing 字段自配置（configure→start）。
+# IdleSensingMonitor — 闲置时感知（聆听）
+# 聆听能力由独立 tracking 子系统（用户跟踪系统 infra）的 AudioListeningMonitor 提供。
+# 本适配器把 tracking 的聆听器接入本客户端：transport 负责把捕捉到的音频转 WAV base64
+# 上报后端 /api/sensing/event（后端落库到统一 tracking_events，并回写旧 sensing_events）。
+# 配置由 heartbeat 响应的 tracking / sensing 字段自配置（configure→start）。
 # ════════════════════════════════════════════════════════════════
 
 class IdleSensingMonitor:
+    """适配 tracking.AudioListeningMonitor 的闲置聆听器（保持原接口 configure/start/stop/enabled）。
+
+    原实现（监听 + 上报）已抽取到 tracking/audio_listen.py，此处仅做依赖绑定：
+      - is_busy:  正式录音占用麦克风时让出
+      - transport_send: 捕捉到音频后转 base64 上报后端
+    """
+
     def __init__(self, client: DSNClient, recorder: VoiceRecorder):
         self._client = client
         self._recorder = recorder
-        self._running = False
-        self._enabled = False
-        self._cooldown = 60
-        self._max_record_secs = 6.0
-        self._last_event_ts = 0.0
-        self._thread: Optional[threading.Thread] = None
+        self._inner = None
+        self._pending_enabled = False
+        self._pending_cooldown = 60
+        self._pending_max_record = 6.0
+        self._instantiated = False
+
+    def _ensure_inner(self):
+        if self._instantiated:
+            return
+        self._instantiated = True
+        from tracking.audio_listen import AudioListeningMonitor
+
+        def _is_busy() -> bool:
+            return bool(self._recorder.is_recording or _SENSING_PAUSE.is_set())
+
+        def _transport(audio: np.ndarray):
+            self._send_event(audio)
+
+        self._inner = AudioListeningMonitor(
+            transport_send=_transport,
+            is_busy=_is_busy,
+            device_index=VoiceRecorder._device_index() if HAS_PVRECORDER else -1,
+        )
+        # 应用此前缓存的配置
+        self._inner.configure(self._pending_enabled, self._pending_cooldown,
+                              self._pending_max_record)
 
     def configure(self, enabled: bool, cooldown: int, max_record_secs: float) -> bool:
-        enabled = bool(enabled)
-        cooldown = max(1, int(cooldown or 60))
-        max_record_secs = max(1.0, float(max_record_secs or 6.0))
-        changed = (enabled != self._enabled) or (cooldown != self._cooldown) \
-            or (max_record_secs != self._max_record_secs)
-        self._enabled = enabled
-        self._cooldown = cooldown
-        self._max_record_secs = max_record_secs
-        return changed
+        self._pending_enabled = bool(enabled)
+        self._pending_cooldown = max(1, int(cooldown or 60))
+        self._pending_max_record = max(1.0, float(max_record_secs or 6.0))
+        if self._instantiated:
+            return self._inner.configure(self._pending_enabled, self._pending_cooldown,
+                                         self._pending_max_record)
+        # 未实例化时先缓存，返回"需要 start"标记
+        return self._pending_enabled
 
     def start(self):
-        if self._running:
+        self._ensure_inner()
+        if self._inner is None:
             return
-        if not self._enabled:
-            log.info("IdleSensingMonitor 未启用 (sensing.enabled=false)")
-            return
-        if not HAS_PVRECORDER:
-            log.warning("IdleSensingMonitor: pvrecorder 未安装，无法监听")
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-        log.info("IdleSensingMonitor 已启动 (cooldown=%ds, max_record=%.1fs)",
-                 self._cooldown, self._max_record_secs)
+        self._inner.start()
 
     def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=2)
+        if self._inner is not None:
+            self._inner.stop()
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
-
-    def _loop(self):
-        while self._running:
-            if not self._enabled:
-                time.sleep(1)
-                continue
-            if self._recorder.is_recording or _SENSING_PAUSE.is_set():
-                time.sleep(0.5)
-                continue
-            if time.time() - self._last_event_ts < self._cooldown:
-                time.sleep(0.5)
-                continue
-            audio = self._listen_once()
-            if audio is None:
-                continue
-            self._send_event(audio)
-
-    def _listen_once(self) -> Optional[np.ndarray]:
-        """监听一轮：等触发→捕捉片段→返回音频；无可感知声音/被打断返回 None。"""
-        recorder = None
-        try:
-            recorder = PvRecorder(device_index=VoiceRecorder._device_index(), frame_length=512)
-        except Exception as e:
-            log.warning("IdleSensingMonitor: 打开麦克风失败 %s", e)
-            return None
-
-        capture: list[np.ndarray] = []
-        last_loud_ts = 0.0
-        trigger_ts = 0.0
-        consecutive_loud = 0
-        peak = 0.0
-        try:
-            recorder.start()
-            while self._running:
-                if not self._enabled or self._recorder.is_recording or _SENSING_PAUSE.is_set():
-                    return None
-                frame = recorder.read()
-                samples = np.array(frame, dtype=np.int16).astype(np.float32) / 32768.0
-                energy = float(np.sqrt(np.mean(samples ** 2)))
-                peak = max(peak, energy)
-                now = time.time()
-
-                if trigger_ts == 0.0:
-                    # 触发阶段：连续多帧超阈值才算一次响动，避免单帧噪声误触发
-                    if energy > SENSING_RMS_THRESHOLD:
-                        consecutive_loud += 1
-                    else:
-                        consecutive_loud = 0
-                    if consecutive_loud >= SENSING_DETECT_FRAMES:
-                        trigger_ts = now
-                        last_loud_ts = now
-                        capture.append(samples)  # 把触发帧一并纳入捕捉
-                else:
-                    # 捕捉阶段：从触发开始收集，直到静音超时或达到上限
-                    capture.append(samples)
-                    if energy > SENSING_RMS_THRESHOLD:
-                        last_loud_ts = now
-                    dur = now - trigger_ts
-                    sil = now - last_loud_ts
-                    if sil > SENSING_SILENCE_TIMEOUT or dur >= self._max_record_secs:
-                        break
-        except Exception:
-            log.warning("IdleSensingMonitor: 监听异常", exc_info=True)
-            return None
-        finally:
-            try:
-                recorder.stop()
-            except Exception:
-                logging.getLogger(__name__).warning("Stop operation failed", exc_info=True)
-            try:
-                recorder.delete()
-            except Exception:
-                logging.getLogger(__name__).warning("Delete/remove operation failed", exc_info=True)
-
-        if trigger_ts == 0.0 or not capture:
-            return None
-        dur = time.time() - trigger_ts
-        if dur < SENSING_MIN_RECORD_SECS:
-            return None
-        audio = np.concatenate(capture)
-        log.info("IdleSensingMonitor: 捕捉到响动 %.1fs (peak_rms=%.3f)",
-                 dur, peak)
-        return audio
+        return self._pending_enabled
 
     def _send_event(self, audio: np.ndarray):
         if not self._client.api_key:
@@ -1994,8 +1942,6 @@ class IdleSensingMonitor:
             }, timeout=30)
             data = resp.json() if resp.status_code == 200 else {}
             if resp.status_code == 200:
-                # 无论是否落盘（文本过短/服务端节流），都进入冷却，避免对同一环境音反复上报
-                self._last_event_ts = time.time()
                 if data.get("recorded"):
                     log.info("IdleSensingMonitor: 已存档 text=%s", data.get("text", "")[:40])
                 else:
@@ -2003,12 +1949,244 @@ class IdleSensingMonitor:
                              (data.get("text") or "")[:40])
             elif resp.status_code == 403:
                 log.info("IdleSensingMonitor: 服务端未启用感知，暂停监听")
-                self._enabled = False
+                self.configure(False, self._pending_cooldown, self._pending_max_record)
             else:
                 log.info("IdleSensingMonitor: 上报异常 code=%s recorded=%s",
                          resp.status_code, data.get("recorded"))
         except Exception:
             log.warning("IdleSensingMonitor: 上报失败", exc_info=True)
+
+
+# ════════════════════════════════════════════════════════════════
+# CheckinRecorder — 打卡录制器
+# 基于 tracking 子系统：按下按键 → 用"AI 备注为主摄像头"录像 + 麦克风录音
+# → 再按停止 → 上传后端 /api/checkin/record 合并存档 + ASR 写 tracking 日志。
+# ════════════════════════════════════════════════════════════════
+
+class CheckinRecorder:
+    def __init__(self, client: DSNClient):
+        self._client = client
+        self._recording = False
+        self._cap: Optional[cv2.VideoCapture] = None
+        self._writer = None
+        self._recorder: Optional[PvRecorder] = None
+        self._audio_frames: list[np.ndarray] = []
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._camera_device = -1
+        self._frame_size = (640, 480)
+        self._fps = 20
+        self._video_tmp: Optional[str] = None
+        self._audio_tmp: Optional[str] = None
+        # 真实录制统计（用于后端修正视频时长，避免"视频比实际短"）
+        self._start_ts = 0.0
+        self._frame_count = 0
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    @staticmethod
+    def _resolve_primary_camera(client: DSNClient) -> int:
+        """选择打卡用主摄像头（AI 备注为主/面向用户的），否则回退 CAMERA_DEVICE_ID。
+
+        优先：后端已登记摄像头中备注含"主"/"用户"/"正面"者；其次 CAMERA_DEVICE_ID。
+        """
+        primary = CAMERA_DEVICE_ID
+        try:
+            resp = client._http_get("/api/vision/cameras", timeout=8)
+            if resp.status_code == 200:
+                for c in resp.json().get("cameras", []):
+                    note = (c.get("note") or "").lower()
+                    if any(k in note for k in ("主", "用户", "正面", "正对")):
+                        idx = c.get("index")
+                        if isinstance(idx, int) and idx >= 0:
+                            primary = idx
+                            break
+        except Exception:
+            log.warning("解析主摄像头失败，回退 CAMERA_DEVICE_ID", exc_info=True)
+        return primary
+
+    def start(self):
+        if self._recording:
+            return
+        if not HAS_CAMERA:
+            print("  opencv-python 未安装，无法录像打卡")
+            return
+        if not HAS_PVRECORDER:
+            print("  pvrecorder 未安装，无法录音打卡")
+            return
+
+        # 让闲置监听让出麦克风
+        _SENSING_PAUSE.set()
+        time.sleep(0.15)
+
+        device = self._resolve_primary_camera(self._client)
+        self._camera_device = device
+        cap = _open_camera(device)
+        if not cap or not cap.isOpened():
+            print(f"  无法打开主摄像头 device{device}")
+            _SENSING_PAUSE.clear()
+            return
+        self._cap = cap
+
+        try:
+            self._recorder = PvRecorder(device_index=VoiceRecorder._device_index(), frame_length=512)
+        except Exception as e:
+            print(f"  无法打开麦克风: {e}")
+            cap.release()
+            _SENSING_PAUSE.clear()
+            return
+
+        # 准备临时视频/音频文件
+        import tempfile
+        _tmpdir = tempfile.gettempdir()
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        self._video_tmp = os.path.join(_tmpdir, f"checkin_video_{ts}.mp4")
+        self._audio_tmp = os.path.join(_tmpdir, f"checkin_audio_{ts}.wav")
+
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+        self._frame_size = (w, h)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self._writer = cv2.VideoWriter(self._video_tmp, fourcc, self._fps, (w, h))
+
+        self._audio_frames = []
+        self._stop_event.clear()
+        self._start_ts = time.time()
+        self._frame_count = 0
+        self._recording = True
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+        print(f"\n  📌 打卡录制中... (再按一次停止)  cam={device}")
+        _play_beep(self._client, 880)
+
+    def stop(self):
+        if not self._recording:
+            return
+        self._recording = False
+        self._stop_event.set()
+
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3.0)
+        try:
+            if self._writer:
+                self._writer.release()
+            if self._cap:
+                self._cap.release()
+            if self._recorder:
+                self._recorder.stop()
+                self._recorder.delete()
+        except Exception:
+            log.warning("停止打卡录制失败", exc_info=True)
+        self._recorder = None
+        self._writer = None
+        self._cap = None
+        _SENSING_PAUSE.clear()
+
+        # 收集音频帧 → WAV 临时文件
+        audio_wav = b""
+        if self._audio_frames:
+            try:
+                audio = np.concatenate(self._audio_frames)
+                audio_wav = raw_pcm_to_wav_bytes(audio)
+                with open(self._audio_tmp, "wb") as f:
+                    f.write(audio_wav)
+            except Exception:
+                log.warning("保存打卡音频失败", exc_info=True)
+
+        video_ok = os.path.exists(self._video_tmp) and os.path.getsize(self._video_tmp) > 0
+        audio_ok = bool(audio_wav) and os.path.exists(self._audio_tmp)
+
+        if not video_ok and not audio_ok:
+            print("  打卡录制过短，忽略")
+            self._cleanup_tmp()
+            return
+
+        # 计算真实录制时长与视频实际帧率（供后端修正视频时长）
+        real_duration = max(0.0, time.time() - self._start_ts)
+        actual_fps = self._frame_count / real_duration if real_duration > 0.1 else float(self._fps)
+
+        _play_beep(self._client, 440)
+        print(f"  正在上传打卡... (录 {real_duration:.1f}s, 实际fps≈{actual_fps:.1f})")
+        self._upload(video_ok, audio_ok, duration=real_duration, fps=actual_fps)
+        self._cleanup_tmp()
+
+    def _capture_loop(self):
+        # 以节拍控制摄像头读取，尽量贴近目标 fps；同时持续读麦克风
+        frame_interval = 1.0 / max(1, self._fps)
+        next_frame_ts = time.time()
+        try:
+            self._recorder.start()
+            while self._recording and not self._stop_event.is_set():
+                # 麦克风帧（不阻塞视频节拍）
+                try:
+                    pf = self._recorder.read()
+                    samples = np.array(pf, dtype=np.int16).astype(np.float32) / 32768.0
+                    self._audio_frames.append(samples)
+                except Exception:
+                    pass
+                # 摄像头按节拍读帧
+                now = time.time()
+                if now >= next_frame_ts:
+                    ok, frame = self._cap.read()
+                    if ok and self._writer:
+                        self._writer.write(frame)
+                        self._frame_count += 1
+                    next_frame_ts = now + frame_interval
+        except Exception:
+            log.warning("打卡录制循环异常", exc_info=True)
+        finally:
+            try:
+                self._recorder.stop()
+            except Exception:
+                log.warning("打卡录音停止失败", exc_info=True)
+
+    def _upload(self, has_video: bool, has_audio: bool,
+                duration: float = 0.0, fps: float = 0.0):
+        if not self._client.api_key:
+            print("  未登录，无法上传打卡")
+            return
+        try:
+            files = {}
+            if has_video:
+                files["video"] = open(self._video_tmp, "rb")
+            if has_audio:
+                files["audio"] = open(self._audio_tmp, "rb")
+            data = {}
+            if duration > 0:
+                data["duration"] = str(round(duration, 2))
+            if fps > 0:
+                data["fps"] = str(round(fps, 2))
+            resp = requests.post(
+                f"{self._client.base}/api/checkin/record",
+                headers=self._client._headers(),
+                files=files, data=data, timeout=60,
+            )
+            for f in files.values():
+                try:
+                    f.close()
+                except Exception:
+                    pass
+            if resp.status_code == 200:
+                data = resp.json()
+                today = data.get("today_checkin_time", "")
+                print(f"  ✅ 今日已打卡 {today}  ({data.get('checkin_date','')})")
+                if data.get("text"):
+                    print(f"     ASR: {data['text'][:60]}")
+            else:
+                print(f"  打卡上传失败 HTTP {resp.status_code}: {resp.text[:120]}")
+        except Exception as e:
+            log.warning("打卡上传失败: %s", e)
+            print(f"  打卡上传异常: {e}")
+
+    def _cleanup_tmp(self):
+        for p in (self._video_tmp, self._audio_tmp):
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    log.warning("清理打卡临时文件失败", exc_info=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2034,7 +2212,8 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [=]     async task      [k] skip reminder")
     print("  [r]     heartbeat       [f] silence alarm")
     print("  [l]     alarm status    [v] list cameras")
-    print("  [g]     select mic")
+    print("  [g]     select mic      [d] check-in (打卡)")
+    print("  [c]     check-in status")
     print("  [q/Ctrl+C] quit         [n/m] vol-/+ (music)")
     print("  [d/e/f] prev/toggle/next (music mode)")
     print("=" * 43)
@@ -2120,6 +2299,25 @@ def toggle_standby(client: DSNClient):
         print(f"  Server State: {state}")
     except Exception as e:
         print(f"  Error: {e}")
+
+
+def print_checkin_status(client: DSNClient):
+    print("\n  --- Check-in (打卡) ---")
+    try:
+        resp = client._http_get("/api/checkin/status", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            date = data.get("checkin_date", "")
+            time_ = data.get("checkin_time", "")
+            if data.get("checked_in"):
+                print(f"  今日已打卡  ({date} {time_})")
+            else:
+                print(f"  今日未打卡  ({date})")
+            print(f"  累计打卡 {data.get('total_days', 0)} 天")
+        else:
+            print(f"  查询失败 HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"  查询异常: {e}")
 
 
 def print_system_info(client: DSNClient):
@@ -2239,6 +2437,7 @@ def main():
     # 初始化所有组件
     recorder = VoiceRecorder(client)
     sensing_mon = IdleSensingMonitor(client, recorder)
+    checkin_rec = CheckinRecorder(client)
     vision_obs = VisionObserver(client)
     reminder = HeartbeatPoller(client, client._tts_queue, vision_observer=vision_obs,
                                sensing_monitor=sensing_mon)
@@ -2397,6 +2596,18 @@ def main():
                 # ── s: standby ──
                 elif ch.lower() == "s":
                     toggle_standby(client)
+
+                # ── d: 打卡 (check-in) — 主摄像头录像 + 麦克风录音，再按停止上传 ──
+                # 注意：音乐模式下 d 是上一首，需让位给后面的音乐分支。
+                elif ch.lower() == "d" and not _music_mode:
+                    if checkin_rec.is_recording:
+                        checkin_rec.stop()
+                    else:
+                        checkin_rec.start()
+
+                # ── c: 打卡状态 ──
+                elif ch.lower() == "c":
+                    print_checkin_status(client)
 
                 # ── i: 系统信息 ──
                 elif ch.lower() == "i":

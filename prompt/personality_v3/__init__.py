@@ -69,6 +69,8 @@ class PersonalitySystemV3:
         self._enabled = True
         self._distillation_pending: dict[str, bool] = {}
         self._distill_lock = threading.Lock()
+        # 正在后台执行的蒸馏 card_id 集合，防止重复并发
+        self._distill_running: set[str] = set()
 
     def init_tables(self) -> None:
         logger.info("V3: 开始初始化持久层表...")
@@ -312,29 +314,57 @@ class PersonalitySystemV3:
             logger.error("V3: 无法绑定 — 默认角色卡不可用")
             return False
 
-        self.upload_card(default)
-
+        # 绑定阶段不执行蒸馏：新用户尚未产生对话，同步蒸馏（多次 LLM 调用）
+        # 会阻塞登录响应且属于白费功夫。只登记待蒸馏并触发后台预热，
+        # 产物由后台线程/维护任务补全，已有产物则直接复用。
         distilled = self._state_manager.load_distilled(default.card_id)
         if not distilled:
-            logger.info("V3: 默认角色卡未有蒸馏产物，执行首次蒸馏...")
-            try:
-                distilled = self._distillation_engine.run(default)
-                self._state_manager.save_distillation(distilled)
-                if distilled.foundation_description:
-                    default.distilled_description = distilled.foundation_description[:800]
-                from datetime import datetime as _dt, timezone as _tz
-                default.distilled_at = _dt.now(_tz.utc).isoformat()
-                self.upload_card(default)
-                logger.info("V3: 默认角色卡首次蒸馏完成 distillation_id=%s", distilled.distillation_id)
-            except Exception as e:
-                logger.warning("V3: 默认角色卡蒸馏失败 (将在首次使用性格模型时重试): %s", e)
-                # 即使蒸馏失败也绑定用户，后续 generate/analyze 会回退
+            logger.info("V3: 默认角色卡尚无蒸馏产物，标记待蒸馏（不阻塞登录）")
+            self.mark_distillation_needed(default.card_id)
+            self.warmup_distillation(default.card_id)
 
         self._state_manager.bind_user(uid, default.card_id, default.dynamic_config.seed)
         logger.info("V3: 用户 %d 已自动绑定默认角色卡 card_id=%s seed=%d (蒸馏=%s)",
                      uid, default.card_id, default.dynamic_config.seed,
-                     "成功" if distilled else "待完成")
+                     "可用" if distilled else "待后台完成")
         return True
+
+    def warmup_distillation(self, card_id: str = None, model_name: str = "openai") -> None:
+        """后台线程预热蒸馏（默认卡）。不阻塞调用方。
+
+        幂等：已有蒸馏产物 / 该卡蒸馏已在运行 时静默跳过。
+        登录绑定与系统启动时调用，产物最终供所有用户复用。
+        """
+        try:
+            card = self.get_card(card_id) if card_id else self.load_default_card()
+            if card is None:
+                logger.debug("V3: 后台蒸馏跳过 — 无可用角色卡")
+                return
+            card_id = card.card_id
+            if self._state_manager.load_distilled(card_id):
+                logger.debug("V3: 后台蒸馏跳过 — %s 已有蒸馏产物", card_id)
+                return
+            with self._distill_lock:
+                if card_id in self._distill_running:
+                    logger.debug("V3: 后台蒸馏跳过 — %s 正在蒸馏中", card_id)
+                    return
+                self._distill_running.add(card_id)
+        except Exception as e:
+            logger.warning("V3: 后台蒸馏预检失败: %s", e)
+            return
+
+        def _run():
+            try:
+                logger.info("V3: 后台蒸馏开始 card_id=%s", card_id)
+                self.distill(card_id, model_name=model_name)
+            except Exception as e:
+                logger.warning("V3: 后台蒸馏失败: %s", e)
+            finally:
+                with self._distill_lock:
+                    self._distill_running.discard(card_id)
+
+        threading.Thread(target=_run, daemon=True,
+                         name=f"v3-distill-{card_id}").start()
 
     def bind_user_card(self, uid: int, card_id: str) -> bool:
         logger.info("V3: 用户 %d 绑定角色卡 card_id=%s", uid, card_id)

@@ -71,6 +71,10 @@ def create_admin_app() -> Flask:
         token = request.headers.get("X-Admin-Token", "")
         if token == password:
             return
+        # 视频播放 <video> 标签不带自定义头，允许从 query 传 token
+        query_token = request.args.get("admin_token", "")
+        if query_token and query_token == password:
+            return
         return jsonify({"error": "Unauthorized"}), 401
 
     return app

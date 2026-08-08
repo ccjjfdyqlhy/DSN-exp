@@ -227,6 +227,16 @@ class Config:
     CAMERA_ENABLED = _env("CAMERA_ENABLED", "true").lower() == "true"
     CAMERA_DEVICE_ID = int(_env("CAMERA_DEVICE_ID", "0"))
 
+    # ── 远程摄像头 (webcam infra) ──
+    # 注册表持久化路径；经 /webcam 命令或 REST API 添加的远程摄像头保存在这里。
+    WEBCAM_CONFIG_PATH = _env("WEBCAM_CONFIG_PATH", ".dsn/webcams.json")
+    # 打开流超时（秒）：cv2 打开 RTSP/HTTP 流可能阻塞，超时即放弃
+    WEBCAM_OPEN_TIMEOUT = float(_env("WEBCAM_OPEN_TIMEOUT", "5"))
+    # 单帧抓取超时（秒）
+    WEBCAM_FRAME_TIMEOUT = float(_env("WEBCAM_FRAME_TIMEOUT", "8"))
+    # 多台 webcam 并发抓帧的线程上限
+    WEBCAM_MAX_FRAMES = int(_env("WEBCAM_MAX_FRAMES", "4"))
+
     # ── 主动视觉感知 ──
     ACTIVE_VISION_ENABLED = _env("ACTIVE_VISION_ENABLED", "false").lower() == "true"
     ACTIVE_VISION_INTERVAL = int(_env("ACTIVE_VISION_INTERVAL", "300"))
@@ -243,6 +253,18 @@ class Config:
     SENSING_MAX_RECORD_SECS = max(1.0, float(_env("SENSING_MAX_RECORD_SECS", "6.0")))
     # 允许 AI 通过工具查询闲置时感知记录（false 时工具返回未启用）。
     SENSING_AI_ACCESS_ENABLED = _env_bool("SENSING_AI_ACCESS_ENABLED", "false")
+
+    # ── 用户跟踪系统 (tracking, infra) ──
+    # 主开关：启用跟踪系统的聆听能力（闲时感知的音频部分依赖它）。
+    TRACKING_ENABLED = _env_bool("TRACKING_ENABLED", "false")
+    # 允许 AI 通过工具查询跟踪观察日志 / 建模结果（false 时工具返回未启用）。
+    TRACKING_AI_ACCESS_ENABLED = _env_bool("TRACKING_AI_ACCESS_ENABLED", "false")
+    # 拍照 / 录像（infra）媒体保存根目录。
+    TRACKING_MEDIA_ROOT = _env("TRACKING_MEDIA_ROOT", ".dsn/tracking_media")
+    # 独立加密数据库路径；为空则放在 <TRACKING_MEDIA_ROOT>/../tracking/tracking.db。
+    TRACKING_DB_PATH = _env("TRACKING_DB_PATH", "")
+    # 闲时感知音频是否同时把真实 WAV 存入用户媒体库（完整日记；关则只存识别文本）。
+    TRACKING_SAVE_AUDIO = _env_bool("TRACKING_SAVE_AUDIO", "true")
 
     # ═══════════════════════════════════════════════════════════════════════
     # 第七层: 高级功能

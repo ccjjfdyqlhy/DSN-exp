@@ -21,6 +21,7 @@ from api.heartbeat import heartbeat_bp, init_heartbeat_api
 from api.vision import vision_bp, init_vision_api
 from api.alarm import alarm_bp, init_alarm_api
 from api.update import update_bp
+from api.checkin import checkin_bp, init_checkin_api
 from db.plan_store import set_plan_db
 from db.chat import ChatDBManager
 from models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
@@ -428,6 +429,8 @@ def create_application():
     app.register_blueprint(agent_bp)
     from api.music import music_bp
     app.register_blueprint(music_bp)
+    from api.checkin import checkin_bp as _checkin_bp
+    app.register_blueprint(_checkin_bp)
     _t("认证 + 蓝图 + 数据库")
 
     # ── 数据库 ──
@@ -624,6 +627,12 @@ def create_application():
             prompt_engine.personality_v3 = personality_v3
             if Config.PERSONALITY_V3_OVERRIDE_V2:
                 prompt_engine.personality_v2 = None
+            # 后台预热默认卡蒸馏：不阻塞启动，也不在用户登录时触发；
+            # 产物全局共享，供所有用户复用（已有产物则自动跳过）。
+            try:
+                personality_v3.warmup_distillation()
+            except Exception:
+                _root_logger.debug("V3 默认卡后台预热蒸馏未启动", exc_info=True)
         except Exception:
             _root_logger.warning("Operation failed", exc_info=True)
     _t("人格系统 V3", disabled=not Config.PERSONALITY_V3_ENABLED)
@@ -640,10 +649,62 @@ def create_application():
         task_manager=task_manager, personality_v3=personality_v3,
     )
     app.config["ENGINE"] = engine
+
+    # ── 用户跟踪系统 (tracking, infra) ──
+    # 实例化 TrackingEngine（独立加密数据库 + 媒体库）并注入到系统技能上下文，
+    # 供 AI 查询/添加观察日志与建模结果。db 仅用于回写 legacy sensing_events 兼容。
+    tracking_engine = None
+    try:
+        from config import Config as _Cfg
+        from tracking import TrackingEngine
+        _media_root = getattr(_Cfg, "TRACKING_MEDIA_ROOT", ".dsn/tracking_media")
+        _db_path = getattr(_Cfg, "TRACKING_DB_PATH", "") or None
+        tracking_engine = TrackingEngine(db=db, media_root=_media_root, db_path=_db_path)
+        app.config["TRACKING_ENGINE"] = tracking_engine
+        if skill_registry is not None:
+            from tracking.tools import TrackingTools
+            for key, inst in list(skill_registry._tool_instances.items()):
+                cls = type(inst)
+                if key.startswith("system.") and cls is TrackingTools:
+                    try:
+                        cls.set_context(tracking_engine=tracking_engine, db=db)
+                    except Exception:
+                        _root_logger.warning("注入 tracking 技能上下文失败: %s", key)
+    except Exception:
+        _root_logger.warning("TrackingEngine 初始化失败", exc_info=True)
+
+    # ── 主动视觉观察服务（tracking 子系统内，替代原 active_vision 插件）──
+    # 接收客户端帧 → 保存照片 + VisionModel 描述 → 写入 tracking 日志 + 主动通知。
+    try:
+        from tracking.vision_observe import VisionObservationService
+        _vision_svc = VisionObservationService(tracking_engine=tracking_engine, db=db)
+        app.config["VISION_OBSERVATION_SERVICE"] = _vision_svc
+    except Exception:
+        _root_logger.warning("VisionObservationService 初始化失败", exc_info=True)
+
+    # 初始化打卡接口（基于 tracking + ASR）
+    try:
+        init_checkin_api(db=db, auth_manager=_auth_manager, asr_model=asr_model)
+    except Exception:
+        _root_logger.warning("Checkin API 初始化失败", exc_info=True)
+
     # 初始化心跳接口（需要 engine 来生成 AI 回复 + TTS）
     init_heartbeat_api(db, task_manager, _auth_manager, engine)
+    # 远程摄像头接入层：加载持久化的 webcam 注册表，与本地物理摄像头统一编目
+    webcam_manager = None
+    try:
+        from tracking.webcam import WebCamManager
+        from config import Config as _WcCfg
+        webcam_manager = WebCamManager(
+            path=getattr(_WcCfg, "WEBCAM_CONFIG_PATH", "") or None,
+            open_timeout=getattr(_WcCfg, "WEBCAM_OPEN_TIMEOUT", 5),
+            frame_timeout=getattr(_WcCfg, "WEBCAM_FRAME_TIMEOUT", 8),
+        )
+        app.config["WEBCAM_MANAGER"] = webcam_manager
+    except Exception:
+        _root_logger.warning("WebCamManager 初始化失败（远程摄像头不可用）", exc_info=True)
     # 初始化视觉感知协调层（桥接本地客户端摄像头 ↔ 后端 VisionModel/场景变化）
-    init_vision_api(db, engine, _auth_manager)
+    init_vision_api(db, engine, _auth_manager, webcams=webcam_manager)
     # 后台预热 VLM（摊薄首次 look_around 的冷启动，非阻塞）
     try:
         from api.vision import spawn_vision_warmup
