@@ -15,6 +15,7 @@ from typing import Optional
 from config import Config
 from db.chat import ChatDBManager, _tokenize
 from models import LMSummaryModel, EmbeddingClient
+from memory.topics import TopicManager
 
 logger = logging.getLogger("MemorySystem")
 
@@ -37,6 +38,12 @@ class MemorySystem:
         )
         self._lock = threading.Lock()
         self._init_table()
+        self._topics: TopicManager = TopicManager(
+            db=db,
+            memory_system=self,
+            summary_model=self.summary_model,
+            embedding_client=embedding_client,
+        )
 
     def _init_table(self):
 
@@ -55,9 +62,16 @@ class MemorySystem:
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        _mem_cols = [r[1] for r in conn.execute("PRAGMA table_info(memory_v2)").fetchall()]
+        if "topic_id" not in _mem_cols:
+            conn.execute("ALTER TABLE memory_v2 ADD COLUMN topic_id INTEGER DEFAULT NULL")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_v2_lookup "
             "ON memory_v2(user_id, chat_id, type, round)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mem_v2_topic "
+            "ON memory_v2(topic_id)"
         )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS memory_embeds (
@@ -73,6 +87,26 @@ class MemorySystem:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mem_embeds_lookup "
             "ON memory_embeds(user_id, chat_id, round)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS topics (
+                topic_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id           INTEGER NOT NULL,
+                chat_id           INTEGER NOT NULL,
+                title             TEXT,
+                start_round       INTEGER NOT NULL,
+                end_round         INTEGER,
+                summary           TEXT,
+                embedding         BLOB,
+                status            TEXT NOT NULL DEFAULT 'open',
+                created_at        TEXT DEFAULT (datetime('now')),
+                closed_at         TEXT,
+                last_activity_at  TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_topics_user_chat "
+            "ON topics(user_id, chat_id, status)"
         )
         conn.commit()
 
@@ -106,6 +140,7 @@ class MemorySystem:
         user_msg: str,
         assistant_reply: str,
         async_mode: bool = True,
+        topic_id: Optional[int] = None,
     ) -> Optional[int]:
         """对一轮对话生成 LLM 摘要并持久化。"""
         marked = (
@@ -119,16 +154,13 @@ class MemorySystem:
         if async_mode and Config.MEMORY_ASYNC_ENABLED:
             threading.Thread(
                 target=self._do_summarize,
-                args=(user_id, chat_id, round_idx, user_msg, assistant_reply),
+                args=(user_id, chat_id, round_idx, user_msg, assistant_reply, topic_id),
                 daemon=True,
             ).start()
             return None
-        return self._do_summarize(user_id, chat_id, round_idx, user_msg, assistant_reply)
+        return self._do_summarize(user_id, chat_id, round_idx, user_msg, assistant_reply, topic_id)
 
-    def _do_summarize(self, user_id, chat_id, round_idx, user_msg, assistant_reply):
-
-
-
+    def _do_summarize(self, user_id, chat_id, round_idx, user_msg, assistant_reply, topic_id=None):
         # run the summarization llm call
         try:
             summary = self.summary_model.summarize_dialog(
@@ -145,9 +177,9 @@ class MemorySystem:
             conn = self.db._get_connection()
             with self._lock:
                 cursor = conn.execute(
-                    "INSERT INTO memory_v2 (user_id, chat_id, type, round, content) "
-                    "VALUES (?, ?, 'exp', ?, ?)",
-                    (user_id, chat_id, round_idx, encrypted),
+                    "INSERT INTO memory_v2 (user_id, chat_id, type, round, content, topic_id) "
+                    "VALUES (?, ?, 'exp', ?, ?, ?)",
+                    (user_id, chat_id, round_idx, encrypted, topic_id),
                 )
                 memory_id = cursor.lastrowid
                 conn.commit()
@@ -241,8 +273,13 @@ class MemorySystem:
 
         # build context string from recent memories
     def assemble_context(
-        self, user_id: int, history: list[dict], cross_user_id: Optional[int] = None
+        self, user_id: int, history: list[dict], cross_user_id: Optional[int] = None,
+        chat_id: Optional[int] = None,
     ) -> list[dict]:
+        # 话题系统启用时: 话题组装 (原文 + 摘要 + 激活窗口)
+        if Config.TOPIC_ENABLED and chat_id and self._topics is not None and self.db is not None:
+            return self._topics.assemble_topic_context(user_id, chat_id, history, cross_user_id)
+
         memos = self._get_memos(user_id)
         exps = self._get_exp_memories(user_id)
         window = Config.MEMORY_CONTEXT_WINDOW_SIZE
@@ -686,6 +723,7 @@ class MemorySystem:
         detail_indices = payload.get("detail", [])
         auto_detail = payload.get("detail") is True
         count = payload.get("count", 5)
+        activate = bool(payload.get("activate", False))
 
         if isinstance(detail_indices, list) and detail_indices:
             detail = self.get_detail(user_id, chat_id, detail_indices)
@@ -698,6 +736,16 @@ class MemorySystem:
                 threshold=Config.MEMORY_SEARCH_THRESHOLD,
                 embedding_query=embedding_query if self._embedding_enabled else None,
             )
+            # 主动激活: 把命中记忆所属的话题持续打开
+            if activate and hits and self._topics is not None and Config.TOPIC_ENABLED:
+                pinned = []
+                for h in hits:
+                    tid = self._hit_topic_id(user_id, chat_id, h)
+                    if tid and self._topics.pin_topic(user_id, chat_id, tid):
+                        pinned.append(tid)
+                if pinned:
+                    logger.info("<recall> 主动激活话题: %s", pinned)
+
             search_text = self._format_search_results(hits, keywords)
             if auto_detail and hits:
                 indices = [h["round"] for h in hits if h.get("round") is not None]
@@ -707,6 +755,29 @@ class MemorySystem:
                     return search_text + "\n\n" + detail_text
             return search_text
 
+        return None
+
+    def _hit_topic_id(self, user_id: int, chat_id: int, hit: dict) -> Optional[int]:
+        """由召回命中行定位其所属话题 id。"""
+        try:
+            conn = self.db._get_connection()
+            row = conn.execute(
+                "SELECT topic_id FROM memory_v2 WHERE id = ? AND user_id = ?",
+                (hit["id"], user_id),
+            ).fetchone()
+            if row and row["topic_id"]:
+                return row["topic_id"]
+            round_idx = hit.get("round")
+            if round_idx is not None:
+                r = conn.execute(
+                    "SELECT topic_id FROM messages WHERE chat_id = ? AND round_index = ? "
+                    "AND topic_id IS NOT NULL LIMIT 1",
+                    (chat_id, round_idx),
+                ).fetchone()
+                if r:
+                    return r["topic_id"]
+        except Exception:
+            pass
         return None
 
     # =================================================================
