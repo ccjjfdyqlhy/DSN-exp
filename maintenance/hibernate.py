@@ -175,6 +175,7 @@ class HibernateManager:
                 user_msg=snap["message"],
                 assistant_reply=snap["reply"],
                 async_mode=True,
+                topic_id=snap.get("topic_id"),
             )
             logger.debug("Hibernate[memory]: 摘要任务已提交 uid=%s", uid)
         except Exception as e:

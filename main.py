@@ -1728,6 +1728,8 @@ def _cmd_memory(auth_manager, db, args: str):
         _cmd_memory_query(db, parts)
     elif sub == "rebuild":
         _cmd_memory_rebuild(db, parts)
+    elif sub in ("topics", "close", "reopen", "pin", "unpin", "summary"):
+        _cmd_memory_topics(db, sub, parts)
     else:
         _cmd_memory_help()
 
@@ -2264,7 +2266,71 @@ def _cmd_memory_help():
     /memory rebuild latest <N>                      重建最近 N 轮摘要 (全部用户)
     /memory rebuild latest <用户ID> <聊天ID> <N>    重建指定聊天的最近 N 轮
     /memory rebuild span <用户ID> <聊天ID> <起始> <结束>  重建指定轮次范围
+    /memory topics <用户ID> [聊天ID]        列出话题 (含状态/标题/轮次)
+    /memory close <用户ID> <话题ID>         关闭话题(触发聚合摘要)
+    /memory reopen <用户ID> <话题ID>        重新打开话题
+    /memory pin <用户ID> <聊天ID> <话题ID>  持续激活话题(原文注入)
+    /memory unpin <用户ID> <聊天ID> <话题ID> 取消持续激活
+    /memory summary <用户ID> <话题ID>       查看话题聚合摘要
 """)
+
+
+def _cmd_memory_topics(db, sub: str, parts: list[str]):
+    """话题管理命令"""
+    global _engine
+    ms = _engine.memory_system if _engine else None
+    if ms is None or getattr(ms, "_topics", None) is None:
+        print("  错误: TopicManager 未初始化 (需 MEMORY_ENABLED=true)")
+        return
+    tm = ms._topics
+
+    if sub == "topics":
+        if len(parts) < 2:
+            print("  用法: /memory topics <用户ID> [聊天ID]")
+            return
+        uid = int(parts[1])
+        cid = int(parts[2]) if len(parts) > 2 else None
+        topics = tm.store.list_topics(uid, cid)
+        if not topics:
+            print("  (无话题)")
+            return
+        print(f"  共 {len(topics)} 个话题:")
+        print(f"  {'ID':>4} {'状态':<6} {'轮次':<10} 标题 / 摘要")
+        for t in topics:
+            status = t["status"]
+            rounds = f"{t['start_round']}-{t.get('end_round') or '?'}"
+            title = t.get("title") or "(未命名)"
+            summary = (t.get("summary") or "")[:50]
+            print(f"  {t['topic_id']:>4} {status:<6} {rounds:<10} {title} | {summary}")
+        return
+
+    if len(parts) < 3:
+        print(f"  用法: /memory {sub} <用户ID> <话题ID>")
+        return
+    uid = int(parts[1])
+    tid = int(parts[2])
+
+    if sub == "close":
+        ok = tm.store.close_topic(tid)
+        tm._finalize_topic(uid, tid)
+        print(f"  话题 #{tid} {'已关闭' if ok else '关闭失败(可能已关闭)'}")
+    elif sub == "reopen":
+        ok = tm.store.reopen_topic(tid)
+        print(f"  话题 #{tid} {'已重新打开' if ok else '打开失败'}")
+    elif sub in ("pin", "unpin"):
+        cid = int(parts[3]) if len(parts) > 3 else None
+        if cid is None:
+            print(f"  用法: /memory {sub} <用户ID> <聊天ID> <话题ID>")
+            return
+        ok = tm.pin_topic(uid, cid, tid) if sub == "pin" else tm.unpin_topic(uid, cid, tid)
+        print(f"  话题 #{tid} {'已持续激活' if ok else ('操作失败' if sub=='pin' else '已取消激活(或未激活)')}")
+    elif sub == "summary":
+        t = tm.store.get_topic(uid, tid)
+        if not t:
+            print(f"  话题 #{tid} 不存在")
+            return
+        print(f"  话题 #{tid} 「{t.get('title') or '(未命名)'}」 轮次 {t['start_round']}-{t.get('end_round') or '?'} [{t['status']}]")
+        print(f"  聚合摘要: {t.get('summary') or '(暂无)'}")
 
 
 def _cmd_detail(arg: str = ""):

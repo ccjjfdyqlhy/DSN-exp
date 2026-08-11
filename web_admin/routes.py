@@ -480,6 +480,66 @@ def api_memory_list(uid, cid):
         })
     return jsonify({"entries": entries, "count": len(entries)})
 
+@admin_bp.route("/memory/topics/<int:uid>", methods=["GET"])
+def api_memory_topics(uid):
+    db = DB()
+    if not db:
+        return jsonify({"error": "DB unavailable"}), 503
+    cid = request.args.get("chat_id", type=int)
+    conn = db._get_connection()
+    sql = "SELECT * FROM topics WHERE user_id = ?"
+    params: list = [uid]
+    if cid:
+        sql += " AND chat_id = ?"
+        params.append(cid)
+    sql += " ORDER BY start_round ASC"
+    rows = conn.execute(sql, params).fetchall()
+    cipher = db._cipher
+    topics = []
+    for r in rows:
+        topics.append({
+            "topic_id": r["topic_id"],
+            "chat_id": r["chat_id"],
+            "title": cipher.decrypt(uid, r["title"] or "") or None,
+            "rounds": f"{r['start_round']}-{r['end_round'] or '?'}",
+            "status": r["status"],
+            "summary": (cipher.decrypt(uid, r["summary"] or "") or "")[:300],
+            "created_at": r["created_at"],
+            "closed_at": r["closed_at"],
+        })
+    return jsonify({"topics": topics, "count": len(topics)})
+
+@admin_bp.route("/memory/topics/<int:tid>/<action>", methods=["POST"])
+def api_memory_topic_action(tid, action):
+    engine = EN()
+    db = DB()
+    if not engine or not db:
+        return jsonify({"error": "System unavailable"}), 503
+    ms = getattr(engine, "memory_system", None)
+    tm = getattr(ms, "_topics", None) if ms else None
+    if tm is None:
+        return jsonify({"error": "TopicManager not initialized"}), 503
+    data = request.get_json() or {}
+    uid = data.get("uid")
+    if not uid:
+        return jsonify({"error": "uid required"}), 400
+    if action == "close":
+        ok = tm.store.close_topic(tid)
+        tm._finalize_topic(uid, tid)
+        return jsonify({"success": ok})
+    if action == "reopen":
+        ok = tm.store.reopen_topic(tid)
+        return jsonify({"success": ok})
+    if action == "pin":
+        cid = data.get("cid")
+        ok = tm.pin_topic(uid, cid, tid) if cid else False
+        return jsonify({"success": ok})
+    if action == "unpin":
+        cid = data.get("cid")
+        ok = tm.unpin_topic(uid, cid, tid) if cid else False
+        return jsonify({"success": ok})
+    return jsonify({"error": "unknown action"}), 400
+
 @admin_bp.route("/memory/query", methods=["POST"])
 def api_memory_query():
     db = DB()

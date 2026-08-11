@@ -267,6 +267,7 @@ class MaintenanceSystem:
     # ── 时钟 tick ──
 
     def _on_tick(self) -> None:
+        self._sweep_topics()
         if self.state.state == ServerState.READY:
             if self._should_start_maintenance():
                 self._drain_hibernate()
@@ -364,6 +365,22 @@ class MaintenanceSystem:
         if n:
             logger.info("休眠队列排空 %d 个任务（空闲窗口）", n)
         return n
+
+    def _sweep_topics(self) -> None:
+        """定期关闭超过 30min 静默的 open 话题(懒关闭的兜底)。"""
+        now = time.time()
+        last = getattr(self, "_last_topic_sweep", 0.0)
+        if now - last < 300:
+            return
+        self._last_topic_sweep = now
+        try:
+            engine = self._engine
+            ms = getattr(engine, "memory_system", None)
+            topics = getattr(ms, "_topics", None)
+            if topics is not None:
+                topics.sweep_stale_topics()
+        except Exception as e:
+            logger.debug("话题清扫跳过: %s", e)
 
     # ── 状态转换 ──
 

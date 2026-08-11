@@ -960,6 +960,24 @@ class LMSummaryModel:
 
         return _do_request()
 
+    def complete_text(self, prompt: str, max_length: Optional[int] = None) -> str:
+        """用原始 prompt 直接调用后端（不附加摘要指令），用于话题归属等结构化判断。"""
+        if not prompt or not isinstance(prompt, str):
+            raise ValueError("prompt 必须是非空字符串")
+        if max_length is None:
+            max_length = self.summary_length
+        if self.backend == "openai":
+            url = f"{self.base_url}/chat/completions"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            }
+            return self._call_llm(prompt, max_length, self.model_name or "OpenAI", url, headers)
+        else:
+            url = f"{self.base_url}/v1/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            return self._call_llm(prompt, max_length, self.model_name or "LMStudio", url, headers, is_lmstudio=True)
+
     def summarize_text(self, text: str, max_length: Optional[int] = None) -> str:
         """生成摘要。根据 backend 自动选择 OpenAI 兼容 API 或 LMStudio。"""
         if not text or not isinstance(text, str):
