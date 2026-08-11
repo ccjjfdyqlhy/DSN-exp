@@ -24,6 +24,21 @@ tags:
 3. 用户确认后调用 `document.scan` 执行扫描
 4. 扫描文件保存在 `<扫描文件存放目录>` 中
 
+### 题库入库扫描（强制：一条原子管线，禁止拆步）
+当用户要把扫描件**录入题库**（试卷/题目入库）时，**只能**走：
+
+```
+document.list_scanners → document.scan → document.scan_import_questions
+```
+
+`scan_import_questions` 一个调用内部由视觉模型全权处理：OCR → 自动识别科目+题目原文+图片描述+答案解析（输出完整 JSON）→ 批量入库。**科目不需要主模型判断**，`subject` 参数留空即可，视觉模型自动识别。
+
+**严禁**：
+- ❌ 调 `describe_image` 确认科目/预览内容（科目由视觉模型在 `scan_import_questions` 内自动识别）
+- ❌ 手动切换/加载 OCR 模型，或把 OCR 文本单独丢给视觉模型结构化
+- ❌ 用 `process_scan` / `process_last_scan` / `read_hmd` 走文档 OCR 路径来入库
+- ❌ `scan_import_questions` 失败/超时时重扫（先重试该工具本身；PNG 已在 uploads，不会因模型超时而损坏）
+
 ### 打印文档
 当用户需要打印文件时：
 

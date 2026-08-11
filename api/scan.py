@@ -539,3 +539,300 @@ def _parse_questions(text: str) -> list:
     if isinstance(data, dict):
         data = [data]
     return data if isinstance(data, list) else []
+
+
+# ════════════════════════════════════════════════════════════════
+# 扫题打印：物理扫描仪 → VisionModel → 题库入库 → 生成可打印文档 → 打印
+# 全程不调用主模型：扫描由 SANE 直接完成，题目/科目/题图描述/标准答案解析
+# 全部由 VisionModel 一次输出 JSON，主模型完全不接触题目内容。
+# ════════════════════════════════════════════════════════════════
+
+_SCANPRINT_VISION_PROMPT = (
+    "你是一个试卷题目提取专家。你看到的是刚从物理扫描仪扫出的一页试卷图片。\n"
+    "请综合图片内容直接输出一个 JSON 对象：\n"
+    "{\n"
+    '  "subject": 科目代码（从 math/physics/chemistry/english/chinese/biology 中自动判断；无法判断填 "unknown"）,\n'
+    '  "page_description": 整页图片的文字描述（表格/图形/实验装置等）,\n'
+    '  "questions": [每道题的 JSON 对象数组]\n'
+    "}\n"
+    "每道题字段：\n"
+    "- content: 题目原文\n"
+    "- options: 选项列表，如[\"A. xxx\", \"B. xxx\"]；非选择题填 []\n"
+    "- answer: 标准答案\n"
+    "- explanation: 标准解析（解题步骤与思路，尽量详细）\n"
+    "- type_name: \"选择题\"/\"填空题\"/\"解答题\"/\"判断题\"\n"
+    "- subtype: \"单选\"/\"多选\"/\"填空\"/\"计算\"/\"证明\"/\"简答\"/\"判断\"\n"
+    "- difficulty: 1-5 整数\n"
+    "- tags: 字符串数组，如[\"氧化还原\",\"化学计算\"]\n"
+    "- knowledge_points: 知识点字符串数组\n"
+    "- figure_description: 该题配图/图表的文字描述；无配图则填\"\"\n"
+    "- notes: 图片中的手写备注（无则填\"\"）\n"
+    "只返回这一个 JSON 对象，不要包含其他任何内容。"
+)
+
+_SCANPRINT_CJK_FONTS = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+]
+
+
+@scan_bp.route("/api/scan/scanprint", methods=["POST"])
+def scan_print():
+    """body: {chat_id?} → {task_id}
+
+    不依赖主模型：物理扫描仪第一台 → 扫描 → VisionModel 生成题库结构化
+    JSON（科目/题图描述/题目原文/标准答案解析）→ 入库 → 生成可打印文档 → 打印。
+    后台异步执行，客户端通过 AsyncTaskPoller 轮询 task_id 获取结果。
+    """
+    engine = _get_engine()
+    if not engine:
+        return jsonify({"error": "Engine not ready"}), 503
+
+    data = request.get_json(silent=True) or {}
+    user_id = g.user.get("uid", 0)
+    chat_id = data.get("chat_id", 0) or 0
+
+    task_id = f"scanprint_{uuid.uuid4().hex[:16]}"
+    store = engine.async_task_store
+    store.create(task_id, user_id, chat_id)
+
+    threading.Thread(
+        target=_scanprint_worker,
+        args=(engine, task_id, user_id, chat_id),
+        daemon=True, name=f"scanprint-{user_id}",
+    ).start()
+
+    logger.info("扫题打印任务已启动: user=%d task=%s", user_id, task_id)
+    return jsonify({"success": True, "task_id": task_id})
+
+
+def _scanprint_worker(engine, task_id: str, user_id: int, chat_id) -> None:
+    """后台线程：扫描 → VisionModel → 入库 → 打印 → 写回异步任务结果。"""
+    store = engine.async_task_store
+    try:
+        result = _scanprint_run(engine, user_id)
+        if result.get("success"):
+            store.complete(task_id, reply=result["feedback_text"])
+        else:
+            store.complete(task_id, reply="", error=result.get("error", "扫描打印失败"))
+    except Exception as e:
+        logger.error("扫题打印任务失败 %s: %s", task_id, e, exc_info=True)
+        store.complete(task_id, reply="", error=str(e))
+
+
+def _scanprint_run(engine, user_id: int) -> dict:
+    """主流程：第一台扫描仪扫描 → VisionModel 直接结构化 → 入库 → 可打印文档 → 打印。"""
+    from document.scanner import ScannerTool
+    from document.printer import PrinterTool
+    from models.clients import VisionModel
+    from utils.workspace import get_workspace_manager
+
+    # 1. 扫描（最前面一台扫描仪，300 DPI）
+    scanners = ScannerTool.list_scanners()
+    if not scanners:
+        return {"success": False, "error": "未找到扫描仪（请检查连接/驱动/接口）"}
+    device = scanners[0]["device"]
+
+    wm = get_workspace_manager()
+    uploads = str(wm.user_uploads_dir(uid=user_id or 1))
+    scanned = ScannerTool.scan(device=device, output_dir=uploads,
+                               resolution=300, mode="Color")
+    if not scanned:
+        return {"success": False, "error": "扫描未产出文件"}
+    png_path = scanned[0]["filepath"]
+    logger.info("扫题打印: 扫描完成 %s (device=%s)", png_path, device)
+
+    # 2. VisionModel 直接生成结构化 JSON（不经主模型）
+    data_url = VisionModel.encode_image(png_path)
+    vm = VisionModel()
+    raw = vm.ask(data_url, _SCANPRINT_VISION_PROMPT, max_tokens=8192, temperature=0.1)
+    questions, subject, page_desc = _parse_scanprint(raw)
+    if not questions:
+        return {"success": False, "error": "视觉模型未能从扫描件中识别出题目",
+                "scan_file": png_path}
+
+    # 3. 入库（科目以 VisionModel 识别结果为准）
+    store = _get_question_store(engine)
+    tm = _get_template_manager(engine)
+    subjects = tm.get_active_subjects() or []
+    imported = []
+    import_errors = []
+    subjects_used = set()
+    for q in questions:
+        try:
+            type_name = q.get("type_name", "解答题")
+            subtype = q.get("subtype", "")
+            type_id = tm.get_type_id(type_name, subtype) or tm.get_type_id(type_name) or 1
+            subject_id = _match_subject(subjects, q.get("subject", ""), subject)
+
+            metadata = {"source": "scan_print"}
+            fig = q.get("figure_description")
+            if isinstance(fig, str) and fig.strip():
+                metadata["figure_description"] = fig.strip()
+            notes = q.get("notes")
+            if isinstance(notes, str) and notes.strip():
+                metadata["handwritten_notes"] = notes.strip()
+
+            qid = store.create_question({
+                "subject_id": subject_id,
+                "type_id": type_id,
+                "source": "scan_print",
+                "difficulty": q.get("difficulty", 3),
+                "content": q.get("content", ""),
+                "options": q.get("options", []),
+                "answer": q.get("answer", ""),
+                "explanation": q.get("explanation", ""),
+                "tags": q.get("tags", []) or [],
+                "knowledge_points": q.get("knowledge_points", []),
+                "metadata": metadata,
+            })
+            imported.append({"id": qid, "content": (q.get("content") or "")[:60]})
+            for s in subjects:
+                if s["subject_id"] == subject_id:
+                    subjects_used.add(s.get("name") or s.get("code") or "")
+                    break
+        except Exception as e:
+            logger.error("扫题打印入库失败: %s", e)
+            import_errors.append(str(e))
+    if not subjects_used and subject:
+        for s in subjects:
+            if s.get("code") == subject:
+                subjects_used.add(s.get("name") or subject)
+                break
+
+    # 4. 生成可打印文档（优先 PDF，回退 TXT）
+    doc = _build_printable_doc(questions, subject, page_desc, user_id)
+
+    # 5. 打印
+    print_result = PrinterTool.print_file(doc["path"])
+
+    # 6. 反馈
+    subj_txt = "/".join(sorted(subjects_used)) if subjects_used else (subject or "未知")
+    feedback = (
+        f"扫描打印完成：扫描件 {os.path.basename(png_path)}，"
+        f"识别 {len(questions)} 道题，入库 {len(imported)} 道"
+        f"（科目：{subj_txt}）"
+    )
+    if print_result.get("success"):
+        feedback += f"，打印任务已提交（job #{print_result.get('job_id')}）"
+    else:
+        feedback += f"，但打印失败：{print_result.get('error', '未知错误')}"
+    if import_errors:
+        feedback += f"。入库失败 {len(import_errors)} 道"
+    feedback += f"。可打印文档：{doc['path']}"
+
+    logger.info("扫题打印完成: 识别 %d 题, 入库 %d 题, 打印=%s",
+                len(questions), len(imported), print_result.get("success"))
+
+    return {
+        "success": True,
+        "questions_found": len(questions),
+        "questions_added": len(imported),
+        "subjects": sorted(subjects_used),
+        "scan_file": png_path,
+        "doc_path": doc["path"],
+        "print": print_result,
+        "feedback_text": feedback,
+    }
+
+
+def _parse_scanprint(text: str) -> tuple:
+    """解析 VisionModel 回复（包裹对象或纯数组）。返回 (questions, subject, page_desc)。"""
+    text = (text or "").strip()
+    if "```" in text:
+        lines = text.split("\n")
+        json_lines = []
+        in_block = False
+        for line in lines:
+            if line.strip().startswith("```"):
+                if in_block:
+                    break
+                in_block = True
+                continue
+            if in_block:
+                json_lines.append(line)
+        text = "\n".join(json_lines)
+        text = text.strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("扫描打印 JSON 解析失败: %s", text[:200])
+        return [], "", ""
+    if isinstance(data, dict):
+        qs = data.get("questions") or data.get("items") or []
+        if isinstance(qs, dict):
+            qs = [qs]
+        return (qs if isinstance(qs, list) else []), \
+               str(data.get("subject", "") or "").strip(), \
+               str(data.get("page_description", "") or "").strip()
+    if isinstance(data, list):
+        return data, "", ""
+    return [], "", ""
+
+
+def _build_printable_doc(questions: list, subject: str, page_desc: str,
+                         user_id: int) -> dict:
+    """生成可打印文档（优先 PDF，回退 TXT），返回 {path, fmt}。"""
+    from utils.workspace import get_workspace_manager
+    wm = get_workspace_manager()
+    doc_dir = str(wm.user_documents_dir(uid=user_id or 1))
+    os.makedirs(doc_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    stem = f"scanprint_{ts}"
+
+    subject_name = {
+        "math": "数学", "physics": "物理", "chemistry": "化学",
+        "english": "英语", "chinese": "语文", "biology": "生物",
+    }.get(subject, subject or "未知")
+
+    lines = []
+    lines.append("扫描试卷 · 题目与标准答案解析")
+    lines.append(f"科目: {subject_name}    时间: {time.strftime('%Y-%m-%d %H:%M')}")
+    lines.append("=" * 40)
+    if page_desc:
+        lines.append(f"[整页图片描述] {page_desc}")
+        lines.append("")
+    for i, q in enumerate(questions, 1):
+        lines.append(f"第 {i} 题 【{q.get('type_name', '解答题')}】")
+        lines.append(q.get("content", ""))
+        for o in (q.get("options") or []):
+            lines.append(f"    {o}")
+        lines.append(f"答案: {q.get('answer', '')}")
+        if q.get("explanation"):
+            lines.append(f"解析: {q.get('explanation', '')}")
+        if q.get("figure_description"):
+            lines.append(f"题图: {q.get('figure_description', '')}")
+        lines.append("-" * 40)
+
+    # 优先 PDF（fpdf2 + 系统 CJK 字体），失败回退纯文本
+    try:
+        from fpdf import FPDF
+        from fpdf.enums import XPos, YPos
+        font_path = None
+        for cand in _SCANPRINT_CJK_FONTS:
+            if os.path.isfile(cand):
+                font_path = cand
+                break
+        pdf = FPDF()
+        pdf.add_page()
+        if font_path:
+            pdf.add_font("CJK", "", font_path)
+            pdf.set_font("CJK", size=12)
+        else:
+            pdf.set_font("Helvetica", size=12)
+        for ln in lines:
+            # new_x=LMARGIN 保证每行从左边距开始，避免下一行可用宽度被吃掉
+            pdf.multi_cell(0, 6, ln, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        path = os.path.join(doc_dir, f"{stem}.pdf")
+        pdf.output(path)
+        return {"path": path, "fmt": "pdf"}
+    except Exception as e:
+        logger.warning("生成 PDF 失败，回退 TXT: %s", e)
+        path = os.path.join(doc_dir, f"{stem}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return {"path": path, "fmt": "txt"}

@@ -305,30 +305,32 @@ class DocTools:
         }
 
     # ════════════════════════════════════════════════════════════════
-    # question_from_png — 全新管线: OCR → VisionModel 合成 → 入库
+    # scan_import_questions — 一键管线: OCR → VisionModel 合成(含科目/图片描述) → 入库
+    # 全程由 VisionModel 产出格式化 JSON，主模型不接触题目内容
     # ════════════════════════════════════════════════════════════════
 
-    def question_from_png(self, scanned_files: list,
-                          subject: str = "math",
-                          user_id: int = 0) -> dict:
+    def scan_import_questions(self, scanned_files: list,
+                              subject: str = "",
+                              user_id: int = 0) -> dict:
         """
-        处理扫描试卷 PNG → OCR → VisionModel 合成题目 JSON → 入库。
+        扫描试卷 PNG → 直接入库（VisionModel 全权处理，不经主模型）。
 
         流程:
           1. OCRModel (deepseek-ocr/glm-ocr) 对每张 PNG 做 OCR → Markdown
-          2. 将 PNG + MD 成对保存到 workspace/<user>/documents/question_from_png/<session>/
-          3. VisionModel 结合 PNG 图片 + OCR 文本，按题库标准合成 JSON
-             - 补全题图描述（如图、如图所示）
-             - 提取手写内容为备注
-             - 生成参考答案和解析
-          4. 解析 JSON → 批量入库到 question_bank
+          2. 将 PNG + MD 成对保存到 workspace/<user>/documents/scan_import_questions/<session>/
+          3. VisionModel 结合 PNG 图片 + OCR 文本，一次性输出完整 JSON:
+             - subject: 科目自动识别（无需主模型判断）
+             - page_description: 整页图片描述
+             - questions: 每题含题目原文/选项/参考答案/解析/题型/难度/标签/知识点/手写备注
+          4. 解析 JSON → 批量入库到 question_bank（科目以 VisionModel 识别结果为准）
           5. 返回反馈给 LLM
 
         :param scanned_files: 文件路径列表 ["/path/page1.png", ...] 或对象列表
-        :param subject: 学科代码 (math/physics/chemistry/english/chinese/biology)
+        :param subject: 学科代码，可留空；留空时由 VisionModel 从图片内容自动识别
         :param user_id: 用户 ID
         :return: {
             success, questions_found, questions_imported,
+            subject, page_descriptions,
             questions: [{id, preview}],
             session_dir, page_errors, import_errors, feedback_text
         }
@@ -357,8 +359,8 @@ class DocTools:
         if not normalized:
             return {"success": False, "error": "没有有效的扫描文件"}
 
-        logger.info("question_from_png 开始: %d 文件, subject=%s, user_id=%d",
-                     len(normalized), subject, uid)
+        logger.info("scan_import_questions 开始: %d 文件, subject=%s, user_id=%d",
+                     len(normalized), subject or "(自动识别)", uid)
 
         # ── Step 1: OCR 每张 PNG → Markdown ──
         from config import Config
@@ -386,7 +388,7 @@ class DocTools:
         from utils.workspace import get_workspace_manager
         wm = get_workspace_manager()
         session = datetime.now().strftime("scan_%Y%m%d_%H%M%S")
-        session_dir = wm.user_subdir(uid, "documents") / "question_from_png" / session
+        session_dir = wm.user_subdir(uid, "documents") / "scan_import_questions" / session
         session_dir.mkdir(parents=True, exist_ok=True)
 
         saved_pairs = []
@@ -398,30 +400,32 @@ class DocTools:
             saved_pairs.append({"png": r["filepath"], "md": str(md_path)})
             logger.info("保存 PNG+MD 对: %s ↔ %s", r["filename"], md_path)
 
-        # ── Step 3: VisionModel 合成题库 JSON ──
+        # ── Step 3: VisionModel 直接合成完整 JSON（科目+图片描述+题目）──
         if not Config.VISION_API_KEY:
             return {
                 "success": False,
-                "error": "VISION_API_KEY 未配置，请先设置视觉模型 API 密钥才能使用 question_from_png",
+                "error": "VISION_API_KEY 未配置，请先设置视觉模型 API 密钥才能使用 scan_import_questions",
                 "session_dir": str(session_dir),
             }
 
         vm = VisionModel()
         all_questions = []
+        detected_subjects = {}
+        page_descriptions = {}
         page_errors = []
 
         for r in ocr_pages:
             prompt = self._build_question_prompt(r["markdown"], subject)
             try:
                 response = vm.ask(r["data_url"], prompt,
-                                  max_tokens=4096, temperature=0.1)
+                                  max_tokens=8192, temperature=0.1)
             except Exception as e:
                 page_errors.append(f"{r['filename']}: VisionModel 失败 - {e}")
                 logger.error("VisionModel 提取失败 %s: %s", r["filename"], e)
                 continue
 
             try:
-                qs = self._parse_vision_json(response)
+                qs, page_subject, page_desc = self._parse_vision_page(response)
             except Exception as e:
                 page_errors.append(f"{r['filename']}: JSON 解析失败 - {e}")
                 logger.error("JSON 解析失败 %s: %s", r["filename"], e)
@@ -430,7 +434,12 @@ class DocTools:
             for q in qs:
                 q["_source_page"] = r["filename"]
             all_questions.extend(qs)
-            logger.info("VisionModel 提取 %s: %d 道题", r["filename"], len(qs))
+            if page_subject:
+                detected_subjects[r["filename"]] = page_subject
+            if page_desc:
+                page_descriptions[r["filename"]] = page_desc
+            logger.info("VisionModel 提取 %s: %d 道题, subject=%s",
+                        r["filename"], len(qs), page_subject or "?")
 
         if not all_questions:
             return {
@@ -440,33 +449,43 @@ class DocTools:
                 "session_dir": str(session_dir),
             }
 
-        # ── Step 4: 入库 ──
+        # ── Step 4: 入库（科目以 VisionModel 识别结果为准）──
         store = self._question_store
         if store is None:
             from question_bank.store import QuestionStore
             from db.question_bank import QuestionBankDBManager
             store = QuestionStore(db=QuestionBankDBManager())
 
-        subject_id = self._resolve_subject_id(subject, store)
         subject_name_map = {
             "math": "数学", "physics": "物理", "chemistry": "化学",
             "english": "英语", "chinese": "语文", "biology": "生物",
+            "history": "历史", "geography": "地理", "politics": "政治",
         }
-        subject_name = subject_name_map.get(subject, subject)
+        detected_counts = {}
+        for s in detected_subjects.values():
+            detected_counts[s] = detected_counts.get(s, 0) + 1
+        final_subject = subject or (max(detected_counts, key=detected_counts.get) if detected_counts else "unknown")
+        subject_name = subject_name_map.get(final_subject, final_subject)
+        default_subject = subject or "unknown"
 
         imported = []
         import_errors = []
         for q in all_questions:
             try:
+                page_key = q.get("_source_page", "")
+                q_subject = detected_subjects.get(page_key) or default_subject
+                subject_id = self._resolve_subject_id(q_subject, store)
                 type_id = self._resolve_type_id(
                     q.get("type_name", "解答题"),
                     q.get("subtype", ""),
                     store,
                 )
                 metadata = {
-                    "source": "question_from_png",
-                    "source_page": q.get("_source_page", ""),
+                    "source": "scan_import_questions",
+                    "source_page": page_key,
                     "session": session,
+                    "subject_detected": detected_subjects.get(page_key, ""),
+                    "page_description": page_descriptions.get(page_key, ""),
                 }
                 notes = q.get("notes", "").strip()
                 if notes:
@@ -496,6 +515,10 @@ class DocTools:
             f"导入了一道题, 科目: {subject_name}",
             f"共识别 {len(all_questions)} 道题，成功导入 {len(imported)} 道",
         ]
+        if detected_subjects and not subject:
+            feedback_parts.append(
+                f"科目由视觉模型自动识别: {subject_name}"
+            )
         if page_errors:
             feedback_parts.append(
                 f"部分页面处理异常: {'; '.join(page_errors[:3])}"
@@ -509,13 +532,15 @@ class DocTools:
                 f"扫描件与OCR文本已保存至: {session_dir}"
             )
 
-        logger.info("question_from_png 完成: 识别 %d 题, 入库 %d 题",
-                     len(all_questions), len(imported))
+        logger.info("scan_import_questions 完成: 识别 %d 题, 入库 %d 题, subject=%s",
+                     len(all_questions), len(imported), final_subject)
 
         return {
             "success": True,
             "questions_found": len(all_questions),
             "questions_imported": len(imported),
+            "subject": final_subject,
+            "page_descriptions": page_descriptions,
             "questions": imported,
             "session_dir": str(session_dir),
             "page_errors": page_errors,
@@ -526,36 +551,33 @@ class DocTools:
     # ── 辅助方法 ──
 
     @staticmethod
-    def _build_question_prompt(ocr_md: str, subject: str) -> str:
+    def _build_question_prompt(ocr_md: str, subject: str = "") -> str:
         """
         构建发给 VisionModel 的提示词。
-        要求其结合图片（图表、手写）和 OCR 文本，按题库标准输出 JSON。
+        要求其综合图片 + OCR 文本，一次性输出完整 JSON：
+        科目自动识别、整页图片描述、逐题结构，全部由视觉模型直接产出。
         """
-        subject_hint = {
-            "math": "数学", "physics": "物理", "chemistry": "化学",
-            "english": "英语", "chinese": "语文", "biology": "生物",
-        }.get(subject, subject)
+        subject_hint = ""
+        if subject:
+            subject_hint = (
+                "用户已指定科目：__SUBJECT__，请按此科目处理。\n"
+            ).replace("__SUBJECT__", subject)
 
         # 用 replace 而非 f-string，避免 OCR 文本中的 { } 导致崩溃
         template = (
-            "你是一个__SUBJECT__试卷题目提取专家。\n"
+            "你是一个试卷题目提取专家，正在把扫描试卷导入题库。\n"
+            "__SUBJECT_HINT__"
+            "你同时能看到这一页的扫描图片和下方 OCR 文本。请**综合图片与 OCR**，"
+            "直接输出一个 JSON 对象，格式如下：\n"
             "\n"
-            "我正在将一份扫描试卷导入题库。以下是 OCR 从当前页面提取的文本：\n"
+            "{\n"
+            '  "subject": 科目代码（从 math/physics/chemistry/english/chinese/biology 中自动判断；无法判断填 "unknown"）,\n'
+            '  "page_description": 整页图片的文字描述（表格/图形/实验装置等，用于补充题图）,\n'
+            '  "questions": [每道题的 JSON 对象数组]\n'
+            "}\n"
             "\n"
-            "--- OCR 文本开始 ---\n"
-            "__OCR_MD__\n"
-            "--- OCR 文本结束 ---\n"
-            "\n"
-            "同时你也能看到这一页的扫描图片。\n"
-            "\n"
-            "请综合图片和 OCR 文本，完成以下任务：\n"
-            "1. 提取这一页中的所有题目\n"
-            "2. 如果题目包含\u201c如图\u201d\u201c如图所示\u201d等，根据图片补充图表/图形的文字描述到题目内容中（用括号标注）\n"
-            "3. 如果图片中有手写内容（OCR可能遗漏），提取为 notes 字段\n"
-            "4. 为每道题生成参考答案(answer)和解析(explanation)\n"
-            "\n"
-            "每道题输出一个 JSON 对象，字段如下：\n"
-            "- content: 题目内容（如有图表，在括号中补充描述）\n"
+            "每道题字段：\n"
+            "- content: 题目原文（如有图表，在括号中补充该图描述）\n"
             "- options: 选项列表，如[\"A. xxx\", \"B. xxx\"]；非选择题填 []\n"
             "- answer: 参考答案\n"
             "- explanation: 详细解析\n"
@@ -566,9 +588,53 @@ class DocTools:
             "- knowledge_points: 知识点字符串数组\n"
             "- notes: 图片中的手写备注（无则填\"\"）\n"
             "\n"
-            "只返回 JSON 数组，不要包含其他任何内容。"
+            "--- OCR 文本开始 ---\n"
+            "__OCR_MD__\n"
+            "--- OCR 文本结束 ---\n"
+            "\n"
+            "只返回这一个 JSON 对象，不要包含其他任何内容。"
         )
-        return template.replace("__SUBJECT__", subject_hint).replace("__OCR_MD__", ocr_md)
+        return (template
+                .replace("__SUBJECT_HINT__", subject_hint)
+                .replace("__OCR_MD__", ocr_md))
+
+    @staticmethod
+    def _parse_vision_page(text: str) -> tuple[list, str, str]:
+        """
+        解析 VisionModel 回复，兼容两种格式：
+          - 包裹对象: {"subject":..., "page_description":..., "questions":[...]}
+          - 纯数组: [...]
+        返回 (questions, subject, page_description)
+        """
+        text = text.strip()
+        if "```" in text:
+            lines = text.split("\n")
+            json_lines = []
+            in_block = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if in_block:
+                        break
+                    in_block = True
+                    continue
+                if in_block:
+                    json_lines.append(line)
+            text = "\n".join(json_lines)
+            text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+        result = json_mod.loads(text)
+        if isinstance(result, dict):
+            qs = result.get("questions") or result.get("items") or []
+            if isinstance(qs, dict):
+                qs = [qs]
+            return (qs if isinstance(qs, list) else []), \
+                   str(result.get("subject", "") or "").strip(), \
+                   str(result.get("page_description", "") or "").strip()
+        if isinstance(result, list):
+            return result, "", ""
+        return [], "", ""
 
     @staticmethod
     def _parse_vision_json(text: str) -> list[dict]:

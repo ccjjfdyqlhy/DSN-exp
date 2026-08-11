@@ -81,7 +81,7 @@ tools:
   # ---- 文档处理 ----
   - name: process_scan
     display_name: "处理扫描结果"
-    description: "对扫描产出的 PNG 文件执行完整处理管线：分类→OCR→打包为 .hmd（+ .md）。返回反馈文本（已含全文 Markdown）及文件路径。"
+    description: "把扫描 PNG 做通用文档处理：分类→OCR→打包为 .hmd（+ .md），仅供阅读文档。注意：这不是题库入库工具，录入题目请用 scan_import_questions。"
     async: true
     estimated_duration: "30-300s"
     module: "tools.doc_tools"
@@ -118,7 +118,7 @@ tools:
   # ---- 快捷操作 ----
   - name: process_last_scan
     display_name: "处理最近扫描"
-    description: "自动找最近一次 scan 产生的 PNG 文件，直接执行完整管线。零参数，无需手动写文件路径。推荐在 scan 之后直接调用。"
+    description: "自动找最近一次 scan 产生的 PNG 文件，走通用文档 OCR 管线生成 .hmd 供阅读。注意：这不是题库入库工具，录入题目请用 scan_import_questions。"
     async: true
     estimated_duration: "30-300s"
     module: "tools.doc_tools"
@@ -135,7 +135,7 @@ tools:
   # ---- 图片分析 ----
   - name: describe_image
     display_name: "分析图片"
-    description: "用视觉多模态模型分析本地图片的内容（如截图、照片、扫描件等）。用户说「看看这张图」「分析一下这张图片」「这张图里有什么」等均使用此工具。支持 jpg/png/gif/webp。"
+    description: "用视觉多模态模型描述本地图片的内容（截图/照片/扫描件等），仅用于闲聊看图预览。注意：这不是题库入库工具，录入题目请用 scan_import_questions。"
     async: true
     estimated_duration: "5-30s"
     module: "tools.doc_tools"
@@ -154,27 +154,27 @@ tools:
             required: false
 
   # ---- 扫描件智能入库 ----
-  - name: question_from_png
-    display_name: "扫描试卷智能入库"
-    description: "从扫描试卷PNG提取题目并入库：OCR识别文本 → VisionModel结合图片+文本合成题库标准JSON → 自动入库。自动补全题图描述，识别手写备注，生成答案和解析。"
+  - name: scan_import_questions
+    display_name: "扫描试卷直接入库"
+    description: "【题库入库专用·一键完成】把扫描试卷 PNG 直接导入题库，自动完成 OCR → 视觉模型识别(科目/题目原文/图片描述/答案解析) → 批量入库，一步到位。扫描录入题库只此一个入口：scan 之后直接调它，不要在它之外做任何识别/确认/拆步。"
     async: true
     estimated_duration: "60-300s"
     module: "tools.doc_tools"
     class: "DocTools"
     methods:
-      - name: question_from_png
-        description: "OCR→VisionModel合成→入库的完整管线，支持单张或多张PNG"
+      - name: scan_import_questions
+        description: "扫描试卷PNG→直接入库。内部自动：OCR→VisionModel输出科目+题目+图片描述JSON→入库"
         parameters:
           scanned_files:
             type: array
-            description: "扫描文件路径列表，如 [\"/path/to/page1.png\", \"/path/to/page2.png\"]"
+            description: "扫描文件路径列表，如 [\"/path/to/page1.png\", \"/path/to/page2.png\"]，传 document.scan 返回的 files"
             required: true
             items:
               type: string
           subject:
             type: string
-            description: "学科代码 (math/physics/chemistry/english/chinese/biology)"
-            default: "math"
+            description: "学科代码，可留空；留空时由视觉模型从图片内容自动识别"
+            required: false
           user_id:
             type: integer
             description: "用户 ID"

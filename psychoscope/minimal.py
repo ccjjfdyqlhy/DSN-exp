@@ -2339,6 +2339,7 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     print("  [r]     heartbeat       [f] silence alarm")
     print("  [l]     alarm status    [v] list cameras")
     print("  [g]     select mic      [c] quick scan")
+    print("  [w]     scan-print (扫描仪→题库→打印)")
     print("  [d]     check-in (打卡)  [j] check-in status")
     print("  [q/Ctrl+C] quit         [n/m] vol-/+ (music)")
     print("  [d/e/f] prev/toggle/next (music mode)")
@@ -2538,6 +2539,29 @@ def quick_scan(client: DSNClient, cfg: dict):
     _play_beep(client, 700)
     threading.Thread(target=_scan_job, args=(client, cfg), daemon=True,
                      name="quick-scan").start()
+
+
+def scan_print(client: DSNClient):
+    """扫题打印（不依赖主模型）: 请求后端用物理扫描仪第一台扫描，
+    后端 VisionModel 直接生成题库结构化文本+标准答案解析 → 入库 → 生成可打印文档 → 打印。
+    后端异步执行，结果经 AsyncTaskPoller 轮询反馈。"""
+    print("\n  \U0001f50d 扫题打印（扫描仪→题库→打印）...")
+    _play_beep(client, 700)
+    try:
+        resp = client._http_post("/api/scan/scanprint", json={
+            "chat_id": client.chat_id,
+        }, timeout=20)
+        if resp.status_code == 200:
+            data = resp.json()
+            task_id = data.get("task_id")
+            if task_id and client.async_poller is not None:
+                client.async_poller.add_task(task_id)
+            else:
+                print("  已请求后端扫题打印，等待异步结果...")
+        else:
+            print(f"  \u274c 扫题打印请求失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"  \u274c 扫题打印请求失败: {e}")
 
 
 def toggle_standby(client: DSNClient):
@@ -2995,6 +3019,10 @@ def main():
                 # ── c: 快速扫题（拍照 → 识别入库 → 主模型回复）──
                 elif ch.lower() == "c":
                     quick_scan(client, cfg)
+
+                # ── w: 扫题打印（物理扫描仪第一台 → VisionModel → 题库入库 → 打印）──
+                elif ch.lower() == "w":
+                    scan_print(client)
 
                 # ── 音乐模式音量 ──
                 elif ch.lower() == "n":

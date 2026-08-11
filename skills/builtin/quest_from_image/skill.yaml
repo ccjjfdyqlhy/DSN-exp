@@ -10,14 +10,14 @@ prompt_category: "skills"
 prompt_priority: 69
 
 tools:
-  - name: snap_question
-    display_name: "单张图片识题"
-    description: "识别一张题目截图/照片中的题目并入库。支持 preview_only 模式只预览不入库。"
+  - name: import_photo_questions
+    display_name: "图片直接入库"
+    description: "【拍题/截图入库专用·一键完成】从一张题目图片直接导入题库，视觉模型自动识别科目+题目原文+答案+解析并入库，一步到位。"
     module: "tools.quest_from_image"
     class: "QuestFromImageTool"
     methods:
-      - name: snap_question
-        description: "从单张图片识别题目并入库"
+      - name: import_photo_questions
+        description: "从单张图片识别题目并直接入库（科目由视觉模型自动识别）"
         parameters:
           file_path:
             type: string
@@ -25,21 +25,21 @@ tools:
             required: true
           subject:
             type: string
-            description: "学科代码 (math/physics/chemistry/english/chinese/biology)"
-            required: true
+            description: "学科代码，可留空；留空时由视觉模型从图片内容自动识别"
+            required: false
           preview_only:
             type: boolean
             description: "true=仅预览识别结果不入库, false(默认)=识别后直接入库"
             default: false
 
-  - name: snap_batch
-    display_name: "批量图片识题"
-    description: "一次处理多张图片，每张图片中的题目分别识别后合并入库。"
+  - name: import_photo_questions_batch
+    display_name: "批量图片直接入库"
+    description: "一次处理多张题目图片，每张由视觉模型自动识别科目和题目后合并入库。"
     module: "tools.quest_from_image"
     class: "QuestFromImageTool"
     methods:
-      - name: snap_batch
-        description: "从多张图片批量识别题目"
+      - name: import_photo_questions_batch
+        description: "从多张图片批量识别题目并入库"
         parameters:
           file_paths:
             type: array
@@ -49,8 +49,8 @@ tools:
               type: string
           subject:
             type: string
-            description: "学科代码"
-            required: true
+            description: "学科代码，可留空；留空时由视觉模型自动识别"
+            required: false
           preview_only:
             type: boolean
             description: "true=仅预览不入库"
