@@ -40,9 +40,26 @@ class MemoryPlugin(Plugin):
 
     def _on_pre_process(self, ctx: PluginContext) -> PluginContext:
         if self._ms is not None:
+            # 话题决策: 归属当前/旧话题或新建, 并计算本轮 round_index 供持久化使用
+            # (调试模式不持久化, 跳过话题决策避免产生垃圾话题)
+            if (self._db is not None and ctx.chat_id and not ctx.extra.get("_debug_mode")
+                    and getattr(Config, "TOPIC_ENABLED", True)):
+                try:
+                    if ctx.extra.get("round_index") is None:
+                        ctx.extra["round_index"] = self._db.get_next_round_index(ctx.chat_id)
+                    decision = self._ms._topics.on_new_message(
+                        ctx.user_id, ctx.chat_id, ctx.message,
+                        round_idx=ctx.extra.get("round_index"),
+                    )
+                    ctx.extra["topic_id"] = decision.get("topic_id")
+                    ctx.extra["topic_decision"] = decision
+                except Exception as e:
+                    logger.error("话题决策失败: %s", e)
+
             ctx.full_history = self._ms.assemble_context(
                 ctx.user_id, ctx.history,
                 cross_user_id=ctx.cross_user_id,
+                chat_id=ctx.chat_id,
             )
         else:
             ctx.full_history = list(ctx.history)
@@ -54,25 +71,39 @@ class MemoryPlugin(Plugin):
         if ctx.extra.get("_debug_mode"):
             return ctx
 
+        topic_id = ctx.extra.get("topic_id")
+        round_index = ctx.extra.get("round_index")
+        if round_index is None:
+            try:
+                round_index = self._db.get_next_round_index(ctx.chat_id)
+            except Exception:
+                round_index = None
+
+        # 更新话题活动时间与轮次 (无论实时/挂起模式, 防止过期话题被清扫)
+        if topic_id and round_index:
+            try:
+                self._ms._topics.store.touch_topic(topic_id, round_index)
+            except Exception as exc:
+                logger.error("touch topic 失败: %s", exc)
+
         # ── fastcache 模式：挂起到 HibernateManager ──
         if _PERFORMANCE_MODE == "fastcache":
             hibernate = ctx.extra.get("_hibernate_manager")
             if hibernate:
                 try:
-                    round_index = ctx.extra.get("round_index") or self._db.get_next_round_index(ctx.chat_id)
-                except Exception:
-                    round_index = None
-                hibernate.push("memory_summarize", {
-                    "user_id": ctx.user_id,
-                    "chat_id": ctx.chat_id,
-                    "message": ctx.message,
-                    "reply": ctx.original_reply or ctx.reply or "",
-                    "round_index": round_index,
-                })
+                    hibernate.push("memory_summarize", {
+                        "user_id": ctx.user_id,
+                        "chat_id": ctx.chat_id,
+                        "message": ctx.message,
+                        "reply": ctx.original_reply or ctx.reply or "",
+                        "round_index": round_index,
+                        "topic_id": topic_id,
+                    })
+                except Exception as e:
+                    logger.error("hibernate push 失败: %s", e)
             return ctx
 
         try:
-            round_index = ctx.extra.get("round_index") or self._db.get_next_round_index(ctx.chat_id)
             self._ms.summarize_turn(
                 user_id=ctx.user_id,
                 chat_id=ctx.chat_id,
@@ -80,8 +111,9 @@ class MemoryPlugin(Plugin):
                 user_msg=ctx.message,
                 assistant_reply=ctx.original_reply,
                 async_mode=True,
+                topic_id=topic_id,
             )
-            logger.debug("记忆摘要任务已提交 (round=%d)", round_index)
+            logger.debug("记忆摘要任务已提交 (round=%s, topic=%s)", round_index, topic_id)
         except Exception as e:
             logger.error("提交记忆摘要失败: %s", e)
 

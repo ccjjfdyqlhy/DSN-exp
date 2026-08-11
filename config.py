@@ -133,6 +133,21 @@ class Config:
     MEMORY_EMBEDDING_DIMS = int(_env("MEMORY_EMBEDDING_DIMS", "768"))
     MEMORY_EMBEDDING_WEIGHT = float(_env("MEMORY_EMBEDDING_WEIGHT", "0.6"))
 
+    # ── 话题系统 (话题) ──
+    TOPIC_ENABLED = _env("TOPIC_ENABLED", "true").lower() == "true"
+    TOPIC_IDLE_SECONDS = max(1, int(_env("TOPIC_IDLE_SECONDS", "1800")))   # 30min 不聊 → 关话题/划新话题
+    TOPIC_ACTIVATION_THRESHOLD = min(1.0, max(0.0, float(_env("TOPIC_ACTIVATION_THRESHOLD", "0.55"))))
+    TOPIC_CONTINUE_THRESHOLD = min(1.0, max(0.0, float(_env("TOPIC_CONTINUE_THRESHOLD", "0.65"))))
+    TOPIC_REOPEN_THRESHOLD = min(1.0, max(0.0, float(_env("TOPIC_REOPEN_THRESHOLD", "0.50"))))
+    TOPIC_TAIL_ROUNDS = max(1, int(_env("TOPIC_TAIL_ROUNDS", "10")))
+    TOPIC_MAX_OPEN_TOPICS = max(1, int(_env("TOPIC_MAX_OPEN_TOPICS", "3")))
+    TOPIC_MAX_VERBATIM_CHARS = max(0, int(_env("TOPIC_MAX_VERBATIM_CHARS", "6000")))
+    TOPIC_SUMMARY_CHARS = max(0, int(_env("TOPIC_SUMMARY_CHARS", "2000")))
+    TOPIC_MEMO_CHARS = max(0, int(_env("TOPIC_MEMO_CHARS", "1200")))
+    TOPIC_JUDGE_ENABLED = _env("TOPIC_JUDGE_ENABLED", "true").lower() == "true"
+    TOPIC_JUDGE_ALWAYS = _env("TOPIC_JUDGE_ALWAYS", "false").lower() == "true"
+    TOPIC_CANDIDATE_K = max(1, int(_env("TOPIC_CANDIDATE_K", "3")))
+
     # ── 人格系统 V3 ──
     PERSONALITY_V3_ENABLED = _env("PERSONALITY_V3_ENABLED", "true").lower() == "true"
     PERSONALITY_V3_OVERRIDE_V2 = _env("PERSONALITY_V3_OVERRIDE_V2", "true").lower() == "true"
