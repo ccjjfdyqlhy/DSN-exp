@@ -46,6 +46,7 @@ class ChatDBManager:
         self._local = threading.local()
         self._cipher = MessageCipher()  # 主密钥从 /.dsn/ 自动加载或创建
         self._init_lock = threading.Lock()
+        self._round_locks: dict[int, threading.Lock] = {}
 
         # 日志
         if logger:
@@ -113,9 +114,12 @@ class ChatDBManager:
                 _msg_cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
                 if "msg_type" not in _msg_cols:
                     conn.execute("ALTER TABLE messages ADD COLUMN msg_type TEXT NOT NULL DEFAULT 'main'")
+                if "topic_id" not in _msg_cols:
+                    conn.execute("ALTER TABLE messages ADD COLUMN topic_id INTEGER DEFAULT NULL")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_round ON messages(chat_id, round_index)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_topic ON messages(chat_id, topic_id)")
 
                 # 任务通知表
                 conn.execute("""
@@ -847,15 +851,52 @@ class ChatDBManager:
         """获取下一个可用的 round_index（基于消息表中最大 round_index 计算）"""
         conn = self._get_connection()
         try:
-            row = conn.execute(
-                "SELECT MAX(round_index) FROM messages WHERE chat_id = ?",
-                (chat_id,),
-            ).fetchone()
-            max_ri = row[0] if row and row[0] is not None else 0
-            return max_ri + 1
+            with self._round_locks.setdefault(chat_id, threading.Lock()):
+                row = conn.execute(
+                    "SELECT MAX(round_index) FROM messages WHERE chat_id = ?",
+                    (chat_id,),
+                ).fetchone()
+                max_ri = row[0] if row and row[0] is not None else 0
+                return max_ri + 1
         except sqlite3.Error as e:
             self.logger.error("获取下一个 round_index 失败: %s", e)
             raise
+
+    def get_last_message_timestamp(self, chat_id: int) -> Optional[str]:
+        """返回聊天最后一条 main 消息的 timestamp（无则 None），用于话题 30min 判定。"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT MAX(timestamp) AS ts FROM messages WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            return row["ts"] if row and row["ts"] else None
+        except sqlite3.Error as e:
+            self.logger.error("获取最后消息时间失败: %s", e)
+            return None
+
+    def get_messages_by_topic(self, user_id: int, topic_id: int) -> dict[int, list[dict]]:
+        """按话题还原原始对话消息，返回 {round_index: [{role, content, timestamp}, ...]}。"""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT user_id, chat_id FROM topics WHERE topic_id = ?", (topic_id,)
+            ).fetchone()
+            if not row or row["user_id"] != user_id:
+                return {}
+            round_indices = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT round_index FROM messages "
+                    "WHERE chat_id = ? AND topic_id = ? AND round_index IS NOT NULL "
+                    "ORDER BY round_index ASC",
+                    (row["chat_id"], topic_id),
+                ).fetchall()
+            ]
+            return self.get_messages_by_rounds(user_id, row["chat_id"], round_indices)
+        except sqlite3.Error as e:
+            self.logger.error("按话题获取消息失败: %s", e)
+            return {}
 
     def create_chat(self, user_id: int, chat_name: str, chat_type: str = "user") -> int:
         """创建新聊天会话。chat_type 为 'user' 或 'agent'。"""
@@ -1027,7 +1068,7 @@ class ChatDBManager:
 
     def append_messages(self, user_id: int, chat_id: int, messages: List[Dict[str, str]],
                         skip_memory_check: bool = False, round_index: int = None,
-                        skip_ownership_check: bool = False) -> None:
+                        skip_ownership_check: bool = False, topic_id: int = None) -> None:
         """
         向指定聊天会话追加消息（需验证用户所有权）。
 
@@ -1037,6 +1078,7 @@ class ChatDBManager:
         :param skip_memory_check: 是否跳过记忆化检查（用于系统触发的AI提醒消息）
         :param round_index: 当前对话轮次索引，用于记忆召回时的消息定位
         :param skip_ownership_check: 跳过所有权验证（用于系统内部调用）
+        :param topic_id: 所属话题ID（可空）
         :raises ValueError: 如果聊天不属于该用户
         :raises sqlite3.Error: 数据库错误
         """
@@ -1061,11 +1103,12 @@ class ChatDBManager:
                     self.logger.warning("跳过无效消息: %s", msg)
                     continue
 
-                # 加密内容后插入数据库，含 round_index 和 msg_type
+                # 加密内容后插入数据库，含 round_index、msg_type 和 topic_id
                 encrypted = self._cipher.encrypt(user_id, content)
                 conn.execute(
-                    "INSERT INTO messages (chat_id, role, content, round_index, msg_type) VALUES (?, ?, ?, ?, ?)",
-                    (chat_id, role, encrypted, round_index, msg_type),
+                    "INSERT INTO messages (chat_id, role, content, round_index, msg_type, topic_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (chat_id, role, encrypted, round_index, msg_type, topic_id),
                 )
 
                 # 如果消息标记为跳过记忆化，记录日志
@@ -1073,7 +1116,7 @@ class ChatDBManager:
                     self.logger.info("消息标记为跳过记忆化: role=%s, content_preview=%s", role, content[:50])
 
             conn.commit()
-            self.logger.info("向聊天 %d 追加 %d 条消息 (round=%s)", chat_id, len(messages), round_index)
+            self.logger.info("向聊天 %d 追加 %d 条消息 (round=%s, topic=%s)", chat_id, len(messages), round_index, topic_id)
         except sqlite3.Error as e:
             self.logger.error("追加消息失败: %s", e)
             conn.rollback()

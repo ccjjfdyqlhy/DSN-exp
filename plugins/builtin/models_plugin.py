@@ -202,13 +202,14 @@ class ModelsPlugin(Plugin):
 
         if self._db is not None and ctx.chat_id and not ctx.extra.get("_debug_mode"):
             try:
-                round_index = self._db.get_next_round_index(ctx.chat_id)
+                round_index = ctx.extra.get("round_index") or self._db.get_next_round_index(ctx.chat_id)
                 ctx.extra["round_index"] = round_index
                 last_msgs = [m for m in chat.messages[-2:] if m.get("content")]
                 if last_msgs:
                     self._db.append_messages(
                         ctx.user_id, ctx.chat_id, last_msgs,
                         round_index=round_index,
+                        topic_id=ctx.extra.get("topic_id"),
                     )
             except Exception as e:
                 logger.error("保存消息失败: %s", e)

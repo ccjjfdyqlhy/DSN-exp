@@ -329,6 +329,10 @@ tools:
             type: boolean
             description: "是否还原细节"
             default: false
+          activate:
+            type: boolean
+            description: "是否同时持续激活命中的话题"
+            default: false
 
   - name: save_memo
     display_name: "保存备忘"
@@ -343,6 +347,43 @@ tools:
             type: string
             description: "备忘录内容"
             required: true
+
+  - name: activate_topic
+    display_name: "激活话题"
+    description: "主动持续激活某个话题(原文注入上下文), 直到话题结束"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: activate_topic
+        description: "持续激活指定话题"
+        parameters:
+          topic_id:
+            type: integer
+            description: "话题ID"
+            required: true
+
+  - name: deactivate_topic
+    display_name: "取消激活话题"
+    description: "取消某个话题的持续激活"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: deactivate_topic
+        description: "取消指定话题的持续激活"
+        parameters:
+          topic_id:
+            type: integer
+            description: "话题ID"
+            required: true
+
+  - name: list_topics
+    display_name: "列出话题"
+    description: "列出当前聊天的话题(标题/轮次/状态/摘要)"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: list_topics
+        description: "列出话题列表"
 
   - name: save_observation
     display_name: "观察笔记"
