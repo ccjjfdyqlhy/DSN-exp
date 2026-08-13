@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import onboarding
+import apps.dsn.onboarding as onboarding
 
 
 class _MockChat:

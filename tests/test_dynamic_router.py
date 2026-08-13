@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["OPENAI_API_KEY"] = "test-key"
 
-from models.api_accounts import APIManager
-from models.dynamic_router import (
+from apps.dsn.models.api_accounts import APIManager
+from apps.dsn.models.dynamic_router import (
     DynamicRouter,
     MonitorStore,
     reset_dynamic_router,

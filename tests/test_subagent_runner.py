@@ -72,7 +72,7 @@ def test_no_tools():
     print("Test 1: 无工具调用直接输出")
     print("=" * 60)
 
-    from plugins.builtin.subagent_runner import SubAgentRunner
+    from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 
     models = FakeModels([("直接完成，不需要工具。", []), ("不应再调用", [])])
     runner = SubAgentRunner(models_plugin=models, skill_registry=FakeSkillRegistry())
@@ -94,7 +94,7 @@ def test_tool_execution():
     print("Test 2: 工具执行 + 结果回喂")
     print("=" * 60)
 
-    from plugins.builtin.subagent_runner import SubAgentRunner
+    from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 
     script = [
         ("", [_tc("skill-search-search", '{"q": "dsn"}')]),
@@ -128,7 +128,7 @@ def test_context_isolation():
     print("Test 3: 上下文隔离")
     print("=" * 60)
 
-    from plugins.builtin.subagent_runner import SubAgentRunner
+    from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 
     models = FakeModels([("回答A", []), ("回答B", []), ("回答C", [])])
     runner = SubAgentRunner(models_plugin=models, skill_registry=FakeSkillRegistry())
@@ -152,7 +152,7 @@ def test_max_steps_guard():
     print("Test 4: 最大步数保护")
     print("=" * 60)
 
-    from plugins.builtin.subagent_runner import SubAgentRunner
+    from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 
     # 模型每轮都请求工具，永不终止文本
     script = [("", [_tc()]), ("", [_tc()]), ("", [_tc()]), ("", [_tc()])]
@@ -175,7 +175,7 @@ def test_unresolvable_tool():
     print("Test 5: 无法解析的工具名")
     print("=" * 60)
 
-    from plugins.builtin.subagent_runner import SubAgentRunner
+    from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 
     script = [
         ("", [_tc("bad-name")]),
@@ -199,7 +199,7 @@ def test_tool_error_handled():
     print("Test 6: 工具异常处理")
     print("=" * 60)
 
-    from plugins.builtin.subagent_runner import SubAgentRunner
+    from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 
     script = [
         ("", [_tc("skill-search-boom")]),

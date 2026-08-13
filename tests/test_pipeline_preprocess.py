@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from plugins.base import PluginContext
-from plugins.pipeline import ChatPipeline
+from apps.dsn.plugins.base import PluginContext
+from apps.dsn.plugins.pipeline import ChatPipeline
 
 
 class _NotCopyable:

@@ -14,7 +14,7 @@ from datetime import datetime
 import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from maintenance.state import ServerState, ServerStateMachine
+from apps.dsn.maintenance.state import ServerState, ServerStateMachine
 
 
 def test_initial_state():
@@ -80,7 +80,7 @@ def test_on_transition_callback():
 
 # ── 时钟 ──
 
-from maintenance.clock import MaintenanceClock
+from apps.dsn.maintenance.clock import MaintenanceClock
 
 
 def test_clock_tick():
@@ -98,7 +98,7 @@ def test_clock_tick():
 
 # ── 追踪器 ──
 
-from maintenance.tracker import ActivityTracker
+from apps.dsn.maintenance.tracker import ActivityTracker
 
 
 def test_tracker_record():
@@ -135,11 +135,11 @@ def test_tracker_save_load():
 
 # ── 任务系统 ──
 
-from maintenance.tasks import (
+from apps.dsn.maintenance.tasks import (
     MaintenanceTask, TaskProgress, PersonalityOptimizeTask, LogCleanupTask,
     AccountCheckTask,
 )
-from maintenance.system import TaskExecutor
+from apps.dsn.maintenance.system import TaskExecutor
 
 
 class _SuccessTask(MaintenanceTask):
@@ -221,7 +221,7 @@ def test_task_executor_set_priority():
 
 # ── 核心系统 ──
 
-from maintenance.system import MaintenanceSystem
+from apps.dsn.maintenance.system import MaintenanceSystem
 
 
 def test_system_starts_as_ready():
@@ -289,7 +289,7 @@ def test_system_add_remove_task():
 
 def test_system_task_persistence(tmp_path):
     """任务安排应持久化并可恢复"""
-    import maintenance.system as msys
+    import apps.dsn.maintenance.system as msys
     orig = msys._TASK_CONFIG_FILE
     msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
     try:
@@ -307,7 +307,7 @@ def test_system_task_persistence(tmp_path):
 
 def test_system_add_account_check_task(tmp_path):
     """account_check 任务需要 account_id，且可持久化恢复"""
-    import maintenance.system as msys
+    import apps.dsn.maintenance.system as msys
     orig = msys._TASK_CONFIG_FILE
     msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
     try:
@@ -397,7 +397,7 @@ def test_system_maint_interval_start_now():
 
 def test_system_maint_interval_persistence(tmp_path):
     """维护重复周期应持久化并恢复"""
-    import maintenance.system as msys
+    import apps.dsn.maintenance.system as msys
     orig = msys._TASK_CONFIG_FILE
     msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
     try:
@@ -415,7 +415,7 @@ def test_interval_prevents_auto_standby(tmp_path):
     """配置手动重复周期时，空闲也不进入自动待机（周期性检修不能停）"""
     from datetime import timedelta
     from unittest import mock
-    import maintenance.system as msys
+    import apps.dsn.maintenance.system as msys
     orig = msys._TASK_CONFIG_FILE
     msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
     try:
@@ -433,7 +433,7 @@ def test_interval_prevents_auto_standby(tmp_path):
 
 def test_standby_runs_scheduled_maintenance(tmp_path):
     """待机状态下，定时检修到点仍会进入维护（修复空闲后检修停止）"""
-    import maintenance.system as msys
+    import apps.dsn.maintenance.system as msys
     orig = msys._TASK_CONFIG_FILE
     msys._TASK_CONFIG_FILE = str(tmp_path / "tasks.json")
     try:
@@ -475,7 +475,7 @@ def test_log_cleanup_deletes_old(tmp_path):
 
 # ── SSE 桥 ──
 
-from maintenance.frontend_bridge import broadcast, subscribe, unsubscribe
+from apps.dsn.maintenance.frontend_bridge import broadcast, subscribe, unsubscribe
 
 
 def test_sse_broadcast_receive():

@@ -11,7 +11,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from prompt.personality_v3.events import (
+from apps.dsn.prompt.personality_v3.events import (
     PerceptionRecord,
     affinity_level,
     affinity_stage_cap,
@@ -21,12 +21,12 @@ from prompt.personality_v3.events import (
     EVENT_SILENCE,
     EVENT_NEUTRAL,
 )
-from prompt.personality_v3.dynamics_engine import DynamicsEngine, DynamicsConfig
-from prompt.personality_v3.evidence_accumulator import EvidenceAccumulator
-from prompt.personality_v3.audit import AuditLogger, AuditEntry
-from prompt.personality_v3.personality_judge import PersonalityJudge
-from prompt.personality_v3.dynamic_synthesizer import DynamicSnapshot
-from prompt.personality_v3 import PersonalitySystemV3
+from apps.dsn.prompt.personality_v3.dynamics_engine import DynamicsEngine, DynamicsConfig
+from apps.dsn.prompt.personality_v3.evidence_accumulator import EvidenceAccumulator
+from apps.dsn.prompt.personality_v3.audit import AuditLogger, AuditEntry
+from apps.dsn.prompt.personality_v3.personality_judge import PersonalityJudge
+from apps.dsn.prompt.personality_v3.dynamic_synthesizer import DynamicSnapshot
+from apps.dsn.prompt.personality_v3 import PersonalitySystemV3
 
 
 class _FakeDB:
@@ -154,7 +154,7 @@ def test_presentation_layer_separation():
         mood_state={"joy": 0.9, "sadness": 0.1, "anger": 0.1, "fear": 0.1},
         affinity_value=50.0,
     )
-    from prompt.personality_v3.personality_generator import PersonalityPromptGenerator
+    from apps.dsn.prompt.personality_v3.personality_generator import PersonalityPromptGenerator
     gen = PersonalityPromptGenerator(chat=None)
     assert gen._stable_vector(snapshot) == {"B2": 0.5, "A5": 0.5}
     print("  PASSED")

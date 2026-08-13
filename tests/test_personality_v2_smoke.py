@@ -2,10 +2,10 @@
 import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from prompt.personality_v2 import PersonalitySystemV2
-from prompt.personality_v2.emotion import EmotionModule, EmotionalStimulus, StimulusAnalyzer
-from prompt.personality_v2.affinity import AffinityModule, ActionClassifier, AFFINITY_LEVELS
-from prompt.personality_v2.habit import HabitModule, Habit, PatternObserver
+from apps.dsn.prompt.personality_v2 import PersonalitySystemV2
+from apps.dsn.prompt.personality_v2.emotion import EmotionModule, EmotionalStimulus, StimulusAnalyzer
+from apps.dsn.prompt.personality_v2.affinity import AffinityModule, ActionClassifier, AFFINITY_LEVELS
+from apps.dsn.prompt.personality_v2.habit import HabitModule, Habit, PatternObserver
 
 
 def test_emotion():
@@ -81,7 +81,7 @@ def test_observer():
 def test_persistence():
     print("\n=== Test 5: Persistence ===")
     db_path = os.path.join(tempfile.gettempdir(), "test_personality_v2.db")
-    from db.chat import ChatDBManager
+    from apps.dsn.db.chat import ChatDBManager
     db = ChatDBManager(db_path=db_path)
 
     p2 = PersonalitySystemV2(db=db)

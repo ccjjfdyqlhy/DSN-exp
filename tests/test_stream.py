@@ -51,8 +51,8 @@ def _install_fake_cv():
 
 
 def _make_webcam_coord():
-    from api.vision import VisionCoordinator
-    from tracking.webcam import WebCamManager
+    from apps.dsn.api.vision import VisionCoordinator
+    from apps.dsn.tracking.webcam import WebCamManager
     _install_fake_cv()
     cfg = Path(tempfile.mkdtemp()) / "webcams.json"
     mgr = WebCamManager(path=str(cfg))
@@ -67,7 +67,7 @@ def _make_webcam_coord():
 def test_jpeg_extract():
     print("=== _jpeg_from_data_url 提取 ===")
     import base64
-    from api.stream import _jpeg_from_data_url
+    from apps.dsn.api.stream import _jpeg_from_data_url
     b64 = base64.b64encode(b"JPEGDATA").decode()
     assert _jpeg_from_data_url("data:image/jpeg;base64," + b64) == b"JPEGDATA"
     assert _jpeg_from_data_url("") is None
@@ -78,7 +78,7 @@ def test_jpeg_extract():
 
 def test_session_flow():
     print("=== StreamSession 版本化帧缓冲 ===")
-    from api.stream import StreamSession
+    from apps.dsn.api.stream import StreamSession
     s = StreamSession("camA", "webcam")
 
     # 无帧时超时返回（从未出帧 → None，真离线）
@@ -106,7 +106,7 @@ def test_session_flow():
 
 def test_session_keepalive():
     print("=== 流保活：无新帧时重发最后帧，不断开 ===")
-    from api.stream import StreamSession
+    from apps.dsn.api.stream import StreamSession
     s = StreamSession("camA", "webcam")
 
     # 无任何帧 → 超时返回 None（断开）
@@ -135,9 +135,9 @@ def test_session_keepalive():
 
 def test_stream_webcam_end_to_end():
     print("=== VisionStreamingService webcam 流端到端 ===")
-    import api.stream as _st
+    import apps.dsn.api.stream as _st
     _st.GRACE_SECONDS = 1   # 缩短回收等待，加速测试
-    from api.stream import VisionStreamingService
+    from apps.dsn.api.stream import VisionStreamingService
     coord, mgr = _make_webcam_coord()
     svc = VisionStreamingService(coord)
     svc.start()
@@ -170,7 +170,7 @@ def test_stream_webcam_end_to_end():
 
 def test_stream_kind_and_multi_subscriber():
     print("=== 摄像头分类 + 多订阅者 ===")
-    from api.stream import VisionStreamingService
+    from apps.dsn.api.stream import VisionStreamingService
     coord, mgr = _make_webcam_coord()
     svc = VisionStreamingService(coord)
 
@@ -195,10 +195,10 @@ def test_stream_kind_and_multi_subscriber():
 def test_stream_local_push_end_to_end():
     print("=== 本地摄像头流端到端：订阅 → 客户端推送 → 出帧 ===")
     import base64
-    import api.stream as _st
+    import apps.dsn.api.stream as _st
     _st.GRACE_SECONDS = 1
-    from api.stream import VisionStreamingService
-    from api.vision import VisionCoordinator
+    from apps.dsn.api.stream import VisionStreamingService
+    from apps.dsn.api.vision import VisionCoordinator
 
     # 后端已注册本地摄像头 cam0（minimal.py 上报）
     coord = VisionCoordinator()
@@ -238,8 +238,8 @@ def test_stream_local_push_end_to_end():
 
 def test_stream_serve_rejects_unknown():
     print("=== serve 拒绝未知摄像头 ===")
-    from api.stream import VisionStreamingService
-    from api.vision import VisionCoordinator
+    from apps.dsn.api.stream import VisionStreamingService
+    from apps.dsn.api.vision import VisionCoordinator
     coord = VisionCoordinator()   # 空，无任何摄像头
     svc = VisionStreamingService(coord)
     assert svc.serve("ghost") is None
@@ -251,8 +251,8 @@ def test_stream_serve_rejects_unknown():
 def test_camera_online_by_push():
     print("=== 本地摄像头在线判定：基于最近推帧而非启动上报 ===")
     import base64
-    from api.stream import VisionStreamingService
-    from api.vision import VisionCoordinator
+    from apps.dsn.api.stream import VisionStreamingService
+    from apps.dsn.api.vision import VisionCoordinator
     coord = VisionCoordinator()
     coord.register_cameras([{"logical_name": "cam0", "index": 0}])
     svc = VisionStreamingService(coord)

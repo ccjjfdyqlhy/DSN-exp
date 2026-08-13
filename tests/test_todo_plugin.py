@@ -33,7 +33,7 @@ def test_store_crud():
     print("Test 1: TodoStore 计划 CRUD")
     print("=" * 60)
 
-    from plugins.builtin.todo_store import get_todo_store, TodoStore
+    from apps.dsn.plugins.builtin.todo_store import get_todo_store, TodoStore
 
     store = TodoStore()
     plan = store.create_plan(chat_id=42, user_id=1)
@@ -85,7 +85,7 @@ def test_store_subscribe():
     print("Test 2: TodoStore SSE 订阅与发布")
     print("=" * 60)
 
-    from plugins.builtin.todo_store import TodoStore
+    from apps.dsn.plugins.builtin.todo_store import TodoStore
 
     store = TodoStore()
     plan = store.create_plan(chat_id=1, user_id=1)
@@ -139,7 +139,7 @@ def test_heuristic_check():
     print("Test 3: TodoPlugin 启发式判断")
     print("=" * 60)
 
-    from plugins.builtin.todo_plugin import TodoPlugin
+    from apps.dsn.plugins.builtin.todo_plugin import TodoPlugin
 
     # 简单消息
     assert not TodoPlugin._heuristic_check("你好")
@@ -168,7 +168,7 @@ def test_parse_decomposition():
     print("Test 4: TodoPlugin 分解 JSON 解析")
     print("=" * 60)
 
-    from plugins.builtin.todo_plugin import TodoPlugin
+    from apps.dsn.plugins.builtin.todo_plugin import TodoPlugin
 
     # 正常 JSON
     valid_response = '''[
@@ -205,9 +205,9 @@ def test_todo_plugin_mock():
     print("Test 5: TodoPlugin 完整流程 (mock)")
     print("=" * 60)
 
-    from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.todo_plugin import TodoPlugin
-    from plugins.builtin.todo_store import TodoStore, get_todo_store
+    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from apps.dsn.plugins.builtin.todo_plugin import TodoPlugin
+    from apps.dsn.plugins.builtin.todo_store import TodoStore, get_todo_store
 
     # Mock ComplexityAnalyzer
     class MockComplexity:
@@ -291,7 +291,7 @@ def test_sub_agent_spawning():
     print("Test 6: TodoPlugin 子代理孵化")
     print("=" * 60)
 
-    from plugins.builtin.todo_store import TodoStore, get_todo_store
+    from apps.dsn.plugins.builtin.todo_store import TodoStore, get_todo_store
 
     store = TodoStore()
     plan = store.create_plan(chat_id=1, user_id=1)
@@ -337,9 +337,9 @@ def test_below_threshold_skip():
     print("Test 7: TodoPlugin 低复杂度跳过")
     print("=" * 60)
 
-    from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.todo_plugin import TodoPlugin
-    from plugins.builtin.todo_store import get_todo_store
+    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from apps.dsn.plugins.builtin.todo_plugin import TodoPlugin
+    from apps.dsn.plugins.builtin.todo_store import get_todo_store
 
     class MockComplexity:
         def analyze_complexity(self, message, context_len):

@@ -1,0 +1,21 @@
+# apps.yaml — DSN-exp Harness 应用注册表（可选）
+#
+# 启动器按此文件加载应用 → 入口映射；未出现于此处的内置应用也可用
+# （launcher.py 内置 dsn / coding_agent / text_agent）。
+# 可用启动方式:
+#   python main.py --app <name>
+#   DSN_APP=<name> python main.py
+#
+# 每个应用:
+#   entry:       可调用模块（提供 main()）
+#   description: 展示说明
+#   default:     true 表示默认启动（仅一个）
+
+dsn:
+  entry: apps.dsn.entry
+  description: DSN 语音陪伴应用（默认启动）
+  default: true
+
+coding_agent:
+  entry: apps.coding_agent.entry
+  description: 基于 harness 的 coding agent 示例

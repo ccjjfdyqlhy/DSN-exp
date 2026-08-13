@@ -27,8 +27,8 @@ except ImportError:
     readline = None
 
 try:
-    from skills.registry import SkillRegistry
-    from skills.manager import SkillManager
+    from apps.dsn.skills.registry import SkillRegistry
+    from apps.dsn.skills.manager import SkillManager
 except Exception:
     print("无法导入技能系统，请从项目根目录运行")
     sys.exit(1)
@@ -62,8 +62,8 @@ class SkillDebugger:
     def __init__(self):
         self.registry = SkillRegistry()
         skill_dirs = [
-            str(PROJECT_ROOT / "skills" / "builtin"),
-            str(PROJECT_ROOT / "skills" / "custom"),
+            str(PROJECT_ROOT / "apps" / "dsn" / "skills" / "builtin"),
+            str(PROJECT_ROOT / "apps" / "dsn" / "skills" / "custom"),
         ]
         self.manager = SkillManager(skill_dirs=skill_dirs, registry=self.registry)
         loaded = self.manager.scan_and_load()

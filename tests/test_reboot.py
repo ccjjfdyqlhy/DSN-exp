@@ -8,12 +8,12 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import main as main_mod
+import apps.dsn.main as main_mod
 
 
 def test_restart_process_uses_same_command():
     """_restart_process 应用同一命令行重建进程"""
-    import main
+    import apps.dsn.main as main
     with mock.patch.object(main.os, "execv") as fake_execv:
         main._restart_process()
     fake_execv.assert_called_once_with(
@@ -22,7 +22,7 @@ def test_restart_process_uses_same_command():
 
 def test_reboot_sets_flag_and_event():
     """/reboot 应置位重启标记并触发 shutdown_event"""
-    import main
+    import apps.dsn.main as main
     main._REBOOT_REQUESTED = False
     evt = threading.Event()
 
@@ -34,7 +34,7 @@ def test_reboot_sets_flag_and_event():
 
 def test_stop_does_not_set_reboot_flag():
     """/stop 不应置位重启标记"""
-    import main
+    import apps.dsn.main as main
     main._REBOOT_REQUESTED = False
     evt = threading.Event()
 

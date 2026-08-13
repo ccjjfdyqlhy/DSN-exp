@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from config import Config
-from memory import MemorySystem
+from apps.dsn.config import Config
+from apps.dsn.memory import MemorySystem
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ class TestMemorySystem(unittest.TestCase):
 
     def test_search_vector_only(self):
         """embedding_query 为 list[float] 时走纯向量搜索"""
-        from config import Config
+        from apps.dsn.config import Config
         old_enabled = Config.MEMORY_EMBEDDING_ENABLED
         Config.MEMORY_EMBEDDING_ENABLED = True
 
@@ -289,7 +289,7 @@ class TestMemorySystem(unittest.TestCase):
 
     def test_search_hybrid_keyword_and_vector(self):
         """关键词 + 向量混合搜索"""
-        from config import Config
+        from apps.dsn.config import Config
         old_enabled = Config.MEMORY_EMBEDDING_ENABLED
         Config.MEMORY_EMBEDDING_ENABLED = True
         try:
@@ -309,7 +309,7 @@ class TestMemorySystem(unittest.TestCase):
 
     def test_search_fallback_when_no_embedding(self):
         """有 embedding_query 但 memory 无 blob 时应跳过 vector 部分"""
-        from config import Config
+        from apps.dsn.config import Config
         old_enabled = Config.MEMORY_EMBEDDING_ENABLED
         Config.MEMORY_EMBEDDING_ENABLED = True
         try:
@@ -325,7 +325,7 @@ class TestMemorySystem(unittest.TestCase):
 
     def test_embed_raw_round(self):
         """验证 summarize_turn 将原始对话 embedding 写入 memory_embeds"""
-        from config import Config
+        from apps.dsn.config import Config
         old_enabled = Config.MEMORY_EMBEDDING_ENABLED
         Config.MEMORY_EMBEDDING_ENABLED = True
         try:

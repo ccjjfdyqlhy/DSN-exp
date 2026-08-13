@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _load_exempt_fn():
     """从 api/app.py 提取 is_exempt_from_maintenance 纯函数定义（不 import 模块，
     避免触发完整的 boot 初始化）。"""
-    src = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "api" / "app.py"
+    src = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "apps" / "dsn" / "api" / "app.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "is_exempt_from_maintenance":

@@ -8,7 +8,7 @@ import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models import OpenAIChat
+from apps.dsn.models import OpenAIChat
 
 # 简单示例
 chat = OpenAIChat(api_key=input("请输入API密钥: "))

@@ -3,10 +3,10 @@ import sys, os, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from prompt.personality_v2 import PersonalitySystemV2
+from apps.dsn.prompt.personality_v2 import PersonalitySystemV2
 
 ps = PersonalitySystemV2()
-ps.scan_presets(os.path.join("prompt", "personality_v2", "presets"))
+ps.scan_presets(os.path.join("apps", "dsn", "prompt", "personality_v2", "presets"))
 ps.load_preset(1, "default")
 ps.load_rules_from_files()
 
@@ -51,8 +51,8 @@ for p in presets:
     print(f"  - {p['name']} ({p['display_name']}): {p['description']}")
 
 # Test that engine.py properly uses v2
-from prompt.engine import PromptEngine
-from prompt.library import PromptLibrary
+from apps.dsn.prompt.engine import PromptEngine
+from apps.dsn.prompt.library import PromptLibrary
 lib = PromptLibrary()
 engine = PromptEngine(library=lib, personality_v2=ps)
 full_prompt = engine.build_system_prompt({"uid": 1, "nickname": "test_user"})

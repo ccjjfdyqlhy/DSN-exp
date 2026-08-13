@@ -3,8 +3,8 @@ import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db.chat import ChatDBManager
-from prompt.impression import ImpressionManager
+from apps.dsn.db.chat import ChatDBManager
+from apps.dsn.prompt.impression import ImpressionManager
 
 db_path = os.path.join(tempfile.gettempdir(), "test_impressions.db")
 

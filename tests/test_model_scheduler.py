@@ -4,7 +4,7 @@ import time
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from models.scheduler import ModelScheduler
+from apps.dsn.models.scheduler import ModelScheduler
 
 
 def _register(scheduler, name, events, priority=50, immediate=False, resident=False, orchestrated=True):

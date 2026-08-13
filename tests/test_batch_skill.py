@@ -5,11 +5,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from plugins.base import HookPoint, PluginContext
-from plugins.builtin.tool_plugin import ToolPlugin
-from skills.loader import SkillLoader
-from skills.manager import SkillManager
-from skills.registry import SkillRegistry
+from apps.dsn.plugins.base import HookPoint, PluginContext
+from apps.dsn.plugins.builtin.tool_plugin import ToolPlugin
+from apps.dsn.skills.loader import SkillLoader
+from apps.dsn.skills.manager import SkillManager
+from apps.dsn.skills.registry import SkillRegistry
 
 
 class _FakeTask:
@@ -38,7 +38,7 @@ class _FakeTaskManager:
 
 def test_batch_skill_loads_from_its_root_directory():
     registry = SkillRegistry()
-    manager = SkillManager(skill_dirs=["skills/batch"], registry=registry)
+    manager = SkillManager(skill_dirs=["apps/dsn/skills/batch"], registry=registry)
 
     assert manager.scan_and_load() == 1
     assert registry.has_skill("batch")
@@ -51,7 +51,7 @@ def test_batch_skill_loads_from_its_root_directory():
 
 def test_batch_skill_receives_tool_request_context_and_submits_tasks():
     registry = SkillRegistry()
-    skill = SkillLoader().load("skills/batch")
+    skill = SkillLoader().load("apps/dsn/skills/batch")
     registry.register_skill(skill)
     task_manager = _FakeTaskManager()
     plugin = ToolPlugin(skill_registry=registry)
@@ -76,8 +76,8 @@ def test_batch_skill_receives_tool_request_context_and_submits_tasks():
 
 
 def test_batch_skill_prefers_thread_local_request_context():
-    from skills.batch.tools.batch_tools import BatchTools
-    from skills.context import set_call_context
+    from apps.dsn.skills.batch.tools.batch_tools import BatchTools
+    from apps.dsn.skills.context import set_call_context
 
     task_manager = _FakeTaskManager()
     BatchTools.set_context(task_manager=task_manager)

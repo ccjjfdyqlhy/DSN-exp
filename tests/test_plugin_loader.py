@@ -21,10 +21,10 @@ import os
 # 确保项目根目录在 path 中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from plugins import (
+from apps.dsn.plugins import (
     Plugin, AsyncPlugin, HookPoint, PluginContext, PluginManager, ChatPipeline,
 )
-from plugins.builtin import (
+from apps.dsn.plugins.builtin import (
     TTSPlugin, ASRFilterPlugin, MemoryPlugin, TaskPlugin, ModelsPlugin,
 )
 

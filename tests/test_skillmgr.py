@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from skills.builtin.skillmgr.tools.skillmgr import SkillMgrTool
+from apps.dsn.skills.builtin.skillmgr.tools.skillmgr import SkillMgrTool
 
 t = SkillMgrTool()
 
@@ -38,7 +38,7 @@ print(f"Success: {r5['success']}, Message: {r5.get('message')}")
 
 # Verify generated files
 import json
-base = os.path.join("skills", "custom", "test_skill")
+base = os.path.join("apps", "dsn", "skills", "custom", "test_skill")
 print(f"\n=== Generated files ===")
 for f in ["skill.yaml", "prompts/instruction.md", "tools/wrapper.py", "tools/__init__.py"]:
     fp = os.path.join(base, f)

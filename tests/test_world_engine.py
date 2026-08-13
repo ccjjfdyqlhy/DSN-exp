@@ -3,13 +3,13 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from world.engine import WorldEngine
-from world.state_manager import WorldStateManager
-from world.narrative_model import NarrativeModel
+from apps.dsn.world.engine import WorldEngine
+from apps.dsn.world.state_manager import WorldStateManager
+from apps.dsn.world.narrative_model import NarrativeModel
 
 print("=== Test 1: WorldEngine load config ===")
 engine = WorldEngine()
-engine.load_config_file("world/worlds/default.yaml")
+engine.load_config_file("apps/dsn/world/worlds/default.yaml")
 assert engine._day_length == 86400
 assert engine._year_length == 31536000
 assert engine._time_scale == 1.0
@@ -108,7 +108,7 @@ print("  PASSED")
 
 print("\n=== Test 11: NarrativeModel init ===")
 import yaml
-cfg = yaml.safe_load(open("world/worlds/default.yaml", encoding="utf-8-sig")) or {}
+cfg = yaml.safe_load(open("apps/dsn/world/worlds/default.yaml", encoding="utf-8-sig")) or {}
 nm = NarrativeModel(
     model_type="openai",
     model_name="deepseek-v4-flash",

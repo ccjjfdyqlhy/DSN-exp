@@ -30,10 +30,10 @@ def test_library_scan():
     print("Test 1: PromptLibrary 扫描加载")
     print("=" * 60)
 
-    from prompt.library import PromptLibrary
+    from apps.dsn.prompt.library import PromptLibrary
 
     lib = PromptLibrary()
-    count = lib.scan_and_load("prompt/prompts/core", "prompt/prompts/capabilities")
+    count = lib.scan_and_load("apps/dsn/prompt/prompts/core", "apps/dsn/prompt/prompts/capabilities")
 
     assert count >= 6, f"应至少加载 6 个文件，实际 {count}"
     print(f"  加载了 {count} 个文件")
@@ -50,10 +50,10 @@ def test_library_aggregation():
     print("Test 2: PromptLibrary 按 category 聚合")
     print("=" * 60)
 
-    from prompt.library import PromptLibrary
+    from apps.dsn.prompt.library import PromptLibrary
 
     lib = PromptLibrary()
-    lib.scan_and_load("prompt/prompts/core", "prompt/prompts/capabilities")
+    lib.scan_and_load("apps/dsn/prompt/prompts/core", "apps/dsn/prompt/prompts/capabilities")
 
     core = lib.get_content_by_category("core")
     assert "EXA" in core, "core 应包含身份定义"
@@ -80,10 +80,10 @@ def test_library_toggle():
     print("Test 3: PromptLibrary enable / disable / toggle")
     print("=" * 60)
 
-    from prompt.library import PromptLibrary
+    from apps.dsn.prompt.library import PromptLibrary
 
     lib = PromptLibrary()
-    lib.scan_and_load("prompt/prompts/core")
+    lib.scan_and_load("apps/dsn/prompt/prompts/core")
 
     # 禁用 safety
     assert lib.disable("safety")
@@ -115,10 +115,10 @@ def test_personality_presets():
     print("Test 4: PersonalitySystem 性格预设")
     print("=" * 60)
 
-    from prompt._personality_v1_legacy import PersonalitySystem
+    from apps.dsn.prompt._personality_v1_legacy import PersonalitySystem
 
     ps = PersonalitySystem()
-    count = ps.scan_presets("prompt/prompts/personality")
+    count = ps.scan_presets("apps/dsn/prompt/prompts/personality")
     assert count >= 4, f"应加载至少 4 个预设，实际 {count}"
     print(f"  加载了 {count} 个性格预设")
 
@@ -152,10 +152,10 @@ def test_personality_prompt():
     print("Test 5: PersonalitySystem 自然语言描述")
     print("=" * 60)
 
-    from prompt._personality_v1_legacy import PersonalitySystem
+    from apps.dsn.prompt._personality_v1_legacy import PersonalitySystem
 
     ps = PersonalitySystem()
-    ps.scan_presets("prompt/prompts/personality")
+    ps.scan_presets("apps/dsn/prompt/prompts/personality")
     ps.load_preset("default")
 
     prompt = ps.generate_personality_prompt()
@@ -175,7 +175,7 @@ def test_personality_dynamics():
     print("Test 6: PersonalitySystem 情绪动态")
     print("=" * 60)
 
-    from prompt._personality_v1_legacy import PersonalitySystem
+    from apps.dsn.prompt._personality_v1_legacy import PersonalitySystem
 
     ps = PersonalitySystem()
     ps.load_preset("default")
@@ -208,15 +208,15 @@ def test_prompt_engine():
     print("Test 7: PromptEngine 组装")
     print("=" * 60)
 
-    from prompt.library import PromptLibrary
-    from prompt.personality_v2 import PersonalitySystemV2
-    from prompt.engine import PromptEngine
+    from apps.dsn.prompt.library import PromptLibrary
+    from apps.dsn.prompt.personality_v2 import PersonalitySystemV2
+    from apps.dsn.prompt.engine import PromptEngine
 
     lib = PromptLibrary()
-    lib.scan_and_load("prompt/prompts/core", "prompt/prompts/capabilities")
+    lib.scan_and_load("apps/dsn/prompt/prompts/core", "apps/dsn/prompt/prompts/capabilities")
 
     ps = PersonalitySystemV2()
-    ps.scan_presets("prompt/personality_v2/presets")
+    ps.scan_presets("apps/dsn/prompt/personality_v2/presets")
     ps.load_preset(42, "default")
 
     engine = PromptEngine(library=lib, personality_v2=ps)
@@ -246,7 +246,7 @@ def test_old_prompt_compat():
     print("Test 8: 旧 prompt.py 回退兼容")
     print("=" * 60)
 
-    from prompt import get_system_prompt as old_get
+    from apps.dsn.prompt import get_system_prompt as old_get
 
     # 不初始化 PromptEngine，验证回退工作
     user_info = {"uid": 1, "nickname": "user"}
@@ -264,15 +264,15 @@ def test_engine_integration():
     print("Test 9: PromptEngine 初始化 + 自动切换")
     print("=" * 60)
 
-    from prompt.engine import init_prompt_engine
+    from apps.dsn.prompt.engine import init_prompt_engine
 
     engine = init_prompt_engine(
-        library_dirs=["prompt/prompts/core", "prompt/prompts/capabilities"],
-        personality_v2_dir="prompt/personality_v2/presets",
+        library_dirs=["apps/dsn/prompt/prompts/core", "apps/dsn/prompt/prompts/capabilities"],
+        personality_v2_dir="apps/dsn/prompt/personality_v2/presets",
     )
 
     # 验证旧 prompt.py 自动使用新引擎
-    from prompt import get_system_prompt
+    from apps.dsn.prompt import get_system_prompt
     result = get_system_prompt({"uid": 1, "nickname": "auto_user"})
 
     assert "性格" in result, "应通过新引擎生成性格描述"

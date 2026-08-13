@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from document.inputs import load_document_image, normalize_document_inputs
-from utils.media import image_data_url, image_file_data_url, image_mime_type
+from apps.dsn.document.inputs import load_document_image, normalize_document_inputs
+from apps.dsn.utils.media import image_data_url, image_file_data_url, image_mime_type
 
 
 def test_image_helpers_preserve_mime_type_and_data(tmp_path):

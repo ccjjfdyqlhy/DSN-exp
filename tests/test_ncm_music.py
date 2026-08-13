@@ -6,7 +6,7 @@ import os
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skills.builtin.ncm_music.tools.ncm_api import NCMApi
+from apps.dsn.skills.builtin.ncm_music.tools.ncm_api import NCMApi
 
 
 def main():

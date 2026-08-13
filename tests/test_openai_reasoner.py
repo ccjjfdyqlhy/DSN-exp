@@ -7,7 +7,7 @@ from openai import OpenAI
 import os,sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config import Config
+from apps.dsn.config import Config
 
 client = OpenAI(api_key=Config.OPENAI_API_KEY, base_url=Config.OPENAI_API_BASE)
 

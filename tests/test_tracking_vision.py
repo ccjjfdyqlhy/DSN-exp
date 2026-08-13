@@ -9,11 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import datetime, timedelta
-from db.chat import ChatDBManager
-from tracking.core import TrackingEngine
-from tracking.store import TrackingStore
-from tracking.vision_observe import VisionObservationService
-from config import Config
+from apps.dsn.db.chat import ChatDBManager
+from apps.dsn.tracking.core import TrackingEngine
+from apps.dsn.tracking.store import TrackingStore
+from apps.dsn.tracking.vision_observe import VisionObservationService
+from apps.dsn.config import Config
 
 workdir = tempfile.mkdtemp(prefix="test_vision_")
 db_path = os.path.join(workdir, "chats.db")

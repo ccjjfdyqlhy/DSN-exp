@@ -8,7 +8,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from models.clients import OpenAIChat, LMSummaryModel
+from apps.dsn.models.clients import OpenAIChat, LMSummaryModel
 
 
 class _Response:

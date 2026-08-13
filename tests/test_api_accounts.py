@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["OPENAI_API_KEY"] = "test-key"
 
-from models.api_accounts import (
+from apps.dsn.models.api_accounts import (
     APIManager,
     FailoverChat,
     APIAccount,
@@ -20,8 +20,8 @@ from models.api_accounts import (
     reset_api_manager,
     is_known_down,
 )
-import models.api_accounts as ma_module
-import models.clients as clients_mod
+import apps.dsn.models.api_accounts as ma_module
+import apps.dsn.models.clients as clients_mod
 
 
 def _fresh_manager():
@@ -487,10 +487,10 @@ def test_manual_schedule_demote():
 
 def _fresh_router():
     """把全局动态路由指向临时监控文件，返回其引用"""
-    import models.dynamic_router as dr
+    import apps.dsn.models.dynamic_router as dr
     orig = dr._MONITOR_FILE
     dr._MONITOR_FILE = os.path.join(tempfile.mkdtemp(), "monitor.json")
-    from models.dynamic_router import reset_dynamic_router, get_dynamic_router
+    from apps.dsn.models.dynamic_router import reset_dynamic_router, get_dynamic_router
     reset_dynamic_router()
     return get_dynamic_router(), orig
 
@@ -506,7 +506,7 @@ def test_known_down_defers_account():
         mgr.add("slow", "http://x/v1", "sk-slow", "m", priority=0)
         # promote dead 作为默认提优
         mgr.add_schedule("00:00", "23:59", "dead", "promote")
-        from models.dynamic_router import get_dynamic_router
+        from apps.dsn.models.dynamic_router import get_dynamic_router
         r = get_dynamic_router()
         now = time.time()
         r.record("dead", False, 10000, source="request", ts=now - 60)
@@ -522,9 +522,9 @@ def test_known_down_defers_account():
         fc = FailoverChat(mgr.enabled_accounts())
         assert fc._account_names == ["slow", "good", "dead"], fc._account_names
     finally:
-        from models.dynamic_router import reset_dynamic_router
+        from apps.dsn.models.dynamic_router import reset_dynamic_router
         reset_dynamic_router()
-        import models.dynamic_router as dr
+        import apps.dsn.models.dynamic_router as dr
         dr._MONITOR_FILE = orig
     print("  PASSED")
 
@@ -537,7 +537,7 @@ def test_known_down_window_configurable():
         mgr, _ = _fresh_manager()
         mgr.add("a", "http://x/v1", "sk-a", "m", priority=0)
         mgr.add("b", "http://x/v1", "sk-b", "m", priority=1)
-        from models.dynamic_router import get_dynamic_router
+        from apps.dsn.models.dynamic_router import get_dynamic_router
         r = get_dynamic_router()
         now = time.time()
         r.record("b", False, 10000, source="request", ts=now - 100)  # 100 秒前失败
@@ -545,7 +545,7 @@ def test_known_down_window_configurable():
         # 默认窗口 3600s → b 被标记为已知坏
         assert is_known_down("b") is True
         # 把窗口调小到 60s → 100 秒前的失败已过期, b 恢复
-        from config import Config
+        from apps.dsn.config import Config
         old = getattr(Config, "FAILOVER_DOWN_WINDOW", 3600)
         try:
             setattr(Config, "FAILOVER_DOWN_WINDOW", 60)
@@ -553,9 +553,9 @@ def test_known_down_window_configurable():
         finally:
             setattr(Config, "FAILOVER_DOWN_WINDOW", old)
     finally:
-        from models.dynamic_router import reset_dynamic_router
+        from apps.dsn.models.dynamic_router import reset_dynamic_router
         reset_dynamic_router()
-        import models.dynamic_router as dr
+        import apps.dsn.models.dynamic_router as dr
         dr._MONITOR_FILE = orig
     print("  PASSED")
 

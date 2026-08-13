@@ -10,10 +10,10 @@ import sqlite3
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from config import Config
-from db.chat import ChatDBManager
-from memory import MemorySystem
-from memory.topics import TopicManager
+from apps.dsn.config import Config
+from apps.dsn.db.chat import ChatDBManager
+from apps.dsn.memory import MemorySystem
+from apps.dsn.memory.topics import TopicManager
 
 
 # ---------------------------------------------------------------------------

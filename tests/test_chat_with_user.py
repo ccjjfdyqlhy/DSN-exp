@@ -5,9 +5,9 @@
 import os
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from api.auth import UserManager
-from db.chat import ChatDBManager
-from models import OpenAIChat
+from apps.dsn.api.auth import UserManager
+from apps.dsn.db.chat import ChatDBManager
+from apps.dsn.models import OpenAIChat
 
 # 1. 登录
 um = UserManager(client_id=845, client_secret="J6Hlf0Pp0mYTpRYyOhPFduJGJw828PjaDKOqXGbP")

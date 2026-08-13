@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import datetime
-from db.chat import ChatDBManager
-from tracking.core import TrackingEngine
+from apps.dsn.db.chat import ChatDBManager
+from apps.dsn.tracking.core import TrackingEngine
 
 workdir = tempfile.mkdtemp(prefix="test_checkin_")
 db_path = os.path.join(workdir, "chats.db")

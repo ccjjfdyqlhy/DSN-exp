@@ -30,12 +30,12 @@ def test_loader_load_skills():
     print("Test 1: SkillLoader 加载内置技能")
     print("=" * 60)
 
-    from skills.loader import SkillLoader
+    from apps.dsn.skills.loader import SkillLoader
 
     loader = SkillLoader()
 
     # 加载 web_search
-    ws = loader.load("skills/builtin/web_search")
+    ws = loader.load("apps/dsn/skills/builtin/web_search")
     assert ws is not None
     assert ws.name == "web_search"
     assert ws.display_name == "网页搜索"
@@ -45,7 +45,7 @@ def test_loader_load_skills():
     print(f"  web_search: {ws.name} — prompts={len(ws.prompts)}, tools={len(ws.tools)}")
 
     # 加载 file_manager
-    fm = loader.load("skills/builtin/file_manager")
+    fm = loader.load("apps/dsn/skills/builtin/file_manager")
     assert fm is not None
     assert fm.name == "file_manager"
     assert len(ws.tools) >= 1
@@ -61,14 +61,14 @@ def test_registry():
     print("Test 2: SkillRegistry 注册 + 工具调用 + 提示词聚合")
     print("=" * 60)
 
-    from skills.loader import SkillLoader
-    from skills.registry import SkillRegistry
+    from apps.dsn.skills.loader import SkillLoader
+    from apps.dsn.skills.registry import SkillRegistry
 
     registry = SkillRegistry()
     loader = SkillLoader()
 
     # 注册 web_search
-    ws = loader.load("skills/builtin/web_search")
+    ws = loader.load("apps/dsn/skills/builtin/web_search")
     registry.register_skill(ws)
     assert registry.has_skill("web_search")
     assert "web_search.search" in registry.list_active_tools()
@@ -96,7 +96,7 @@ def test_registry():
     print(f"  工具规格: {spec['name']} ({spec['description'][:40]}...)")
 
     # 注册 file_manager 并测试
-    fm = loader.load("skills/builtin/file_manager")
+    fm = loader.load("apps/dsn/skills/builtin/file_manager")
     registry.register_skill(fm)
     assert registry.has_skill("file_manager")
 
@@ -120,11 +120,11 @@ def test_manager():
     print("Test 3: SkillManager 扫描 + 生命周期")
     print("=" * 60)
 
-    from skills.registry import SkillRegistry
-    from skills.manager import SkillManager
+    from apps.dsn.skills.registry import SkillRegistry
+    from apps.dsn.skills.manager import SkillManager
 
     registry = SkillRegistry()
-    mgr = SkillManager(skill_dirs=["skills/builtin"], registry=registry)
+    mgr = SkillManager(skill_dirs=["apps/dsn/skills/builtin"], registry=registry)
 
     # 扫描加载
     count = mgr.scan_and_load()
@@ -168,18 +168,18 @@ def test_tool_plugin():
     print("Test 4: ToolPlugin <tool> 标签解析与执行")
     print("=" * 60)
 
-    from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.tool_plugin import ToolPlugin
-    from skills.loader import SkillLoader
-    from skills.registry import SkillRegistry
+    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from apps.dsn.plugins.builtin.tool_plugin import ToolPlugin
+    from apps.dsn.skills.loader import SkillLoader
+    from apps.dsn.skills.registry import SkillRegistry
 
     registry = SkillRegistry()
     loader = SkillLoader()
 
-    ws = loader.load("skills/builtin/web_search")
+    ws = loader.load("apps/dsn/skills/builtin/web_search")
     registry.register_skill(ws)
 
-    fm = loader.load("skills/builtin/file_manager")
+    fm = loader.load("apps/dsn/skills/builtin/file_manager")
     registry.register_skill(fm)
 
     plugin = ToolPlugin(skill_registry=registry)
@@ -245,9 +245,9 @@ def test_tool_plugin_empty():
     print("Test 5: ToolPlugin 无工具标签时保持原样")
     print("=" * 60)
 
-    from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.tool_plugin import ToolPlugin
-    from skills.registry import SkillRegistry
+    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from apps.dsn.plugins.builtin.tool_plugin import ToolPlugin
+    from apps.dsn.skills.registry import SkillRegistry
 
     registry = SkillRegistry()
     plugin = ToolPlugin(skill_registry=registry)
@@ -278,23 +278,23 @@ def test_prompt_engine_with_skills():
     print("Test 6: PromptEngine + SkillRegistry 集成")
     print("=" * 60)
 
-    from skills.loader import SkillLoader
-    from skills.registry import SkillRegistry
-    from prompt.library import PromptLibrary
-    from prompt._personality_v1_legacy import PersonalitySystem
-    from prompt.engine import PromptEngine
+    from apps.dsn.skills.loader import SkillLoader
+    from apps.dsn.skills.registry import SkillRegistry
+    from apps.dsn.prompt.library import PromptLibrary
+    from apps.dsn.prompt._personality_v1_legacy import PersonalitySystem
+    from apps.dsn.prompt.engine import PromptEngine
 
     lib = PromptLibrary()
-    lib.scan_and_load("prompt/prompts/core", "prompt/prompts/capabilities")
+    lib.scan_and_load("apps/dsn/prompt/prompts/core", "apps/dsn/prompt/prompts/capabilities")
 
     ps = PersonalitySystem()
-    ps.scan_presets("prompt/prompts/personality")
+    ps.scan_presets("apps/dsn/prompt/prompts/personality")
     ps.load_preset("default")
 
     registry = SkillRegistry()
     loader = SkillLoader()
 
-    ws = loader.load("skills/builtin/web_search")
+    ws = loader.load("apps/dsn/skills/builtin/web_search")
     registry.register_skill(ws)
 
     engine = PromptEngine(library=lib, personality=ps, skill_registry=registry)
@@ -322,8 +322,8 @@ def test_distill_plugin():
     print("Test 7: DistillPlugin 触发逻辑")
     print("=" * 60)
 
-    from plugins.base import PluginContext, HookPoint
-    from plugins.builtin.distill_plugin import DistillPlugin
+    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from apps.dsn.plugins.builtin.distill_plugin import DistillPlugin
 
     # 无 engine 时跳过
     plugin = DistillPlugin(distillation_engine=None)
@@ -346,7 +346,7 @@ def test_distillation_engine():
     print("Test 8: DistillationEngine 核心方法")
     print("=" * 60)
 
-    from skills.distill import DistillationEngine
+    from apps.dsn.skills.distill import DistillationEngine
 
     # 无 db 时
     engine = DistillationEngine(db=None, skill_manager=None, llm_client=None)
@@ -377,13 +377,13 @@ def test_file_manager_tool():
     print("Test 9: FileManager 工具实际操作")
     print("=" * 60)
 
-    from skills.loader import SkillLoader
-    from skills.registry import SkillRegistry
+    from apps.dsn.skills.loader import SkillLoader
+    from apps.dsn.skills.registry import SkillRegistry
 
     registry = SkillRegistry()
     loader = SkillLoader()
 
-    fm = loader.load("skills/builtin/file_manager")
+    fm = loader.load("apps/dsn/skills/builtin/file_manager")
     registry.register_skill(fm)
 
     # list_dir
@@ -394,7 +394,7 @@ def test_file_manager_tool():
             print(f"    {item['name']} ({item['type']})")
 
     # 测试写入 + 读取 + 清理
-    test_path = "skills/distilled/_drafts/_test_skill_io.txt"
+    test_path = "apps/dsn/skills/distilled/_drafts/_test_skill_io.txt"
     write_result = registry.call_tool("file_manager", "write_file",
                                        {"path": test_path, "content": "hello skills test"})
     if write_result.get("success"):

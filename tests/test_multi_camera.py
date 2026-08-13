@@ -9,8 +9,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import psychoscope.minimal as m
-from api.vision import VisionCoordinator
+import apps.dsn.psychoscope.minimal as m
+from apps.dsn.api.vision import VisionCoordinator
 
 
 class _FakeCap:
@@ -120,7 +120,7 @@ def test_frame_submit_formats():
 
 def test_look_around_multi_camera():
     print("=== look_around 多摄像头端到端 ===")
-    from skills.builtin.visual_perception.tools.perception import VisualPerceptionTool
+    from apps.dsn.skills.builtin.visual_perception.tools.perception import VisualPerceptionTool
 
     class _FakeCoord:
         def __init__(self):

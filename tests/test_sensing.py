@@ -10,11 +10,11 @@ import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db.chat import ChatDBManager
-from tracking.store import TrackingStore
-from tracking.core import TrackingEngine
-from tracking.tools import TrackingTools
-from config import Config
+from apps.dsn.db.chat import ChatDBManager
+from apps.dsn.tracking.store import TrackingStore
+from apps.dsn.tracking.core import TrackingEngine
+from apps.dsn.tracking.tools import TrackingTools
+from apps.dsn.config import Config
 
 workdir = tempfile.mkdtemp(prefix="test_tracking_")
 db_path = os.path.join(workdir, "chats.db")

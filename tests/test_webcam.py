@@ -69,7 +69,7 @@ def _install_fake_cv() -> "_FakeCv":
 
 
 def _make_manager(path, **kw):
-    from tracking.webcam import WebCamManager
+    from apps.dsn.tracking.webcam import WebCamManager
     return WebCamManager(path=str(path), **kw)
 
 
@@ -166,7 +166,7 @@ def test_manager_frame_timeout():
 # ═══════════════════════════════════════
 
 def _make_coord_with_webcams():
-    from api.vision import VisionCoordinator
+    from apps.dsn.api.vision import VisionCoordinator
     fake = _install_fake_cv()
     cfg = Path(tempfile.mkdtemp()) / "webcams.json"
     mgr = _make_manager(cfg)
@@ -232,7 +232,7 @@ def test_coordinator_webcam_all_mixed():
 
 def test_look_around_webcam_end_to_end():
     print("=== look_around 端到端：AI 像调物理摄像头一样调 webcam ===")
-    from skills.builtin.visual_perception.tools.perception import VisualPerceptionTool
+    from apps.dsn.skills.builtin.visual_perception.tools.perception import VisualPerceptionTool
     coord, mgr = _make_coord_with_webcams()
 
     class _FakeVM:
