@@ -20,13 +20,20 @@ logger = logging.getLogger("harness.pipeline")
 
 
 class Pipeline:
-    """通用消息管线。"""
+    """通用消息管线。
+
+    hook_order 可配置（默认覆盖全部钩子点的超集顺序）；
+    DSN 引擎可传入 dsn 专属顺序，见 apps/dsn/plugins/pipeline.py。
+    """
 
     _HOOK_ORDER = [
         HookPoint.INBOUND,
+        HookPoint.PRE_FILTER,
         HookPoint.PREPARE,
+        HookPoint.PRE_PROCESS,
         HookPoint.MODEL_INVOKE,
         HookPoint.POST_PROCESS,
+        HookPoint.POST_TTS,
         HookPoint.OUTPUT,
     ]
 
@@ -34,9 +41,11 @@ class Pipeline:
         self,
         plugin_manager: PluginManager,
         event_bus: Optional[EventBus] = None,
+        hook_order: Optional[list[HookPoint]] = None,
     ):
         self.pm = plugin_manager
         self.events = event_bus or EventBus()
+        self.hook_order = list(hook_order) if hook_order else list(self._HOOK_ORDER)
 
     def _drain_events(self, ctx: Context) -> None:
         pending = ctx.extra.pop("_events", [])
@@ -47,7 +56,7 @@ class Pipeline:
         timing: dict[str, float] = {}
         t_total = time.perf_counter()
 
-        for hook in self._HOOK_ORDER:
+        for hook in self.hook_order:
             t0 = time.perf_counter()
             ctx = await self.pm.dispatch(hook, ctx)
             timing[hook.value] = round((time.perf_counter() - t0) * 1000, 1)
@@ -63,7 +72,7 @@ class Pipeline:
         self, ctx: Context,
     ) -> AsyncGenerator[dict, None]:
         """带阶段事件推送的流式处理。每个阶段前后 yield 状态。"""
-        for hook in self._HOOK_ORDER:
+        for hook in self.hook_order:
             yield {"status": hook.value, "phase": "start"}
             ctx = await self.pm.dispatch(hook, ctx)
             self._drain_events(ctx)

@@ -1,5 +1,8 @@
 # harness/memory/base.py
 # 通用记忆抽象。
+#
+# DSN 超集：MemoryStorePort 是"对话路径记忆服务"的 canonical 契约
+# （dsn MemorySystem 实现并经 harness Runtime 注册，见 apps/dsn/memory/core.py）。
 
 from __future__ import annotations
 
@@ -27,3 +30,42 @@ class IMemoryStore(Protocol):
     def clear(self) -> None: ...
 
     def count(self) -> int: ...
+
+
+@runtime_checkable
+class MemoryStorePort(Protocol):
+    """对话路径使用的记忆服务契约（由 harness 全局引擎定义）。
+
+    DSN 的 MemorySystem 即实现此契约并经 harness Runtime 注册，
+    对话路径（MemoryPlugin / RecallPlugin / topics）经 harness 解析该服务。
+    """
+
+    def assemble_context(
+        self,
+        user_id: int,
+        history: list,
+        cross_user_id: Any = ...,
+        chat_id: Any = None,
+    ) -> list: ...
+
+    def summarize_turn(
+        self,
+        user_id: int,
+        chat_id: int,
+        round_idx: int,
+        user_msg: str,
+        assistant_reply: str,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    def search(
+        self,
+        user_id: int,
+        keywords: list,
+        limit: int = ...,
+        **kwargs: Any,
+    ) -> list: ...
+
+    def add_memo(self, user_id: int, chat_id: int, text: str) -> int: ...
+
+    def delete_memo(self, memo_id: int) -> bool: ...

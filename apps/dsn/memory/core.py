@@ -3,9 +3,7 @@
 # v3.0 — 替换旧的 MemoryManager + MemoryRecallEngine
 
 import json
-import math
 import re
-import struct
 import threading
 import time
 import logging
@@ -16,6 +14,8 @@ from apps.dsn.config import Config
 from apps.dsn.db.chat import ChatDBManager, _tokenize
 from apps.dsn.models import LMSummaryModel, EmbeddingClient
 from apps.dsn.memory.topics import TopicManager
+# 记忆检索原语（向量打包/余弦相似度）来自 harness 全局引擎（超集）
+from harness.memory import cosine_similarity, pack_embedding, unpack_embedding
 
 logger = logging.getLogger("MemorySystem")
 
@@ -244,25 +244,18 @@ class MemorySystem:
 
     @staticmethod
     def _pack_embedding(vec: list[float]) -> bytes:
-        return struct.pack(f"{len(vec)}f", *vec)
+        """向量打包 — 委托 harness.memory.pack_embedding。"""
+        return pack_embedding(vec)
 
     @staticmethod
     def _unpack_embedding(blob: bytes) -> list[float]:
-        return list(struct.unpack(f"{len(blob) // 4}f", blob))
+        """向量解包 — 委托 harness.memory.unpack_embedding。"""
+        return unpack_embedding(blob)
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        if not a or not b or len(a) != len(b):
-
-
-        # pack a float embedding into binary for storage
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(x * x for x in b))
-        if na == 0 or nb == 0:
-            return 0.0
-        return dot / (na * nb)
+        """余弦相似度 — 委托 harness.memory.cosine_similarity。"""
+        return cosine_similarity(a, b)
 
     # =================================================================
     # 上下文组装 (被动回忆)

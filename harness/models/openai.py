@@ -69,7 +69,12 @@ class OpenAICompatClient(ChatClientAdapter):
         messages: list[Any],
         tools: Optional[list[dict]] = None,
         **kwargs: Any,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[Any, None]:
+        """流式输出：文本增量 yield str；工具调用增量 yield dict（见 IChatClient）。
+
+        OpenAI 流式响应的 tool_calls 分布在多个 chunk 的 delta 中，
+        按 index 累积 id/name/arguments（arguments 为字符串片段拼接）。
+        """
         msgs = self._to_message_dicts(messages)
         params: dict[str, Any] = {"model": self.model, "messages": msgs, "stream": True}
         if tools:
@@ -77,12 +82,34 @@ class OpenAICompatClient(ChatClientAdapter):
         params.update({k: v for k, v in kwargs.items() if v is not None})
 
         stream = self._client.chat.completions.create(**params)
+        # index -> 累积的工具调用增量
+        tool_deltas: dict[int, dict] = {}
         for chunk in stream:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
-            if delta and delta.content:
+            if delta is None:
+                continue
+            if delta.content:
                 yield delta.content
+            tc_delta = getattr(delta, "tool_calls", None)
+            if tc_delta:
+                emitted = []
+                for tc in tc_delta:
+                    idx = getattr(tc, "index", 0)
+                    acc = tool_deltas.setdefault(
+                        idx, {"index": idx, "id": "", "name": "", "arguments": ""})
+                    if getattr(tc, "id", None):
+                        acc["id"] = tc.id
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            acc["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            acc["arguments"] += fn.arguments or ""
+                    emitted.append(dict(acc))
+                if emitted:
+                    yield {"tool_calls": emitted}
 
     @staticmethod
     def _to_response(resp: Any) -> ChatResponse:

@@ -24,7 +24,7 @@
 from .runtime import Runtime
 from .settings import Settings
 from .subapps import AppBundle, AppBundleRegistry
-from .tools import Tool, ToolResult, ToolRegistry
+from .tools import Tool, ToolResult, ToolRegistry, ToolboxManager, RegistryIndexSource
 from .agent_runtime import AgentRuntime
 from . import models
 from . import pipeline
@@ -37,6 +37,19 @@ from . import gateway
 from . import codegraph
 from .conversation import Conversation, ConversationManager
 from .cache import SemanticCache
+from .prompts import PromptEngine, PromptFragment
+from . import policy
+from .tools.standard import ToolDeps, install_standard_tools
+from .context_gatherer import ContextGatherer, ParseResult
+from .context_assembly import (
+    ContextBudget,
+    ContextSegment,
+    SegmentedContextAssembler,
+    SEG_MEMO,
+    SEG_SUMMARY,
+    SEG_VERBATIM,
+    SEG_TAIL,
+)
 
 __version__ = "0.4.0"
 
@@ -52,6 +65,16 @@ __all__ = [
     "Conversation",
     "ConversationManager",
     "SemanticCache",
+    "ContextBudget",
+    "ContextSegment",
+    "SegmentedContextAssembler",
+    "PromptEngine",
+    "PromptFragment",
+    "ToolDeps",
+    "install_standard_tools",
+    "ContextGatherer",
+    "ParseResult",
+    "policy",
     "models",
     "pipeline",
     "agent",

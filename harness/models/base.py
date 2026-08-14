@@ -87,7 +87,18 @@ class IChatClient(Protocol):
         messages: list[Any],
         tools: Optional[list[dict]] = None,
         **kwargs: Any,
-    ) -> AsyncGenerator[str, None]: ...
+    ) -> AsyncGenerator[Any, None]:
+        """流式输出生成器。
+
+        yield 项两种形态（流式工具调用协议）：
+          - str：文本增量（纯文本流，兼容旧调用方）
+          - dict：结构化增量事件，可含：
+              {"content": str}                       文本增量
+              {"tool_calls": [{"index", "id", "name", "arguments"}]}
+                                                     工具调用增量（按 index 累积）
+              {"usage": {...}}                       用量信息
+        实现应保证：无工具增量时只 yield str（保持向后兼容）。
+        """
 
 
 @runtime_checkable

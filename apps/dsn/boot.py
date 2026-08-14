@@ -412,6 +412,34 @@ def create_application():
     app.config["HARNESS_RUNTIME"] = harness_runtime
     harness_runtime.set_default()
 
+    # ── 模型提供商注册表（harness 引擎） ──
+    # dsn 对话/嵌入客户端以 harness 契约（IChatClient）接入，经 harness Runtime 解析。
+    from harness.models import ModelProviderRegistry
+    _model_provider = ModelProviderRegistry()
+
+    def _make_dsn_chat(model_type: str):
+        if model_type == "lmstudio":
+            return LMStudioChat(
+                base_url=Config.LMSTUDIO_BASE_URL,
+                model_name=Config.MAIN_MODEL_NAME,
+                temperature=Config.LMSTUDIO_TEMPERATURE,
+                max_tokens=Config.LMSTUDIO_MAX_TOKENS,
+                timeout=Config.LMSTUDIO_TIMEOUT,
+            )
+        return OpenAIChat(
+            api_key=Config.OPENAI_API_KEY,
+            model=Config.MAIN_MODEL_NAME,
+            api_url=Config.OPENAI_API_BASE,
+        )
+
+    def _make_dsn_embedding():
+        return EmbeddingClient(base_url=Config.LMSTUDIO_BASE_URL)
+
+    _model_provider.register_chat("openai", lambda: _make_dsn_chat("openai"))
+    _model_provider.register_chat("lmstudio", lambda: _make_dsn_chat("lmstudio"))
+    _model_provider.register_embedding("embedding", _make_dsn_embedding)
+    harness_runtime.register("model_provider", _model_provider)
+
 
     # ── 认证 ──
     from apps.dsn.auth import AuthManager, auth_bp

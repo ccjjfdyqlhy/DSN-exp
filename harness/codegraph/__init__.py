@@ -5,6 +5,8 @@
 
 from .symbol import Symbol, CallGraph
 from .builder import GraphBuilder
+from .watcher import FileWatcher
+from .imports import ImportResolver, SymbolSignature
 from .search import (
     search_symbols,
     find_callers,
@@ -17,6 +19,9 @@ __all__ = [
     "Symbol",
     "CallGraph",
     "GraphBuilder",
+    "FileWatcher",
+    "ImportResolver",
+    "SymbolSignature",
     "search_symbols",
     "find_callers",
     "find_callees",

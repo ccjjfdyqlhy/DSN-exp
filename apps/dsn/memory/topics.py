@@ -24,6 +24,19 @@ from apps.dsn.config import Config
 from apps.dsn.db.chat import ChatDBManager
 from apps.dsn.models import LMSummaryModel, EmbeddingClient
 
+from harness.context_assembly import (
+    ContextBudget,
+    ContextSegment,
+    PRIORITY_ACTIVE,
+    PRIORITY_CURRENT,
+    PRIORITY_MEMO,
+    PRIORITY_SUMMARY,
+    SEG_MEMO,
+    SEG_SUMMARY,
+    SEG_VERBATIM,
+    SegmentedContextAssembler,
+)
+
 logger = logging.getLogger("TopicManager")
 
 _JUDGE_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -544,11 +557,17 @@ class TopicManager:
 
     def assemble_topic_context(self, user_id: int, chat_id: int, history: list[dict],
                                cross_user_id: Optional[int] = None) -> list[dict]:
-        """组装最终注入上下文: 备忘 + agent/跨用户 + 闭锁摘要 + 激活话题原文 + 原始尾部。"""
+        """组装最终注入上下文: 备忘 + agent/跨用户 + 闭锁摘要 + 激活话题原文 + 原始尾部。
+
+        预算与剪裁策略由引擎层 SegmentedContextAssembler 承担
+        （harness/context_assembly.py，场景无关的通用能力）；本方法只负责
+        数据准备与段构造，不再自行维护逐层 used 预算。
+        """
         st = self._state(user_id, chat_id)
-        result: list[dict] = []
+        segments: list[ContextSegment] = []
 
         # 1) 全局备忘 + 绑定 agent / 跨用户
+        #    用户 memo 受 memo 预算约束；agent/跨用户内容为常驻段（unbounded）
         if self._ms is not None:
             used = 0
             for m in self._ms._get_memos(user_id):
@@ -558,21 +577,38 @@ class TopicManager:
                 if used > 0 and used + len(content) > Config.TOPIC_MEMO_CHARS:
                     break
                 used += len(content)
-                result.append({"role": "system", "content": f"[备忘] {content}"})
+                segments.append(ContextSegment(
+                    kind=SEG_MEMO, content=content,
+                    priority=PRIORITY_MEMO, label="[备忘]"))
 
             if cross_user_id is None:
                 bound = self._ms._get_bound_agent(user_id)
                 if bound:
                     for m in self._ms._get_memos(bound):
-                        result.append({"role": "system", "content": f"[AI Agent备忘] {m['content']}"})
+                        segments.append(ContextSegment(
+                            kind=SEG_MEMO, content=m["content"], unbounded=True,
+                            priority=PRIORITY_MEMO, label="[AI Agent备忘]"))
                     for mem in self._ms._get_exp_memories(bound):
-                        result.append({"role": "system", "content": f"[AI Agent记忆 · 轮次{mem['round']}] {mem['content']}"})
-                    self._ms._inject_unsynced_agent_chat(result, user_id, bound)
+                        segments.append(ContextSegment(
+                            kind=SEG_MEMO, content=mem["content"], unbounded=True,
+                            priority=PRIORITY_MEMO,
+                            label=f"[AI Agent记忆 · 轮次{mem['round']}]"))
+                    unsynced: list[dict] = []
+                    self._ms._inject_unsynced_agent_chat(unsynced, user_id, bound)
+                    for u in unsynced:
+                        segments.append(ContextSegment(
+                            kind=SEG_MEMO, content=u.get("content", ""),
+                            unbounded=True, priority=PRIORITY_MEMO, label="[AI Agent]"))
             elif cross_user_id and cross_user_id != user_id:
                 for m in self._ms._get_memos(cross_user_id):
-                    result.append({"role": "system", "content": f"[来自关联用户的备忘] {m['content']}"})
+                    segments.append(ContextSegment(
+                        kind=SEG_MEMO, content=m["content"], unbounded=True,
+                        priority=PRIORITY_MEMO, label="[来自关联用户的备忘]"))
                 for mem in self._ms._get_exp_memories(cross_user_id):
-                    result.append({"role": "system", "content": f"[关联用户记忆 · 轮次{mem['round']}] {mem['content']}"})
+                    segments.append(ContextSegment(
+                        kind=SEG_MEMO, content=mem["content"], unbounded=True,
+                        priority=PRIORITY_MEMO,
+                        label=f"[关联用户记忆 · 轮次{mem['round']}]"))
 
         # 2) 话题状态快照
         current = self.store.get_topic(user_id, st.current_topic_id) if st.current_topic_id else None
@@ -584,8 +620,7 @@ class TopicManager:
         open_ids.update(st.passive_activations)
         open_ids.update(st.active_pins)
 
-        # 3) 关闭且未激活话题 → 聚合摘要
-        used = 0
+        # 3) 关闭且未激活话题 → 聚合摘要段（summary 预算由引擎承担）
         all_topics = self.store.list_topics(user_id, chat_id)
         for t in all_topics:
             if t["status"] != "closed" or t["topic_id"] in open_ids:
@@ -594,38 +629,27 @@ class TopicManager:
             if not snippet:
                 continue
             title = t.get("title") or f"第{t['start_round']}轮起"
-            line = f"[闭锁话题·{title}·第{t['start_round']}-{t.get('end_round') or '?'}轮] {snippet}"
-            if used > 0 and used + len(line) > Config.TOPIC_SUMMARY_CHARS:
-                break
-            used += len(line)
-            result.append({"role": "system", "content": line})
+            segments.append(ContextSegment(
+                kind=SEG_SUMMARY, content=snippet, priority=PRIORITY_SUMMARY,
+                label=f"[闭锁话题·{title}·第{t['start_round']}-{t.get('end_round') or '?'}轮]"))
 
-        # 4) 激活话题原文 (被动 + 持续激活), 数量受 TOPIC_MAX_OPEN_TOPICS 限制
-        verbatim_budget = Config.TOPIC_MAX_VERBATIM_CHARS
-        used = 0
-        # 优先保留持续激活(pin), 再补被动激活
+        # 4) 激活话题原文段 (被动 + 持续激活), 数量受 TOPIC_MAX_OPEN_TOPICS 限制
+        #    优先保留持续激活(pin), 再补被动激活
         ordered = list(st.active_pins) + [t for t in st.passive_activations if t not in st.active_pins]
         ordered = ordered[:max(0, Config.TOPIC_MAX_OPEN_TOPICS - (1 if current else 0))]
-        topic_meta = {}
         for tid in ordered:
             t = self.store.get_topic(user_id, tid)
-            if t and (t["status"] == "open" or tid in st.passive_activations or tid in st.active_pins):
-                topic_meta[tid] = t
-
-        for tid in ordered:
-            t = topic_meta.get(tid)
-            if not t:
+            if not (t and (t["status"] == "open" or tid in st.passive_activations
+                           or tid in st.active_pins)):
                 continue
             label = "被动激活" if tid in st.passive_activations else "持续激活"
             block = self._topic_block(user_id, t, label)
-            if not block:
-                continue
-            if used > 0 and used + len(block) > verbatim_budget:
-                break
-            used += len(block)
-            result.append({"role": "system", "content": block})
+            if block:
+                segments.append(ContextSegment(
+                    kind=SEG_VERBATIM, content=block, priority=PRIORITY_ACTIVE,
+                    meta={"topic_id": tid}))
 
-        # 5) 当前话题: 注入不在尾部窗口内的轮次(尾部原文见第 6 层)
+        # 5) 当前话题段: 注入不在尾部窗口内的轮次(可截断保留)
         tail_rounds = self._build_tail(user_id, chat_id)
         tail_round_indices = set(tail_rounds[1])
         if current:
@@ -637,15 +661,19 @@ class TopicManager:
             if inject:
                 block = self._topic_block(user_id, current, "当前话题", include_rounds=inject)
                 if block:
-                    if used > 0 and used + len(block) > verbatim_budget:
-                        block = block[:max(0, verbatim_budget - used)]
-                    if block:
-                        result.append({"role": "system", "content": block})
+                    segments.append(ContextSegment(
+                        kind=SEG_VERBATIM, content=block, priority=PRIORITY_CURRENT,
+                        truncatable=True, meta={"topic_id": current["topic_id"]}))
 
-        # 6) 原始尾部
-        result.extend(tail_rounds[0])
-
-        return result
+        # 6) 引擎预算剪裁组装 + 原始尾部
+        assembler = SegmentedContextAssembler(ContextBudget(
+            memo_chars=Config.TOPIC_MEMO_CHARS,
+            summary_chars=Config.TOPIC_SUMMARY_CHARS,
+            verbatim_chars=Config.TOPIC_MAX_VERBATIM_CHARS,
+            tail_rounds=Config.TOPIC_TAIL_ROUNDS,
+            max_open_topics=Config.TOPIC_MAX_OPEN_TOPICS,
+        ))
+        return assembler.assemble(segments, tail=tail_rounds[0])
 
     def _topic_block(self, user_id: int, topic: dict, label: str,
                       include_rounds: Optional[list[int]] = None) -> str:

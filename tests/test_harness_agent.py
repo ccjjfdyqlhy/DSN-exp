@@ -92,3 +92,34 @@ def test_hit_max_steps():
     result = asyncio.run(loop.run_async([ChatMessage.user("x")]))
     assert result.hit_max_steps is True
     assert len(result.tool_executions) == 3
+
+def test_agent_loop_run_rounds_round_runner_skeleton():
+    """run_rounds：应用提供轮次策略，harness 骨架驱动迭代/上限。"""
+    from harness.agent import RoundResult
+    calls = []
+
+    async def runner(state, step, max_steps):
+        calls.append(step)
+        if step >= 1:
+            return RoundResult(continue_loop=False, reply="done", hit_max=True)
+        return RoundResult(continue_loop=True, reply="")
+
+    loop = AgentLoop(max_steps=5)  # client/tools 可缺省（轮次策略模式）
+    outcome = asyncio.run(loop.run_rounds(runner, state={"x": 1}))
+    assert outcome.reply == "done"
+    assert outcome.hit_max is True
+    assert calls == [0, 1]
+
+
+def test_agent_loop_run_rounds_max_steps_enforced():
+    from harness.agent import RoundResult
+    calls = []
+
+    async def always_continue(state, step, max_steps):
+        calls.append(step)
+        return RoundResult(continue_loop=True, reply="")
+
+    loop = AgentLoop(max_steps=3)
+    outcome = asyncio.run(loop.run_rounds(always_continue))
+    assert calls == [0, 1, 2]
+    assert outcome.continue_loop is True

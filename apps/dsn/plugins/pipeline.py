@@ -14,6 +14,7 @@ from typing import AsyncGenerator, Callable, Awaitable, Optional
 
 from .base import HookPoint, PluginContext
 from .manager import PluginManager
+from harness.pipeline import Pipeline as _HarnessPipeline
 from apps.dsn.world.action_narrator import ActionNarrativeCollector
 from apps.dsn.config import Config
 
@@ -116,9 +117,9 @@ def _log_stage_timing(stage: str, ms: float):
         logger.info("  ⏱ %-15s %8.0fms", stage, ms)
 
 
-class ChatPipeline:
+class ChatPipeline(_HarnessPipeline):
     """
-    对话处理管道。
+    对话处理管道（基于 harness 全局引擎 Pipeline，附加 DSN 专属编排）。
 
     编排流程:
       PRE_FILTER → PRE_PROCESS → [PromptEngine] → MODEL_INVOKE → POST_PROCESS → POST_TTS
@@ -140,8 +141,18 @@ class ChatPipeline:
         async_task_store=None,
         skill_registry=None,
     ):
-        # wire up pipeline dependencies
-        self.pm = plugin_manager
+        # DSN 引擎基于 harness 全局引擎：PluginManager/Context/HookPoint/EventBus
+        # 全部来自 harness，本类只附加 DSN 专属编排（TTS / Agent 循环 / 异步后台）。
+        super().__init__(
+            plugin_manager,
+            hook_order=[
+                HookPoint.PRE_FILTER,
+                HookPoint.PRE_PROCESS,
+                HookPoint.MODEL_INVOKE,
+                HookPoint.POST_PROCESS,
+                HookPoint.POST_TTS,
+            ],
+        )
         self._prompt_engine = prompt_engine
         self._tts_client = tts_client
         self._tts_profile_mgr = tts_profile_mgr
@@ -439,10 +450,14 @@ class ChatPipeline:
         })
 
     async def _run_agent_loop(self, ctx: PluginContext) -> PluginContext:
-        from datetime import datetime
+        """Agent 循环 — 由 harness AgentLoop.run_rounds 驱动轮次策略。
+
+        循环骨架（步数迭代 / max_steps 上限 / 生命周期）来自 harness 全局引擎；
+        每轮策略（_dsn_agent_round）为 DSN 专属：调模型 → 重跑 POST_PROCESS → 回馈。
+        """
+        from harness.agent import AgentLoop
         max_steps = ctx.agent_max_steps or 5
-        loop = asyncio.get_event_loop()
-        logger.info("_run_agent_loop 启动, max_steps=%d", max_steps)
+        logger.info("_run_agent_loop 启动, max_steps=%d (harness AgentLoop)", max_steps)
 
         models_plugin = None
         for p in self.pm.get_hooks_for(HookPoint.MODEL_INVOKE):
@@ -452,103 +467,124 @@ class ChatPipeline:
 
         self._report_agent_progress(ctx, 0, max_steps, ["开始处理"])
 
+        state = {"ctx": ctx, "models_plugin": models_plugin}
+        loop = AgentLoop(max_steps=max_steps)
+        outcome = await loop.run_rounds(self._dsn_agent_round, state)
+        if outcome.hit_max:
+            ctx.extra["_agent_hit_max"] = True
+
+        self._report_agent_progress(ctx, max_steps, max_steps, [], done=True)
+        return ctx
+
+    async def _dsn_agent_round(self, state: dict, step: int,
+                               max_steps: int) -> "RoundResult":
+        """Agent 轮次策略 — 由 harness AgentLoop.run_rounds 每轮调用。
+
+        每轮: 取上一轮 POST_PROCESS 留下的工具结果(_tag_results) → 组消息 →
+        调模型(models_plugin.invoke) → 更新 ctx → 重跑 POST_PROCESS。
+        原生 tool call 与 XML 标签双路径；最后一步内含超步数兜底汇报。
+        """
+        from datetime import datetime
+        from harness.agent import RoundResult
+        ctx = state["ctx"]
+        models_plugin = state["models_plugin"]
+        loop = asyncio.get_event_loop()
+
         # 超步数兜底汇报: 记录最后一轮是否仍在执行工具、以及未回喂给 LLM 的工具结果
         hit_max = False
         report_tool_calls: list = []
         report_results: list = []
 
-        for step in range(max_steps):
-            results = ctx.extra.pop("_tag_results", [])
-            if not results:
-                logger.info("Agent 第 %d 步: _tag_results 为空", step + 1)
-                break
+        results = ctx.extra.pop("_tag_results", [])
+        if not results:
+            logger.info("Agent 第 %d 步: _tag_results 为空", step + 1)
+            return RoundResult(continue_loop=False, reply=ctx.reply)
 
-            # 提取本次执行了哪些工具，用于进度提示
-            tool_names = []
+        # 提取本次执行了哪些工具，用于进度提示
+        tool_names = []
+        for r in results:
+            func = r.get("function", "")
+            # "skill-document-process_scan" → "process_scan"
+            short = func.rsplit("-", 1)[-1] if "-" in func else func
+            if short:
+                tool_names.append(short)
+            if not r.get("success"):
+                self._report_tool_error(
+                    ctx, func or r.get("skill", "") or "tool",
+                    r.get("error") or r.get("summary") or "未知错误")
+
+        # 检测是否为原生 tool call 结果（有 function 和 tool_call_id 字段）
+        has_native_results = any(
+            r.get("function") and r.get("tool_call_id") for r in results
+        )
+
+        if has_native_results and models_plugin:
+            msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
+            msgs.extend(ctx.full_history)
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+
+            # assistant 消息必须携带 tool_calls（对应后续 tool role 消息）
+            last_tool_calls = ctx.extra.pop("_last_tool_calls", [])
+            assistant_msg = {"role": "assistant",
+                             "content": ctx.original_reply or ctx.reply}
+            if last_tool_calls:
+                assistant_msg["tool_calls"] = last_tool_calls
+            msgs.append(assistant_msg)
+
             for r in results:
-                func = r.get("function", "")
-                # "skill-document-process_scan" → "process_scan"
-                short = func.rsplit("-", 1)[-1] if "-" in func else func
-                if short:
-                    tool_names.append(short)
-                if not r.get("success"):
-                    self._report_tool_error(
-                        ctx, func or r.get("skill", "") or "tool",
-                        r.get("error") or r.get("summary") or "未知错误")
+                content = json.dumps(r.get("data", r.get("error", "")),
+                                     ensure_ascii=False, default=str)
+                msgs.append({
+                    "role": "tool",
+                    "tool_call_id": r.get("tool_call_id", "unknown"),
+                    "content": content,
+                })
 
-            # 检测是否为原生 tool call 结果（有 function 和 tool_call_id 字段）
-            has_native_results = any(
-                r.get("function") and r.get("tool_call_id") for r in results
-            )
+            tools_schema = None
+            if hasattr(models_plugin, '_build_tools_schema'):
+                activated = ctx.extra.get("_activated_tools", None)
+                tools_schema = models_plugin._build_tools_schema(activated)
 
-            if has_native_results and models_plugin:
-                msgs: list[dict] = [{"role": "system", "content": ctx.system_prompt}]
-                msgs.extend(ctx.full_history)
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                msgs.append({"role": "user", "content": f"[{now}] {ctx.message}"})
+            self._report_agent_progress(ctx, step + 1, max_steps, tool_names)
 
-                # assistant 消息必须携带 tool_calls（对应后续 tool role 消息）
-                last_tool_calls = ctx.extra.pop("_last_tool_calls", [])
-                assistant_msg = {"role": "assistant",
-                                 "content": ctx.original_reply or ctx.reply}
-                if last_tool_calls:
-                    assistant_msg["tool_calls"] = last_tool_calls
-                msgs.append(assistant_msg)
+            try:
+                new_reply = await loop.run_in_executor(
+                    None, lambda: models_plugin.invoke(msgs, ctx, tools=tools_schema)
+                )
+            except Exception as e:
+                logger.error("Agent 第 %d 步(native): invoke 失败: %s", step + 1, e)
+                return RoundResult(continue_loop=False, reply=ctx.reply)
+            if not new_reply:
+                has_pending = bool(ctx.extra.get("_native_tool_calls", []))
+                has_pending_toolbox = bool(ctx.extra.get("_tag_results", []))
+                if not has_pending and not has_pending_toolbox:
+                    logger.warning("Agent 第 %d 步(native): LLM 返回空且无待处理 tool_calls，终止",
+                                   step + 1)
+                    return RoundResult(continue_loop=False, reply=ctx.reply)
+                logger.info("Agent 第 %d 步(native): LLM 返回空但有 %d 个待处理 tool_calls，继续执行",
+                            step + 1, len(ctx.extra.get("_native_tool_calls", [])))
 
-                for r in results:
-                    content = json.dumps(r.get("data", r.get("error", "")),
-                                         ensure_ascii=False, default=str)
-                    msgs.append({
-                        "role": "tool",
-                        "tool_call_id": r.get("tool_call_id", "unknown"),
-                        "content": content,
-                    })
+            logger.info("Agent 第 %d 步(native): LLM 回复 %d 字符",
+                        step + 1, len(new_reply or ""))
+            ctx.original_reply = new_reply
+            reply_text = (models_plugin._clean_reply(new_reply)
+                          if new_reply else "…")
+            ctx.reply = reply_text
+            ctx.extra["_agent_step"] = step + 1
 
-                tools_schema = None
-                if hasattr(models_plugin, '_build_tools_schema'):
-                    activated = ctx.extra.get("_activated_tools", None)
-                    tools_schema = models_plugin._build_tools_schema(activated)
+            # 将本轮 LLM 回复推送给前端（非空且不是占位符时 TTS 会朗读）
+            if new_reply:
+                self._report_agent_progress(ctx, step + 1, max_steps,
+                                             tool_names, reply_text=reply_text)
 
-                self._report_agent_progress(ctx, step + 1, max_steps, tool_names)
-
-                try:
-                    new_reply = await loop.run_in_executor(
-                        None, lambda: models_plugin.invoke(msgs, ctx, tools=tools_schema)
-                    )
-                except Exception as e:
-                    logger.error("Agent 第 %d 步(native): invoke 失败: %s", step + 1, e)
-                    break
-                if not new_reply:
-                    has_pending = bool(ctx.extra.get("_native_tool_calls", []))
-                    has_pending_toolbox = bool(ctx.extra.get("_tag_results", []))
-                    if not has_pending and not has_pending_toolbox:
-                        logger.warning("Agent 第 %d 步(native): LLM 返回空且无待处理 tool_calls，终止",
-                                       step + 1)
-                        break
-                    logger.info("Agent 第 %d 步(native): LLM 返回空但有 %d 个待处理 tool_calls，继续执行",
-                                step + 1, len(ctx.extra.get("_native_tool_calls", [])))
-
-                logger.info("Agent 第 %d 步(native): LLM 回复 %d 字符",
-                            step + 1, len(new_reply or ""))
-                ctx.original_reply = new_reply
-                reply_text = (models_plugin._clean_reply(new_reply)
-                              if new_reply else "…")
-                ctx.reply = reply_text
-                ctx.extra["_agent_step"] = step + 1
-
-                # 将本轮 LLM 回复推送给前端（非空且不是占位符时 TTS 会朗读）
-                if new_reply:
-                    self._report_agent_progress(ctx, step + 1, max_steps,
-                                                 tool_names, reply_text=reply_text)
-
-                ctx = await self._dispatch_post_process(ctx)
-                if step >= max_steps - 1:
-                    hit_max = True
-                    report_tool_calls = last_tool_calls
-                    report_results = ctx.extra.get("_tag_results", [])
-                    logger.warning("Agent 达到最大步数 %d，等待兜底汇报", max_steps)
-                continue
-
+            ctx = await self._dispatch_post_process(ctx)
+            if step >= max_steps - 1:
+                hit_max = True
+                report_tool_calls = last_tool_calls
+                report_results = ctx.extra.get("_tag_results", [])
+                logger.warning("Agent 达到最大步数 %d，等待兜底汇报", max_steps)
+        else:
             # 降级模式：传统 XML 标签处理
             formatted = self._format_tag_results(results)
             logger.info("Agent 第 %d 步(xml): %d 个标签执行完毕",
@@ -565,7 +601,7 @@ class ChatPipeline:
 
             if models_plugin is None:
                 logger.warning("models_plugin 未找到，中断 agent 循环")
-                break
+                return RoundResult(continue_loop=False, reply=ctx.reply)
 
             try:
                 new_reply = await loop.run_in_executor(
@@ -573,10 +609,10 @@ class ChatPipeline:
                 )
             except Exception as e:
                 logger.error("Agent 第 %d 步(xml): invoke 失败: %s", step + 1, e)
-                break
+                return RoundResult(continue_loop=False, reply=ctx.reply)
             if not new_reply:
                 logger.info("Agent 第 %d 步: LLM 返回空", step + 1)
-                break
+                return RoundResult(continue_loop=False, reply=ctx.reply)
 
             logger.info("Agent 第 %d 步(xml): LLM 回复 %d 字符",
                         step + 1, len(new_reply))
@@ -594,6 +630,9 @@ class ChatPipeline:
                 hit_max = True
                 report_results = ctx.extra.get("_tag_results", [])
                 logger.warning("Agent 达到最大步数 %d，等待兜底汇报", max_steps)
+
+        if not hit_max:
+            return RoundResult(continue_loop=True, reply=ctx.reply)
 
         # ── 超步数兜底：最后一轮仍在执行工具、且未产出面向用户的文本时，
         #    追加一轮"汇报"，把已执行的工具结果总结成最终答复，避免无声终止 ──
@@ -648,8 +687,7 @@ class ChatPipeline:
                                             reply_text=ctx.reply)
                 logger.info("Agent 超步数汇报完成: %d 字符", len(report))
 
-        self._report_agent_progress(ctx, max_steps, max_steps, [], done=True)
-        return ctx
+        return RoundResult(continue_loop=False, reply=ctx.reply, hit_max=hit_max)
 
     def _print_timing(self, timing: dict[str, float], ctx: PluginContext | None = None):
         # log timing breakdown for each pipeline stage

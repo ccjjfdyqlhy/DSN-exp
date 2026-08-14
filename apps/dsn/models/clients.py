@@ -187,6 +187,45 @@ class OpenAIChat:
         return self._call_and_append(tools=tools, tool_choice=tool_choice,
                                      extra_body=extra_body)
 
+    # ── harness IChatClient 兼容桥 ──
+    # 对话路径的模型客户端以 harness 契约接入（单一生效源：harness.models.IChatClient）
+
+    def invoke(self, messages, tools=None, *, temperature=None, max_tokens=None,
+               timeout=None):
+        """harness IChatClient 兼容入口 — 归一化消息并返回 ChatResponse。"""
+        from harness.models import ChatResponse, ToolCall
+        from harness.models.base import ChatClientAdapter
+        self.messages = ChatClientAdapter._to_message_dicts(messages)
+        body = {}
+        if temperature is not None:
+            body["temperature"] = temperature
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        reply = self._call_and_append(tools=tools, extra_body=body or None)
+        tool_calls = []
+        for tc in (self.last_tool_calls or []):
+            fn = tc.get("function", {})
+            try:
+                args = json.loads(fn.get("arguments", "{}") or "{}")
+            except (TypeError, ValueError):
+                args = {}
+            tool_calls.append(ToolCall(
+                id=tc.get("id", ""), name=fn.get("name", ""), arguments=args))
+        return ChatResponse(
+            content=reply or "",
+            tool_calls=tool_calls,
+            usage=self.last_usage or {},
+            model=self.last_model or self.model,
+        )
+
+    async def stream(self, messages, tools=None, **kwargs):
+        """harness IChatClient 兼容入口 — 同步客户端，单帧 yield 完整回复。"""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: self.invoke(messages, tools=tools, **kwargs))
+        yield result.content
+
     @property
     def last_tool_calls(self) -> Optional[list[dict]]:
         msg = self._last_message
@@ -465,6 +504,34 @@ class LMStudioChat:
     def continue_conversation(self) -> str:
         """不追加新用户消息，直接用当前消息列表调用 LLM（用于 Agent 工具反馈循环）。"""
         return self._call_and_append()
+
+    # ── harness IChatClient 兼容桥 ──
+
+    @property
+    def model(self) -> str:
+        return self.model_name or "lmstudio"
+
+    def invoke(self, messages, tools=None, *, temperature=None, max_tokens=None,
+               timeout=None):
+        """harness IChatClient 兼容入口 — 归一化消息并返回 ChatResponse。"""
+        from harness.models import ChatResponse
+        from harness.models.base import ChatClientAdapter
+        self.messages = ChatClientAdapter._to_message_dicts(messages)
+        reply = self.continue_conversation()
+        return ChatResponse(
+            content=reply or "",
+            tool_calls=[],
+            usage=self.last_usage or {},
+            model=self.last_model or self.model,
+        )
+
+    async def stream(self, messages, tools=None, **kwargs):
+        """harness IChatClient 兼容入口 — 同步客户端，单帧 yield 完整回复。"""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: self.invoke(messages, tools=tools, **kwargs))
+        yield result.content
 
     def _call_and_append(self) -> str:
         # 详细模式：显示完整发送内容

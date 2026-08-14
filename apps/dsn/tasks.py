@@ -19,6 +19,7 @@ import schedule
 from apps.dsn.config import Config
 from apps.dsn.db.chat import ChatDBManager
 from apps.dsn.models import OpenAIChat
+from harness.tasks import TaskExecutor
 
 
 class TaskType(Enum):
@@ -33,23 +34,8 @@ class TaskType(Enum):
     ACTION = "action"        # 动作执行任务
 
 
-class TaskStatus(Enum):
-    """任务状态枚举"""
-    PENDING = "pending"      # 等待执行
-    RUNNING = "running"      # 执行中
-    COMPLETED = "completed"  # 已完成
-    FAILED = "failed"        # 失败
-    CANCELLED = "cancelled"  # 已取消
-    MISSED = "missed"        # 过期未执行
-    SKIPPED = "skipped"      # 用户主动跳过该次触发
-
-
-class TaskPriority(Enum):
-    """任务优先级枚举"""
-    LOW = 0
-    NORMAL = 1
-    HIGH = 2
-    URGENT = 3
+# 任务状态 / 优先级来自 harness 全局引擎（超集：状态含 MISSED/SKIPPED）
+from harness.tasks import TaskStatus, TaskPriority
 
 
 class Task:
@@ -82,7 +68,17 @@ class Task:
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
         self.handled_by_pipeline: bool = False
-        
+
+    @property
+    def type(self) -> str:
+        """harness TaskExecutorRegistry 兼容桥：返回任务类型字符串。"""
+        return self.task_type.value if isinstance(self.task_type, TaskType) else str(self.task_type)
+
+    @property
+    def id(self) -> str:
+        """harness 通用任务模型兼容桥：任务 ID。"""
+        return self.task_id
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Task':
         """从字典创建任务对象"""
@@ -128,6 +124,17 @@ class Task:
         return dt
 
 
+class _DsnTaskExecutor(TaskExecutor):
+    """把 DSN 任务处理器包装为 harness 执行器（分派经 harness TaskExecutorRegistry）。"""
+
+    def __init__(self, task_type: str, fn):
+        self.type = task_type
+        self._fn = fn
+
+    def execute(self, task) -> Any:
+        return self._fn(task)
+
+
 class TaskManager:
     """任务管理器"""
     
@@ -152,7 +159,22 @@ class TaskManager:
         # 启动调度器线程
         self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
         self.scheduler_thread.start()
-        
+
+        # 任务类型 → 执行器分派经 harness TaskExecutorRegistry（DSN 引擎依赖 harness 任务引擎）
+        from harness.tasks import TaskExecutorRegistry
+        self._exec_registry = TaskExecutorRegistry(max_workers=max_workers)
+        for _ttype, _fn in (
+            (TaskType.REASONER, self._execute_reasoner_task),
+            (TaskType.REMINDER, self._execute_reminder_task),
+            (TaskType.HABIT, self._execute_reminder_task),
+            (TaskType.COUNTDOWN, self._execute_reminder_task),
+            (TaskType.DAILY_PLAN, self._execute_reminder_task),
+            (TaskType.PERIODIC, self._execute_reminder_task),
+            (TaskType.ANALYSIS, self._execute_analysis_task),
+            (TaskType.ACTION, self._execute_action_task),
+        ):
+            self._exec_registry.register(_DsnTaskExecutor(_ttype.value, _fn))
+
         self.logger.info("TaskManager 初始化完成")
 
     _ACTION_HANDLERS = {
@@ -492,19 +514,16 @@ class TaskManager:
         return future
     
     def _execute_task_internal(self, task: Task) -> Dict[str, Any]:
-        """内部任务执行逻辑"""
+        """内部任务执行逻辑 — 类型分派经 harness TaskExecutorRegistry。
+
+        生命周期（状态/持久化/重试/重排/通知）仍由本管理器负责；
+        类型→处理器 的映射由 harness 任务引擎（TaskExecutorRegistry）承担。
+        """
+        executor = self._exec_registry.get(task.type)
+        if executor is None:
+            raise ValueError(f"未知的任务类型: {task.task_type}")
         try:
-            if task.task_type == TaskType.REASONER:
-                return self._execute_reasoner_task(task)
-            elif task.task_type in (TaskType.REMINDER, TaskType.HABIT, TaskType.COUNTDOWN,
-                                     TaskType.DAILY_PLAN, TaskType.PERIODIC):
-                return self._execute_reminder_task(task)
-            elif task.task_type == TaskType.ANALYSIS:
-                return self._execute_analysis_task(task)
-            elif task.task_type == TaskType.ACTION:
-                return self._execute_action_task(task)
-            else:
-                raise ValueError(f"未知的任务类型: {task.task_type}")
+            return executor.execute(task)
         except Exception as e:
             self.logger.error("任务执行失败 (task_id=%s): %s", task.task_id, e)
             raise
@@ -1066,6 +1085,10 @@ class TaskManager:
         """关闭任务管理器"""
         self.running = False
         self.executor.shutdown(wait=True)
+        try:
+            self._exec_registry.shutdown(wait=True)
+        except Exception:
+            pass
         self.logger.info("TaskManager 已关闭")
 
 

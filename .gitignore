@@ -32,6 +32,9 @@ AGENTS.md
 /prototypes/*
 *.distilled.json
 
+# ── 文档目录（含内部规划/审计文档，不再跟踪）──
+/docs/
+
 # ── DSN 语音陪伴应用 (apps/dsn/) 运行时目录 ──
 /apps/dsn/website/*
 /apps/dsn/logs/*

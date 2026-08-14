@@ -41,7 +41,8 @@ def test_plugin_manager_priority_order():
     pm.register(P2())
     pm.register(P1())
     asyncio.run(pm.dispatch(HookPoint.PREPARE, Context()))
-    assert order == ["p1", "p2"]  # 高优先级先
+    # 与 DSN 引擎调度约定一致：priority 值小者先执行（help=5 在 task=40 前）
+    assert order == ["p2", "p1"]
 
 
 def test_plugin_short_circuit_stops_dispatch():
@@ -51,7 +52,7 @@ def test_plugin_short_circuit_stops_dispatch():
     class Stopper(Plugin):
         name = "stopper"
         hooks = [HookPoint.INBOUND]
-        priority = 100
+        priority = 1   # 升序调度：值小者先执行，故先短路
 
         def on_hook(self, hook, ctx):
             calls.append("stop")
@@ -61,7 +62,7 @@ def test_plugin_short_circuit_stops_dispatch():
     class After(Plugin):
         name = "after"
         hooks = [HookPoint.INBOUND]
-        priority = 1
+        priority = 100
 
         def on_hook(self, hook, ctx):
             calls.append("after")
@@ -138,3 +139,45 @@ def test_event_bus_unsubscribe():
     unsub()
     bus.publish("e", 2)
     assert got == [1]
+def test_hookpoint_superset_contains_dsn_hooks():
+    """harness HookPoint 是 dsn 引擎钩子的超集。"""
+    from harness.pipeline import HookPoint as HP
+    for name in ("PRE_FILTER", "PRE_PROCESS", "POST_TTS"):
+        assert hasattr(HP, name), f"缺少 dsn 兼容钩子 {name}"
+    # dsn 专属顺序可独立编排
+    dsn_order = [HP.PRE_FILTER, HP.PRE_PROCESS, HP.MODEL_INVOKE,
+                 HP.POST_PROCESS, HP.POST_TTS]
+    assert all(h in HP for h in dsn_order)
+
+
+def test_context_superset_contains_dsn_fields():
+    """harness Context 是 dsn PluginContext 字段的超集。"""
+    from harness.pipeline import Context as C
+    ctx = C(
+        user_id=1, chat_id=42, chat_name="测试", is_asr_input=True,
+        tts_enabled=True, model_type="openai", nickname="用户",
+        image_data="data:image/png;base64,xxx",
+        original_reply="<tool>x</tool>", full_history=[{"role": "user", "content": "hi"}],
+        agent_active=True, agent_max_steps=10, agent_token_budget=100,
+        skip_model=False, cross_user_id=2, recall_engine=None,
+    )
+    assert ctx.chat_id == 42
+    assert ctx.image_data.startswith("data:")
+    assert ctx.agent_active and ctx.agent_max_steps == 10
+    assert ctx.original_reply == "<tool>x</tool>"
+    # 与 dsn PluginContext 同一对象
+    from apps.dsn.plugins.base import PluginContext
+    assert PluginContext is C
+
+
+def test_dsn_pipeline_subclasses_harness_pipeline():
+    """dsn ChatPipeline 继承 harness Pipeline（全局引擎单一实现）。"""
+    from apps.dsn.plugins.pipeline import ChatPipeline
+    from harness.pipeline import Pipeline
+    assert issubclass(ChatPipeline, Pipeline)
+    pm = PluginManager()
+    pipe = ChatPipeline(pm)
+    assert pipe.pm is pm
+    assert pipe.hook_order == [HookPoint.PRE_FILTER, HookPoint.PRE_PROCESS,
+                               HookPoint.MODEL_INVOKE, HookPoint.POST_PROCESS,
+                               HookPoint.POST_TTS]

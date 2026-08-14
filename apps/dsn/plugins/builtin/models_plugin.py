@@ -11,7 +11,37 @@ from typing import Optional
 from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
 from apps.dsn.config import Config
 
+from harness.tools.toolbox import ToolboxManager
+
 logger = logging.getLogger("ModelsPlugin")
+
+
+class _SkillIndexSource:
+    """DSN SkillRegistry 的 Toolbox 索引源适配器（引擎 ToolIndexSource 契约）。
+
+    索引 id 为 "skill.tool" 点分形式；schema_for 复用技能加载器的原生
+    function-calling schema 构建。
+    """
+
+    def __init__(self, registry):
+        self._registry = registry
+
+    def index(self) -> list[dict]:
+        return self._registry.get_tools_index()
+
+    def schema_for(self, tool_id: str):
+        parts = tool_id.split(".", 1)
+        if len(parts) != 2:
+            return None
+        spec = self._registry.get_tool_spec(parts[0], parts[1])
+        if not spec:
+            return None
+        tool_spec_obj = spec.get("_tool_spec_obj")
+        if tool_spec_obj is None:
+            return None
+        from apps.dsn.skills.loader import SkillLoader
+        return SkillLoader().build_function_schema(
+            spec.get("_skill_name", parts[0]), tool_spec_obj)
 
 
 class ModelsPlugin(Plugin):
@@ -46,13 +76,20 @@ class ModelsPlugin(Plugin):
         self._complexity = complexity_analyzer
         self._db = db
         self._skill_registry = None
+        self._toolbox = None  # 引擎 ToolboxManager，set_skill_registry 时构建
         self._tool_call_mode = getattr(Config, "TOOL_CALL_MODE", "native")
 
     def set_skill_registry(self, registry):
         self._skill_registry = registry
         tools_count = len(registry.get_tools_schema()) if registry else 0
         logger.info("ModelsPlugin: skill_registry 已注入, %d 个可用工具", tools_count)
-        self._cached_tool_index = registry.get_tools_index() if registry else []
+        # 引擎层两阶段工具激活策略（ToolboxManager），策略逻辑全部在 harness
+        # nested=True：DSN 技能加载器输出 OpenAI 嵌套格式 schema
+        self._toolbox = ToolboxManager(
+            _SkillIndexSource(registry),
+            enabled=getattr(Config, "TOOLBOX_ENABLED", True),
+            nested=True,
+        )
 
     def on_load(self) -> None:
         logger.info("ModelsPlugin 已加载 — model_type=%s tool_call_mode=%s",
@@ -104,39 +141,12 @@ class ModelsPlugin(Plugin):
                     else:
                         real_calls.append(tc)
 
-                # 处理 toolbox 调用 → 填充 _activated_tools
-                if toolbox_calls and use_toolbox:
-                    for tc in toolbox_calls:
-                        try:
-                            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                            ids = args.get("ids", [])
-                            act = ctx.extra.setdefault("_activated_tools", [])
-                            for aid in ids:
-                                if aid not in act:
-                                    act.append(aid)
-                            logger.info("ModelsPlugin: toolbox 激活工具: %s", ids)
-                        except Exception as e:
-                            logger.warning("ModelsPlugin: toolbox 解析失败: %s", e)
-                    # toolbox 的调用结果由 ToolPlugin 生成确认消息
-                    tool_call_results = []
-                    for tc in toolbox_calls:
-                        try:
-                            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                            ids = args.get("ids", [])
-                            tool_call_results.append({
-                                "function": "toolbox",
-                                "tool_call_id": tc["id"],
-                                "success": True,
-                                "data": {"activated": ids,
-                                         "message": f"已激活工具: {', '.join(ids)}"}
-                            })
-                        except Exception as e:
-                            tool_call_results.append({
-                                "function": "toolbox",
-                                "tool_call_id": tc["id"],
-                                "success": False,
-                                "error": str(e),
-                            })
+                # 处理 toolbox 调用 → 引擎 ToolboxManager 策略（激活去重/上限/结果生成）
+                if toolbox_calls and use_toolbox and self._toolbox is not None:
+                    _, tb_results = self._toolbox.handle_calls(toolbox_calls)
+                    # 激活状态写回 ctx.extra，供后续轮次与 agent loop 使用
+                    ctx.extra["_activated_tools"] = list(self._toolbox.activated)
+                    tool_call_results = self._toolbox.results_to_legacy(tb_results)
                     if tool_call_results:
                         ctx.extra.setdefault("_tag_results", []).extend(tool_call_results)
 
@@ -217,75 +227,19 @@ class ModelsPlugin(Plugin):
         return ctx
 
     def _build_tools_schema(self, activated: list[str] = None) -> list[dict]:
+        """构建 tools schema — 工具箱策略委托引擎 ToolboxManager。
+
+        - toolbox 启用：按激活状态两阶段构建（索引 / 索引+已激活工具）
+        - 未启用或 registry 缺失：全量导出
+        """
+        if self._toolbox is not None and self._toolbox.enabled:
+            schema = self._toolbox.build_schema(activated)
+            logger.info("ModelsPlugin: 工具箱模式, %d 个工具 schema (激活 %d)",
+                        len(schema), len(self._toolbox.activated))
+            return schema
         if not self._skill_registry:
-            toolbox_tool = self._build_toolbox_schema(True)
-            return [toolbox_tool] if toolbox_tool else []
-
-        use_toolbox = getattr(Config, "TOOLBOX_ENABLED", True)
-
-        if not use_toolbox:
-            return self._build_full_schema()
-
-        if not activated:
-            tb = self._build_toolbox_schema(True)
-            logger.info("ModelsPlugin: 工具箱模式, 仅发送 toolbox 工具")
-            return [tb] if tb else []
-
-        tb = self._build_toolbox_schema(False)
-        detail = [tb] if tb else []
-        from apps.dsn.skills.loader import SkillLoader
-        loader = SkillLoader()
-        for key in activated:
-            spec = self._skill_registry._tool_specs.get(key)
-            if spec:
-                tool_spec_obj = spec.get("_tool_spec_obj")
-                if tool_spec_obj:
-                    schema = loader.build_function_schema(
-                        spec.get("_skill_name", ""), tool_spec_obj)
-                    detail.append(schema)
-        logger.info("ModelsPlugin: 工具箱模式, toolbox + %d 个已激活工具 schema", len(detail) - 1)
-        return detail
-
-    def _build_toolbox_schema(self, include_index: bool = True) -> dict:
-        if not self._skill_registry:
-            return None
-        if not hasattr(self, '_cached_tool_index') or not self._cached_tool_index:
-            self._cached_tool_index = self._skill_registry.get_tools_index()
-        index = self._cached_tool_index
-
-        if include_index:
-            index_desc = "\n".join(
-                f"  - {item['id']}: {item['description']}"
-                for item in index
-            ) if index else "暂无可用工具"
-            description = (
-                "查看并激活你需要的工具。开始处理用户请求前，先思考可能需要哪些工具，"
-                "一次调用激活全部。激活后即可在后续轮次中使用。\n\n"
-                "如果用户只是询问你的能力/你能做什么，直接根据下方可用工具列表回答即可，"
-                "不要调用本工具，也不要激活任何工具。\n\n可用工具:\n" + index_desc
-            )
-        else:
-            description = "激活更多工具。如果处理过程中发现还需要其他工具，调用此工具补充激活。\n\n已激活列表仅供追踪，不再重复列出。"
-
-        enum_ids = [item["id"] for item in index]
-        return {
-            "type": "function",
-            "function": {
-                "name": "toolbox",
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ids": {
-                            "type": "array",
-                            "items": {"type": "string", "enum": enum_ids} if enum_ids else {"type": "string"},
-                            "description": "需要激活的工具 ID 列表"
-                        }
-                    },
-                    "required": ["ids"]
-                }
-            }
-        }
+            return []
+        return self._build_full_schema()
 
     def _build_full_schema(self) -> list[dict]:
         try:
@@ -377,38 +331,12 @@ class ModelsPlugin(Plugin):
                 else:
                     real_calls.append(tc)
 
-            # 处理 toolbox 调用
-            if toolbox_calls:
-                for tc in toolbox_calls:
-                    try:
-                        args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                        ids = args.get("ids", [])
-                        act = ctx.extra.setdefault("_activated_tools", [])
-                        for aid in ids:
-                            if aid not in act:
-                                act.append(aid)
-                        logger.info("ModelsPlugin.invoke: toolbox 激活工具: %s", ids)
-                    except Exception as e:
-                        logger.warning("ModelsPlugin.invoke: toolbox 解析失败: %s", e)
-                # 生成 toolbox 结果
-                for tc in toolbox_calls:
-                    try:
-                        args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                        ids = args.get("ids", [])
-                        ctx.extra.setdefault("_tag_results", []).append({
-                            "function": "toolbox",
-                            "tool_call_id": tc["id"],
-                            "success": True,
-                            "data": {"activated": ids,
-                                     "message": f"已激活工具: {', '.join(ids)}"}
-                        })
-                    except Exception as e:
-                        ctx.extra.setdefault("_tag_results", []).append({
-                            "function": "toolbox",
-                            "tool_call_id": tc["id"],
-                            "success": False,
-                            "error": str(e),
-                        })
+            # 处理 toolbox 调用（引擎 ToolboxManager 策略）
+            if toolbox_calls and self._toolbox is not None:
+                _, tb_results = self._toolbox.handle_calls(toolbox_calls)
+                ctx.extra["_activated_tools"] = list(self._toolbox.activated)
+                ctx.extra.setdefault("_tag_results", []).extend(
+                    self._toolbox.results_to_legacy(tb_results))
 
             # 真实工具调用
             if real_calls:
