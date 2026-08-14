@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.dsn.plugins.base import HookPoint, PluginContext
+from harness.pipeline import HookPoint, Context as PluginContext
 from apps.dsn.plugins.builtin.tool_plugin import ToolPlugin
 from apps.dsn.skills.loader import SkillLoader
 from apps.dsn.skills.manager import SkillManager

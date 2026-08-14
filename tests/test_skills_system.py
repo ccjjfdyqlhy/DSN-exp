@@ -168,7 +168,7 @@ def test_tool_plugin():
     print("Test 4: ToolPlugin <tool> 标签解析与执行")
     print("=" * 60)
 
-    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from harness.pipeline import Context as PluginContext, HookPoint
     from apps.dsn.plugins.builtin.tool_plugin import ToolPlugin
     from apps.dsn.skills.loader import SkillLoader
     from apps.dsn.skills.registry import SkillRegistry
@@ -245,7 +245,7 @@ def test_tool_plugin_empty():
     print("Test 5: ToolPlugin 无工具标签时保持原样")
     print("=" * 60)
 
-    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from harness.pipeline import Context as PluginContext, HookPoint
     from apps.dsn.plugins.builtin.tool_plugin import ToolPlugin
     from apps.dsn.skills.registry import SkillRegistry
 
@@ -322,7 +322,7 @@ def test_distill_plugin():
     print("Test 7: DistillPlugin 触发逻辑")
     print("=" * 60)
 
-    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from harness.pipeline import Context as PluginContext, HookPoint
     from apps.dsn.plugins.builtin.distill_plugin import DistillPlugin
 
     # 无 engine 时跳过

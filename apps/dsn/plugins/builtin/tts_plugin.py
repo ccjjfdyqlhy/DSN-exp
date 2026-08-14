@@ -9,7 +9,7 @@ import re
 import logging
 from typing import Optional
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 from apps.dsn.plugins.builtin.tts_profile import TTSProfileManager
 
 logger = logging.getLogger("TTSPlugin")

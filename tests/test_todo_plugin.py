@@ -205,7 +205,7 @@ def test_todo_plugin_mock():
     print("Test 5: TodoPlugin 完整流程 (mock)")
     print("=" * 60)
 
-    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from harness.pipeline import Context as PluginContext, HookPoint
     from apps.dsn.plugins.builtin.todo_plugin import TodoPlugin
     from apps.dsn.plugins.builtin.todo_store import TodoStore, get_todo_store
 
@@ -337,7 +337,7 @@ def test_below_threshold_skip():
     print("Test 7: TodoPlugin 低复杂度跳过")
     print("=" * 60)
 
-    from apps.dsn.plugins.base import PluginContext, HookPoint
+    from harness.pipeline import Context as PluginContext, HookPoint
     from apps.dsn.plugins.builtin.todo_plugin import TodoPlugin
     from apps.dsn.plugins.builtin.todo_store import get_todo_store
 

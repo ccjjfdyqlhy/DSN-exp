@@ -3,8 +3,11 @@
 #
 # 从 dekacode router.py 提炼并引擎化，创新扩展：
 #   - 路由依据可扩展：任务类型 / 高峰时段 / 手动覆盖 / 预算告警（budget pressure）
+#   - 多档位模型（tier）：flash/pro/自定义档，register_tier 声明即用
 #   - 路由决策可记录（decision log），供可观测性消费
 #   - 与 TokenBudget 联动：预算压力高时自动降级到廉价模型
+#
+# 本模块同时是 harness.models.router 的唯一实现（旧 models/router.py 已合并删除）。
 
 from __future__ import annotations
 
@@ -27,8 +30,17 @@ def in_peak_hours(now: Optional[datetime] = None,
 
 
 @dataclass
+class TierConfig:
+    """每档模型的接入配置（多档位扩展）。"""
+
+    model: str = ""
+    api_key: str = ""
+    base_url: str = ""
+
+
+@dataclass
 class ModelConfig:
-    """双模型配置（flash 廉价 / pro 强大），可各配 API key 与 base url。"""
+    """模型配置：内置 flash/pro 双档 + 任意注册档位（tiers）。"""
 
     flash_model: str = "deepseek-v4-flash"
     pro_model: str = "deepseek-v4-pro"
@@ -39,6 +51,7 @@ class ModelConfig:
     auto_downgrade_on_peak: bool = True
     cheap_tasks: tuple = CHEAP_TASKS
     peak_ranges: tuple = DEFAULT_PEAK_RANGES
+    tiers: dict[str, TierConfig] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,7 +67,7 @@ class RouterDecision:
 class ModelRouter:
     """模型路由策略。
 
-    select(task_type, budget_pressure) → mode（"flash" | "pro" | 自定义覆盖）
+    select(task_type, budget_pressure) → mode（"flash" | "pro" | 注册档位 | 自定义覆盖）
     决策优先级：手动覆盖 > 预算压力降级 > 任务类型 > 高峰降级 > 默认。
     """
 
@@ -63,6 +76,19 @@ class ModelRouter:
         self.current_model: str = "flash"
         self.manual_override: Optional[str] = None
         self.decisions: list[RouterDecision] = []
+
+    # ── 档位管理 ──
+
+    def register_tier(self, name: str, model: str, api_key: str = "",
+                      base_url: str = "") -> "ModelRouter":
+        """注册一个模型档位（如 local/embedding），之后可 switch/select。"""
+        self.config.tiers[name] = TierConfig(model=model, api_key=api_key,
+                                             base_url=base_url)
+        return self
+
+    def tier_config(self, tier: Optional[str] = None) -> Optional[TierConfig]:
+        """查询档位接入配置；tier 缺省取当前模式。"""
+        return self.config.tiers.get(tier or self.current_model)
 
     # ── 决策 ──
 
@@ -89,10 +115,13 @@ class ModelRouter:
     # ── 切换 ──
 
     def switch(self, mode: str) -> str:
-        """切换模型模式：flash / pro / auto / local / 自定义模型 id。"""
+        """切换模型模式：注册档位名 / auto / 自定义模型 id（手动锁定）。"""
         if mode == "auto":
             self.manual_override = None
             self.current_model = "flash"
+        elif mode in self.config.tiers:
+            self.manual_override = None
+            self.current_model = mode
         else:
             self.manual_override = mode
             self.current_model = mode
@@ -102,14 +131,24 @@ class ModelRouter:
         self.manual_override = None
         self.current_model = "flash"
 
+    def reset_auto(self) -> str:
+        """别名：清除手动覆盖，恢复自动路由。"""
+        self.manual_override = None
+        return self.current_model
+
     # ── 查询 ──
 
     def get_model_name(self, mode: str) -> str:
+        if mode in self.config.tiers:
+            return self.config.tiers[mode].model
         if mode == "pro":
             return self.config.pro_model
         return self.config.flash_model
 
     def get_model_config(self, mode: str) -> dict:
+        if mode in self.config.tiers:
+            t = self.config.tiers[mode]
+            return {"model": t.model, "api_key": t.api_key, "base_url": t.base_url}
         if mode == "pro":
             return {"model": self.config.pro_model,
                     "api_key": self.config.pro_api_key,

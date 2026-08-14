@@ -15,6 +15,16 @@ from datetime import datetime
 from typing import Optional
 
 
+# 高峰时段（与 policy.router 共用同一判定，单点定义）
+DEFAULT_PEAK_RANGES = ((9, 12), (14, 18))
+
+
+def in_peak_hours(now: Optional[datetime] = None,
+                  ranges=DEFAULT_PEAK_RANGES) -> bool:
+    h = (now or datetime.now()).hour
+    return any(start <= h < end for start, end in ranges)
+
+
 def pricing(*, input_cache_hit: float = 0.02, input_cache_miss: float = 1.0,
             output: float = 2.0, name: str = "default") -> dict:
     """构造定价表（$/M tokens）。"""
@@ -33,9 +43,10 @@ DEFAULT_PRICING = {
 
 @dataclass
 class UsageRecord:
-    """一次模型调用的账目。"""
+    """一次模型调用的账目（唯一实现：observability.usage 复用本类）。"""
 
     model: str = ""
+    tier: str = ""          # 档位别名（flash/pro/local），缺省取 model
     input_tokens: int = 0
     output_tokens: int = 0
     cache_hit_input: int = 0
@@ -48,6 +59,20 @@ class UsageRecord:
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+    def as_dict(self) -> dict:
+        return {
+            "model": self.model,
+            "tier": self.tier or self.model,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_hit_input": self.cache_hit_input,
+            "cache_miss_input": self.cache_miss_input,
+            "cost": self.cost,
+            "peak_hours": self.peak_hours,
+            "elapsed": self.elapsed,
+            "ts": self.ts,
+        }
 
 
 def fmt_tokens(n: int) -> str:
@@ -101,8 +126,7 @@ class TokenMeter:
             cache_hit_input=cached,
             cache_miss_input=cache_miss,
             cost=cost,
-            peak_hours=datetime.now().hour in tuple(
-                h for rng in ((9, 12), (14, 18)) for h in range(*rng)),
+            peak_hours=in_peak_hours(),
             elapsed=elapsed,
         )
         self.records.append(rec)

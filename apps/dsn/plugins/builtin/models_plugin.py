@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 from apps.dsn.config import Config
 
 from harness.tools.toolbox import ToolboxManager

@@ -5,7 +5,7 @@
 # 不含语音/人格/提醒等应用语义 —— 应用特定数据走 extra / outputs / events。
 #
 # DSN 超集：HookPoint 与 Context 已扩展为 dsn 引擎（apps.dsn.plugins）的超集，
-# dsn 的 PluginContext / 5 个钩子点直接映射到本模块（见 apps.dsn.plugins.base 再导出）。
+# dsn 的 PluginContext / 5 个钩子点直接映射到本模块（apps.dsn.plugins 直接再导出本模块符号）。
 
 from __future__ import annotations
 

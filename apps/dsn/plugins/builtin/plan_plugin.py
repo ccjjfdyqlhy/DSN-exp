@@ -7,7 +7,7 @@ import logging
 import re
 from datetime import datetime, date
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 from apps.dsn.db.plan_store import PlanStore
 from apps.dsn.db.plan_engine import PlanEngine
 

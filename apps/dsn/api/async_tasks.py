@@ -10,7 +10,7 @@ import uuid
 
 from flask import Blueprint, request, jsonify, current_app, g
 
-from apps.dsn.plugins.base import PluginContext
+from harness.pipeline import Context as PluginContext
 
 logger = logging.getLogger("AsyncTasks")
 

@@ -68,8 +68,16 @@ class NativeToolCallAdapter(ToolCallAdapter):
             ],
         )]
         for r in results:
-            content = json.dumps(r.get("output") if r.get("success") else r.get("error"),
-                                 ensure_ascii=False, default=str)
+            # 回喂内容包含 状态(status) + 结果(output/error) + 下一步提示(hint)，
+            # 让模型能依据结构化状态决定下一步（重试/换工具/询问用户）。
+            payload = {
+                "success": r.get("success", True),
+                "status": r.get("status", "ok" if r.get("success", True) else "error"),
+                "output": r.get("output"),
+                "error": r.get("error"),
+                "hint": r.get("hint"),
+            }
+            content = json.dumps(payload, ensure_ascii=False, default=str)
             msgs.append(ChatMessage.tool_result(
                 tool_call_id=r.get("call_id", "unknown"), content=content))
         return msgs
@@ -128,7 +136,11 @@ class TaggedToolCallAdapter(ToolCallAdapter):
         lines = []
         for r in results:
             data = r.get("output") if r.get("success") else r.get("error")
-            lines.append(f"- {r.get('name', 'tool')}: {json.dumps(data, ensure_ascii=False, default=str)}")
+            hint = r.get("hint")
+            line = f"- {r.get('name', 'tool')} [{r.get('status', 'ok' if r.get('success', True) else 'error')}]: {json.dumps(data, ensure_ascii=False, default=str)}"
+            if hint:
+                line += f" (提示: {hint})"
+            lines.append(line)
         summary = "\n".join(lines)
         return [
             ChatMessage.assistant(response.content),

@@ -1,5 +1,4 @@
-from .base import Plugin, HookPoint, PluginContext, AsyncPlugin
-from .manager import PluginManager
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext, AsyncPlugin, PluginManager
 from .pipeline import ChatPipeline
 
 __all__ = [

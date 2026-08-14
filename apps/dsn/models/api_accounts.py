@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from harness.models.failover import FailoverChat as _HarnessFailoverChat
+
 logger = logging.getLogger("APIAccounts")
 
 _ACCOUNTS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".dsn", "api_accounts.json")
@@ -672,46 +674,56 @@ def reset_api_manager() -> None:
 
 
 # ── FailoverChat: 按优先级逐个账号尝试，出错自动回退下一个 ──
+# 通用故障转移逻辑在 harness.models.failover（IChatClient 契约 + 观察回调），
+# 本类只负责把 DSN 账号装配成端点，并保留 DSN 兼容 API。
 
-class FailoverChat:
+class FailoverChat(_HarnessFailoverChat):
     """
     包装多个 OpenAIChat 实例，接口与 OpenAIChat 兼容。
     调用时按优先级顺序尝试，任一账号抛错则回退到下一个；
-    全部失败才抛出最后一个异常。
+    全部失败才抛出最后一个异常。故障转移核心由 harness 提供。
     """
 
     def __init__(self, accounts: list[APIAccount], timeout: int = 300):
         from .clients import OpenAIChat
+        from harness.models.failover import FailoverEndpoint
         self._accounts: list[OpenAIChat] = []
         self._account_names: list[str] = []
+        endpoints: list[FailoverEndpoint] = []
         # 已知坏账号（近期失败过）自动排后，优先尝试健康账号
         for acc in order_accounts_for_routing(accounts):
             try:
-                self._accounts.append(OpenAIChat(
+                chat = OpenAIChat(
                     api_key=acc.api_key,
                     model=acc.model or "deepseek-v4-flash",
                     api_url=acc.base_url or None,
                     timeout=timeout,
-                ))
+                )
+                self._accounts.append(chat)
                 self._account_names.append(acc.name)
+                endpoints.append(FailoverEndpoint(name=acc.name, client=chat))
                 # 备用 Token：主 Token 失效时优雅顶上（同端点，紧随主账号之后）
                 if acc.backup_api_key:
-                    self._accounts.append(OpenAIChat(
+                    backup = OpenAIChat(
                         api_key=acc.backup_api_key,
                         model=acc.model or "deepseek-v4-flash",
                         api_url=acc.base_url or None,
                         timeout=timeout,
-                    ))
+                    )
+                    self._accounts.append(backup)
                     self._account_names.append(f"{acc.name}(备用)")
+                    endpoints.append(FailoverEndpoint(name=f"{acc.name}(备用)", client=backup))
             except Exception as e:
                 logger.error("FailoverChat: 初始化账号 %s 失败: %s", acc.name, e)
+
+        super().__init__(endpoints, on_observation=self._record_observation,
+                         timeout=timeout)
 
         self.messages: list[dict] = []
         self.last_usage = None
         self.last_model = None
         self._last_tool_calls = None
         self._last_account = None
-        self.fallback_log: list[str] = []
 
     def __repr__(self):
         return f"<FailoverChat accounts={self._account_names}>"
@@ -725,31 +737,22 @@ class FailoverChat:
         return self._last_account
 
     def _try_all(self, **kwargs) -> str:
-        errors: list[tuple[str, str]] = []
-        for acc, chat in zip(self._account_names, self._accounts):
-            _t0 = time.time()
-            try:
-                # 同步历史到当前账号，从同一状态重试
-                chat.messages = list(self.messages)
-                reply = chat.continue_conversation(**kwargs)
-                self._record_observation(acc, True, (time.time() - _t0) * 1000)
-                self.messages = list(chat.messages)
-                self.last_usage = chat.last_usage
-                self.last_model = chat.last_model
-                self._last_tool_calls = chat.last_tool_calls
-                self._last_account = acc
-                if errors:
-                    self.fallback_log.append(f"{time.strftime('%H:%M:%S')} 回退到 {acc}（此前失败: {errors[0][0]}）")
-                    logger.info("FailoverChat: %s 失败后回退到 %s 成功", errors[0][0], acc)
-                return reply
-            except Exception as e:
-                msg = f"{type(e).__name__}: {e}"
-                errors.append((acc, msg))
-                self._record_observation(acc, False, (time.time() - _t0) * 1000)
-                logger.warning("FailoverChat: 账号 %s 调用失败: %s", acc, msg)
-                continue
-        err = errors[-1][1] if errors else "无可用账号"
-        raise RuntimeError(f"所有 API 账号均失败: {err}")
+        """经 harness FailoverChat.invoke 逐个账号尝试（同一消息集重试）。"""
+        resp = self.invoke(self.messages, tools=kwargs.get("tools"))
+        self.last_usage = resp.usage or None
+        self.last_model = resp.model or None
+        self._last_tool_calls = ([
+            {"id": tc.id, "type": "function",
+             "function": {"name": tc.name, "arguments": tc.arguments_json}}
+            for tc in resp.tool_calls
+        ] or None)
+        self._last_account = self.last_endpoint
+        # 同步历史：追加助手回复（与旧实现 chat.messages 同步语义一致）
+        entry: dict = {"role": "assistant", "content": resp.content or ""}
+        if resp.tool_calls:
+            entry["tool_calls"] = self._last_tool_calls
+        self.messages.append(entry)
+        return resp.content or ""
 
     @staticmethod
     def _record_observation(account: str, ok: bool, latency_ms: float) -> None:
@@ -767,12 +770,12 @@ class FailoverChat:
         if not message or not isinstance(message, str):
             raise ValueError("消息内容必须为非空字符串")
         self.messages.append({"role": "user", "content": message})
-        return self._try_all(tools=tools, tool_choice=tool_choice, extra_body=extra_body)
+        return self._try_all(tools=tools)
 
     def continue_conversation(self, tools: list[dict] = None,
                               tool_choice: str = "auto",
                               extra_body: Optional[dict] = None) -> str:
-        return self._try_all(tools=tools, tool_choice=tool_choice, extra_body=extra_body)
+        return self._try_all(tools=tools)
 
     def reset_conversation(self) -> None:
         self.messages.clear()

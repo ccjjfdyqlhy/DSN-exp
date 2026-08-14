@@ -17,7 +17,7 @@ from harness.agent import (
 )
 from harness.codegraph import GraphBuilder, find_callers, search_symbols
 from harness.models.base import ChatResponse
-from harness.models.router import ModelRouter
+from harness.models import ModelRouter  # 唯一实现在 harness.policy.router
 from harness.models.stub import StubChatClient
 from harness.observability import UsageTracker
 from harness.pipeline.filters import OutputFilter

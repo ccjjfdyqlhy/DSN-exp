@@ -12,25 +12,52 @@ from typing import Any, Callable, Optional
 
 @dataclass
 class ToolResult:
-    """工具执行结果。success=False 时 error 说明原因。"""
+    """工具执行结果。
+
+    success  是否成功（False 时 error 说明原因）
+    status   执行状态: ok | error | retry | deferred（模型可据此决定下一步）
+    hint     给 Agent 的下一步提示（继续尝试 / 换工具 / 询问用户等）
+    data     附加结构化字段（随 to_dict 一起回喂模型）
+    """
     success: bool = True
     output: Any = None
     error: Optional[str] = None
+    status: str = "ok"
+    hint: Optional[str] = None
     data: dict = field(default_factory=dict)
 
     @classmethod
-    def ok(cls, output: Any = None, **data) -> "ToolResult":
-        return cls(success=True, output=output, data=data)
+    def ok(cls, output: Any = None, *, hint: Optional[str] = None,
+           status: str = "ok", **data) -> "ToolResult":
+        return cls(success=True, output=output, hint=hint,
+                   status=status, data=data)
 
     @classmethod
-    def fail(cls, error: str, **data) -> "ToolResult":
-        return cls(success=False, error=error, data=data)
+    def fail(cls, error: str, *, hint: Optional[str] = None,
+             status: str = "error", **data) -> "ToolResult":
+        return cls(success=False, error=error, hint=hint,
+                   status=status, data=data)
+
+    @classmethod
+    def retry(cls, error: str, *, hint: Optional[str] = None, **data) -> "ToolResult":
+        """失败但值得重试（如临时性错误）。"""
+        return cls(success=False, error=error, hint=hint,
+                   status="retry", data=data)
+
+    @classmethod
+    def deferred(cls, output: Any = None, *, hint: Optional[str] = None,
+                 **data) -> "ToolResult":
+        """已接受但结果稍后到达（异步任务）。"""
+        return cls(success=True, output=output, hint=hint,
+                   status="deferred", data=data)
 
     def to_dict(self) -> dict:
         return {
             "success": self.success,
+            "status": self.status,
             "output": self.output,
             "error": self.error,
+            "hint": self.hint,
             **self.data,
         }
 

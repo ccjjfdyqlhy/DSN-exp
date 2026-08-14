@@ -17,7 +17,7 @@
 #     predictor = DurationPredictor()
 #     # 组装成 PolicySet 注入 AgentLoop / Pipeline
 
-from .router import ModelRouter, ModelConfig
+from .router import ModelRouter, ModelConfig, TierConfig, RouterDecision
 from .token_meter import TokenMeter, UsageRecord, pricing
 from .budget import TokenBudget
 from .predictor import DurationPredictor
@@ -25,7 +25,7 @@ from .warmer import CacheWarmer
 from .retry import RetryPolicy, RetryStats
 
 __all__ = [
-    "ModelRouter", "ModelConfig",
+    "ModelRouter", "ModelConfig", "TierConfig", "RouterDecision",
     "TokenMeter", "UsageRecord", "pricing",
     "TokenBudget", "DurationPredictor", "CacheWarmer",
     "RetryPolicy", "RetryStats",

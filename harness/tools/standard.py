@@ -46,6 +46,7 @@ class ToolDeps:
         self.workspace: str = kwargs.get("workspace", os.getcwd())
         self.codegraph: Any = kwargs.get("codegraph")   # harness.codegraph 实例
         self.fetcher: Any = kwargs.get("fetcher")       # web 抓取器
+        self.tool_registry: Any = kwargs.get("tool_registry")  # ToolRegistry（batch.run 解析 fn 用）
         self.max_output_chars: int = kwargs.get("max_output_chars", 6000)
 
 
@@ -442,11 +443,81 @@ def tool_project_snapshot(deps: ToolDeps):
     return run
 
 
-def tool_batch_run():
-    """批量执行：把同一函数应用到参数组合（map-reduce 风格）。"""
+def tool_batch_run(deps: ToolDeps):
+    """批量执行：对 items 逐项调用已注册工具 fn（fn 为工具名）。
+
+    每个 item 可以是 dict（作为 fn 的参数）或标量（转为 {"value": item}）。
+    逐项收集 success/status/error/hint，聚合返回。
+    """
     def run(items: list, fn: str = ""):
-        # fn 未提供时原样返回 items（占位）；应用层可注入 callable
-        return {"success": True, "count": len(items), "items": items}
+        reg = deps.tool_registry
+        if not fn:
+            return {"success": False, "error": "缺少 fn（要批量调用的工具名）",
+                    "hint": "例如 batch.run(fn='text.chunk', items=[...])"}
+        if reg is None:
+            return {"success": False, "error": "tool_registry 未注入，无法解析工具",
+                    "hint": "在 ToolDeps 中注入 tool_registry"}
+        tool = reg.get(fn) if hasattr(reg, "get") else None
+        if tool is None:
+            names = reg.names() if hasattr(reg, "names") else []
+            return {"success": False, "error": f"工具不存在: {fn}",
+                    "hint": f"可用工具: {', '.join(names[:12])}"}
+        results = []
+        for i, item in enumerate(items or []):
+            params = item if isinstance(item, dict) else {"value": item}
+            if hasattr(tool, "run"):
+                tr = tool.run(**params)
+                results.append({
+                    "index": i,
+                    "success": tr.success,
+                    "status": tr.status,
+                    "output": tr.output,
+                    "error": tr.error,
+                    "hint": tr.hint,
+                })
+            else:
+                results.append({"index": i, "success": False,
+                                "error": "工具无 run 方法"})
+        ok_count = sum(1 for r in results if r["success"])
+        return {
+            "success": True,
+            "count": len(results),
+            "ok": ok_count,
+            "failed": len(results) - ok_count,
+            "results": results,
+        }
+    return run
+
+
+def tool_code_diagnose(deps: ToolDeps):
+    """错误诊断：输入报错文本，借助 codegraph 检索相关符号并给出建议。
+
+    无 codegraph 时返回带提示的降级结果（hint 指明如何注入）。
+    """
+    def run(error: str, context: str = ""):
+        if deps.codegraph is None:
+            return {"success": False, "error": "codegraph 未注入，无法诊断",
+                    "hint": "在 ToolDeps 中注入 codegraph（GraphBuilder 构建）"}
+        try:
+            import re as _re
+            query = (context or error or "").strip()
+            # 从错误文本提取疑似符号名（标识符 token）
+            tokens = _re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,}", query)
+            candidates: list[str] = []
+            graph = deps.codegraph
+            for tok in tokens:
+                if hasattr(graph, "search"):
+                    for sym in (graph.search(tok) or [])[:3]:
+                        name = getattr(sym, "name", None) or getattr(sym, "to_compact", lambda: str(sym))()
+                        if name not in candidates:
+                            candidates.append(name)
+            return {
+                "success": True,
+                "matches": candidates[:10],
+                "note": "可对匹配符号用 code.locate_symbol / file.read 深入排查",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     return run
 
 
@@ -472,12 +543,13 @@ def install_standard_tools(registry: ToolRegistry, *,
         "text.diff": tool_text_diff(),
         "code.syntax_check": tool_code_syntax_check(deps),
         "code.locate_symbol": tool_code_locate_symbol(deps),
+        "code.diagnose": tool_code_diagnose(deps),
         "proc.run": tool_proc_run(deps),
         "web.fetch": tool_web_fetch(deps),
         "project.summary": tool_project_summary(deps),
         "project.snapshot": tool_project_snapshot(deps),
         "project.todo": tool_project_todo(deps),
-        "batch.run": tool_batch_run(),
+        "batch.run": tool_batch_run(deps),
     }
     tool_meta: dict[str, tuple[str, dict]] = {
         "file.read": ("读取文本文件（相对路径基于工作区）",
@@ -519,6 +591,11 @@ def install_standard_tools(registry: ToolRegistry, *,
         "code.locate_symbol": ("在项目符号图中定位符号定义",
                                {"type": "object", "properties": {
                                    "name": {"type": "string"}}, "required": ["name"]}),
+        "code.diagnose": ("错误诊断：从报错文本检索相关符号并给出排查建议",
+                          {"type": "object", "properties": {
+                              "error": {"type": "string"},
+                              "context": {"type": "string"}},
+                           "required": ["error"]}),
         "proc.run": ("执行 shell 命令（带超时与输出截断）",
                      {"type": "object", "properties": {
                          "command": {"type": "string"}, "timeout": {"type": "integer"},
@@ -542,7 +619,7 @@ def install_standard_tools(registry: ToolRegistry, *,
                              "text": {"type": "string"}, "index": {"type": "integer"},
                              "status": {"type": "string"}},
                           "required": ["action"]}),
-        "batch.run": ("批量处理占位工具（应用层注入实际函数）",
+        "batch.run": ("批量执行：对 items 逐项调用已注册工具 fn（map 风格）",
                       {"type": "object", "properties": {
                           "items": {"type": "array"}, "fn": {"type": "string"}},
                        "required": ["items"]}),

@@ -23,8 +23,8 @@ from apps.dsn.models.tts_process import TTSProcessModel
 from apps.dsn.memory import MemorySystem
 from apps.dsn.tasks import TaskManager, TaskType, ComplexityAnalyzer
 
-from apps.dsn.plugins.base import PluginContext
-from apps.dsn.plugins.manager import PluginManager
+from harness.pipeline import Context as PluginContext
+from harness.pipeline import PluginManager
 from apps.dsn.plugins.pipeline import ChatPipeline
 
 from apps.dsn.prompt import PromptEngine, PromptLibrary, PersonalitySystemV2

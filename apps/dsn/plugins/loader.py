@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import yaml
 
-from apps.dsn.plugins.base import Plugin, AsyncPlugin
+from harness.pipeline import Plugin, AsyncPlugin
 from apps.dsn.plugins.container import PluginDIContainer
 
 logger = logging.getLogger("PluginLoader")

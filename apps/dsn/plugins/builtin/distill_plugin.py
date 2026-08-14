@@ -7,7 +7,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 
 logger = logging.getLogger("DistillPlugin")
 

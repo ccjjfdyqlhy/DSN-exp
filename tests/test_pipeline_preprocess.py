@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.dsn.plugins.base import PluginContext
+from harness.pipeline import Context as PluginContext
 from apps.dsn.plugins.pipeline import ChatPipeline
 
 

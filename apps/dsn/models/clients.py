@@ -11,6 +11,15 @@ import time
 from collections import deque
 from typing import List, Dict, Optional
 
+# 本地模型加载/HTTP 助手统一来自 harness（apps.dsn.models 保留名字再导出）
+from harness.models.lmstudio import (
+    LMStudioChat as _HarnessLMStudioChat,
+    is_no_model_error as _is_no_model_error,
+    post_json as _post_json,
+    load_lmstudio_model as _load_lmstudio_model,
+    unload_lmstudio_model as _unload_lmstudio_model,
+)
+
 
 # 全局详细模式标志，由 /detail 命令切换
 DETAIL_CHATS = False
@@ -31,79 +40,15 @@ def toggle_detail_actions() -> bool:
     return DETAIL_ACTIONS
 
 
-def _is_no_model_error(response) -> bool:
-    """检查 HTTP 400 错误是否因 'No models loaded' 导致"""
-    if response is None or response.status_code != 400:
-        return False
-    try:
-        body = response.text or ""
-        return "no model" in body.lower() or "No models loaded" in body
-    except Exception:
-        return False
-
-
-def _post_json(session: requests.Session, url: str, headers: dict,
-               payload: dict, timeout: int | float) -> dict:
-    """Submit a JSON request through a reusable session and decode its response."""
-    response = session.post(url, headers=headers, json=payload, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
+# _is_no_model_error / _post_json / _load_lmstudio_model 由 harness.models.lmstudio 提供
+# （见文件头部 import；以下为向后兼容占位，无自研实现）
 
 
 
 
 
 
-    # load a model on lmstudio
-def _load_lmstudio_model(base_url: str, model_name: str, label: str, timeout: int = 180) -> bool:
-    """向 LMStudio 发送模型加载请求，返回是否成功"""
-    if not model_name:
-        logging.getLogger("models").error("未配置 model_name，无法自动加载 %s", label)
-        return False
-    try:
-        logging.getLogger("models").info("正在加载 %s: %s", label, model_name)
-        load_resp = requests.post(
-            f"{base_url}/api/v1/models/load",
-            json={"model": model_name},
-            timeout=timeout,
-        )
-        load_resp.raise_for_status()
-        result = load_resp.json()
-        logging.getLogger("models").info(
-            "%s 加载完成 (%.1fs): %s", label, result.get("load_time_seconds", 0), model_name)
-        return True
-    except Exception as e:
-        logging.getLogger("models").error("自动加载 %s 失败 (%s): %s", label, model_name, e)
-        return False
-
-
-
-
-
-
-    # unload a model from lmstudio
-def _unload_lmstudio_model(base_url: str, model_name: str) -> bool:
-    """卸载 LMStudio 模型。POST /api/v1/models/unload，body: {"instance_id": model_name}"""
-    if not model_name:
-        return False
-    try:
-        logger = logging.getLogger("models")
-        logger.info("正在卸载模型: %s", model_name)
-        resp = requests.post(
-            f"{base_url}/api/v1/models/unload",
-            json={"instance_id": model_name},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("instance_id") == model_name or data.get("model") == model_name:
-            logger.info("模型已卸载: %s", model_name)
-            return True
-        logger.info("模型卸载完成: %s", model_name)
-        return True
-    except Exception as e:
-        logging.getLogger("models").error("卸载模型失败 (%s): %s", model_name, e)
-        return False
+# _unload_lmstudio_model 由 harness.models.lmstudio 提供（见文件头部 import）
 
 class OpenAIChat:
     """
@@ -394,10 +339,11 @@ class OpenAIChat:
         return f"<OpenAIChat model={self.model} history_len={len(self.messages)}>"
 
 
-class LMStudioChat:
+class LMStudioChat(_HarnessLMStudioChat):
     """
-    本地 LMStudio 聊天客户端类，支持多轮对话历史管理。
-    与 OpenAIChat 接口兼容，可作为主模型的替代方案。
+    本地 LMStudio 聊天客户端（DSN 扩展）。
+    通用 invoke/stream/原生 toolcall/自动加载重试由 harness.models.lmstudio 提供，
+    本类只保留 DSN 专属：多轮历史管理、视觉描述、ModelScheduler 注册。
     """
 
     def __init__(
@@ -421,16 +367,14 @@ class LMStudioChat:
         :param max_tokens: 最大生成token数
         :param managed: 是否由 ModelScheduler 管理模型加载/卸载
         """
-        self.base_url = base_url.rstrip('/')
-        self.model_name = model_name
-        self.timeout = timeout
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-
+        super().__init__(
+            base_url=base_url,
+            model_name=model_name,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         self.messages: List[Dict[str, str]] = []
-        self.last_usage = None
-        self.last_model = self.model_name or "lmstudio"
-        self._http_session = requests.Session()
 
         if logger is not None:
             self.logger = logger
@@ -438,8 +382,7 @@ class LMStudioChat:
             self.logger = logging.getLogger(self.__class__.__name__)
             self.logger.setLevel(logging.INFO)
 
-        # 注册到 ModelScheduler
-        self._scheduler = None
+        # 注册到 ModelScheduler（DSN 专属）
         if managed and self.model_name:
             from .scheduler import ModelScheduler
             self._scheduler = ModelScheduler.get_instance()
@@ -505,33 +448,7 @@ class LMStudioChat:
         """不追加新用户消息，直接用当前消息列表调用 LLM（用于 Agent 工具反馈循环）。"""
         return self._call_and_append()
 
-    # ── harness IChatClient 兼容桥 ──
-
-    @property
-    def model(self) -> str:
-        return self.model_name or "lmstudio"
-
-    def invoke(self, messages, tools=None, *, temperature=None, max_tokens=None,
-               timeout=None):
-        """harness IChatClient 兼容入口 — 归一化消息并返回 ChatResponse。"""
-        from harness.models import ChatResponse
-        from harness.models.base import ChatClientAdapter
-        self.messages = ChatClientAdapter._to_message_dicts(messages)
-        reply = self.continue_conversation()
-        return ChatResponse(
-            content=reply or "",
-            tool_calls=[],
-            usage=self.last_usage or {},
-            model=self.last_model or self.model,
-        )
-
-    async def stream(self, messages, tools=None, **kwargs):
-        """harness IChatClient 兼容入口 — 同步客户端，单帧 yield 完整回复。"""
-        import asyncio
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: self.invoke(messages, tools=tools, **kwargs))
-        yield result.content
+    # ── harness IChatClient 兼容桥（invoke/stream/原生 toolcall 由基类提供） ──
 
     def _call_and_append(self) -> str:
         # 详细模式：显示完整发送内容

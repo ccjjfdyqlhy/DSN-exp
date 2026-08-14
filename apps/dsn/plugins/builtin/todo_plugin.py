@@ -8,7 +8,7 @@ import logging
 import re
 import threading
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 from apps.dsn.plugins.builtin.todo_store import get_todo_store, TodoPlan
 from apps.dsn.plugins.builtin.subagent_runner import SubAgentRunner
 from apps.dsn.config import Config

@@ -166,7 +166,7 @@ def test_context_superset_contains_dsn_fields():
     assert ctx.agent_active and ctx.agent_max_steps == 10
     assert ctx.original_reply == "<tool>x</tool>"
     # 与 dsn PluginContext 同一对象
-    from apps.dsn.plugins.base import PluginContext
+    from harness.pipeline import Context as PluginContext
     assert PluginContext is C
 
 

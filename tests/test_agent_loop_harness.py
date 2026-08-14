@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.dsn.plugins.base import HookPoint, PluginContext
+from harness.pipeline import HookPoint, Context as PluginContext
 from apps.dsn.plugins.pipeline import ChatPipeline
 
 # ── 旧实现快照（迁移前） — 回归基线 ──

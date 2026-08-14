@@ -181,8 +181,10 @@ class AgentLoop:
                     "call_id": tc.id,
                     "name": tc.name,
                     "success": result.success,
+                    "status": result.status,
                     "output": result.output,
                     "error": result.error,
+                    "hint": result.hint,
                 })
 
             # 合并 toolbox 确认结果（assistant 消息含 toolbox tool_calls，配对正确）

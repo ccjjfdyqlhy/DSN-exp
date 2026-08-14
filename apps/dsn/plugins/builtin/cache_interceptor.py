@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 
 logger = logging.getLogger("CacheInterceptor")
 

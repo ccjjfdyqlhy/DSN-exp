@@ -12,9 +12,12 @@ import logging
 from copy import copy, deepcopy
 from typing import AsyncGenerator, Callable, Awaitable, Optional
 
-from .base import HookPoint, PluginContext
-from .manager import PluginManager
-from harness.pipeline import Pipeline as _HarnessPipeline
+from harness.pipeline import (
+    HookPoint,
+    Context as PluginContext,
+    PluginManager,
+    Pipeline as _HarnessPipeline,
+)
 from apps.dsn.world.action_narrator import ActionNarrativeCollector
 from apps.dsn.config import Config
 

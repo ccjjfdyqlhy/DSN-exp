@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from apps.dsn.plugins.base import Plugin, HookPoint, PluginContext
+from harness.pipeline import Plugin, HookPoint, Context as PluginContext
 from apps.dsn.tasks import TaskType
 
 logger = logging.getLogger("TaskPlugin")

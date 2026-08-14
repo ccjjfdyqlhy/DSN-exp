@@ -53,6 +53,26 @@ def test_agent_loop_missing_tool_reports_error():
     assert not result.tool_executions[0].result.success
 
 
+def test_tool_result_status_hint_round_trip():
+    from harness.tools.base import ToolResult
+    stub = StubChatClient(responses=[
+        ChatResponse(content="", tool_calls=[ToolCall(id="1", name="tool.check", arguments={})]),
+        ChatResponse(content="已收到状态", model="stub"),
+    ])
+    tools = ToolRegistry()
+    tools.register_tool("tool.check", "检查状态",
+                        lambda: ToolResult.ok(output="一切正常", hint="继续下一步", status="ok"),
+                        parameters={"type": "object", "properties": {}})
+    loop = AgentLoop(stub, tools, max_steps=5)
+    result = asyncio.run(loop.run_async([ChatMessage.user("check")]))
+    assert result.reply == "已收到状态"
+    te = result.tool_executions[0]
+    assert te.result.status == "ok"
+    d = te.result.to_dict()
+    assert d["status"] == "ok"
+    assert d["hint"] == "继续下一步"
+
+
 def test_tagged_adapter_parse_and_loop():
     raw = '好的。\n<toolcall>\n{"name": "math.add", "arguments": {"a": 3, "b": 4}}\n</toolcall>'
     stub = StubChatClient(responses=[

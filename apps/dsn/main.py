@@ -80,7 +80,7 @@ except ImportError:
     _TRAIT_NAMES = {}
 
 try:
-    from apps.dsn.plugins.base import AsyncPlugin
+    from harness.pipeline import AsyncPlugin
 except ImportError:
     AsyncPlugin = None
 

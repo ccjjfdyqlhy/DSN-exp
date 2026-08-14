@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from apps.dsn.plugins.base import PluginContext
+from harness.pipeline import Context as PluginContext
 
 logger = logging.getLogger("SubAgentRunner")
 
