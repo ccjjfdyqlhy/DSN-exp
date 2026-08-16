@@ -195,7 +195,7 @@ class LMStudioChat(ChatClientAdapter):
         tools: Optional[list[dict]] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
-        """SSE 流式：文本增量 yield str；工具调用增量 yield dict（按 index 累积）。"""
+        """SSE 流式：文本增量 yield str；工具调用增量 yield dict（原始片段，由消费方按 index 拼接）。"""
         msgs = self._to_message_dicts(messages)
         payload: dict[str, Any] = {
             "messages": msgs,
@@ -219,7 +219,6 @@ class LMStudioChat(ChatClientAdapter):
         resp = await loop.run_in_executor(None, _request)
         resp.raise_for_status()
 
-        tool_deltas: dict[int, dict] = {}
         for raw in resp.iter_lines(decode_unicode=True):
             if not raw or not raw.startswith("data:"):
                 continue
@@ -239,17 +238,14 @@ class LMStudioChat(ChatClientAdapter):
             if tc_delta:
                 emitted = []
                 for tc in tc_delta:
-                    idx = tc.get("index", 0)
-                    acc = tool_deltas.setdefault(
-                        idx, {"index": idx, "id": "", "name": "", "arguments": ""})
-                    if tc.get("id"):
-                        acc["id"] = tc["id"]
                     fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        acc["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        acc["arguments"] += fn["arguments"]
-                    emitted.append(dict(acc))
+                    emitted.append({
+                        "index": tc.get("index", 0) or 0,
+                        "id": tc.get("id", "") or "",
+                        "name": fn.get("name", "") or "",
+                        # 只带本 chunk 的片段，由 AgentLoop 负责按 index 拼接
+                        "arguments": fn.get("arguments", "") or "",
+                    })
                 if emitted:
                     yield {"tool_calls": emitted}
         resp.close()

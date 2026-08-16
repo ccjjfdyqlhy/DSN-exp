@@ -114,8 +114,35 @@ def test_run_stream_toolbox_integration():
     events = asyncio.run(_collect(loop, [ChatMessage.user("hi")]))
     assert len(seen_schemas[0]) == 1
     assert seen_schemas[0][0]["name"] == "toolbox"
-    assert [s["name"] for s in seen_schemas[1]] == ["toolbox", "demo.echo"]
+    # 发给模型的是 wire 名（demo.echo → demo__echo）
+    assert [s["name"] for s in seen_schemas[1]] == ["toolbox", "demo__echo"]
     assert any(e.kind == "reply" and e.reply == "完成" for e in events)
+
+
+def test_run_stream_sync_generator_streams_incrementally():
+    """同步生成器必须逐块 yield，不能先在线程里缓冲完整个流再返回。"""
+    class SyncGenClient:
+        model = "fake"
+
+        def __init__(self):
+            self.advanced_past_first = False
+
+        def stream(self, messages, tools=None, **kw):
+            yield "a"
+            self.advanced_past_first = True
+            yield "b"
+
+    client = SyncGenClient()
+    loop = AgentLoop(client, None, max_steps=2)
+
+    async def consume():
+        async for e in loop.run_stream([ChatMessage.user("hi")]):
+            if e.kind == "delta" and e.content == "a":
+                # 收到第一个 delta 时，生成器不应已被整个消费完。
+                assert client.advanced_past_first is False
+
+    asyncio.run(consume())
+    assert client.advanced_past_first is True
 
 
 async def _collect(loop, msgs):

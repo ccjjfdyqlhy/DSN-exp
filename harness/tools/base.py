@@ -6,8 +6,46 @@
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+
+# ── 线路名（wire name）编解码 ──
+#
+# harness 内部工具名带命名空间点号（如 "file.read"），可读性好；但部分 OpenAI 兼容
+# 服务端会强校验 function 名必须匹配 ^[a-zA-Z0-9_-]+$，点号会直接被拒（400
+# invalid_request_error）。因此在"发给模型"的边界上把点号编码为双下划线，在
+# "解析模型调用"的边界上再还原，内部命名与工具注册表完全不变。
+_WIRE_SAFE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_WIRE_SEP = "__"
+
+
+def to_wire_name(name: str) -> str:
+    """把内部工具名转成 provider 可接受的 function 名（file.read → file__read）。"""
+    if not name:
+        return name
+    wire = name.replace(".", _WIRE_SEP)
+    # 兜底：其余非法字符统一替换为下划线，保证一定能过 provider 校验
+    if not _WIRE_SAFE_RE.match(wire):
+        wire = re.sub(r"[^a-zA-Z0-9_-]", "_", wire)
+    return wire
+
+
+def from_wire_name(wire: str, known: Optional[Any] = None) -> str:
+    """把 provider 返回的 function 名还原为内部工具名（file__read → file.read）。
+
+    known 可传入可迭代的合法工具名集合；命中原名或还原名时优先返回该名字，
+    避免误伤本身就带双下划线的工具名。
+    """
+    if not wire:
+        return wire
+    names = set(known) if known is not None else None
+    if names is not None and wire in names:
+        return wire
+    restored = wire.replace(_WIRE_SEP, ".")
+    if names is not None and restored not in names:
+        return wire
+    return restored
 
 
 @dataclass
@@ -100,9 +138,13 @@ class Tool:
         return result if isinstance(result, ToolResult) else ToolResult.ok(result)
 
     def to_openai_schema(self) -> dict:
-        """转为 OpenAI function-calling 的 function 描述。"""
+        """转为 OpenAI function-calling 的 function 描述。
+
+        name 使用 wire 名（点号编码为双下划线），兼容强校验
+        ^[a-zA-Z0-9_-]+$ 的 provider；模型回调时由 from_wire_name 还原。
+        """
         return {
-            "name": self.name,
+            "name": to_wire_name(self.name),
             "description": self.description,
             "parameters": self.parameters,
         }

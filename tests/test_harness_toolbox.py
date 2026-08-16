@@ -39,7 +39,8 @@ def test_toolbox_activated_schema_appends_details():
     m = ToolboxManager(RegistryIndexSource(_registry(3)))
     schema = m.build_schema(["skill.demo0"])
     names = [s["name"] for s in schema]
-    assert names == ["toolbox", "skill.demo0"]
+    # 发给模型的函数名是 wire 名（点号编码），内部激活状态仍是 skill.demo0
+    assert names == ["toolbox", "skill__demo0"]
     assert schema[1]["parameters"]["properties"]["x"]["type"] == "integer"
     # 已激活时索引描述不再内联
     assert "skill.demo0" not in schema[0]["description"]
@@ -49,7 +50,8 @@ def test_toolbox_disabled_exports_full_schema():
     m = ToolboxManager(RegistryIndexSource(_registry(3)), enabled=False)
     schema = m.build_schema(None)
     assert len(schema) == 3
-    assert all(s["name"].startswith("skill.") for s in schema)
+    # toolbox 关闭时全量导出，函数名仍使用 wire 格式
+    assert all(s["name"].startswith("skill__") for s in schema)
 
 
 def test_toolbox_nested_schema_style():
@@ -130,9 +132,9 @@ def test_toolbox_agentloop_integration_smoke():
                     ToolCall(id="a1", name="toolbox",
                              arguments={"ids": ["skill.demo0"]})
                 ])
-            # 第二轮：真实调用 + 结束
+            # 第二轮：真实调用 + 结束（模型返回 wire 名，loop 会还原）
             return ChatResponse(content="完成", tool_calls=[
-                ToolCall(id="a2", name="skill.demo0", arguments={"x": 1})
+                ToolCall(id="a2", name="skill__demo0", arguments={"x": 1})
             ])
 
     m = ToolboxManager(RegistryIndexSource(reg))
@@ -141,7 +143,7 @@ def test_toolbox_agentloop_integration_smoke():
     # 首轮 schema 只有 toolbox 索引
     assert len(seen_schemas[0]) == 1
     assert seen_schemas[0][0]["name"] == "toolbox"
-    # 第二轮 schema 含 toolbox + 已激活工具
-    assert [s["name"] for s in seen_schemas[1]] == ["toolbox", "skill.demo0"]
+    # 第二轮 schema 含 toolbox + 已激活工具（wire 名）
+    assert [s["name"] for s in seen_schemas[1]] == ["toolbox", "skill__demo0"]
     assert result.reply == "完成"
     assert result.steps >= 2

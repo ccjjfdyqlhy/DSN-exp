@@ -142,7 +142,9 @@ var VoiceSensing = (function () {
         if (enabled) return;
         enabled = true;
         gate.reset();
-        playbackQueue && playbackQueue.resume();
+        if (typeof playbackQueue !== 'undefined' && playbackQueue && playbackQueue.resume) {
+            playbackQueue.resume();
+        }
         sending = false;
 
         navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {

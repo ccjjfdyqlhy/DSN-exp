@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSN Dekacode</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <button id="sidebarToggle" onclick="toggleSidebar()" title="Toggle sidebar">&#x2630;</button>
+  <button id="tempChatBtn" onclick="toggleTempChat()" title="Temporary session">⚡</button>
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <div class="new-session-wrap">
+        <button class="new-session-btn" onclick="newSession()" title="新会话">
+          <span class="ns-icon">+</span><span>新会话</span>
+        </button>
+        <button class="new-session-drop" onclick="toggleWorkspaceDropdown(event)" title="在工作区中新建会话">▾</button>
+        <div id="workspaceDropdown" class="workspace-dropdown hidden"></div>
+      </div>
+    </div>
+    <div class="session-list" id="sessionList">
+      <div class="session-empty">No sessions yet</div>
+    </div>
+    <div class="sidebar-actions">
+      <button class="action-btn" onclick="toggleOptions()" title="Options">
+        <span class="icon">&#x2699;</span> Options
+      </button>
+    </div>
+  </div>
+  <div id="main">
+    <div id="topBar">
+      <div class="top-menu">
+        <button class="top-tab" onclick="toggleTopMenu('file')">文件</button>
+        <div id="fileMenu" class="top-dropdown hidden">
+          <button onclick="newSession()">新建会话</button>
+          <button onclick="openSessionFile()">打开会话</button>
+          <button onclick="openWorkspaceFolder()">打开工作区</button>
+        </div>
+      </div>
+      <div class="top-menu">
+        <button class="top-tab" onclick="toggleTopMenu('edit')">编辑</button>
+        <div id="editMenu" class="top-dropdown hidden">
+          <button onclick="document.execCommand('copy')">复制</button>
+          <button onclick="document.execCommand('paste')">粘贴</button>
+          <button onclick="document.execCommand('selectAll')">全选</button>
+        </div>
+      </div>
+      <div class="top-menu">
+        <button class="top-tab" onclick="toggleTopMenu('view')">视图</button>
+        <div id="viewMenu" class="top-dropdown hidden">
+          <button id="navContext" onclick="toggleContextPanel()">🧠 Context</button>
+          <button id="navStats" onclick="toggleStatsPanel()">📊 Stats</button>
+          <button id="navTrace" onclick="toggleTracePanel()">🧭 Trace</button>
+          <button id="navDiff" onclick="toggleDiffPanel()">⇄ Diff Editor</button>
+        </div>
+      </div>
+    </div>
+    <div id="settingsPanel" class="overlay-panel" style="display:none">
+      <div class="settings-header">
+        <button class="settings-close-btn" onclick="toggleOptions()">✕</button>
+        Settings
+      </div>
+      <div class="settings-content" id="settingsContent"></div>
+    </div>
+    <div class="chat-area" id="chatArea">
+      <div id="welcome" class="welcome-centered">
+        <img src="/logo.png" alt="Dekacode" class="welcome-logo" id="welcomeLogo">
+        <div class="welcome-text" id="welcomeText">How can I help you?</div>
+        <div class="welcome-project" id="welcomeProject"></div>
+      </div>
+      <div id="messages"></div>
+    </div>
+    <div id="inputArea">
+      <div id="executionPanel" class="execution-panel" style="display:none">
+        <div class="ep-header">
+          <span class="spinner-small ep-spinner"></span>
+          <span class="ep-status" id="execStatus">Thinking</span>
+          <span class="ep-elapsed" id="execElapsed"></span>
+        </div>
+        <div class="ep-progress-bar"><div class="ep-progress-fill"></div></div>
+      </div>
+      <div id="scrollHint" class="scroll-hint" style="display:none">Ctrl+E or End to go back</div>
+      <div id="inputBar">
+        <div id="cmdPanel" class="cmd-panel" style="display:none"></div>
+        <textarea id="input" rows="1" placeholder="Type a message... (Enter to send, Ctrl+Enter newline, / for commands)"></textarea>
+        <div class="input-actions">
+          <button id="modelBtn" class="input-action-btn" onclick="toggleModelPanel()" title="Switch model">
+            <span id="modelBtnLabel">Agent Flash</span>
+          </button>
+          <button id="sendBtn" class="input-action-btn send-btn">&#x27A4;</button>
+        </div>
+        <div id="modelPanel" class="model-panel" style="display:none"></div>
+      </div>
+      <div class="input-hint" id="inputHint"></div>
+      <div id="footerNotice">Dekacode is AI-powered — verify before applying.</div>
+    </div>
+  </div>
+  <div id="rightSidebar" class="right-sidebar">
+    <div class="settings-header">
+      <button class="settings-close-btn" onclick="closeRightSidebar()">✕</button>
+      <span id="rightSidebarTitle">Diff Visual Editor</span>
+    </div>
+    <div id="rightSidebarContent" class="settings-content"></div>
+  </div>
+</div>
+<div id="toast"></div>
+<script src="https://unpkg.com/als-highlight@1.0.0/index.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1438,58 +1438,68 @@ def _cmd_help():
     """显示帮助信息"""
     print("""
   可用命令 (必须以 / 开头):
-    /newbind    生成新的设备配对码
-    /users      列出所有注册用户
-    /cleanup_users  清理重名用户（保留有聊天记录的那个）
-    /status     显示服务器状态摘要
-    /plugin     列出所有插件及运行状态
-    /plugin <名称>  查询指定插件的详细信息
-    /memory users    列出用户及记忆统计
-    /memory chats <用户ID>  列出用户的聊天
+
+  ── 用户 / 系统 ──
+    /newbind                  生成新的设备配对码
+    /users                    列出所有注册用户
+    /cleanup_users            清理重名用户（保留有聊天记录的那个）
+    /status                   显示服务器状态摘要
+    /plugin [名称]            列出所有插件或查看指定插件
+    /stop                     安全停止服务器 (等同于 Ctrl+C)
+    /reboot                   自动重启控制台 (优雅停止后以同一命令重新启动)
+
+  ── 记忆 / 人格 / 提示词 ──
+    /memory users             列出用户及记忆统计
+    /memory chats <用户ID>    列出用户的聊天
     /memory list <用户ID> <聊天ID> [轮次]  列出/查看记忆
-    /memory reindex start [用户ID] [聊天ID]   对记忆建立向量索引(覆盖旧索引)
-    /memory query <用户ID> <聊天ID> <关键词...> [--after 日期] [--before 日期] [--date 日期]  搜索记忆
-    /memory rebuild latest <N>    重建最近 N 轮摘要
-    /memory rebuild latest <用户ID> <聊天ID> <N>    指定聊天的最近 N 轮
-    /memory rebuild span <用户ID> <聊天ID> <起始> <结束>  指定轮次范围重建
-    /prompt [用户ID]   查看当前合成后的系统提示词
-    /config listall   列出所有配置项 (敏感信息隐藏)
-    /config set <键> <值>  动态修改配置并写入 .env
-    /config undo      回退 .env 到上一版本 (最多 3 步)
-     /listconfig 同 /config listall (兼容)
-    /persona list                  列出所有角色卡
-    /persona status <角色卡名>    查看人格动态状态
-    /persona distill <角色卡名>   立即启动人格蒸馏
+    /memory reindex start [用户ID] [聊天ID]  对记忆建立向量索引
+    /memory query <用户ID> <聊天ID> <关键词...> [--after 日期] [--before 日期] [--date 日期]
+    /memory rebuild latest <N> / latest <用户ID> <聊天ID> <N> / span <用户ID> <聊天ID> <起始> <结束>
+    /memory topics ...        话题管理 (close/reopen/pin/unpin/summary)
+    /prompt [用户ID]          查看当前合成后的系统提示词
+    /persona list             列出所有角色卡
+    /persona status <角色卡名>  查看人格动态状态
+    /persona distill <角色卡名> 立即启动人格蒸馏
     /persona materials <角色卡名> 列出蒸馏素材
     /persona rollback <角色卡名> 列出备份快照并回滚
-    /login       管理多个 OpenAI 兼容 API 账号 (add/remove/prio/enable/timeslot/schedule/dynamic)
-    /hibernate check             查看待机策略+活跃度分布+任务安排
-    /hibernate archive <时间>    设定下次整理时间 (now / 7d / 3h / 30m / every <时长>)
-    /hibernate sleep             立刻进入待机
-    /hibernate task              查看/添加/移除维护任务 (available/add/remove)
-    /export chats <用户ID> <聊天ID> <路径>   导出聊天记录为 JSON
-    /export memories <用户ID> <聊天ID> <路径> 导出记忆摘要为 JSON
-    /import memories <用户ID> <聊天ID> <路径> 从 JSON 导入记忆摘要
-    /import messages <用户ID> <聊天ID> <路径> 从 JSON 导入聊天记录
-    /reminder list [用户ID] [聊天ID]    列出提醒任务
-    /reminder cancel <task_id>          取消提醒
-    /reminder skip <task_id>            跳过本次触发
-    /detail chats    切换聊天详细模式 (显示完整模型请求/响应)
-    /detail actions  切换动作详细模式 (显示动作执行详情)
-    /timer      切换管线阶段计时 (后端控制台输出各阶段耗时)
+
+  ── 配置 / 账号 / 计划 ──
+    /config listall           列出所有配置项 (敏感信息隐藏)
+    /config set <键> <值>     动态修改配置并写入 .env
+    /config undo              回退 .env 到上一版本 (最多 3 步)
+    /listconfig               同 /config listall (兼容)
+    /login                    管理多个 OpenAI 兼容 API 账号
+    /plan list|create|today|check  计划系统管理
+
+  ── 提醒 / 维护 ──
+    /reminder list [用户ID] [聊天ID]  列出提醒任务
+    /reminder cancel <task_id>        取消提醒
+    /reminder skip <task_id>          跳过本次触发
+    /hibernate check          查看待机策略+活跃度分布+任务安排
+    /hibernate archive <时间> 设定下次整理时间 (now / 7d / 3h / 30m / every <时长>)
+    /hibernate sleep          立刻进入待机
+    /hibernate task           查看/添加/移除维护任务 (available/add/remove)
+
+  ── Agent / 摄像头 ──
     /agent create <Agent名称> [用户ID]  创建 AI Agent 身份并生成 API Key
-    /agent list                         列出所有 Agent 绑定关系
-    /agent bind <AgentUID> <用户ID>     绑定 Agent 到用户
-    /agent unbind <AgentUID>            解除绑定
-    /webcam list                        列出远程摄像头 (webcam)
+    /agent list               列出所有 Agent 绑定关系
+    /agent bind <AgentUID> <用户ID>  绑定 Agent 到用户
+    /agent unbind <AgentUID>  解除绑定
+    /webcam list              列出远程摄像头 (webcam)
     /webcam add <url> [逻辑名] [--note 备注]  添加远程摄像头 (RTSP/HTTP)
-    /webcam remove <逻辑名>             删除远程摄像头
-    /webcam note <逻辑名> <备注>        写备注
-    /webcam test <逻辑名|url>           测试连通性
-    /webcam snapshot <逻辑名> [目录]    抓一帧保存为 JPEG
-    /stop       安全停止服务器 (等同于 Ctrl+C)
-    /reboot     自动重启控制台 (优雅停止后以同一命令重新启动)
-    /help       显示此帮助信息
+    /webcam remove <逻辑名>   删除远程摄像头
+    /webcam note <逻辑名> <备注>  写备注
+    /webcam test <逻辑名|url> 测试连通性
+    /webcam snapshot <逻辑名> [目录]  抓一帧保存为 JPEG
+
+  ── 调试 / 导入导出 ──
+    /detail chats             切换聊天详细模式
+    /detail actions           切换动作详细模式
+    /timer                    切换管线阶段计时
+    /export chats|memories <用户ID> <聊天ID> <路径>  导出 JSON
+    /import memories|messages <用户ID> <聊天ID> <路径>  导入 JSON
+
+    /help                     显示此帮助信息
 
   其他输入将被转发给驻守模型 (如果已启用)。
 """)
@@ -2396,6 +2406,15 @@ def _execute_command(line, auth_manager, db, plugin_manager, prompt_engine, conf
     handler = _CMD_TABLE.get(cmd)
     if handler:
         handler(auth_manager, db, plugin_manager, prompt_engine, config_cls, personality_v3, arg)
+        return
+
+    # 未命中时给出相近命令建议，减少输入成本
+    import difflib
+    all_commands = list(_CMD_TABLE.keys()) + ["/stop", "/reboot", "/hibernate"]
+    suggestions = difflib.get_close_matches(cmd, all_commands, n=3, cutoff=0.4)
+    if suggestions:
+        print(f"  未知命令: {cmd}，输入 /help 查看可用命令")
+        print(f"  你是不是想输入: {' / '.join(suggestions)}")
     else:
         print(f"  未知命令: {cmd}，输入 /help 查看可用命令")
 
@@ -2492,6 +2511,7 @@ _CMD_TABLE = {
     "/timer": _h_timer,
     "/help": _h_help,
     "/agent": _h_agent,
+    "/webcam": _h_webcam,
 }
 
 

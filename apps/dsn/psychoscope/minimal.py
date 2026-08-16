@@ -2331,17 +2331,19 @@ def print_header(cfg: dict, client: DSNClient = None, locked: bool = False):
     if locked:
         print("  \U0001f512 Panel locked")
     print("=" * 43)
-    print("  [Enter] toggle record   [p] personality")
-    print("  [a x2]  lock panel      [i] system info")
-    print("  [b x2]  music mode      [h] help")
-    print("  [t]     text input      [s] standby")
-    print("  [=]     async task      [k] skip reminder")
-    print("  [r]     heartbeat       [f] silence alarm")
-    print("  [l]     alarm status    [v] list cameras")
-    print("  [g]     select mic      [d] check-in (打卡)")
-    print("  [c]     check-in status")
-    print("  [q/Ctrl+C] quit         [n/m] vol-/+ (music)")
-    print("  [d/e/f] prev/toggle/next (music mode)")
+    print("  -- 对话 / 录音 --")
+    print("  [Enter]  开始/停止录音        [t] 文本输入")
+    print("  [r]      手动心跳/查看提醒    [=] 异步任务")
+    print("  [k]      跳过最近提醒         [f] 静音当前闹钟")
+    print("  -- 状态 / 管理 --")
+    print("  [p]      人格状态             [i] 系统信息")
+    print("  [l]      闹钟状态             [c] 打卡状态")
+    print("  [s]      切换待机             [v] 列出摄像头")
+    print("  [g]      选择麦克风           [d] 打卡录制")
+    print("  [a x2]   锁定/解锁面板        [b x2] 音乐模式")
+    print("  [h/?]    显示帮助             [q/Ctrl+C] 退出")
+    print("  -- 音乐模式 --")
+    print("  [d/e/f]  上一首/播放暂停/下一首 [n/m] 音量-/+")
     print("=" * 43)
     print()
 
@@ -2790,8 +2792,8 @@ def main():
                     except Exception as e:
                         log.warning("Alarm list failed: %s", e)
 
-                # ── h: 帮助 ──
-                elif ch.lower() == "h":
+                # ── h / ?: 帮助 ──
+                elif ch.lower() in ("h", "?"):
                     print_header(cfg, client, locked)
 
                 # ── f: 静音闹钟 ──

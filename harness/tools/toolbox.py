@@ -26,6 +26,8 @@ import json
 import logging
 from typing import Any, Optional, Protocol, runtime_checkable
 
+from .base import to_wire_name
+
 logger = logging.getLogger("harness.toolbox")
 
 
@@ -111,11 +113,15 @@ class ToolboxManager:
         return self._cached_index
 
     def is_toolbox_call(self, call: Any) -> bool:
-        """判断一次模型调用是否为 toolbox 索引调用（兼容对象/字典两种形态）。"""
+        """判断一次模型调用是否为 toolbox 索引调用（兼容对象/字典两种形态）。
+
+        同时接受内部名与 wire 名（如 tool_name 含点号时的编码形式），
+        因为 provider 回传的 function 名可能是编码后的。
+        """
         name = getattr(call, "name", None)
         if name is None and isinstance(call, dict):
             name = call.get("function", {}).get("name", "")
-        return name == self.tool_name
+        return name in (self.tool_name, to_wire_name(self.tool_name))
 
     # ── schema 构建 ──
 
@@ -166,7 +172,9 @@ class ToolboxManager:
 
         enum_ids = [item["id"] for item in index]
         tool = {
-            "name": self.tool_name,
+            # 与 Tool.to_openai_schema 一致：函数名走 wire 编码，兼容强校验 provider。
+            # 注意 enum 里的工具 ID 是参数取值而非函数名，保持内部原名不变。
+            "name": to_wire_name(self.tool_name),
             "description": description,
             "parameters": {
                 "type": "object",
@@ -210,21 +218,52 @@ class ToolboxManager:
             ids = args.get("ids", []) if isinstance(args, dict) else []
             if not isinstance(ids, list):
                 ids = [ids]
-            added = []
+            ids = [str(i) for i in ids if str(i).strip()]
+
+            # ids 缺失/为空（常见于模型的 arguments 因流式拼接损坏而解析成 {}）：
+            # 必须回一个明确的失败，否则模型只看到"无新增工具"会误判自己已经
+            # 传了参数，从而反复空调用、无法进入下一步。
+            if not ids:
+                results.append({
+                    "call_id": call_id,
+                    "name": self.tool_name,
+                    "success": False,
+                    "status": "error",
+                    "error": "缺少必填参数 ids：必须传入需要激活的工具 ID 数组。",
+                    "hint": ('正确调用示例：{"ids": ["file.read", "file.tree"]}。'
+                             "ids 只能取可用工具列表中的 ID。"),
+                    "output": {"activated": [], "already_activated": self.activated},
+                })
+                logger.warning("Toolbox: 收到空 ids 的激活调用，已回错误提示")
+                continue
+
+            known = {i["id"] for i in self._index()}
+            added: list[str] = []
+            unknown: list[str] = []
             for tool_id in ids:
+                if tool_id not in known:
+                    unknown.append(tool_id)
+                    continue
                 if tool_id in self._activated:
                     continue
                 if self.max_activated is not None and len(self._activated) >= self.max_activated:
                     break
                 self._activated.append(tool_id)
                 added.append(tool_id)
+
+            message = f"已激活工具: {', '.join(added)}" if added else "无新增工具（可能已激活）"
+            if unknown:
+                message += f"；未知工具 ID 已忽略: {', '.join(unknown)}"
             results.append({
                 "call_id": call_id,
                 "name": self.tool_name,
                 "success": True,
+                "status": "ok",
                 "output": {
                     "activated": added,
-                    "message": f"已激活工具: {', '.join(added)}" if added else "无新增工具",
+                    "unknown": unknown,
+                    "all_activated": self.activated,
+                    "message": message,
                 },
             })
             logger.info("Toolbox: 激活工具 %s (累计 %d)", added, len(self._activated))

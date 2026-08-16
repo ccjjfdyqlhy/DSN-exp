@@ -66,6 +66,8 @@ class NativeToolCallAdapter(ToolCallAdapter):
                  "function": {"name": tc.name, "arguments": tc.arguments_json}}
                 for tc in response.tool_calls
             ],
+            # DeepSeek reasoner 要求 reasoning_content 随 assistant 消息回传
+            reasoning_content=response.reasoning_content,
         )]
         for r in results:
             # 回喂内容包含 状态(status) + 结果(output/error) + 下一步提示(hint)，
@@ -143,6 +145,6 @@ class TaggedToolCallAdapter(ToolCallAdapter):
             lines.append(line)
         summary = "\n".join(lines)
         return [
-            ChatMessage.assistant(response.content),
+            ChatMessage.assistant(response.content, reasoning_content=response.reasoning_content),
             ChatMessage.user(f"[工具执行结果]\n{summary}"),
         ]

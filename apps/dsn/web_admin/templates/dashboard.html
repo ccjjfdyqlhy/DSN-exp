@@ -176,11 +176,22 @@ function showPage(name) {
   document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
   const link = document.querySelector(`.sidebar a[data-page="${name}"]`);
   if (link) link.classList.add('active');
+  const labels = {
+    dashboard: '仪表盘', users: '用户管理', pairing: '配对码', plugins: '插件管理',
+    memory: '记忆系统', config: '配置管理', persona: '人格系统', reminders: '提醒任务',
+    hibernate: '待机维护', agent: 'Agent', plans: '计划管理', logs: '日志',
+    prompt: '系统提示词', tools: '工具箱', checkin: '打卡日历', monitor: '监控画面', system: '系统控制'
+  };
+  document.title = (labels[name] || '管理') + ' · DSN Admin';
 }
 
 function escapeHtml(s) {
   if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/'/g, '&#39;');
 }
 
 function badge(status) {
@@ -220,7 +231,7 @@ pageHandlers.dashboard = function() {
       uptimeStr = parts.join(' ');
     }
     el.innerHTML = `
-      <h1>仪表盘</h1>
+      <h1>仪表盘 <button class="btn btn-sm" onclick="pageHandlers.dashboard()">刷新</button></h1>
       <div class="stat-grid">
         <div class="stat-card"><div class="num">${d.users ? d.users.length : 0}</div><div class="label">用户</div></div>
         <div class="stat-card"><div class="num">${uptimeStr}</div><div class="label">运行时间</div></div>
@@ -425,17 +436,28 @@ pageHandlers.config = function() {
       <td style="font-family:monospace;font-size:12px">${escapeHtml(c.key)}</td>
       <td>${escapeHtml(c.value)}</td>
       <td>${c.sensitive ? badge('red')+' 敏感' : ''} ${c.readonly ? badge('yellow')+' 只读' : ''}</td>
-      <td>${c.readonly ? '—' : `<button class="btn btn-sm" onclick="editConfig('${escapeHtml(c.key)}','${escapeHtml(c.raw_value || c.value)}')">修改</button>`}</td>
+      <td>${c.readonly ? '—' : `<button class="btn btn-sm" onclick="editConfig('${escapeAttr(c.key)}','${escapeAttr(c.raw_value || c.value)}')">修改</button>`}</td>
     </tr>`).join('');
     el.innerHTML = `
       <h1>配置管理</h1>
       <div class="flex-between mb-16">
         <span>备份数: ${d.backups ?? 0} <button class="btn btn-sm" onclick="undoConfig()" ${!d.backups ? 'disabled' : ''}>回退</button></span>
+        <input id="config-filter" placeholder="筛选配置项 / 值..." style="max-width:240px" oninput="filterConfig(this.value)">
       </div>
       <div class="card" style="overflow-x:auto">
-        <table><thead><tr><th>配置项</th><th>值</th><th>属性</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
+        <table><thead><tr><th>配置项</th><th>值</th><th>属性</th><th>操作</th></tr></thead><tbody id="config-tbody">${rows}</tbody></table>
       </div>
       <div id="config-edit-area"></div>`;
+  });
+};
+
+window.filterConfig = function(q) {
+  const tbody = document.getElementById('config-tbody');
+  if (!tbody) return;
+  const needle = q.trim().toLowerCase();
+  tbody.querySelectorAll('tr').forEach(tr => {
+    const match = !needle || tr.textContent.toLowerCase().includes(needle);
+    tr.style.display = match ? '' : 'none';
   });
 };
 
@@ -445,7 +467,7 @@ window.editConfig = function(key, val) {
       <h3>修改配置: ${escapeHtml(key)}</h3>
       <div class="flex" style="margin-top:8px">
         <input id="config-val-input" value="${escapeHtml(val)}" style="max-width:300px">
-        <button class="btn btn-primary btn-sm" onclick="saveConfig('${escapeHtml(key)}')">保存</button>
+        <button class="btn btn-primary btn-sm" onclick="saveConfig('${escapeAttr(key)}')">保存</button>
         <button class="btn btn-sm" onclick="document.getElementById('config-edit-area').innerHTML=''">取消</button>
       </div>
     </div>`;
@@ -664,7 +686,7 @@ window.showCreateAgent = function() {
         <input id="agent-name" placeholder="Agent 名称" style="max-width:200px">
         <input id="agent-uid" placeholder="绑定用户 UID" value="1" style="max-width:120px">
         <button class="btn btn-primary btn-sm" onclick="createAgent()">创建</button>
-        <button class="btn btn-sm" onclick="el.innerHTML=''">取消</button>
+        <button class="btn btn-sm" onclick="document.getElementById('agent-create-area').innerHTML=''">取消</button>
       </div>
     </div>`;
 };
@@ -675,7 +697,7 @@ window.createAgent = function() {
   api('/agent/create', { method: 'POST', body: JSON.stringify({ name, uid }) }).then(d => {
     if (d.success) {
       const keyInfo = d.agent?.api_key ? `<pre style="margin-top:8px">API Key: ${escapeHtml(d.agent.api_key)}</pre>` : '';
-      toast('Agent 已创建: UID=' + d.agent?.agent_uid + keyInfo, 'success');
+      toast('Agent 已创建: UID=' + d.agent?.agent_uid, 'success');
       document.getElementById('agent-create-area').innerHTML = keyInfo ? `<div class="card"><h3>创建成功</h3>${keyInfo}</div>` : '';
       pageHandlers.agent();
     } else toast(d.error || '创建失败', 'error');
@@ -734,7 +756,7 @@ pageHandlers.logs = function() {
   api('/logs').then(d => {
     const logs = d.logs || [];
     el.innerHTML = `
-      <h1>系统日志 (最近 ${logs.length} 条)</h1>
+      <h1>系统日志 (最近 ${logs.length} 条) <button class="btn btn-sm" onclick="pageHandlers.logs()">刷新</button></h1>
       <div class="card" style="max-height:600px;overflow-y:auto">
         ${logs.length === 0 ? '<p style="color:var(--text-dim)">无日志</p>' :
         '<table><thead><tr><th>时间</th><th>模块</th><th>级别</th><th>消息</th></tr></thead><tbody>' +
@@ -954,12 +976,12 @@ window.showDayVideos = function(dayNum) {
     container.innerHTML = `
       <h2>${dateStr} 打卡记录</h2>
       ${day.checkins.map(c => {
-        const vid = c.video_path || c.media_path;
+        const vid = c.video_path || c.media_path || '';
         return `
           <div class="card">
             <div class="flex-between">
               <span><b>${c.checkin_time}</b> ${c.is_valid ? ' <span class="badge badge-green">有效</span>' : ' <span class="badge badge-gray">附加</span>'}</span>
-              <button class="btn btn-sm" onclick="playCheckinVideo('${escapeHtml(vid)}')">播放视频</button>
+              <button class="btn btn-sm" ${vid ? `onclick="playCheckinVideo('${encodeURIComponent(vid)}')"` : 'disabled'}>播放视频</button>
             </div>
             ${c.text ? `<p style="color:var(--text-dim);margin-top:6px">${escapeHtml(c.text)}</p>` : ''}
           </div>`;
@@ -968,9 +990,11 @@ window.showDayVideos = function(dayNum) {
   });
 };
 
-window.playCheckinVideo = function(path) {
+window.playCheckinVideo = function(encodedPath) {
   const player = document.getElementById('video-player');
-  if (!path) { player.innerHTML = '<p>无视频文件</p>'; return; }
+  if (!encodedPath) { player.innerHTML = '<p>无视频文件</p>'; return; }
+  let path = encodedPath;
+  try { path = decodeURIComponent(encodedPath); } catch (_) {}
   player.innerHTML = `<video controls autoplay style="width:100%;max-width:720px;border-radius:8px" src="${videoUrl(path)}"></video>`;
 };
 
@@ -1005,9 +1029,12 @@ pageHandlers.checkin = function() {
   api('/users').then(users => {
     _checkinUsers = users.users || [];
     if (_checkinUsers.length) {
-      _checkinUid = _checkinUsers[0].uid;
+      if (!_checkinUid || !_checkinUsers.some(u => u.uid === _checkinUid)) {
+        _checkinUid = _checkinUsers[0].uid;
+      }
       loadCheckin();
     } else {
+      _checkinUid = 0;
       el.innerHTML = '<h1>打卡日历</h1><p>暂无用户</p>';
     }
   });

@@ -697,7 +697,9 @@
         addSystemLine('录音 ' + seconds + 's');
         isProcessing = true;
         forceScrollToNew = true;
-        dom.btnModeSwitch.classList.add('processing');
+        dom.btnModeSwitch.classList.add('processing', 'stop-mode');
+        dom.btnModeSwitch.title = '停止生成';
+        dom.modeSwitchIcon.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>';
         streamAbort = new AbortController();
         try {
             var b64 = await blobToBase64(audioBlob);
@@ -804,7 +806,9 @@
             activeTypewriter = null;
             streamAbort = null;
             forceScrollToNew = false;
-            dom.btnModeSwitch.classList.remove('processing');
+            dom.btnModeSwitch.classList.remove('processing', 'stop-mode');
+            dom.btnModeSwitch.title = '切换语音输入模式';
+            dom.modeSwitchIcon.innerHTML = '<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>';
             if (inputMode === 'voice') {
                 dom.recordLabel.textContent = '按住 说话';
             }
@@ -985,20 +989,28 @@
         // 清空 TTS 行队列
         lineQueue = [];
         isProcessingLines = false;
+        pendingTiming = null;
+        pendingUsage = null;
+        hideConfirm();
         isProcessing = false;
         forceScrollToNew = false;
         dom.btnSend.textContent = '→';
         dom.btnSend.classList.remove('stop-mode');
         dom.msgInput.disabled = false;
         dom.msgInput.style.height = 'auto';
+        dom.btnModeSwitch.classList.remove('processing');
+        dom.btnModeSwitch.classList.remove('stop-mode');
+        dom.btnModeSwitch.title = '切换语音输入模式';
+        dom.modeSwitchIcon.innerHTML = '<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>';
         if (inputMode === 'text') dom.msgInput.focus();
+        else if (inputMode === 'voice') dom.recordLabel.textContent = '按住 说话';
     }
 
     // TTS
     function toggleTTS() {
         ttsEnabled = !ttsEnabled;
         dom.btnTTS.classList.toggle('active', ttsEnabled);
-        dom.btnTTS.title = ttsEnabled ? 'tts: on' : 'tts: off';
+        dom.btnTTS.title = ttsEnabled ? '语音播报：开 (Alt+T)' : '语音播报：关 (Alt+T)';
     }
     function playAudioBase64(b64) {
         try {
@@ -1085,10 +1097,17 @@
     // status bar
     function updateStatusBar() {
         var count = dom.textBox.querySelectorAll('.text-line').length;
-        dom.statusBar.textContent = 'INDEX: ' + count;
+        var user = localStorage.getItem('dsn_display_name') || '';
+        var chat = currentChatId ? 'CHAT #' + currentChatId : 'NEW';
+        var parts = [];
+        if (user) parts.push(user);
+        parts.push(isProcessing ? '…' : 'READY');
+        parts.push('LINE ' + count);
+        parts.push(chat);
+        dom.statusBar.textContent = parts.join(' · ');
     }
     function updateStatusBarText(text) {
-        dom.statusBar.textContent = text;
+        dom.statusBar.textContent = text || '';
     }
 
     // ── maintenance
@@ -1256,6 +1275,11 @@
     dom.btnRemoveImage.addEventListener('click', removeImage);
     // ── 语音输入绑定 ──
     dom.btnModeSwitch.addEventListener('click', function () {
+        // 生成中点击模式切换按钮 = 停止生成，避免录音/感知模式下没有中止入口
+        if (isProcessing) {
+            abortStream();
+            return;
+        }
         switchInputMode(inputMode === 'text' ? 'voice' : 'text');
     });
     dom.btnRecord.addEventListener('mousedown', function (e) {

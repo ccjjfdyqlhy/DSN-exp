@@ -19,3 +19,7 @@ dsn:
 coding_agent:
   entry: apps.coding_agent.entry
   description: 基于 harness 的 coding agent 示例
+
+dekacode:
+  entry: apps.dekacode.entry
+  description: 基于 harness 复刻的 Dekacode WebUI（代码助手）

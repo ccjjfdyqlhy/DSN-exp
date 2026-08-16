@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable, Optional
 
 from ..models.base import ChatMessage, ChatResponse, IChatClient, ToolCall
-from ..tools import ToolRegistry, ToolResult
+from ..tools import ToolRegistry, ToolResult, from_wire_name
 from .adapters import ToolCallAdapter, NativeToolCallAdapter
 
 logger = logging.getLogger("harness.agent")
@@ -152,6 +152,9 @@ class AgentLoop:
 
             response = await self._invoke(msgs, schema)
             parsed = self.adapter.parse(response)
+            # provider 侧使用 wire 名（file__read），这里统一还原为内部名
+            for tc in parsed.tool_calls:
+                tc.name = self._resolve_tool_name(tc.name)
 
             if not parsed.tool_calls:
                 final_reply = parsed.text or response.content
@@ -266,6 +269,7 @@ class AgentLoop:
 
             # 1) 流式调用模型（无 stream 时回退 invoke）
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             tool_deltas: dict[int, dict] = {}
             stream_fn = getattr(self.client, "stream", None)
             if stream_fn is not None:
@@ -274,18 +278,34 @@ class AgentLoop:
                         content_parts.append(chunk)
                         yield StreamEvent(kind="delta", content=chunk, round=step + 1)
                     elif isinstance(chunk, dict):
+                        if chunk.get("reasoning"):
+                            reasoning_parts.append(chunk["reasoning"])
+                            yield StreamEvent(kind="reasoning", content=chunk["reasoning"],
+                                              round=step + 1)
                         for item in chunk.get("tool_calls", []) or []:
                             idx = item.get("index", 0)
                             acc = tool_deltas.setdefault(idx, {})
                             acc["id"] = item.get("id") or acc.get("id", "")
                             acc["name"] = item.get("name") or acc.get("name", "")
-                            acc["arguments"] = (acc.get("arguments", "")
-                                                + (item.get("arguments") or ""))
+                            # 客户端产出的是本 chunk 的原始片段，这里按 index 拼接。
+                            # 兼容个别客户端仍产出"累积值"的情况：若新片段本身
+                            # 就以已累积内容为前缀，则直接替换而不是再拼一次，
+                            # 否则会得到 '{"ids"{"ids": [...' 这种损坏的 JSON。
+                            prev = acc.get("arguments", "")
+                            frag = item.get("arguments") or ""
+                            if frag and prev and frag.startswith(prev):
+                                acc["arguments"] = frag
+                            else:
+                                acc["arguments"] = prev + frag
             else:
                 response = await self._invoke(msgs, schema)
                 if response.content:
                     content_parts.append(response.content)
                     yield StreamEvent(kind="delta", content=response.content,
+                                      round=step + 1)
+                if response.reasoning_content:
+                    reasoning_parts.append(response.reasoning_content)
+                    yield StreamEvent(kind="reasoning", content=response.reasoning_content,
                                       round=step + 1)
                 for tc in response.tool_calls:
                     tool_deltas[tool_deltas.__len__()] = {
@@ -301,11 +321,13 @@ class AgentLoop:
                     args = {}
                 tool_calls.append(ToolCall(
                     id=d.get("id") or f"stream-{idx}",
-                    name=d.get("name") or "unknown",
+                    # provider 侧使用 wire 名（file__read），这里还原为内部名
+                    name=self._resolve_tool_name(d.get("name") or "unknown"),
                     arguments=args))
 
             # 2) toolbox 分离（激活确认）
             had_any_calls = bool(tool_calls)
+            original_tool_calls = list(tool_calls)
             toolbox_results: list[dict] = []
             if self.toolbox is not None and self.toolbox.enabled:
                 tool_calls, toolbox_results = self.toolbox.handle_calls(tool_calls)
@@ -332,13 +354,17 @@ class AgentLoop:
                     self.on_tool_error(tc.name, result.error or "")
                 results.append({
                     "call_id": tc.id, "name": tc.name, "success": result.success,
-                    "output": result.output, "error": result.error,
+                    "status": result.status, "output": result.output,
+                    "error": result.error, "hint": result.hint,
                 })
                 yield StreamEvent(kind="tool_result", round=step + 1,
                                   tool_result=results[-1])
 
-            # 4) 回喂下一轮
-            response = ChatResponse(content=content, tool_calls=tool_calls)
+            # 4) 回喂下一轮（必须保留 toolbox 调用，否则 tool 结果没有前置 tool_calls）
+            # DeepSeek reasoner 要求 reasoning_content 随 assistant 消息回传给 API
+            reasoning = "".join(reasoning_parts) or None
+            response = ChatResponse(content=content, tool_calls=original_tool_calls,
+                                    reasoning_content=reasoning)
             msgs.extend(self.adapter.build_round(response, toolbox_results + results))
 
             if step >= self.max_steps - 1:
@@ -349,6 +375,19 @@ class AgentLoop:
         yield StreamEvent(kind="done", reply=final_reply, hit_max=hit_max,
                           round=self.max_steps)
 
+    def _known_tool_names(self) -> Optional[set]:
+        """当前可解析的内部工具名集合（含 toolbox 工具名）。"""
+        names: set = set()
+        if self.tools is not None:
+            names.update(self.tools.names())
+        if self.toolbox is not None:
+            names.add(getattr(self.toolbox, "tool_name", "toolbox"))
+        return names or None
+
+    def _resolve_tool_name(self, wire: str) -> str:
+        """把模型返回的 function 名还原为内部工具名（file__read → file.read）。"""
+        return from_wire_name(wire, self._known_tool_names())
+
     async def _stream_or_invoke(self, msgs, schema, stream_fn):
         """把 client.stream 的同步/异步生成器统一为 async 迭代。"""
         import inspect
@@ -357,13 +396,24 @@ class AgentLoop:
             async for chunk in stream_fn(msgs, tools=schema):
                 yield chunk
         else:
-            # 同步生成器 → 线程池
-            def _iterate():
-                for chunk in stream_fn(msgs, tools=schema):
-                    yield chunk
-            loop = asyncio.get_event_loop()
-            gen = await loop.run_in_executor(None, lambda: list(_iterate()))
-            for chunk in gen:
+            # 同步生成器 → 在线程池中逐块读取，避免把整个 SSE 流缓冲完才返回。
+            # 每次只取一块，取到后立即 yield 给上层，保证前端能实时收到增量。
+            iterator = iter(stream_fn(msgs, tools=schema))
+
+            def _next_chunk():
+                try:
+                    return False, next(iterator)
+                except StopIteration:
+                    return True, None
+                except Exception as e:  # noqa: BLE001
+                    return True, e
+
+            while True:
+                done, chunk = await asyncio.to_thread(_next_chunk)
+                if done:
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    break
                 yield chunk
 
     async def _invoke(self, msgs: list[ChatMessage],

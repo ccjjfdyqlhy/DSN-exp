@@ -31,8 +31,14 @@ class OpenAICompatClient(ChatClientAdapter):
         self._timeout = timeout
         self._extra_headers = extra_headers or {}
 
-        from openai import OpenAI  # 延迟导入，避免未安装时影响其他模块
+        from openai import AsyncOpenAI, OpenAI  # 延迟导入，避免未安装时影响其他模块
         self._client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers=self._extra_headers or None,
+        )
+        self._async_client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
@@ -72,8 +78,9 @@ class OpenAICompatClient(ChatClientAdapter):
     ) -> AsyncGenerator[Any, None]:
         """流式输出：文本增量 yield str；工具调用增量 yield dict（见 IChatClient）。
 
-        OpenAI 流式响应的 tool_calls 分布在多个 chunk 的 delta 中，
-        按 index 累积 id/name/arguments（arguments 为字符串片段拼接）。
+        OpenAI 流式响应的 tool_calls 分布在多个 chunk 的 delta 中。
+        本方法只产出"原始增量片段"（arguments 为本 chunk 的片段，不做累积），
+        由消费方（AgentLoop）按 index 拼接，避免双方各累积一次导致 JSON 损坏。
         """
         msgs = self._to_message_dicts(messages)
         params: dict[str, Any] = {"model": self.model, "messages": msgs, "stream": True}
@@ -81,33 +88,33 @@ class OpenAICompatClient(ChatClientAdapter):
             params["tools"] = [{"type": "function", "function": t} for t in tools]
         params.update({k: v for k, v in kwargs.items() if v is not None})
 
-        stream = self._client.chat.completions.create(**params)
-        # index -> 累积的工具调用增量
-        tool_deltas: dict[int, dict] = {}
-        for chunk in stream:
+        stream = await self._async_client.chat.completions.create(**params)
+        async for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                yield {"usage": dict(usage)}
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
             if delta is None:
                 continue
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield {"reasoning": reasoning}
             if delta.content:
                 yield delta.content
             tc_delta = getattr(delta, "tool_calls", None)
             if tc_delta:
                 emitted = []
                 for tc in tc_delta:
-                    idx = getattr(tc, "index", 0)
-                    acc = tool_deltas.setdefault(
-                        idx, {"index": idx, "id": "", "name": "", "arguments": ""})
-                    if getattr(tc, "id", None):
-                        acc["id"] = tc.id
                     fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        if getattr(fn, "name", None):
-                            acc["name"] = fn.name
-                        if getattr(fn, "arguments", None):
-                            acc["arguments"] += fn.arguments or ""
-                    emitted.append(dict(acc))
+                    emitted.append({
+                        "index": getattr(tc, "index", 0) or 0,
+                        "id": getattr(tc, "id", None) or "",
+                        "name": (getattr(fn, "name", None) or "") if fn is not None else "",
+                        # 只带本 chunk 的片段，由 AgentLoop 负责按 index 拼接
+                        "arguments": (getattr(fn, "arguments", None) or "") if fn is not None else "",
+                    })
                 if emitted:
                     yield {"tool_calls": emitted}
 
@@ -119,6 +126,7 @@ class OpenAICompatClient(ChatClientAdapter):
                                 model=getattr(resp, "model", None))
 
         content = getattr(choice.message, "content", None) or ""
+        reasoning = getattr(choice.message, "reasoning_content", None) or ""
         tool_calls: list[ToolCall] = []
         for tc in getattr(choice.message, "tool_calls", None) or []:
             func = tc.function
@@ -134,4 +142,5 @@ class OpenAICompatClient(ChatClientAdapter):
             usage=dict(getattr(resp, "usage", {}) or {}),
             model=getattr(resp, "model", None),
             finish_reason=choice.finish_reason,
+            reasoning_content=reasoning or None,
         )

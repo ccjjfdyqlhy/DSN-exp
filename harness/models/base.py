@@ -15,6 +15,9 @@ class ChatMessage:
     name: Optional[str] = None
     tool_calls: list[dict] = field(default_factory=list)
     tool_call_id: Optional[str] = None
+    # DeepSeek reasoner 等模型要求把上轮的 reasoning_content 回传给 API，
+    # 否则多轮工具调用会报 400 "reasoning_content must be passed back"。
+    reasoning_content: Optional[str] = None
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {"role": self.role, "content": self.content}
@@ -24,6 +27,8 @@ class ChatMessage:
             d["tool_calls"] = self.tool_calls
         if self.tool_call_id:
             d["tool_call_id"] = self.tool_call_id
+        if self.reasoning_content:
+            d["reasoning_content"] = self.reasoning_content
         return d
 
     @classmethod
@@ -35,8 +40,10 @@ class ChatMessage:
         return cls(role="user", content=content)
 
     @classmethod
-    def assistant(cls, content: str, tool_calls: Optional[list[dict]] = None) -> "ChatMessage":
-        return cls(role="assistant", content=content, tool_calls=tool_calls or [])
+    def assistant(cls, content: str, tool_calls: Optional[list[dict]] = None,
+                  reasoning_content: Optional[str] = None) -> "ChatMessage":
+        return cls(role="assistant", content=content, tool_calls=tool_calls or [],
+                   reasoning_content=reasoning_content)
 
     @classmethod
     def tool_result(cls, tool_call_id: str, content: str) -> "ChatMessage":
@@ -64,6 +71,7 @@ class ChatResponse:
     usage: dict = field(default_factory=dict)
     model: Optional[str] = None
     finish_reason: Optional[str] = None
+    reasoning_content: Optional[str] = None
 
 
 @runtime_checkable
