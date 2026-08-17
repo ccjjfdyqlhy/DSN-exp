@@ -15,8 +15,10 @@ from typing import Any
 class SqliteStore:
     def __init__(self, path: str = ":memory:", *, row_factory: Any = sqlite3.Row):
         self.path = str(path)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        # timeout 限制 SQLite 锁等待时间，避免写锁竞争时无限阻塞事件循环
+        self._conn = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._conn.row_factory = row_factory
+        self._conn.execute("PRAGMA busy_timeout=10000")
         self._lock = threading.RLock()
 
     def get_connection(self) -> sqlite3.Connection:

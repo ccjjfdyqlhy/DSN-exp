@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import traceback
@@ -53,7 +54,9 @@ def create_app(engine: DekacodeEngine) -> FastAPI:
 
         async def send(**data) -> bool:
             try:
-                await websocket.send_json(data)
+                # 给 send 加超时：如果前端停止读取导致发送缓冲区满，
+                # 不让服务端永久阻塞在 drain() 上。
+                await asyncio.wait_for(websocket.send_json(data), timeout=15)
                 return True
             except Exception:
                 return False
@@ -70,7 +73,7 @@ def create_app(engine: DekacodeEngine) -> FastAPI:
                 # 每条消息独立 try/except：任何未预期异常都只回一个错误，
                 # 不会把整个 WebSocket 连接打掉（避免“发完消息就断连”）。
                 try:
-                    await _dispatch_ws_message(msg, session, send, engine)
+                    session = await _dispatch_ws_message(msg, session, send, engine)
                 except Exception:
                     traceback.print_exc()
                     await send(type="error", content="处理失败: Internal server error")
@@ -237,6 +240,87 @@ def create_app(engine: DekacodeEngine) -> FastAPI:
         ws = next(w for w in engine.store.list_workspaces() if w["id"] == wid)
         return {"workspace": ws}
 
+    @app.post("/api/workspaces/resolve")
+    async def resolve_workspace(request: Request):
+        """按文件夹名 + 内部样例文件，在常见根目录下查找候选绝对路径。"""
+        data = await request.json()
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少 name")
+        sample_paths = data.get("samplePaths") or []
+
+        import os
+        roots = []
+        home = Path.home()
+        for r in (home, Path(engine.project_root)):
+            if r not in roots:
+                roots.append(r)
+        for extra in ("/Users", "/home", os.path.expanduser("~")):
+            p = Path(extra)
+            if p.exists() and p not in roots:
+                roots.append(p)
+
+        matches: list[str] = []
+        seen: set[str] = set()
+
+        def leaf_exists(base: Path, rel: str) -> bool:
+            try:
+                return (base / rel).exists()
+            except (OSError, ValueError):
+                return False
+
+        def walk(base: Path, depth: int):
+            if depth > 4 or len(matches) > 50:
+                return
+            try:
+                entries = sorted(base.iterdir(), key=lambda x: x.name.lower())
+            except (OSError, PermissionError):
+                return
+            for entry in entries:
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                if entry.name == name:
+                    rp = str(entry.resolve())
+                    # 有 sample 时优先只保留能命中样例的候选
+                    if not sample_paths or all(leaf_exists(entry, rel) for rel in sample_paths):
+                        if rp not in seen:
+                            seen.add(rp)
+                            matches.append(rp)
+                    # 即使样例不命中，也记下同名目录作为兜底候选
+                    elif rp not in seen:
+                        seen.add(rp)
+                        matches.append(rp)
+                if depth < 4:
+                    walk(entry, depth + 1)
+
+        for root in roots:
+            walk(root, 0)
+
+        return {"candidates": matches[:50]}
+
+    @app.get("/api/fs/list")
+    async def fs_list(request: Request):
+        """服务器端目录浏览（兜底选择工作区用）。"""
+        raw = request.query_params.get("path", "/")
+        try:
+            root = Path(raw).expanduser()
+        except (OSError, ValueError):
+            raise HTTPException(status_code=400, detail="非法路径")
+        if not root.is_absolute():
+            root = Path(engine.project_root) / root
+        root = root.resolve()
+        if not root.is_dir():
+            raise HTTPException(status_code=404, detail="不是目录")
+        try:
+            dirs = sorted(
+                [{"name": e.name, "path": str(e)} for e in root.iterdir()
+                 if e.is_dir() and not e.name.startswith(".")],
+                key=lambda x: x["name"].lower(),
+            )[:500]
+        except (OSError, PermissionError):
+            dirs = []
+        return {"path": str(root), "dirs": dirs}
+
     @app.get("/api/sessions")
     async def list_sessions(request: Request):
         workspace_id = request.query_params.get("workspace_id")
@@ -400,13 +484,13 @@ async def _dispatch_ws_message(
     session: DekacodeSession,
     send,
     engine,
-) -> None:
+) -> DekacodeSession:
     msg_type = msg.get("type", "")
 
     if msg_type == "message":
         text = (msg.get("content") or "").strip()
         if not text:
-            return
+            return session
         if text.startswith("/"):
             await _handle_command(text, session, send)
         else:
@@ -451,7 +535,7 @@ async def _dispatch_ws_message(
 
     elif msg_type == "load_session":
         sid = msg.get("session_id", "")
-        if session.load_session(sid):
+        if await asyncio.to_thread(session.load_session, sid):
             if session.workspace_id and session.workspace_id != engine.workspace_id:
                 path = engine.store.get_workspace_path(session.workspace_id)
                 if path:
@@ -482,6 +566,8 @@ async def _dispatch_ws_message(
             await send(type="model_switched", model=model_id, display=display)
         except Exception as e:
             await send(type="error", content=f"Failed to switch model: {e}")
+
+    return session
 
 
 def main() -> None:

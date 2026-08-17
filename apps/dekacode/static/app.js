@@ -138,14 +138,17 @@ function handleMessage(data) {
       break;
 
     case 'text':
+      updateThinkingBar('Replying');
       appendAssistantText(data.content);
       break;
 
     case 'text_delta':
+      updateThinkingBar('Replying');
       appendAssistantTextDelta(data.content);
       break;
 
     case 'reasoning_delta':
+      updateThinkingBar('Thinking');
       appendReasoningDelta(data.content);
       break;
 
@@ -232,6 +235,24 @@ function handleMessage(data) {
         renderContext();
       }
       break;
+
+    case 'session_new':
+      // 新建会话：回到欢迎页并刷新工作区路径
+      if (data.path) setWelcomeProject(data.path);
+      break;
+
+    case 'workspace_opened':
+      // 切换/打开工作区：同步欢迎页路径
+      if (data.path) setWelcomeProject(data.path);
+      break;
+  }
+}
+
+function setWelcomeProject(path) {
+  const projEl = document.getElementById('welcomeProject');
+  if (projEl && path) {
+    projEl.textContent = path;
+    projEl.title = path;
   }
 }
 
@@ -291,7 +312,7 @@ function showThinkingBar() {
   const bar = panel.querySelector('.ep-progress-fill');
   if (bar) bar.style.width = '0%';
   // 状态栏只负责"进度 + 一行当前步骤"，不承载推理内容和工具明细
-  document.getElementById('execStatus').textContent = 'Thinking...';
+  document.getElementById('execStatus').textContent = 'Thinking';
   document.getElementById('execElapsed').textContent = '';
   setSendButtonStop(true);
   _execStart = Date.now();
@@ -615,8 +636,9 @@ function appendReasoningDelta(text) {
   if (header) header.classList.remove('collapsed');
 
   // 状态栏只更新一行文字，推理正文仅在思考栏里显示
+  // 状态栏只显示一行：思考阶段固定为 Thinking
   const status = document.getElementById('execStatus');
-  if (status && status.textContent === 'Thinking...') status.textContent = 'Reasoning...';
+  if (status) status.textContent = 'Thinking';
   scrollToBottom();
 }
 
@@ -1197,34 +1219,20 @@ async function fetchBackendSessions() {
 function updateSessionList() {
   const list = document.getElementById('sessionList');
   if (!list) return;
-  const local = loadSessionList();
   const backend = _backendSessions || [];
-  if (local.length === 0 && backend.length === 0) {
+  if (backend.length === 0) {
     list.innerHTML = '<div class="session-empty">No sessions yet</div>';
     return;
   }
-  let html = '';
-  // 本地 Web 会话（可恢复 HTML）
-  if (local.length > 0) {
-    html += local.slice().reverse().map((e, i) =>
-      `<div class="session-item ${i === 0 ? 'active' : ''}" onclick="restoreSession(${local.length - 1 - i})">
-        <div class="session-preview">${escapeHtml(e.preview)}</div>
-        <div class="session-time">${formatTime(e.ts)}</div>
-      </div>`
-    ).join('');
-  }
-  // 后端会话（TUI + Web 共享 DB）
-  if (backend.length > 0) {
-    html += '<div class="session-group">All Sessions (TUI + Web)</div>';
-    html += backend.map(s => {
-      const preview = s.summary || s.id;
-      const ts = new Date(s.updated_at).getTime();
-      return `<div class="session-item" onclick="loadBackendSession('${s.id}')">
-        <div class="session-preview">${escapeHtml(preview)}</div>
-        <div class="session-time">${formatTime(ts)} · ${s.message_count} msgs · ¥${s.total_cost.toFixed(4)}</div>
-      </div>`;
-    }).join('');
-  }
+  let html = '<div class="session-group">All Sessions (TUI + Web)</div>';
+  html += backend.map(s => {
+    const preview = s.summary || s.id;
+    const ts = new Date(s.updated_at).getTime();
+    return `<div class="session-item" onclick="loadBackendSession('${s.id}')">
+      <div class="session-preview">${escapeHtml(preview)}</div>
+      <div class="session-time">${formatTime(ts)} · ${s.message_count} msgs · ¥${s.total_cost.toFixed(4)}</div>
+    </div>`;
+  }).join('');
   list.innerHTML = html;
 }
 
@@ -1311,6 +1319,11 @@ async function loadBackendSession(sid) {
 
 function startFreshSession() {
   sessionId = _genId();
+  // 清理本地残留会话，避免刷新后误显示/误加载已删除的会话
+  try {
+    localStorage.removeItem(SESSION_LIST_KEY);
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (e) {}
   messagesEl().innerHTML = '';
   currentAssistantEl = null;
   hasSentMessage = false;
@@ -1652,12 +1665,24 @@ function _closeOverlay() {
 
 // ── 顶部 App 指令栏 / 工作区下拉 ──
 function toggleTopMenu(name) {
+  // 显式互斥：只展开当前菜单，其余全部收起
   ['file', 'edit', 'view'].forEach(k => {
     const el = document.getElementById(k + 'Menu');
-    if (el) el.classList.toggle('hidden', k !== name);
+    if (!el) return;
+    if (k === name) {
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
   });
 }
 document.addEventListener('click', (e) => {
+  // 点击下拉菜单里的按钮后，收起对应的菜单
+  const ddBtn = e.target.closest('.top-dropdown button');
+  if (ddBtn) {
+    const dd = ddBtn.closest('.top-dropdown');
+    if (dd) dd.classList.add('hidden');
+  }
   if (!e.target.closest('.top-menu')) {
     document.querySelectorAll('.top-dropdown').forEach(el => el.classList.add('hidden'));
   }
@@ -1698,8 +1723,65 @@ function openSessionFile() {
   input.click();
 }
 function openWorkspaceFolder() {
-  const path = prompt('输入要打开的工作区路径：');
-  if (!path) return;
+  const resolveAndOpen = (name, samplePaths) => {
+    if (!name) { showToast('无法获取文件夹名', 'error'); return; }
+    fetch('/api/workspaces/resolve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, samplePaths: samplePaths || [] }),
+    }).then(r => r.json()).then(d => {
+      const candidates = d.candidates || [];
+      if (candidates.length === 1) {
+        openWorkspacePath(candidates[0]);
+      } else if (candidates.length > 1) {
+        showWorkspaceCandidatePicker(candidates);
+      } else {
+        showServerFolderBrowser();
+      }
+    });
+  };
+
+  // 优先使用 File System Access API 的原生“选择文件夹”窗口
+  if (window.showDirectoryPicker) {
+    window.showDirectoryPicker()
+      .then(async (handle) => {
+        const name = handle.name;
+        const samplePaths = [];
+        // 读一小部分文件名，帮助后端定位（只读前几项）
+        for await (const entry of handle.values()) {
+          if (samplePaths.length >= 5) break;
+          samplePaths.push(entry.name);
+        }
+        resolveAndOpen(name, samplePaths);
+      })
+      .catch(err => {
+        if (err && err.name === 'AbortError') return;
+        // 某些环境虽然有 API 但不允许（如非安全上下文），回退到 webkitdirectory
+        pickViaInput(resolveAndOpen);
+      });
+    return;
+  }
+  pickViaInput(resolveAndOpen);
+}
+
+function pickViaInput(resolveAndOpen) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.webkitdirectory = true;
+  input.onchange = () => {
+    const files = input.files;
+    if (!files || !files.length) return;
+    const rel = files[0].webkitRelativePath || '';
+    const name = rel.split('/')[0];
+    const samplePaths = [];
+    for (let i = 0; i < files.length && samplePaths.length < 5; i++) {
+      samplePaths.push(files[i].webkitRelativePath.split('/').slice(1).join('/') || files[i].name);
+    }
+    resolveAndOpen(name, samplePaths);
+  };
+  input.click();
+}
+
+function openWorkspacePath(path) {
   fetch('/api/workspaces', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
@@ -1713,6 +1795,79 @@ function openWorkspaceFolder() {
     }
   });
 }
+
+function showWorkspaceCandidatePicker(candidates) {
+  const old = document.getElementById('workspaceCandidatePicker');
+  if (old) old.remove();
+  const div = document.createElement('div');
+  div.id = 'workspaceCandidatePicker';
+  div.className = 'workspace-picker-overlay';
+  div.innerHTML = `
+    <div class="workspace-picker">
+      <h3>找到多个同名文件夹，请选择</h3>
+      ${candidates.map(p =>
+        `<button onclick="openWorkspacePath('${p}')">${escapeHtml(p)}</button>`
+      ).join('')}
+      <button onclick="this.closest('#workspaceCandidatePicker').remove()">取消</button>
+    </div>`;
+  document.body.appendChild(div);
+}
+
+// 服务器端目录浏览：在服务端文件系统里选择工作区（作为浏览器选择器的兜底）
+let _wsBrowser = { path: '/', el: null };
+
+async function showServerFolderBrowser() {
+  if (_wsBrowser.el) _wsBrowser.el.remove();
+  _wsBrowser.path = '/';
+  const div = document.createElement('div');
+  div.id = 'workspaceServerBrowser';
+  div.className = 'workspace-picker-overlay';
+  div.addEventListener('click', (e) => { if (e.target === div) { div.remove(); _wsBrowser.el = null; } });
+  document.body.appendChild(div);
+  _wsBrowser.el = div;
+  await wsBrowserRender();
+  return div;
+}
+
+async function wsBrowserRender() {
+  const div = _wsBrowser.el;
+  if (!div) return;
+  const path = _wsBrowser.path;
+  let d;
+  try {
+    d = await fetch('/api/fs/list?path=' + encodeURIComponent(path)).then(r => r.json());
+  } catch (e) {
+    div.innerHTML = '<div class="workspace-picker">读取失败</div>';
+    return;
+  }
+  const dirs = (d.dirs || []).filter(x => !x.name.startsWith('.'));
+  const parent = path === '/' ? null : path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+  div.innerHTML = `
+    <div class="workspace-picker">
+      <h3>在服务器上选择工作区目录</h3>
+      <div class="ws-browser-path">${escapeHtml(path)}</div>
+      <div class="ws-browser-buttons">
+        <button onclick="wsBrowserPick()">选择当前目录为工作区</button>
+        ${parent ? `<button onclick="wsBrowserNav('${parent.replace(/'/g, "\\'")}')">↑ 上级</button>` : ''}
+      </div>
+      <div class="ws-browser-list">
+        ${dirs.length ? dirs.map(x => {
+          const full = path.replace(/\/+$/, '') + '/' + x.name;
+          return `<button onclick="wsBrowserNav('${full.replace(/'/g, "\\'")}')">📁 ${escapeHtml(x.name)}</button>`;
+        }).join('') : '<div style="color:var(--text-muted)">（空目录）</div>'}
+      </div>
+      <button onclick="document.getElementById('workspaceServerBrowser').remove(); _wsBrowser.el=null;">取消</button>
+    </div>`;
+}
+window.wsBrowserNav = async function(path) {
+  _wsBrowser.path = path;
+  await wsBrowserRender();
+};
+window.wsBrowserPick = function() {
+  openWorkspacePath(_wsBrowser.path);
+  const div = _wsBrowser.el;
+  if (div) { div.remove(); _wsBrowser.el = null; }
+};
 function toggleWorkspaceDropdown(event) {
   if (event) event.stopPropagation();
   const dd = document.getElementById('workspaceDropdown');
@@ -2032,6 +2187,13 @@ function renderProviderForm(providers, selectedId) {
     <div class="setting-row"><label>Provider Name</label><input id="provider-name" value="${escapeHtml(p.name || '')}"></div>
     <div class="setting-row"><label>Base URL</label><input id="provider-url" value="${escapeHtml(p.base_url || '')}"></div>
     <div class="setting-row"><label>API Key</label><input id="provider-key" value="${escapeHtml(p.api_key || '')}"></div>
+    <div class="setting-row">
+      <label>协议</label>
+      <select id="provider-protocol">
+        <option value="chat" ${(p.protocol || 'chat') === 'chat' ? 'selected' : ''}>chat.completions</option>
+        <option value="responses" ${(p.protocol || '') === 'responses' ? 'selected' : ''}>responses</option>
+      </select>
+    </div>
     <div class="setting-row"><label>Flash Model</label><input id="model-flash" value="${escapeHtml(modelMap.flash || '')}"></div>
     <div class="setting-row"><label>Pro Model</label><input id="model-pro" value="${escapeHtml(modelMap.pro || '')}"></div>
     <div class="setting-row"><label>OpenAI Model</label><input id="model-openai" value="${escapeHtml(modelMap.openai || '')}"></div>
@@ -2055,7 +2217,7 @@ function selectProvider(id) {
 function addProvider() {
   const id = 'provider_' + Date.now();
   const providers = window._providersCache || [];
-  providers.push({ id, name: 'New Provider', base_url: '', api_key: '', models: { flash: '', pro: '', openai: '' } });
+  providers.push({ id, name: 'New Provider', base_url: '', api_key: '', protocol: 'chat', models: { flash: '', pro: '', openai: '' } });
   window._providersCache = providers;
   renderProviderForm(providers, id);
 }
@@ -2077,6 +2239,7 @@ async function saveProvider() {
     name: document.getElementById('provider-name').value,
     base_url: document.getElementById('provider-url').value,
     api_key: document.getElementById('provider-key').value,
+    protocol: document.getElementById('provider-protocol').value,
     flash_model: document.getElementById('model-flash').value,
     pro_model: document.getElementById('model-pro').value,
     openai_model: document.getElementById('model-openai').value,

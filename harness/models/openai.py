@@ -1,7 +1,9 @@
 # harness/models/openai.py
 # OpenAI 兼容接口适配器 — 通用实现，不依赖任何应用语义。
 #
-# 适配 DeepSeek / Zhipu GLM / OpenAI 等一切兼容 /chat/completions 的服务。
+# 同时支持两种请求协议：
+#   - chat      : /v1/chat/completions（DeepSeek / Zhipu / OpenAI 等）
+#   - responses : /v1/responses（OpenAI Responses API）
 
 from __future__ import annotations
 
@@ -24,8 +26,10 @@ class OpenAICompatClient(ChatClientAdapter):
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[dict] = None,
+        protocol: str = "chat",
     ):
         self.model = model
+        self.protocol = protocol
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
@@ -54,6 +58,9 @@ class OpenAICompatClient(ChatClientAdapter):
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
     ) -> ChatResponse:
+        if self.protocol == "responses":
+            return self._invoke_responses(messages, tools, temperature=temperature,
+                                          max_tokens=max_tokens, timeout=timeout)
         msgs = self._to_message_dicts(messages)
         kwargs: dict[str, Any] = {"model": self.model, "messages": msgs}
         if tools:
@@ -70,6 +77,124 @@ class OpenAICompatClient(ChatClientAdapter):
         resp = self._client.chat.completions.create(**kwargs)
         return self._to_response(resp)
 
+    def _invoke_responses(
+        self,
+        messages: list[Any],
+        tools: Optional[list[dict]] = None,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> ChatResponse:
+        params: dict[str, Any] = {
+            "model": self.model,
+            "input": self._messages_to_responses_input(messages),
+        }
+        if tools:
+            params["tools"] = self._tools_to_responses(tools)
+        if temperature is not None:
+            params["temperature"] = temperature
+        elif self._temperature is not None:
+            params["temperature"] = self._temperature
+        if max_tokens is not None:
+            params["max_output_tokens"] = max_tokens
+        elif self._max_tokens is not None:
+            params["max_output_tokens"] = self._max_tokens
+        if timeout is not None:
+            params["timeout"] = timeout
+        elif self._timeout is not None:
+            params["timeout"] = self._timeout
+
+        # invoke 是同步方法（在 AgentLoop 的线程池里执行），用同步 Responses client
+        resp = self._client.responses.create(**params)
+        return self._to_responses_response(resp)
+
+    @staticmethod
+    def _to_responses_response(resp: Any) -> ChatResponse:
+        content_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        reasoning_parts: list[str] = []
+        for item in getattr(resp, "output", []) or []:
+            itype = getattr(item, "type", "")
+            if itype == "message":
+                for part in getattr(item, "content", []) or []:
+                    text = getattr(part, "text", None)
+                    if text:
+                        content_parts.append(text)
+            elif itype == "function_call":
+                try:
+                    args = json.loads(item.arguments or "{}")
+                except (TypeError, ValueError):
+                    args = {}
+                tool_calls.append(ToolCall(
+                    id=getattr(item, "call_id", None) or getattr(item, "id", "") or "",
+                    name=getattr(item, "name", "") or "",
+                    arguments=args,
+                ))
+            elif itype == "reasoning":
+                for s in getattr(item, "summary", []) or []:
+                    t = getattr(s, "text", "")
+                    if t:
+                        reasoning_parts.append(t)
+                for c in getattr(item, "content", []) or []:
+                    t = getattr(c, "text", "")
+                    if t:
+                        reasoning_parts.append(t)
+        usage = getattr(resp, "usage", None)
+        return ChatResponse(
+            content="".join(content_parts),
+            tool_calls=tool_calls,
+            usage=dict(usage) if usage else {},
+            model=getattr(resp, "model", None),
+            finish_reason=None,
+            reasoning_content="\n".join([p for p in reasoning_parts if p]) or None,
+        )
+
+    @staticmethod
+    def _messages_to_responses_input(messages: list[Any]) -> list[dict]:
+        """把 ChatMessage 列表转成 Responses API 的 input items。"""
+        items: list[dict] = []
+        for m in messages:
+            if isinstance(m, dict):
+                items.append(m)
+                continue
+            role = getattr(m, "role", "")
+            content = getattr(m, "content", "") or ""
+            if role == "system":
+                items.append({"role": "system", "content": [{"type": "input_text", "text": content}]})
+            elif role == "user":
+                items.append({"role": "user", "content": [{"type": "input_text", "text": content}]})
+            elif role == "assistant":
+                items.append({"role": "assistant", "content": [{"type": "output_text", "text": content}]})
+                for tc in (getattr(m, "tool_calls", None) or []):
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    items.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id", "") if isinstance(tc, dict) else "",
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", "{}"),
+                    })
+            elif role == "tool":
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": getattr(m, "tool_call_id", "") or "",
+                    "output": content,
+                })
+        return items
+
+    @staticmethod
+    def _tools_to_responses(tools: Optional[list[dict]]) -> list[dict]:
+        """把 chat 协议的 tools 列表转成 Responses API 的 tools 格式。"""
+        out = []
+        for t in tools or []:
+            out.append({
+                "type": "function",
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "parameters": t.get("parameters", {}),
+            })
+        return out
+
     async def stream(
         self,
         messages: list[Any],
@@ -78,10 +203,13 @@ class OpenAICompatClient(ChatClientAdapter):
     ) -> AsyncGenerator[Any, None]:
         """流式输出：文本增量 yield str；工具调用增量 yield dict（见 IChatClient）。
 
-        OpenAI 流式响应的 tool_calls 分布在多个 chunk 的 delta 中。
-        本方法只产出"原始增量片段"（arguments 为本 chunk 的片段，不做累积），
-        由消费方（AgentLoop）按 index 拼接，避免双方各累积一次导致 JSON 损坏。
+        支持 chat.completions 与 responses 两种协议。
         """
+        if self.protocol == "responses":
+            async for chunk in self._stream_responses(messages, tools, **kwargs):
+                yield chunk
+            return
+
         msgs = self._to_message_dicts(messages)
         params: dict[str, Any] = {"model": self.model, "messages": msgs, "stream": True}
         if tools:
@@ -117,6 +245,60 @@ class OpenAICompatClient(ChatClientAdapter):
                     })
                 if emitted:
                     yield {"tool_calls": emitted}
+
+    async def _stream_responses(
+        self,
+        messages: list[Any],
+        tools: Optional[list[dict]] = None,
+        **kwargs: Any,
+    ) -> AsyncGenerator[Any, None]:
+        params: dict[str, Any] = {
+            "model": self.model,
+            "input": self._messages_to_responses_input(messages),
+        }
+        if tools:
+            params["tools"] = self._tools_to_responses(tools)
+        if kwargs.get("temperature") is not None:
+            params["temperature"] = kwargs["temperature"]
+        elif self._temperature is not None:
+            params["temperature"] = self._temperature
+        if kwargs.get("max_tokens") is not None:
+            params["max_output_tokens"] = kwargs["max_tokens"]
+        elif self._max_tokens is not None:
+            params["max_output_tokens"] = self._max_tokens
+
+        # output_index -> {id, name}（function_call 元信息来自 output_item.added）
+        call_meta: dict[int, dict] = {}
+        async with self._async_client.responses.stream(**params) as stream:
+            async for event in stream:
+                et = getattr(event, "type", "")
+                if et == "response.output_text.delta":
+                    yield getattr(event, "delta", "")
+                elif et in ("response.reasoning_text.delta",
+                            "response.reasoning_summary_text.delta"):
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield {"reasoning": delta}
+                elif et == "response.output_item.added":
+                    item = getattr(event, "item", None)
+                    if item is not None and getattr(item, "type", "") == "function_call":
+                        call_meta[getattr(event, "output_index", 0)] = {
+                            "id": getattr(item, "call_id", None) or getattr(item, "id", "") or "",
+                            "name": getattr(item, "name", "") or "",
+                        }
+                elif et == "response.function_call_arguments.delta":
+                    idx = getattr(event, "output_index", 0)
+                    meta = call_meta.get(idx, {})
+                    yield {"tool_calls": [{
+                        "index": idx,
+                        "id": meta.get("id", ""),
+                        "name": meta.get("name", ""),
+                        "arguments": getattr(event, "delta", ""),
+                    }]}
+                elif et == "response.completed":
+                    usage = getattr(getattr(event, "response", None), "usage", None)
+                    if usage:
+                        yield {"usage": dict(usage)}
 
     @staticmethod
     def _to_response(resp: Any) -> ChatResponse:

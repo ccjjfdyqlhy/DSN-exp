@@ -34,6 +34,8 @@ class DekacodeConfig:
     max_output_chars: int = 6000
     context_budget: int = 60000
     max_history_messages: int = 100
+    # 单轮处理超时（秒）：防止模型/数据库无限挂起导致服务不可用
+    turn_timeout: int = 300
 
     # Provider / 模型
     api_key: str = ""

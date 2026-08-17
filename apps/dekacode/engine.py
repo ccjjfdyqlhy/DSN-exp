@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import asyncio
 from collections import Counter
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -259,6 +260,7 @@ class DekacodeEngine:
             "name": self.config.provider_name,
             "base_url": self.config.base_url,
             "api_key": self.config.api_key,
+            "protocol": "chat",
             "models": {
                 "flash": self.config.flash_model,
                 "pro": self.config.pro_model,
@@ -296,6 +298,7 @@ class DekacodeEngine:
             base_url=p.get("base_url", self.config.base_url),
             model=self._model_for(self.model_mode),
             timeout=120,
+            protocol=p.get("protocol", "chat"),
         ))
 
     def _model_for(self, mode: str) -> str:
@@ -374,7 +377,7 @@ class DekacodeEngine:
             target = self._default_provider()
             target["id"] = provider_id
             self._providers.append(target)
-        for key in ("name", "base_url", "api_key"):
+        for key in ("name", "base_url", "api_key", "protocol"):
             if key in data and data[key] is not None:
                 if key == "api_key" and str(data[key]).startswith("*"):
                     continue
@@ -596,10 +599,22 @@ class DekacodeSession:
         self._stop_requested = False
         self._turn_start_time = time.time()
         try:
+            # 整轮处理加超时安全网：模型/DB 万一无限挂起时能恢复而不是永久卡死
+            turn_timeout = getattr(self.engine.config, "turn_timeout", 300)
             if self.mode.is_oneshot:
-                await self._process_oneshot(user_input, send)
+                await asyncio.wait_for(
+                    self._process_oneshot(user_input, send), timeout=turn_timeout)
             else:
-                await self._process_agent(user_input, send)
+                await asyncio.wait_for(
+                    self._process_agent(user_input, send), timeout=turn_timeout)
+        except asyncio.TimeoutError:
+            await send(
+                type="trace", event="error",
+                t=round(time.time() - self._turn_start_time, 3),
+                error="处理超时，已中止本轮",
+            )
+            await send(type="error", content=f"处理超时（>{turn_timeout}s），已中止")
+            await send(type="thinking_done")
         except Exception as e:  # noqa: BLE001
             await send(
                 type="trace", event="error",
@@ -619,7 +634,8 @@ class DekacodeSession:
         try:
             await self._run_harness_loop(send)
         finally:
-            # 即使流式中途异常也先把已产生的消息持久化，避免整个会话丢失
+            # 即使流式中途异常/超时取消，也要先把已产生的消息持久化。
+            # SQLite 已设 busy_timeout=10s，不会无限阻塞；同步执行保证一定会写库。
             self._persist()
         if self.session_id:
             await send(type="session_id", session_id=self.session_id)
@@ -685,24 +701,60 @@ class DekacodeSession:
             return start
 
     def _build_run_context(self) -> list[ChatMessage]:
-        """按配置剪裁送入模型的上下文（不修改持久化历史），并保证 tool 组完整。"""
+        """按配置剪裁送入模型的上下文（不修改持久化历史），并保证 tool 组完整。
+
+        剪裁策略：从头开始逐步丢弃最旧消息；assistant(tool_calls) + 其后连续
+        tool 消息作为一个不可分割的"单元"，要丢就整组丢，从而保证：
+          - 不会以 tool 消息开头 / 拆散 tool_calls 组；
+          - start 单调前进（_drop_group_start 严格返回更大下标），
+            不会像旧实现那样被 _safe_context_start 拉回造成死循环。
+        """
         msgs = list(self.messages)
         max_msgs = self.engine.config.max_history_messages
         budget = self.engine.config.context_budget
 
-        # 1) 消息条数剪裁，避免从 tool 消息开头
+        # 1) 消息条数剪裁，避免从 tool 消息开头（宁可多保留一点也要保证组完整）
         if max_msgs > 0 and len(msgs) > max_msgs:
             start = self._safe_context_start(msgs, len(msgs) - max_msgs)
             msgs = msgs[start:]
 
-        # 2) 字符预算剪裁，同样保证 tool 组完整
+        # 2) 字符预算剪裁，同样保证 tool 组完整（单调推进，绝不死循环）
         start = self._safe_context_start(msgs, 0)
         total = sum(len(m.content or "") for m in msgs[start:])
         while total > budget and start < len(msgs):
-            start += 1
-            start = self._safe_context_start(msgs, start)
+            start = self._drop_group_start(msgs, start)
             total = sum(len(m.content or "") for m in msgs[start:])
+
+        # 3) 兜底：剪裁后若片段以 assistant(tool_calls) / tool 开头（其前置
+        #    user 消息已被丢弃），继续整组丢弃，保证送回模型的上下文以
+        #    user/system 开头，避免被 API 拒绝。
+        while start < len(msgs) and msgs[start].role in ("assistant", "tool"):
+            start = self._drop_group_start(msgs, start)
         return msgs[start:]
+
+    @staticmethod
+    def _drop_group_start(msgs: list[ChatMessage], start: int) -> int:
+        """预算剪裁的单调推进：返回"丢弃 start 处单元"后的新起始下标。
+
+        单元定义：一条普通消息；或 assistant(tool_calls) + 其后连续的 tool 消息。
+        start 若恰好落在 tool 组中间（历史以 tool 开头等异常数据），则整组丢弃。
+        返回值恒 > start（start >= len(msgs) 时返回 len(msgs)），保证外层循环终止。
+        """
+        n = len(msgs)
+        if start >= n:
+            return n
+        m = msgs[start]
+        if m.role == "assistant" and m.tool_calls:
+            j = start + 1
+            while j < n and msgs[j].role == "tool":
+                j += 1
+            return j
+        if m.role == "tool":
+            j = start
+            while j < n and msgs[j].role == "tool":
+                j += 1
+            return j
+        return start + 1
 
     async def _run_harness_loop(
         self,

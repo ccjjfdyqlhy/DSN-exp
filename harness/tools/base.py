@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import re
 from dataclasses import dataclass, field
@@ -132,7 +133,11 @@ class Tool:
             if inspect.iscoroutinefunction(self.handler):
                 result = await self.handler(**params)
             else:
-                result = self.handler(**params)
+                # 同步 handler 移到线程池执行，避免阻塞事件循环：
+                # 否则一个耗时的同步工具（grep 大目录 / proc.run / web.fetch）
+                # 会卡住整个 asyncio 循环——前端无响应、turn_timeout 无法取消、
+                # 服务端连 SIGINT 都可能失效。
+                result = await asyncio.to_thread(self.handler, **params)
         except Exception as e:  # noqa: BLE001
             return ToolResult.fail(str(e))
         return result if isinstance(result, ToolResult) else ToolResult.ok(result)

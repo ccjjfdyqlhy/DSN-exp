@@ -1731,3 +1731,45 @@ html, body {
   max-height: 320px;
   overflow-y: auto;
 }
+
+/* ─── 工作区候选选择弹窗 ─── */
+.workspace-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.workspace-picker {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  max-width: 520px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.workspace-picker h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.workspace-picker button {
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+}
+.workspace-picker button:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
