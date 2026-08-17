@@ -1903,13 +1903,49 @@ function newSessionInWorkspace(workspaceId) {
 function closeRightSidebar() {
   const rs = document.getElementById('rightSidebar');
   rs.classList.remove('open');
+  const sp = document.getElementById('splitter');
+  if (sp) sp.hidden = true;
 }
 function openRightSidebar(title, renderFn) {
   document.getElementById('rightSidebarTitle').textContent = title;
   const rs = document.getElementById('rightSidebar');
   rs.classList.add('open');
+  const sp = document.getElementById('splitter');
+  if (sp) sp.hidden = false;
   if (renderFn) renderFn();
 }
+
+// ── 右栏宽度拖动（splitter） ──
+(function initSplitter() {
+  const splitter = document.getElementById('splitter');
+  const rs = document.getElementById('rightSidebar');
+  if (!splitter || !rs) return;
+  let dragging = false, startX = 0, startW = 0;
+  splitter.addEventListener('mousedown', (e) => {
+    if (!rs.classList.contains('open')) return;
+    dragging = true;
+    startX = e.clientX;
+    startW = rs.getBoundingClientRect().width;
+    splitter.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    let newW = startW - dx;  // splitter 左拖 → 右栏变窄
+    const minW = 280, maxW = Math.min(window.innerWidth * 0.85, 1600);
+    newW = Math.max(minW, Math.min(maxW, newW));
+    rs.style.width = newW + 'px';
+    rs.style.minWidth = newW + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('dragging');
+    document.body.style.userSelect = '';
+  });
+})();
 
 // ── 上下文结构图示 ──
 let _contextSnapshot = null;
@@ -2001,8 +2037,6 @@ async function loadStats() {
 
 // ── Diff 可视化编辑器（IDE 风格） ──
 let _lastEditPath = '';
-let _highlighter = null;
-try { _highlighter = new Highlighter('Monokai'); } catch (e) { _highlighter = null; }
 
 function _guessLang(path) {
   const ext = String(path || '').split('.').pop().toLowerCase();
@@ -2048,12 +2082,12 @@ function renderDiffEditor(autoLoad) {
       </div>
       <div class="ide-code-wrap">
         <div class="ide-gutter" id="ide-gutter"></div>
-        <pre class="ide-code" id="ide-code"></pre>
+        <div class="ide-code" id="ide-code"></div>
       </div>
     </div>`;
   if (path && autoLoad !== false) loadDiffFileContent(path);
 }
-async function loadDiffFileContent(path, content) {
+async function loadDiffFileContent(path, content, edits) {
   if (!path) { showToast('Enter file path', 'error'); return; }
   _lastEditPath = path;
   let newContent = content;
@@ -2064,23 +2098,39 @@ async function loadDiffFileContent(path, content) {
     }).then(r => r.json());
     newContent = d.content || d.original || '';
   }
-  const lang = _guessLang(path);
   const lines = String(newContent).split('\n');
   const gutter = document.getElementById('ide-gutter');
   const code = document.getElementById('ide-code');
-  if (gutter) gutter.innerHTML = lines.map((_, i) => `<div class="ide-line-num">${i + 1}</div>`).join('');
-  if (code) code.innerHTML = highlightCode(lines.join('\n'), lang);
+  const editSet = edits && edits.lines instanceof Set ? edits.lines : null;
+  if (gutter) gutter.innerHTML = lines.map((_, i) =>
+    `<div class="ide-line-num" data-line="${i + 1}">${i + 1}</div>`).join('');
+  if (code) {
+    // 按行渲染为 div，编辑行加暖色高亮 + 左侧色条（"AI 编辑光标"）。
+    // 不再用 als-highlight：它返回的 data-codeblock 自带 grid/nowrap/overflow，
+    // 嵌在 <pre> 里会与外层 flex/滚动冲突，导致代码区被挤出视口看不见。
+    code.innerHTML = lines.map((line, i) => {
+      const ln = i + 1;
+      const cls = editSet && editSet.has(ln) ? 'ide-line ide-line-edit' : 'ide-line';
+      return `<div class="${cls}" data-line="${ln}">${escapeHtml(line) || '\u200B'}</div>`;
+    }).join('');
+  }
   const wrap = document.querySelector('.ide-code-wrap');
-  if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  if (!wrap) return;
+  if (edits && edits.scrollToLine != null) {
+    const lineEl = code && code.querySelector(`.ide-line[data-line="${edits.scrollToLine}"]`);
+    if (lineEl) lineEl.scrollIntoView({ block: 'center' });
+  } else {
+    wrap.scrollTop = 0;  // 默认滚到顶部（之前 scrollHeight 把代码滚出视口）
+  }
 }
 async function loadDiffFile() {
   const path = document.getElementById('diff-path').value.trim();
   await loadDiffFileContent(path);
 }
-function openRightDiff(path, content) {
+function openRightDiff(path, content, edits) {
   _lastEditPath = path || '';
   openRightSidebar('Diff Visual Editor', () => renderDiffEditor(false));
-  if (path) loadDiffFileContent(path, content);
+  if (path) loadDiffFileContent(path, content, edits);
 }
 function _extractEditPath(args) {
   if (!args) return '';
@@ -2104,7 +2154,12 @@ async function previewFileEdit(path, args) {
   const lines = original.split('\n');
   const replacement = String(args.replacement || '').split('\n');
   const newLines = lines.slice(0, start - 1).concat(replacement, lines.slice(end));
-  loadDiffFileContent(path, newLines.join('\n'));
+  // 高亮"新内容中"被替换/新增的行（即 start 起 replacement.length 行），
+  // 这就是 AI 的"编辑光标"位置。
+  const editLines = new Set();
+  for (let i = start; i < start + replacement.length; i++) editLines.add(i);
+  loadDiffFileContent(path, newLines.join('\n'),
+                      { lines: editLines, scrollToLine: start });
 }
 function previewEditCall(call) {
   let args = {};
@@ -2112,7 +2167,10 @@ function previewEditCall(call) {
   const path = _extractEditPath(args);
   if (!path) return;
   if (call.name === 'file.write' || call.name === 'write_file') {
-    openRightDiff(path, args.content || '');
+    // file.write：把全部新内容高亮，充当"AI 写入"光标
+    const allLines = String(args.content || '').split('\n');
+    const editLines = new Set(Array.from({ length: allLines.length }, (_, i) => i + 1));
+    openRightDiff(path, args.content || '', { lines: editLines, scrollToLine: 1 });
   } else if (call.name === 'file.edit' || call.name === 'edit_file') {
     _lastEditPath = path;
     openRightSidebar('Diff Visual Editor', () => renderDiffEditor(false));

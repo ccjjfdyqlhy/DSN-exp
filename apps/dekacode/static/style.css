@@ -1282,6 +1282,24 @@ html, body {
   width: 46%;
   min-width: 420px;
 }
+.splitter {
+  width: 5px;
+  cursor: col-resize;
+  background: var(--border);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+  transition: background 0.15s ease;
+}
+.splitter:hover, .splitter.dragging {
+  background: var(--accent, #5b8def);
+}
+.splitter::before {
+  /* 扩大点击/拖动热区，不影响视觉 */
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: -3px; right: -3px;
+}
 .right-sidebar .settings-header {
   padding: 16px 20px;
   margin: 0;
@@ -1414,11 +1432,37 @@ html, body {
 }
 .ide-code {
   margin: 0;
-  padding: 12px;
+  padding: 12px 12px 12px 0;
   white-space: pre;
   color: var(--text);
   background: transparent;
   flex: 1;
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.6;
+  min-width: 0;
+  align-self: stretch;
+  display: block;
+}
+.ide-line {
+  white-space: pre;
+  min-height: 1.2em;
+  padding: 0 8px;
+  border-radius: 3px;
+  position: relative;
+}
+.ide-line-edit {
+  /* AI 编辑过的行：暖色高亮 + 左侧色条，充当"编辑光标" */
+  background: rgba(255, 184, 60, 0.10);
+  box-shadow: inset 3px 0 0 var(--accent, #ffb83c);
+  color: var(--text);
+}
+.ide-line-edit::before {
+  content: "✦";
+  color: var(--accent, #ffb83c);
+  margin-right: 6px;
+  font-size: 11px;
+  opacity: 0.85;
 }
 
 /* ─── Top App Bar / Menus ─── */

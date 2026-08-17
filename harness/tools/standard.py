@@ -60,21 +60,26 @@ def _safe_path(deps: ToolDeps, path: str) -> Path:
     return p.resolve()
 
 
-def _read_text(path: Path, max_chars: int) -> tuple[bool, str]:
+def _read_text(path: Path, max_chars: int) -> tuple[bool, str, int, int, bool]:
+    """读取文本，返回 (ok, text, total_bytes, total_lines, truncated)。"""
     try:
         data = path.read_bytes()
     except OSError as e:
-        return False, f"读取失败: {e}"
+        return False, f"读取失败: {e}", 0, 0, False
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         try:
             text = data.decode("utf-8", errors="replace")
         except Exception:
-            return False, "无法解码文件（非 UTF-8）"
+            return False, "无法解码文件（非 UTF-8）", 0, 0, False
+    total_lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
     if max_chars and len(text) > max_chars:
-        text = text[:max_chars] + f"{NL}...[截断, 总 {len(data)} 字节]"
-    return True, text
+        truncated_text = text[:max_chars]
+        shown_lines = truncated_text.count("\n") + 1
+        truncated_text += f"{NL}...[截断, 总 {len(data)} 字节 / {total_lines} 行, 当前仅显示 {shown_lines} 行]"
+        return True, truncated_text, len(data), total_lines, True
+    return True, text, len(data), total_lines, False
 
 
 def tool_file_read(deps: ToolDeps):
@@ -82,8 +87,20 @@ def tool_file_read(deps: ToolDeps):
         p = _safe_path(deps, path)
         if not p.is_file():
             return {"success": False, "error": f"文件不存在: {p}"}
-        ok, text = _read_text(p, max_chars or deps.max_output_chars)
-        return {"success": ok, "content": text}
+        ok, text, total_bytes, total_lines, truncated = _read_text(
+            p, max_chars or deps.max_output_chars)
+        result: dict = {"success": ok, "content": text,
+                        "total_bytes": total_bytes, "total_lines": total_lines}
+        if truncated:
+            shown_lines = text.count("\n")
+            result["shown_lines"] = shown_lines
+            result["truncated"] = True
+            # 关键提示：告诉 AI 行号可能偏移，编辑前应读完整文件或改用 file.edit(match=...)。
+            result["warning"] = (
+                f"内容已截断（共 {total_lines} 行，当前仅 {shown_lines} 行），"
+                f"按行号 file.edit 极易错位！请改用 file.edit(target=path, match=<old text>)"
+                f" 按内容锚点定位，或先 file.read(max_chars=0) 读完整文件。")
+        return result
     return run
 
 
@@ -134,35 +151,75 @@ def tool_file_list(deps: ToolDeps):
 
 
 def tool_file_edit(deps: ToolDeps):
-    """按行范围替换文件内容（dekacode file_ops 能力引擎化）。
+    """按行范围或内容锚点替换文件内容。
 
-    定位格式 "path:start-end"（1 基，含端点）；start 或 end 可省略。
+    两种定位方式：
+    1) 行号模式（默认）：target = "path:start-end"（1 基含端点；start/end 可省略，
+       end 缺省 = 文件末尾）。适合精确定位。
+    2) 内容锚点模式（推荐，抗 read 截断导致的行号错位）：
+       target = "path"，match = "<old text>"。在文件全文中查找 match 第一次
+       出现位置并替换为 replacement。match 必须 unique（出现多次时报错）。
+
+    两种模式写回时都保留原文件的末尾换行符。
     """
 
-    def run(target: str, replacement: str):
-        m = re.match(r"^(.+):(\d+)?-(\d+)?$", target.strip())
-        if not m:
-            return {"success": False,
-                    "error": f"目标格式应为 path:start-end，得到: {target!r}"}
-        path, start_s, end_s = m.group(1), m.group(2), m.group(3)
+    def run(target: str, replacement: str, match=None):
+        target = target.strip()
+        if match is not None:
+            # 内容锚点模式：target 当作 path
+            if re.search(r":\d", target):
+                return {"success": False,
+                        "error": "使用 match 时 target 不应带行号 (path:start-end)"}
+            path = target
+        else:
+            m = re.match(r"^(.+):(\d+)?-(\d+)?$", target)
+            if not m:
+                return {"success": False,
+                        "error": f"目标格式应为 path:start-end，得到: {target!r}"}
+            path = m.group(1)
         p = _safe_path(deps, path)
         if not p.is_file():
             return {"success": False, "error": f"文件不存在: {p}"}
         try:
-            lines = p.read_text(encoding="utf-8").splitlines()
+            raw = p.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
             return {"success": False, "error": f"读取失败: {e}"}
-        start = int(start_s) if start_s else 1
-        end = int(end_s) if end_s else start
-        if start < 1 or end < start or end > len(lines):
-            return {"success": False,
-                    "error": f"行范围越界: {start}-{end} (共 {len(lines)} 行)"}
-        new_lines = lines[:start - 1] + replacement.splitlines() + lines[end:]
+        orig_ended_with_nl = raw.endswith("\n")
+        lines = raw.splitlines()
+
+        if match is not None:
+            occurrences = raw.count(match)
+            if occurrences == 0:
+                return {"success": False,
+                        "error": f"未找到 match 内容: {match[:80]!r}"}
+            if occurrences > 1:
+                return {"success": False,
+                        "error": (f"match 在文件中出现 {occurrences} 次，不唯一。"
+                                  f"请提供更长/更具体的 old text 以唯一定位。")}
+            idx = raw.find(match)
+            before = raw[:idx]
+            match_lines = match.split("\n")
+            start_line = before.count("\n") + 1  # 1 基
+            replaced = len(match_lines)
+            new_raw = before + replacement + raw[idx + len(match):]
+        else:
+            start_s, end_s = m.group(2), m.group(3)
+            start = int(start_s) if start_s else 1
+            end = int(end_s) if end_s else len(lines)  # 缺省=末尾
+            if start < 1 or end < start or end > len(lines):
+                return {"success": False,
+                        "error": f"行范围越界: {start}-{end} (共 {len(lines)} 行)"}
+            replaced = end - start + 1
+            new_lines = lines[:start - 1] + replacement.splitlines() + lines[end:]
+            new_raw = "\n".join(new_lines)
+        # 保留原文件末尾换行（POSIX 文本文件惯例，避免无意义 diff/编辑器告警）
+        if orig_ended_with_nl and not new_raw.endswith("\n"):
+            new_raw += "\n"
         try:
-            p.write_text("\n".join(new_lines), encoding="utf-8")
+            p.write_text(new_raw, encoding="utf-8")
         except OSError as e:
             return {"success": False, "error": f"写入失败: {e}"}
-        return {"success": True, "path": str(p), "replaced": end - start + 1}
+        return {"success": True, "path": str(p), "replaced": replaced}
     return run
 
 
@@ -552,9 +609,11 @@ def install_standard_tools(registry: ToolRegistry, *,
         "batch.run": tool_batch_run(deps),
     }
     tool_meta: dict[str, tuple[str, dict]] = {
-        "file.read": ("读取文本文件（相对路径基于工作区）",
+        "file.read": ("读取文本文件（截断时返回 total_lines/truncated/warning，编辑前请读完整或用 file.edit+match）",
                       {"type": "object", "properties": {
-                          "path": {"type": "string"}, "max_chars": {"type": "integer"}},
+                          "path": {"type": "string"},
+                          "max_chars": {"type": "integer", "default": 0,
+                                        "description": "0=读完整文件；>0 截断到此字符数（按行号 file.edit 极易错位）"}},
                        "required": ["path"]}),
         "file.write": ("写入/追加文本文件",
                        {"type": "object", "properties": {
@@ -568,10 +627,14 @@ def install_standard_tools(registry: ToolRegistry, *,
         "file.tree": ("目录树",
                       {"type": "object", "properties": {
                           "path": {"type": "string"}, "max_depth": {"type": "integer"}}}),
-        "file.edit": ("按行范围替换文件内容（格式 path:start-end）",
+        "file.edit": ("替换文件内容。行号模式 target='path:start-end'（end 缺省=末尾）；"
+                      "内容锚点模式 target='path' + match='<old text>'（推荐，抗 read 截断，match 必须 unique）",
                       {"type": "object", "properties": {
-                          "target": {"type": "string"},
-                          "replacement": {"type": "string"}},
+                          "target": {"type": "string",
+                                     "description": "path 或 path:start-end（end 可省略，缺省=末尾）"},
+                          "replacement": {"type": "string"},
+                          "match": {"type": "string",
+                                    "description": "可选 old-text 锚点。提供时按内容定位（必须 unique）"}},
                        "required": ["target", "replacement"]}),
         "text.chunk": ("把长文本按块切分",
                        {"type": "object", "properties": {
