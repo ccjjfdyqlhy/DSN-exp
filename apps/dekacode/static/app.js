@@ -78,6 +78,13 @@ function handleMessage(data) {
       }
       break;
 
+    case 'stopped':
+      // 用户主动停止：服务端已取消本轮生成，恢复 UI 状态
+      hideThinkingBar();
+      isProcessing = false;
+      fetchBackendSessions().then(updateSessionList);
+      break;
+
     case 'thinking_done':
       hideThinkingBar();
       isProcessing = false;
@@ -335,7 +342,10 @@ function hideThinkingBar() {
 
 function stopGeneration() {
   sendJson({ type: 'stop' });
+  // 立即恢复本地状态：服务端的 stopped 确认可能因网络延迟稍后到达，
+  // 不能只依赖服务端事件，否则 isProcessing 卡死会导致无法再次发送消息。
   hideThinkingBar();
+  isProcessing = false;
 }
 
 function setSendButtonStop(isStop) {
@@ -2006,7 +2016,15 @@ function _guessLang(path) {
 }
 function highlightCode(code, lang) {
   if (_highlighter && typeof _highlighter.renderBlock === 'function') {
-    try { return _highlighter.renderBlock(lang || 'txt', String(code)); } catch (e) {}
+    try {
+      // 关闭 als-highlight 自带的行号/复制/换行按钮（diff 面板有自己的 gutter）。
+      // 该库只支持 js/css/html，未知语言（python/txt 等）可能返回空串，
+      // 必须做非空兜底，否则代码块会整块消失。
+      const html = _highlighter.renderBlock(lang || 'txt', String(code), {
+        lineNumbers: false, wrapButton: false, copyButton: false,
+      });
+      if (html && html.trim()) return html;
+    } catch (e) {}
   }
   return escapeHtml(code);
 }
@@ -2068,7 +2086,9 @@ function _extractEditPath(args) {
   if (!args) return '';
   const raw = args.filePath || args.path || args.target || '';
   if (typeof raw !== 'string') return '';
-  const m = raw.match(/^(.+):\d+-\d+$/);
+  // 兼容 "path:start-end" / "path:start"（file.edit 允许 end 省略，
+  // 旧正则只认 start-end，会把 "path:10" 整串当作路径传给后端导致 404/空）。
+  const m = raw.match(/^(.+?):(\d+)(?:-(\d+))?$/);
   return m ? m[1] : raw;
 }
 async function previewFileEdit(path, args) {
@@ -2077,7 +2097,7 @@ async function previewFileEdit(path, args) {
     body: JSON.stringify({ path }),
   }).then(r => r.json());
   const original = d.original || '';
-  const m = String(args.target || args.filePath || '').match(/^(.+):(\d+)?-(\d+)?$/);
+  const m = String(args.target || args.filePath || '').match(/^(.+?):(\d+)(?:-(\d+))?$/);
   if (!m) return;
   const start = parseInt(m[2] || '1', 10);
   const end = parseInt(m[3] || m[2] || '1', 10);
@@ -2616,7 +2636,8 @@ function _traceEventDetail(ev) {
   switch (ev.event) {
     case 'turn_start':
       put('model', ev.model); put('mode', ev.mode);
-      put('max_steps', ev.max_steps); put('history', ev.history);
+      put('max_steps', ev.max_steps > 0 ? ev.max_steps : 'unlimited');
+      put('history', ev.history);
       put('activated', ev.activated);
       break;
     case 'round_start':

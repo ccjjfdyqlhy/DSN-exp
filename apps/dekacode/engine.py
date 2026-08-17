@@ -680,81 +680,43 @@ class DekacodeSession:
         await self._trace_turn_end(send)
         await send(type="thinking_done")
 
-    @staticmethod
-    def _safe_context_start(msgs: list[ChatMessage], start: int) -> int:
-        """把起始下标向前扩展，避免以 tool 消息开头或拆散 tool_calls 组。"""
-        start = max(0, start)
-        while True:
-            first_tool = None
-            for i in range(start, len(msgs)):
-                if msgs[i].role == "tool":
-                    first_tool = i
-                    break
-            if first_tool is None:
-                return start
-            j = first_tool - 1
-            while j >= 0 and msgs[j].role != "assistant":
-                j -= 1
-            if j >= 0 and msgs[j].tool_calls and j < start:
-                start = j
-                continue
-            return start
-
     def _build_run_context(self) -> list[ChatMessage]:
-        """按配置剪裁送入模型的上下文（不修改持久化历史），并保证 tool 组完整。
+        """按配置剪裁送入模型的上下文（不修改持久化历史）。
 
-        剪裁策略：从头开始逐步丢弃最旧消息；assistant(tool_calls) + 其后连续
-        tool 消息作为一个不可分割的"单元"，要丢就整组丢，从而保证：
-          - 不会以 tool 消息开头 / 拆散 tool_calls 组；
-          - start 单调前进（_drop_group_start 严格返回更大下标），
-            不会像旧实现那样被 _safe_context_start 拉回造成死循环。
+        采用"轮次保留"策略：每条 user 消息是一个轮次起点，其后直到下一条
+        user 之前的内容（assistant 回复 / assistant(tool_calls)+tool 组）都
+        属于该轮次。从后往前优先保留最近的完整轮次；预算不足时从最早的轮次
+        开始丢弃。无论如何都保留"最近一轮 + 当前用户消息"作为最小上下文，
+        保证模型始终有上下文记忆；同时：
+          - 上下文始终以 user 开头（API 友好，不会被拒绝）；
+          - 绝不拆散 tool_calls 组（组在轮次内被整体保留/丢弃）；
+          - 纯线性扫描，无 while 剪裁循环，天然不会死循环。
         """
         msgs = list(self.messages)
         max_msgs = self.engine.config.max_history_messages
         budget = self.engine.config.context_budget
-
-        # 1) 消息条数剪裁，避免从 tool 消息开头（宁可多保留一点也要保证组完整）
-        if max_msgs > 0 and len(msgs) > max_msgs:
-            start = self._safe_context_start(msgs, len(msgs) - max_msgs)
-            msgs = msgs[start:]
-
-        # 2) 字符预算剪裁，同样保证 tool 组完整（单调推进，绝不死循环）
-        start = self._safe_context_start(msgs, 0)
-        total = sum(len(m.content or "") for m in msgs[start:])
-        while total > budget and start < len(msgs):
-            start = self._drop_group_start(msgs, start)
-            total = sum(len(m.content or "") for m in msgs[start:])
-
-        # 3) 兜底：剪裁后若片段以 assistant(tool_calls) / tool 开头（其前置
-        #    user 消息已被丢弃），继续整组丢弃，保证送回模型的上下文以
-        #    user/system 开头，避免被 API 拒绝。
-        while start < len(msgs) and msgs[start].role in ("assistant", "tool"):
-            start = self._drop_group_start(msgs, start)
-        return msgs[start:]
-
-    @staticmethod
-    def _drop_group_start(msgs: list[ChatMessage], start: int) -> int:
-        """预算剪裁的单调推进：返回"丢弃 start 处单元"后的新起始下标。
-
-        单元定义：一条普通消息；或 assistant(tool_calls) + 其后连续的 tool 消息。
-        start 若恰好落在 tool 组中间（历史以 tool 开头等异常数据），则整组丢弃。
-        返回值恒 > start（start >= len(msgs) 时返回 len(msgs)），保证外层循环终止。
-        """
         n = len(msgs)
-        if start >= n:
-            return n
-        m = msgs[start]
-        if m.role == "assistant" and m.tool_calls:
-            j = start + 1
-            while j < n and msgs[j].role == "tool":
-                j += 1
-            return j
-        if m.role == "tool":
-            j = start
-            while j < n and msgs[j].role == "tool":
-                j += 1
-            return j
-        return start + 1
+
+        turn_starts = [i for i, m in enumerate(msgs) if m.role == "user"]
+        if not turn_starts:
+            return msgs  # 无 user 消息（异常数据），原样返回
+
+        # 最小保留窗口：当前用户消息 + 最近一个完整轮次（上一轮对话），
+        # 保证预算再小也有上下文记忆，而不是被剪裁到只剩一条当前消息。
+        min_start = turn_starts[-1]
+        if len(turn_starts) >= 2:
+            min_start = turn_starts[-2]
+
+        # 从后往前并入更早的完整轮次，直到预算或条数上限
+        keep = min_start
+        for s in reversed(turn_starts[:-2]):
+            count = n - s
+            if max_msgs > 0 and count > max_msgs:
+                break
+            if sum(len(m.content or "") for m in msgs[s:]) > budget:
+                break
+            keep = s
+        return msgs[keep:]
 
     async def _run_harness_loop(
         self,

@@ -142,7 +142,9 @@ class AgentLoop:
         final_reply = ""
         hit_max = False
 
-        for step in range(self.max_steps):
+        # max_steps <= 0 表示不限制执行步数
+        step = 0
+        while self.max_steps <= 0 or step < self.max_steps:
             if self.on_progress:
                 self.on_progress(step, self.max_steps, [])
 
@@ -193,15 +195,17 @@ class AgentLoop:
             # 合并 toolbox 确认结果（assistant 消息含 toolbox tool_calls，配对正确）
             msgs.extend(self.adapter.build_round(response, toolbox_results + results))
 
-            if step >= self.max_steps - 1:
+            if self.max_steps > 0 and step >= self.max_steps - 1:
                 hit_max = True
                 final_reply = parsed.text or ""
                 break
+            step += 1
 
         return AgentRunResult(
             reply=final_reply,
             tool_executions=executions,
-            steps=min(self.max_steps, len(executions) + 1),
+            steps=(len(executions) + 1 if self.max_steps <= 0
+                   else min(self.max_steps, len(executions) + 1)),
             hit_max_steps=hit_max,
         )
 
@@ -218,14 +222,17 @@ class AgentLoop:
           - 原生路径（run_async）行为不受影响，二者可并存。
         """
         outcome = RoundResult(state=state)
-        for step in range(self.max_steps):
+        step = 0
+        while self.max_steps <= 0 or step < self.max_steps:
             if self.on_progress:
                 self.on_progress(step, self.max_steps, [])
             outcome = await round_runner(state, step, self.max_steps)
             if not outcome.continue_loop:
                 break
+            step += 1
         if self.on_progress:
-            self.on_progress(self.max_steps, self.max_steps, [])
+            done = step if self.max_steps <= 0 else self.max_steps
+            self.on_progress(done, done, [])
         return outcome
 
     # ── 流式执行（含流式工具调用） ──
@@ -262,7 +269,9 @@ class AgentLoop:
         final_reply = ""
         hit_max = False
 
-        for step in range(self.max_steps):
+        # max_steps <= 0 表示不限制执行步数
+        step = 0
+        while self.max_steps <= 0 or step < self.max_steps:
             yield StreamEvent(kind="round_start", round=step + 1)
             if self.toolbox is not None and self.toolbox.enabled:
                 schema = self.toolbox.build_schema(self.toolbox.activated)
@@ -367,13 +376,14 @@ class AgentLoop:
                                     reasoning_content=reasoning)
             msgs.extend(self.adapter.build_round(response, toolbox_results + results))
 
-            if step >= self.max_steps - 1:
+            if self.max_steps > 0 and step >= self.max_steps - 1:
                 hit_max = True
                 final_reply = content or "…"
                 break
+            step += 1
 
         yield StreamEvent(kind="done", reply=final_reply, hit_max=hit_max,
-                          round=self.max_steps)
+                          round=step + 1)
 
     def _known_tool_names(self) -> Optional[set]:
         """当前可解析的内部工具名集合（含 toolbox 工具名）。"""

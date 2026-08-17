@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+from dotenv import load_dotenv
 
 from apps.dekacode.engine import DekacodeEngine, DekacodeSession
 from harness.models.base import ChatMessage
@@ -51,6 +52,9 @@ def create_app(engine: DekacodeEngine) -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()
         session: DekacodeSession = engine.new_session()
+        # 当前正在运行的消息处理任务：message 放入独立任务，stop 才能即时取消，
+        # 否则 process_message（可能跑很久）会把 stop 消息堵在收件队列里。
+        process_task: asyncio.Task | None = None
 
         async def send(**data) -> bool:
             try:
@@ -70,6 +74,32 @@ def create_app(engine: DekacodeEngine) -> FastAPI:
                     await send(type="error", content="Invalid JSON")
                     continue
 
+                msg_type = msg.get("type", "")
+
+                # stop：立即中止正在运行的消息处理，而不是等它自然结束
+                if msg_type == "stop":
+                    session.stop()
+                    if process_task is not None and not process_task.done():
+                        process_task.cancel()
+                    await send(type="stopped")
+                    continue
+
+                # message：放进独立任务，主循环继续收消息（否则 stop 永远排不到）
+                if msg_type == "message":
+                    if process_task is not None and not process_task.done():
+                        await send(type="error", content="正在处理上一条消息，请稍候")
+                        continue
+                    process_task = asyncio.create_task(
+                        _dispatch_ws_message(msg, session, send, engine))
+                    try:
+                        await process_task
+                    except asyncio.CancelledError:
+                        pass  # 被 stop 取消
+                    except Exception:
+                        traceback.print_exc()
+                        await send(type="error", content="处理失败: Internal server error")
+                    continue
+
                 # 每条消息独立 try/except：任何未预期异常都只回一个错误，
                 # 不会把整个 WebSocket 连接打掉（避免“发完消息就断连”）。
                 try:
@@ -79,6 +109,8 @@ def create_app(engine: DekacodeEngine) -> FastAPI:
                     await send(type="error", content="处理失败: Internal server error")
 
         except WebSocketDisconnect:
+            if process_task is not None and not process_task.done():
+                process_task.cancel()
             pass
         except Exception:
             traceback.print_exc()
@@ -571,18 +603,28 @@ async def _dispatch_ws_message(
 
 
 def main() -> None:
+    # 必须先加载 .env，否则下面 argparse default 里的 os.getenv 在求值时
+    # 读不到 DEKACODE_MAX_STEPS / DEKACODE_PORT 等，会退回到内置默认值
+    # （比如 max_steps=12），把 .env 里的 99999 直接覆盖掉。
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="DSN-exp Dekacode WebUI")
     parser.add_argument("--host", default=os.getenv("DEKACODE_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("DEKACODE_PORT", "8080")))
     parser.add_argument("--project", default=os.getenv("DEKACODE_PROJECT") or os.getcwd())
-    parser.add_argument("--max-steps", type=int, default=int(os.getenv("DEKACODE_MAX_STEPS", "12")))
+    # default=None：未显式传 --max-steps 时交给 DekacodeConfig.from_env 读取
+    #（已加载 .env），避免默认 12 覆盖 env 配置。0 / 负数 = 不限制执行步数。
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="Agent 最大工具调用步数；0 或负数表示不限制"
+                             "（默认取 DEKACODE_MAX_STEPS）")
     args = parser.parse_args()
 
     print(f"  DSN Dekacode WebUI (harness base)")
     print(f"  Project: {args.project}")
     engine = DekacodeEngine(project_root=args.project, max_steps=args.max_steps)
     app = create_app(engine)
-    print(f"  Ready  http://{args.host}:{args.port}  model={engine.model_display}")
+    print(f"  Ready  http://{args.host}:{args.port}  model={engine.model_display}"
+          f"  max_steps={engine.max_steps if engine.max_steps > 0 else 'unlimited'}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
