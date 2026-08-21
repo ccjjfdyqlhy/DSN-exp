@@ -709,9 +709,286 @@ html, body {
   white-space: nowrap;
 }
 
+/* ─── Welcome TaskProfile radio-group ─── */
+.welcome-profile {
+  width: min(560px, 88vw);
+  margin-top: 4px;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.profile-slider-head {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 10px;
+  letter-spacing: 0.5px;
+}
+
+.profile-radio-track {
+  position: relative;
+  display: flex;
+  height: 42px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  touch-action: none;
+}
+
+/* 滑动游标：透明容器 + 伪元素高亮，translateX 精确对齐每个选项 */
+.profile-radio-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(100% / var(--n, 3));
+  transform: translateX(calc(var(--idx, 0) * 100%));
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+  z-index: 0;
+  pointer-events: none;
+}
+.profile-radio-cursor::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent),
+    color-mix(in srgb, var(--accent) 65%, #000));
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+/* 拖动中：禁用 transition，游标跟手 */
+.profile-radio-track.dragging .profile-radio-cursor {
+  transition: none;
+}
+
+.profile-radio-option {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: color 0.2s ease;
+  z-index: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.profile-radio-option input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.profile-radio-option:hover { color: var(--text); }
+.profile-radio-option.active { color: #fff; font-weight: 600; }
+.profile-radio-option .pr-icon { font-size: 14px; line-height: 1; flex-shrink: 0; }
+.profile-radio-option .pr-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-slider-desc {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-align: center;
+  min-height: 16px;
+}
+.profile-slider-desc strong { color: var(--text); }
+
+.profile-soon {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--orange);
+  color: var(--bg);
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.profile-caps {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ─── 用户系统：登录 / 注册 ─── */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.auth-card {
+  width: min(360px, 92vw);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 26px 22px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.auth-logo {
+  display: block;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 10px;
+  border-radius: 12px;
+  object-fit: cover;
+}
+
+.auth-card h2 {
+  text-align: center;
+  margin: 0 0 16px;
+  font-size: 20px;
+  color: var(--text);
+}
+
+.auth-tabs {
+  display: flex;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.auth-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.auth-field {
+  margin-bottom: 12px;
+}
+.auth-field label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.auth-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary, var(--bg));
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+.auth-field input:focus { border-color: var(--accent); }
+
+.auth-error {
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--red, #e5484d);
+  margin-bottom: 6px;
+}
+
+.auth-submit {
+  width: 100%;
+  padding: 10px 0;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-submit:disabled { opacity: 0.6; cursor: default; }
+
+.auth-footer {
+  margin-top: 12px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-dim);
+}
+.auth-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.auth-footer a:hover { text-decoration: underline; }
+
+/* ─── 多人群聊 ─── */
+.group-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary, var(--bg));
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.group-bar-title { font-weight: 600; color: var(--text); white-space: nowrap; }
+.group-bar-members { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.msg-author {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+.msg-author.ai { color: var(--orange, #ff9f43); }
+
+.msg-error-tag {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--red, #e5484d);
+}
+
+.msg-error-content {
+  color: var(--red, #e5484d);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* ─── 用户徽标（侧栏底部） ─── */
+.user-badge {
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-secondary, var(--bg));
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.user-badge:hover { background: var(--border); }
+
 #inputArea.welcome-input {
   position: absolute;
-  top: 65%;
+  top: 78%;
   bottom: auto;
   left: 50%;
   transform: translate(-50%, -50%);

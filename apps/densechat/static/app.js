@@ -12,11 +12,153 @@ let isTempChat = false;
 let _prevSessionState = null;
 let _optionsOpen = false;
 
+// ─── 用户系统（登录 / 注册） ────────────────────────────────────────
+const AUTH_TOKEN_KEY = 'densechat_token';
+
+function currentUser() {
+  try { return JSON.parse(localStorage.getItem('densechat_user') || 'null'); }
+  catch (e) { return null; }
+}
+
+function currentToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+}
+
+async function initAuth() {
+  // 服务器关闭用户系统 → 直接进入（匿名模式）
+  try {
+    const sr = await fetch('/api/status');
+    if (sr.ok) {
+      const st = await sr.json();
+      if (st && st.enable_users === false) {
+        hideAuthOverlay();
+        startMainApp();
+        return;
+      }
+    }
+  } catch (e) { /* status 失败则继续走正常登录流程 */ }
+
+  const token = currentToken();
+  if (!token) { showAuthOverlay(); return; }
+  try {
+    const r = await fetch(`/api/auth/me?token=${encodeURIComponent(token)}`);
+    if (!r.ok) throw new Error('invalid token');
+    const d = await r.json();
+    localStorage.setItem('densechat_user', JSON.stringify(d.user));
+    hideAuthOverlay();
+    startMainApp();
+  } catch (e) {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem('densechat_user');
+    showAuthOverlay();
+  }
+}
+
+// 游客模式：不登录直接进入（服务端以匿名身份处理）
+function continueAsGuest() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem('densechat_user');
+  hideAuthOverlay();
+  startMainApp();
+}
+
+function showAuthOverlay() {
+  const ov = document.getElementById('authOverlay');
+  if (ov) ov.style.display = 'flex';
+}
+
+function hideAuthOverlay() {
+  const ov = document.getElementById('authOverlay');
+  if (ov) ov.style.display = 'none';
+}
+
+let AUTH_MODE = 'login'; // login | register
+function showAuthTab(mode) {
+  AUTH_MODE = mode;
+  document.getElementById('authTabLogin').classList.toggle('active', mode === 'login');
+  document.getElementById('authTabRegister').classList.toggle('active', mode === 'register');
+  document.getElementById('authNicknameField').style.display = mode === 'register' ? '' : 'none';
+  document.getElementById('authSubmit').textContent = mode === 'login' ? '登录' : '注册';
+  document.getElementById('authError').textContent = '';
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const username = document.getElementById('authUsername').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const nickname = document.getElementById('authNickname').value.trim();
+  const errEl = document.getElementById('authError');
+  errEl.textContent = '';
+  const btn = document.getElementById('authSubmit');
+  btn.disabled = true;
+  try {
+    const url = AUTH_MODE === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const body = AUTH_MODE === 'login'
+      ? { username, password }
+      : { username, password, nickname };
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { errEl.textContent = d.detail || '请求失败'; return; }
+    localStorage.setItem(AUTH_TOKEN_KEY, d.token);
+    localStorage.setItem('densechat_user', JSON.stringify(d.user));
+    hideAuthOverlay();
+    startMainApp();
+  } catch (e) {
+    errEl.textContent = '网络错误，请重试';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function logoutUser() {
+  const token = currentToken();
+  if (token) {
+    fetch('/api/auth/logout', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    }).catch(() => {});
+  }
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem('densechat_user');
+  showAuthOverlay();
+}
+
+// 登录后启动主应用（连接 WS 等）
+function startMainApp() {
+  startFreshSession();
+  connect();
+  fetchModels();
+  fetchProfiles();
+  bindProfileSlider();
+  updateUserBadge();
+}
+
+function updateUserBadge() {
+  const user = currentUser();
+  if (!user) return;
+  let el = document.getElementById('userBadge');
+  if (!el) {
+    el = document.createElement('button');
+    el.id = 'userBadge';
+    el.className = 'user-badge';
+    el.title = '点击退出登录';
+    el.onclick = logoutUser;
+    const actions = document.querySelector('.sidebar-actions');
+    if (actions) actions.appendChild(el);
+  }
+  el.textContent = `👤 ${user.nickname || user.username}`;
+}
+
 // ─── WebSocket ────────────────────────────────────────────────────
 
 function connect() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${protocol}//${location.host}/ws`);
+  const token = currentToken();
+  ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`);
 
   ws.onopen = () => {
     showToast('Connected');
@@ -53,6 +195,66 @@ function sendJson(obj) {
 
 function handleMessage(data) {
   switch (data.type) {
+
+    // ── 多人群聊（random 模式） ──
+    case 'room_joined':
+      groupChatMode = true;
+      groupRoomId = data.room_id;
+      hideWelcome();
+      showToast(`已加入群聊 · 当前 ${((data.members || []).length)} 人 + AI`);
+      if (data.history && data.history.length) {
+        data.history.forEach(h => {
+          if (h.role === 'user') appendGroupUserMessage(h.content, h.name);
+          else if (h.role === 'assistant') appendGroupAssistantMessage(h.content, h.name);
+        });
+      }
+      updateGroupMembers(data.members || []);
+      break;
+
+    case 'chat_message':
+      if (data.role === 'user') {
+        appendGroupUserMessage(data.content, data.name);
+      } else {
+        // AI 最终回复：移除流式占位气泡，渲染完整消息
+        if (currentAssistantEl) {
+          try { currentAssistantEl.remove(); } catch (e) {}
+          currentAssistantEl = null;
+        }
+        appendGroupAssistantMessage(data.content, data.name || 'AI', !!data.error);
+      }
+      break;
+
+    case 'ai_done':
+      // 群聊 AI 回复结束（含出错/停止）：恢复输入状态
+      hideThinkingBar();
+      isProcessing = false;
+      setSendButtonStop(false);
+      break;
+
+    case 'ai_stopped':
+      hideThinkingBar();
+      isProcessing = false;
+      setSendButtonStop(false);
+      break;
+
+    case 'member_joined':
+      if (data.members) updateGroupMembers(data.members);
+      showToast(`👤 ${(data.member || {}).nickname || '用户'} 加入了群聊`);
+      break;
+
+    case 'member_left':
+      if (data.members) updateGroupMembers(data.members);
+      showToast(`🚪 ${data.name || '用户'} 离开了群聊`);
+      break;
+
+    case 'ai_thinking_start':
+      showThinkingBar();
+      if (!currentAssistantEl) currentAssistantEl = createAssistantMessage();
+      break;
+
+    case 'ai_delta':
+      appendAssistantTextDelta(data.content || '');
+      break;
 
     case 'thinking_start':
       showThinkingBar();
@@ -213,7 +415,8 @@ function handleMessage(data) {
       break;
 
     case 'session_loaded':
-      showToast(`Session loaded: ${data.count} msgs, mode=${data.mode}`);
+      showToast(`Session loaded: ${data.count} msgs, mode=${data.mode}, profile=${data.profile || ''}`);
+      syncProfileSlider(data.profile);
       break;
 
     case 'session_id':
@@ -244,8 +447,9 @@ function handleMessage(data) {
       break;
 
     case 'session_new':
-      // 新建会话：回到欢迎页并刷新工作区路径
+      // 新建会话：回到欢迎页并刷新工作区路径 + 同步任务模式滑条
       if (data.path) setWelcomeProject(data.path);
+      syncProfileSlider(data.profile);
       break;
 
     case 'workspace_opened':
@@ -557,6 +761,66 @@ function stopExecTicker() {
 
 // ─── Messages ─────────────────────────────────────────────────────
 
+// 多人群聊状态
+let groupChatMode = false;
+let groupRoomId = null;
+let groupMembers = [];
+
+function updateGroupMembers(members) {
+  groupMembers = members || [];
+  const bar = document.getElementById('groupBar');
+  const el = document.getElementById('groupMembers');
+  if (!bar || !el) return;
+  if (groupChatMode) {
+    bar.style.display = 'flex';
+    const names = groupMembers.map(m => (m && m.nickname) || m).filter(Boolean);
+    el.textContent = `👥 ${names.length} 人：${names.join(' · ') || '（空）'}　|　🤖 DenseChat AI`;
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+// 退出群聊模式（切换到单人会话 / 载入历史会话时调用）
+function exitGroupMode() {
+  if (!groupChatMode) return;
+  groupChatMode = false;
+  groupRoomId = null;
+  groupMembers = [];
+  const bar = document.getElementById('groupBar');
+  if (bar) bar.style.display = 'none';
+}
+
+function appendGroupUserMessage(text, name) {
+  hideWelcome();
+  const div = document.createElement('div');
+  div.className = 'message message-user';
+  div.id = `msg-${++messageId}`;
+  div.innerHTML = `
+    <div class="bubble">
+      ${name ? `<div class="msg-author">${escapeHtml(name)}</div>` : ''}
+      ${escapeHtml(text)}
+    </div>`;
+  messagesEl().appendChild(div);
+  scrollToBottom();
+}
+
+function appendGroupAssistantMessage(text, name, isError) {
+  hideWelcome();
+  const div = document.createElement('div');
+  div.className = 'message message-assistant';
+  div.id = `msg-${++messageId}`;
+  // 错误消息不渲染 markdown（避免超长/HTML 内容撑爆布局），直接转义显示
+  const body = isError ? escapeHtml(text) : renderMarkdown(text);
+  div.innerHTML = `
+    <div class="bubble">
+      ${name ? `<div class="msg-author ai">${escapeHtml(name)}</div>` : ''}
+      <div class="message-content${isError ? ' msg-error-content' : ''}">${body}</div>
+      ${isError ? '<div class="msg-error-tag">⚠ AI 出错</div>' : ''}
+    </div>`;
+  messagesEl().appendChild(div);
+  scrollToBottom();
+}
+
 function appendUserMessage(text) {
   hideWelcome();
   const div = document.createElement('div');
@@ -689,35 +953,6 @@ async function saveOption(key, value) {
       body: JSON.stringify({ [key]: value })
     });
   } catch (e) {}
-}
-
-function toggleOptions() {
-  const panel = document.getElementById('settingsPanel');
-  const chat = document.getElementById('chatArea');
-  const inputArea = document.getElementById('inputArea');
-  _optionsOpen = !_optionsOpen;
-  if (_optionsOpen) {
-    chat.style.display = 'none';
-    inputArea.style.display = 'none';
-    panel.style.display = 'block';
-    renderSettings();
-  } else {
-    chat.style.display = '';
-    inputArea.style.display = '';
-    panel.style.display = 'none';
-  }
-}
-
-function renderSettings() {
-  const content = document.getElementById('settingsContent');
-  content.innerHTML = `
-    <div class="setting-row">
-      <label for="optCollapse">Thinking details collapsed by default</label>
-      <input type="checkbox" id="optCollapse"
-        ${_optionsCache.thinking_collapsed_default ? 'checked' : ''}
-        onchange="saveOption('thinking_collapsed_default', this.checked)">
-    </div>
-  `;
 }
 
 // ─── Temp Chat ─────────────────────────────────────────────────────
@@ -973,6 +1208,15 @@ function sendMessage() {
     _optionsOpen = false;
   }
 
+  if (groupChatMode) {
+    // 群聊：消息由服务器广播回来统一渲染（避免本地+广播重复显示）；
+    // 不锁 isProcessing —— 群聊允许在 AI 回复期间继续发言
+    currentAssistantEl = null;
+    hasSentMessage = true;
+    sendJson({ type: 'message', content: text });
+    return;
+  }
+
   appendUserMessage(text);
   currentAssistantEl = null;
   hasSentMessage = true;
@@ -1105,6 +1349,8 @@ function clearChat() {
 
 function newSession() {
   saveCurrentBeforeNew();
+  // 切到非群聊任务模式 → 退出群聊状态（隐藏成员栏）
+  if (currentProfile !== 'random') exitGroupMode();
   sessionId = _genId();
   messagesEl().innerHTML = '';
   currentAssistantEl = null;
@@ -1123,7 +1369,155 @@ function newSession() {
 }
 
 let sessionId = 'sess_' + Date.now();
-const SESSION_LIST_KEY = 'dekacode_sessions';
+const SESSION_LIST_KEY = 'densechat_sessions';
+
+// ── 任务模式（TaskProfile）radio-group 选择器 ──
+let PROFILES = [];
+let currentProfile = 'dekacode';
+
+async function fetchProfiles() {
+  try {
+    const r = await fetch('/api/profiles');
+    const d = await r.json();
+    PROFILES = (d.profiles || []).filter(p => p && p.id);
+    renderProfileSlider();
+  } catch (e) {
+    PROFILES = [];
+  }
+}
+
+function currentProfileIdx() {
+  const idx = PROFILES.findIndex(p => p.id === currentProfile);
+  return idx >= 0 ? idx : 0;
+}
+
+function renderProfileSlider() {
+  const track = document.getElementById('profileRadioTrack');
+  if (!track || PROFILES.length === 0) return;
+  const idx = currentProfileIdx();
+  track.innerHTML =
+    '<div class="profile-radio-cursor" id="profileRadioCursor"></div>' +
+    PROFILES.map((p, i) => `
+      <label class="profile-radio-option${i === idx ? ' active' : ''}" data-i="${i}" title="${escapeHtml(p.description)}">
+        <input type="radio" name="profileMode" value="${escapeHtml(p.id)}"${i === idx ? ' checked' : ''}>
+        <span class="pr-icon">${p.icon || ''}</span>
+        <span class="pr-label">${escapeHtml(p.label)}</span>
+      </label>`).join('');
+  updateRadioCursor();
+  updateProfileDesc();
+}
+
+function updateRadioCursor() {
+  const track = document.getElementById('profileRadioTrack');
+  const cursor = document.getElementById('profileRadioCursor');
+  if (!track || !cursor || PROFILES.length === 0) return;
+  const cur = currentProfileIdx();
+  cursor.style.setProperty('--n', PROFILES.length);
+  cursor.style.setProperty('--idx', cur);
+  const opts = track.querySelectorAll('.profile-radio-option');
+  opts.forEach((o, i) => {
+    const input = o.querySelector('input[type="radio"]');
+    if (input) input.checked = (i === cur);
+    o.classList.toggle('active', i === cur);
+  });
+  if (PROFILES[cur]) currentProfile = PROFILES[cur].id;
+}
+
+function updateProfileDesc() {
+  const desc = document.getElementById('profileSliderDesc');
+  if (!desc) return;
+  const p = PROFILES[currentProfileIdx()];
+  if (!p) { desc.textContent = ''; return; }
+  let html = `<strong>${escapeHtml(p.label)}</strong> · ${escapeHtml(p.description)}`;
+  if (!p.available) html += ' <span class="profile-soon">即将上线</span>';
+  if (p.capabilities && (p.capabilities.multi_user || p.capabilities.group_chat)) {
+    const caps = [];
+    if (p.capabilities.multi_user) caps.push('多用户');
+    if (p.capabilities.group_chat) caps.push('AI 群聊');
+    html += `<div class="profile-caps">能力：${caps.join(' · ')}</div>`;
+  }
+  desc.innerHTML = html;
+}
+
+function indexAtPointer(e, track) {
+  const rect = track.getBoundingClientRect();
+  const ratio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+  return Math.round(ratio * (PROFILES.length - 1));
+}
+
+// 设置当前模式索引；animate=false 时配合 .dragging（无 transition）跟手拖动
+function setProfileIndex(i, animate) {
+  i = Math.min(Math.max(i, 0), PROFILES.length - 1);
+  const track = document.getElementById('profileRadioTrack');
+  const cursor = document.getElementById('profileRadioCursor');
+  if (!track || !cursor) return;
+  if (animate) track.classList.remove('dragging');
+  cursor.style.setProperty('--idx', i);
+  if (PROFILES[i]) currentProfile = PROFILES[i].id;
+  const opts = track.querySelectorAll('.profile-radio-option');
+  opts.forEach((o, k) => {
+    const input = o.querySelector('input[type="radio"]');
+    if (input) input.checked = (k === i);
+    o.classList.toggle('active', k === i);
+  });
+  updateProfileDesc();
+}
+
+function syncProfileSlider(profileId) {
+  if (!profileId) return;
+  const idx = PROFILES.findIndex(p => p.id === profileId);
+  if (idx >= 0) {
+    currentProfile = profileId;
+    renderProfileSlider();
+  }
+}
+
+function bindProfileSlider() {
+  const track = document.getElementById('profileRadioTrack');
+  if (!track) return;
+
+  let start = null;
+
+  // 拖动游标：pointer 距离 > 6px 判定为拖动（禁用过渡跟手），否则视为点击
+  // 点击时恢复过渡 → 游标从当前位置丝滑滑动到目标选项。
+  track.addEventListener('pointerdown', (e) => {
+    start = { x: e.clientX, y: e.clientY, moved: false };
+    track.classList.add('dragging');
+
+    const moveTo = (ev) => setProfileIndex(indexAtPointer(ev, track), false);
+
+    const onMove = (ev) => {
+      if (!start) return;
+      if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > 6) start.moved = true;
+      if (start.moved) moveTo(ev);
+    };
+    const onUp = (ev) => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      if (!start) return;
+      track.classList.remove('dragging'); // 恢复 transition
+      if (!start.moved) {
+        // 点击：丝滑动画滑到目标
+        const i = indexAtPointer(ev, track);
+        setProfileIndex(i, true);
+        const p = PROFILES[i];
+        if (p && !p.available) showToast('该模式即将上线');
+      }
+      start = null;
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    e.preventDefault();
+  });
+
+  // 键盘（radio 原生 Arrow 键切换）同步游标
+  track.addEventListener('change', (e) => {
+    if (e.target.type === 'radio') {
+      const opt = e.target.closest('.profile-radio-option');
+      if (opt) setProfileIndex(Number(opt.dataset.i), true);
+    }
+  });
+}
 
 function _genId() { return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6); }
 
@@ -1153,7 +1547,7 @@ function loadSessionList() {
 }
 
 function saveCurrentBeforeNew() {
-  // 会话只持久化到 ~/.dekacode，不再写 localStorage。
+  // 会话只持久化到 ~/.densechat，不再写 localStorage。
 }
 
 function optionsMenu() {
@@ -1171,7 +1565,7 @@ document.addEventListener('click', (e) => {
 
 // ─── localStorage Persistence ─────────────────────────────────────
 
-const STORAGE_KEY = 'dekacode_chat';
+const STORAGE_KEY = 'densechat_chat';
 
 function saveChatToStorage() {
   const html = messagesEl().innerHTML;
@@ -1206,7 +1600,7 @@ function restoreChatFromStorage() {
   scrollToBottom();
 }
 
-// ─── Welcome / dekacode.png ────────────────────────────────────────
+// ─── Welcome / densechat.png ────────────────────────────────────────
 
 function showWelcome() {
   const w = welcomeEl();
@@ -1219,7 +1613,8 @@ let _backendSessions = [];
 
 async function fetchBackendSessions() {
   try {
-    const r = await fetch('/api/sessions');
+    const token = currentToken();
+    const r = await fetch(`/api/sessions${token ? `?token=${encodeURIComponent(token)}` : ''}`);
     _backendSessions = await r.json();
   } catch (e) {
     _backendSessions = [];
@@ -1288,42 +1683,6 @@ function renderHistoricalToolResult(m) {
   if (body) body.appendChild(div);
   else {
     messagesEl().appendChild(div);
-  }
-}
-
-async function loadBackendSession(sid) {
-  try {
-    const r = await fetch(`/api/sessions/${sid}/messages`);
-    const msgs = await r.json();
-    if (!msgs || msgs.length === 0) {
-      showToast('Empty session');
-      return;
-    }
-    // 渲染到聊天区
-    const inputArea = document.getElementById('inputArea');
-    inputArea.classList.remove('welcome-input');
-    inputArea.classList.remove('scrolled-up');
-    messagesEl().innerHTML = '';
-    currentAssistantEl = null;
-    _lastHistoricalThinkingBody = null;
-    messageId = 0;
-    for (const m of msgs) {
-      if (m.role === 'user') {
-        appendUserMessage(m.content || '');
-      } else if (m.role === 'assistant') {
-        renderHistoricalAssistant(m);
-      } else if (m.role === 'tool') {
-        renderHistoricalToolResult(m);
-      }
-    }
-    hasSentMessage = true;
-    hideWelcome();
-    scrollToBottom();
-    // 通知后端加载到 ctx
-    sendJson({ type: 'load_session', session_id: sid });
-    showToast(`Loaded session ${sid.slice(-6)}`);
-  } catch (e) {
-    showToast('Failed to load session');
   }
 }
 
@@ -1601,10 +1960,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const logo = document.getElementById('welcomeLogo');
   if (logo) logo.src = '/logo.png?_=' + Date.now();
 
-  // 首次进入页面总是开启新会话，不自动恢复上一个会话
-  startFreshSession();
-  connect();
-  fetchModels();
+  // 用户系统：先验证登录，成功后才连接 WS / 加载界面
+  initAuth();
   if (input) input.focus();
   document.getElementById('sendBtn').onclick = sendMessage;
 
@@ -1638,21 +1995,21 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// DSN Dekacode 增强功能：主题 / 上下文 / 统计 / Diff / 配置 / 会话
+// DSN DenseChat 增强功能：主题 / 上下文 / 统计 / Diff / 配置 / 会话
 // ══════════════════════════════════════════════════════════════════
 
 // ── 深色 / 浅色主题 ──
 function applyTheme(theme) {
   if (!theme) theme = 'dark';
   document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem('dekacode_theme', theme); } catch (e) {}
+  try { localStorage.setItem('densechat_theme', theme); } catch (e) {}
 }
 function toggleTheme() {
   const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
   applyTheme(cur);
   showToast('Theme: ' + cur);
 }
-applyTheme(localStorage.getItem('dekacode_theme') || 'dark');
+applyTheme(localStorage.getItem('densechat_theme') || 'dark');
 
 // ── 通用 Overlay 面板管理 ──
 function _hideAllOverlays() {
@@ -2406,7 +2763,7 @@ async function savePrompt() {
 function newSession(skipServer) {
   _closeOverlay();
   _optionsOpen = false;
-  if (!skipServer) sendJson({ type: 'new_session' });
+  if (!skipServer) sendJson({ type: 'new_session', profile: currentProfile });
   sessionId = _genId();
   messagesEl().innerHTML = '';
   currentAssistantEl = null;
@@ -2425,7 +2782,7 @@ function newSession(skipServer) {
   updateSessionList();
 }
 function saveCurrentBeforeNew() {
-  // 会话只持久化到 ~/.dekacode，不再写 localStorage。
+  // 会话只持久化到 ~/.densechat，不再写 localStorage。
 }
 function updateSessionList() {
   const list = document.getElementById('sessionList');
@@ -2463,7 +2820,9 @@ function updateSessionList() {
 }
 async function deleteBackendSession(sid) {
   if (!confirm('Delete session ' + sid + '?')) return;
-  const d = await fetch('/api/sessions/' + sid, { method: 'DELETE' }).then(r => r.json());
+  const token = currentToken();
+  const d = await fetch('/api/sessions/' + sid + (token ? `?token=${encodeURIComponent(token)}` : ''),
+    { method: 'DELETE' }).then(r => r.json());
   if (d.success) {
     showToast('Session deleted');
     await fetchBackendSessions();
@@ -2475,7 +2834,8 @@ async function deleteBackendSession(sid) {
 async function renameBackendSession(sid) {
   const newName = prompt('New session name:', sid);
   if (!newName || newName === sid) return;
-  const d = await fetch('/api/sessions/' + sid, {
+  const token = currentToken();
+  const d = await fetch('/api/sessions/' + sid + (token ? `?token=${encodeURIComponent(token)}` : ''), {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ summary: newName }),
   }).then(r => r.json());
@@ -2493,7 +2853,7 @@ async function exportBackendSession(sid) {
   const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `dekacode-session-${sid}.json`; a.click();
+  a.href = url; a.download = `densechat-session-${sid}.json`; a.click();
   URL.revokeObjectURL(url);
   showToast('Session exported');
 }
@@ -2532,9 +2892,13 @@ async function loadBackendSession(sid) {
   _closeOverlay();
   _optionsOpen = false;
   try {
-    const r = await fetch(`/api/sessions/${sid}/messages`);
+    const token = currentToken();
+    const r = await fetch(`/api/sessions/${sid}/messages${token ? `?token=${encodeURIComponent(token)}` : ''}`);
+    if (r.status === 403) { showToast('无权访问该会话'); return; }
     const msgs = await r.json();
     if (!msgs || msgs.length === 0) { showToast('Empty session'); return; }
+    // 载入历史会话 → 退出群聊模式
+    exitGroupMode();
     const inputArea = document.getElementById('inputArea');
     inputArea.classList.remove('welcome-input');
     inputArea.classList.remove('scrolled-up');

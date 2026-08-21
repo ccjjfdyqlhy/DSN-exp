@@ -38,28 +38,31 @@ def get_call_chain_text(graph: CallGraph, symbol_name: str, depth: int = 2) -> s
     return "\n".join(lines)
 
 
-def get_symbol_source(graph: CallGraph, symbol_name: str) -> str | None:
+def get_symbol_source(graph: CallGraph, symbol_name: str, workspace: str | None = None) -> str | None:
     sym = graph.get(symbol_name)
     if not sym:
         return None
-    fpath = sym.file_path
-    try:
-        with open(fpath, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except (FileNotFoundError, IOError, OSError):
-        fpath_abs = None
-        for gf in graph.files:
-            if gf.endswith(sym.file_path) or sym.file_path.endswith(gf):
-                fpath_abs = gf
-                break
-        if not fpath_abs:
-            return None
-        try:
-            with open(fpath_abs, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except (FileNotFoundError, IOError, OSError):
-            return None
-    start = sym.line - 1
-    end = min(start + 30, len(lines))
+    candidate_paths = []
+    if workspace:
+        candidate_paths.append(os.path.join(workspace, sym.file_path))
+    candidate_paths.append(sym.file_path)
+    for gf in graph.files:
+        if workspace:
+            candidate_paths.append(os.path.join(workspace, gf))
+        candidate_paths.append(gf)
+
+    lines = None
+    for p in candidate_paths:
+        if p and os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                    break
+            except (OSError, IOError):
+                continue
+    if lines is None:
+        return None
+    start = max(0, sym.line - 1)
+    end = min(start + 50, len(lines))
     source = "".join(lines[start:end])
     return f"# {sym.signature}  ({sym.file_path}:{sym.line})\n{source}"

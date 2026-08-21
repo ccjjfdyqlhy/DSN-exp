@@ -1,7 +1,7 @@
-# engine.py — 用 DSN-exp harness 基座承载 Dekacode WebUI 的 Agent 引擎。
+# engine.py — 用 DSN-exp harness 基座承载 DenseChat WebUI 的 Agent 引擎。
 #
 # 与 ~/dekacode 的差异：
-#   - 不再依赖 dekacode 私有模块，改用 harness 的 AgentLoop / ToolRegistry /
+#   - 不再依赖 densechat 私有模块，改用 harness 的 AgentLoop / ToolRegistry /
 #     SessionStore / codegraph / ContextGatherer。
 #   - 保留 WebUI 前端协议（/ws + /api/*），后端换为 harness 驱动。
 #   - 增加配置管理、Provider/模型切换、技能加载、上下文快照与统计。
@@ -9,12 +9,35 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import asyncio
 from collections import Counter
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
+
+logger = logging.getLogger("densechat.engine")
+
+
+def _brief_error(exc: BaseException, max_len: int = 200) -> str:
+    """把异常转成简短、安全的错误文案。
+
+    模型 SDK 的异常 __str__ 可能携带完整 HTTP 响应体（如 401 的 HTML 页面），
+    直接塞进前端消息会撑爆布局；这里只保留类型 + 截断后的消息，
+    并压缩空白/去掉换行，避免超长单行文本。
+    """
+    raw = str(exc) or ""
+    # 压缩所有空白为单个空格
+    raw = " ".join(raw.split())
+    # 去掉可能的 HTML 片段噪音
+    if "<html" in raw.lower() or "<!doctype" in raw.lower():
+        raw = raw.split("<", 1)[0].strip()
+    if len(raw) > max_len:
+        raw = raw[:max_len] + "…"
+    if not raw:
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {raw}"
 
 from harness import (
     ContextGatherer,
@@ -23,12 +46,17 @@ from harness import (
     install_standard_tools,
 )
 from harness.agent import AgentLoop, ModeState, SubAgentRunner, SubTask
+from harness.auth import Identity, UserStore
 from harness.codegraph import GraphBuilder
+from harness.groupchat import GroupChatManager, GroupChatRoom
 from harness.models.base import ChatMessage
 from harness.models.openai import OpenAICompatClient
 from harness.tools import RegistryIndexSource, ToolboxManager
 
-from .config import DekacodeConfig
+from .config import DenseChatConfig
+from .profiles import (
+    DEFAULT_PROFILE, PROFILES, TaskProfile, get_profile, list_profiles,
+)
 from .store import CentralSessionStore
 from .tools import install_extra_tools, load_skills_from_dir
 
@@ -96,11 +124,11 @@ def _tool_label(name: str, args: Optional[dict] = None) -> str:
     return f"{label} {detail}".strip() if detail else label
 
 
-class DekacodeEngine:
-    """基于 harness 的 Dekacode WebUI 后端引擎。"""
+class DenseChatEngine:
+    """基于 harness 的 DenseChat WebUI 后端引擎。"""
 
     def __init__(self, project_root: Optional[str] = None, *, max_steps: Optional[int] = None):
-        self.config = DekacodeConfig.from_env(project_root)
+        self.config = DenseChatConfig.from_env(project_root)
         if max_steps is not None:
             self.config.max_steps = max_steps
         self.project_root = self.config.project_root
@@ -113,27 +141,21 @@ class DekacodeEngine:
         self.model_mode = self.config.model_mode
         self._apply_active_provider()
 
-        # 项目符号图 + 标准工具集（harness 基座）
+        # 项目符号图 + 按任务模式（profile）构建各智能体的工具注册表
         self.graph = GraphBuilder(self.project_root).build()
-        self.tools = ToolRegistry()
-        deps = ToolDeps(
-            workspace=self.project_root,
-            codegraph=self.graph,
-            tool_registry=self.tools,
-            max_output_chars=self.config.max_output_chars,
-        )
-        install_standard_tools(self.tools, deps=deps)
-        install_extra_tools(self.tools, workspace=self.project_root, graph=self.graph)
         self.skill_report: dict[str, Any] = {"loaded": [], "errors": []}
-        if self.config.enable_skills:
-            self.skill_report = load_skills_from_dir(
-                self.tools, self.config.skills_dir, deps=deps
-            )
-        self._register_subagent_tool()
+        self._profile_tools: dict[str, ToolRegistry] = {}
+        self._rebuild_profile_tools()
+        # 默认工具注册表 = dekacode 任务模式（兼容 /api/skills、compute_stats 等引用）
+        self.tools = self._profile_tools.get(DEFAULT_PROFILE) or ToolRegistry()
 
-        # 会话持久化（全局 ~/.dekacode，按 workspace 分组）
+        # 会话持久化（全局 ~/.densechat，按 workspace 分组）
         self.store = CentralSessionStore(db_path=self.config.db_path)
         self.workspace_id = self.store.ensure_workspace(self.project_root)
+
+        # 原生多用户 + AI 群聊（harness 底层）
+        self.users = UserStore(db_path=self.config.users_db_path)
+        self.group_chat = GroupChatManager()
 
         self.gatherer = ContextGatherer(self.project_root, graph=self.graph)
         self.load_prompts()
@@ -146,21 +168,8 @@ class DekacodeEngine:
         self.project_root = new_root
         self.config.project_root = new_root
         self.graph = GraphBuilder(new_root).build()
-        self.tools = ToolRegistry()
-        deps = ToolDeps(
-            workspace=new_root,
-            codegraph=self.graph,
-            tool_registry=self.tools,
-            max_output_chars=self.config.max_output_chars,
-        )
-        install_standard_tools(self.tools, deps=deps)
-        install_extra_tools(self.tools, workspace=new_root, graph=self.graph)
-        self._register_subagent_tool()
         self.skill_report = {"loaded": [], "errors": []}
-        if self.config.enable_skills:
-            self.skill_report = load_skills_from_dir(
-                self.tools, self.config.skills_dir, deps=deps
-            )
+        self._rebuild_profile_tools()
         self.gatherer = ContextGatherer(new_root, graph=self.graph)
         self.load_prompts()
         self.workspace_id = self.store.ensure_workspace(new_root)
@@ -176,7 +185,7 @@ class DekacodeEngine:
                     parts.append(f.read_text(encoding="utf-8").strip())
                 except OSError:
                     continue
-        env_prompt = os.getenv("DEKACODE_SYSTEM_PROMPT", "").strip()
+        env_prompt = os.getenv("DENSECHAT_SYSTEM_PROMPT", "").strip()
         if env_prompt:
             parts.insert(0, env_prompt)
         self.system_prompt = "\n\n".join(parts) or (
@@ -208,8 +217,11 @@ class DekacodeEngine:
         target.write_text(content, encoding="utf-8")
         self.load_prompts()
 
-    def _register_subagent_tool(self) -> None:
+    def _register_subagent_tool(self, registry: Optional[ToolRegistry] = None,
+                                system_prompt: str = "") -> None:
         """注册 task.split：用 harness SubAgentRunner 并行执行子任务。"""
+        registry = registry or self.tools
+
         async def split_task(tasks: list[dict], max_concurrency: int = 3) -> str:
             subtasks = [
                 SubTask(title=str(t.get("title", "")), prompt=str(t.get("prompt", "")))
@@ -219,14 +231,14 @@ class DekacodeEngine:
                 return "(未提供 tasks)"
             runner = SubAgentRunner(
                 self.client,
-                self.tools,
+                registry,
                 max_steps=self.max_steps,
-                system_prompt=self.system_prompt,
+                system_prompt=system_prompt or self.system_prompt_for(DEFAULT_PROFILE),
             )
             result = await runner.run(subtasks, max_concurrency=max_concurrency)
             return result.summary()
 
-        self.tools.register_tool(
+        registry.register_tool(
             "task.split",
             "把一个大任务拆成多个子任务并发执行，返回每个子任务的结果摘要。"
             "参数 tasks 为 [{title, prompt}]。",
@@ -251,6 +263,55 @@ class DekacodeEngine:
             },
             async_mode=True,
         )
+
+    # ── 任务模式（profile）管理 ──
+
+    def _build_tools_for(self, profile: TaskProfile) -> ToolRegistry:
+        """按任务模式构建工具注册表：标准工具（可按命名空间过滤）+ 扩展/技能/子任务。"""
+        reg = ToolRegistry()
+        deps = ToolDeps(
+            workspace=self.project_root,
+            codegraph=self.graph,
+            tool_registry=reg,
+            max_output_chars=self.config.max_output_chars,
+        )
+        install_standard_tools(reg, deps=deps, include=profile.standard_include)
+        if profile.extra_tools:
+            install_extra_tools(reg, workspace=self.project_root, graph=self.graph)
+        if profile.load_skills and self.config.enable_skills:
+            self.skill_report = load_skills_from_dir(
+                reg, self.config.skills_dir, deps=deps
+            )
+        if profile.subagent_tool:
+            self._register_subagent_tool(
+                reg, system_prompt=getattr(self, "system_prompt", ""))
+        return reg
+
+    def _rebuild_profile_tools(self) -> None:
+        """重建所有可用任务模式的工具注册表（初始化/切工作区/重载技能后调用）。"""
+        self._profile_tools = {}
+        for pid, profile in PROFILES.items():
+            if profile.available:
+                try:
+                    self._profile_tools[pid] = self._build_tools_for(profile)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("任务模式 %s 工具构建失败: %s", pid, e)
+                    self._profile_tools[pid] = ToolRegistry()
+        self.tools = self._profile_tools.get(DEFAULT_PROFILE) or ToolRegistry()
+
+    def get_tools(self, profile_id: Optional[str]) -> ToolRegistry:
+        """按任务模式取工具注册表（会话运行时使用）。"""
+        return self._profile_tools.get(profile_id or "") or self.tools
+
+    def system_prompt_for(self, profile_id: Optional[str]) -> str:
+        """按任务模式取系统提示词：densechat 读 prompts/*.md，其余用 profile 内置提示。"""
+        profile = get_profile(profile_id)
+        if profile.system_prompt:
+            return profile.system_prompt
+        return self.system_prompt
+
+    def list_profiles(self) -> list[dict[str, Any]]:
+        return list_profiles()
 
     # ── Provider / 模型管理 ──
 
@@ -306,8 +367,142 @@ class DekacodeEngine:
         models = p.get("models", {}) or {}
         return models.get(mode or "flash") or models.get("flash") or self.config.flash_model
 
-    def new_session(self) -> "DekacodeSession":
-        return DekacodeSession(self)
+    def new_session(self, profile_id: Optional[str] = None) -> "DenseChatSession":
+        return DenseChatSession(self, profile_id=profile_id)
+
+    # ── 群聊：AI 回复（1 个 AI + N 个用户） ──
+
+    GROUP_AI_NAME = "DenseChat AI"
+
+    def group_session_id(self, profile_id: str) -> str:
+        """群聊房间对应的持久化会话 id（固定 id，跨重启保留历史）。"""
+        return f"grp_{profile_id}"
+
+    def persist_group_message(self, room: GroupChatRoom, msg: ChatMessage) -> None:
+        """把群聊消息增量写入持久化会话。"""
+        try:
+            sid = self.group_session_id(room.profile_id)
+            self.store.ensure_session(sid, profile=room.profile_id)
+            self.store.save_messages([msg], session_id=sid)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("群聊消息持久化失败: %s", e)
+
+    def load_group_history(self, profile_id: str, limit: int = 100) -> list[ChatMessage]:
+        """加载群聊持久化历史（服务器重启后恢复房间消息）。"""
+        try:
+            sid = self.group_session_id(profile_id)
+            if not self.store.set_session(sid):
+                return []
+            msgs = self.store.load_messages(sid)
+            return msgs[-limit:]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("群聊历史加载失败: %s", e)
+            return []
+
+    async def try_group_reply(self, room: GroupChatRoom) -> bool:
+        """群聊房间有新用户消息时，让 AI 基于共享历史生成回复并广播。
+
+        同一房间串行：AI 回复期间的新消息会在本轮结束后自动补回复。
+        """
+        if room._ai_running:
+            return False
+        msgs = list(room.messages)
+        if not msgs or msgs[-1].role != "user":
+            return False
+        room._ai_running = True
+        # 保存任务引用：防止被 GC，且支持 stop 取消
+        room._ai_task = asyncio.create_task(self._group_reply_task(room, msgs))
+        return True
+
+    def stop_group_reply(self, room: GroupChatRoom) -> bool:
+        """取消房间正在进行的 AI 回复。"""
+        if room._ai_task is not None and not room._ai_task.done():
+            room._ai_task.cancel()
+            return True
+        return False
+
+    async def _group_reply_task(self, room: GroupChatRoom, msgs: list[ChatMessage]) -> None:
+        ai_name = self.GROUP_AI_NAME
+        try:
+            loop = AgentLoop(
+                self.client,
+                self.get_tools(room.profile_id),
+                max_steps=self.max_steps,
+            )
+            system = self.system_prompt_for(room.profile_id)
+            system += (
+                f"\n\n当前是多人群聊（你叫 {ai_name}，消息带发言者名字）。"
+                "请直接回答最新消息，保持简短。用简体中文。"
+            )
+            replies: list[str] = []
+            await room.publish({"type": "ai_thinking_start", "name": ai_name})
+            async for ev in loop.run_stream(msgs, system_prompt=system):
+                if ev.kind == "delta":
+                    # 只广播增量流（前端累积显示）；最终内容以 reply 为准
+                    if ev.content:
+                        await room.publish({
+                            "type": "ai_delta", "name": ai_name, "content": ev.content})
+                elif ev.kind == "reply":
+                    text = ev.reply or ""
+                    if text:
+                        replies.append(text)
+            content = "".join(replies).strip() or "(无回复)"
+            ai_msg = ChatMessage(role="assistant", content=content, name=ai_name)
+            room.add_message(ai_msg)
+            self.persist_group_message(room, ai_msg)
+            self._persist_group_usage(room)
+            await room.publish({
+                "type": "chat_message", "role": "assistant", "name": ai_name,
+                "content": content, "final": True,
+            })
+        except asyncio.CancelledError:
+            await room.publish({
+                "type": "chat_message", "role": "assistant", "name": ai_name,
+                "content": "(AI 回复已被停止)", "final": True, "stopped": True,
+            })
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("群聊 AI 回复失败: %s", e)
+            await room.publish({
+                "type": "chat_message", "role": "assistant", "name": ai_name,
+                "content": f"(AI 回复出错) {_brief_error(e)}", "final": True, "error": True,
+            })
+        finally:
+            room._ai_running = False
+            room._ai_task = None
+            try:
+                await room.publish({"type": "ai_done", "name": ai_name})
+            except Exception:  # noqa: BLE001  # 取消传播时 publish 可能失败，忽略
+                pass
+            # AI 忙期间用户又发了消息 → 自动补一轮回复（排队语义）
+            if room.messages and room.messages[-1].role == "user":
+                try:
+                    await self.try_group_reply(room)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _persist_group_usage(self, room: GroupChatRoom) -> None:
+        """记录群聊 AI 回复的 token 用量与成本。"""
+        try:
+            usage = getattr(self.client, "last_usage", {}) or {}
+            input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            output_tokens = int(usage.get("completion_tokens", 0) or 0)
+            if input_tokens == 0 and output_tokens == 0:
+                return
+            cache_hit = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
+            cost = (
+                input_tokens / 1_000_000 * self.config.input_price_per_mtok
+                + output_tokens / 1_000_000 * self.config.output_price_per_mtok
+            )
+            room_turn = room.message_count()
+            self.store.save_usage(
+                room_turn, tier=self.model_mode,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                cache_hit_input=cache_hit, cost=round(cost, 6),
+                session_id=self.group_session_id(room.profile_id),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("群聊 usage 记录失败: %s", e)
 
     def switch_model(self, mode: str) -> str:
         mode = (mode or "flash").lower()
@@ -335,7 +530,7 @@ class DekacodeEngine:
     def update_config(self, key: str, value: Any) -> dict[str, Any]:
         old_value = getattr(self.config, key)
         new_value = self.config.update(key, value)
-        DekacodeConfig.write_env(self.project_root, key, new_value)
+        DenseChatConfig.write_env(self.project_root, key, new_value)
         if key in ("api_key", "base_url", "provider_name", "flash_model", "pro_model", "openai_model", "model_mode"):
             p = self._active_provider()
             if key == "model_mode":
@@ -389,7 +584,7 @@ class DekacodeEngine:
         if data.get("active"):
             self.active_provider_id = provider_id
             self.config.active_provider = provider_id
-            DekacodeConfig.write_env(self.project_root, "active_provider", provider_id)
+            DenseChatConfig.write_env(self.project_root, "active_provider", provider_id)
         if "active_model" in data and data["active_model"]:
             self.switch_model(data["active_model"])
         self._save_providers()
@@ -406,27 +601,14 @@ class DekacodeEngine:
         if self.active_provider_id == provider_id:
             self.active_provider_id = self._providers[0]["id"]
             self.config.active_provider = self.active_provider_id
-            DekacodeConfig.write_env(self.project_root, "active_provider", self.active_provider_id)
+            DenseChatConfig.write_env(self.project_root, "active_provider", self.active_provider_id)
         self._save_providers()
         self._apply_active_provider()
 
     def reload_skills(self) -> dict[str, Any]:
-        """重新构建工具注册表并加载技能（配置变更后调用）。"""
-        self.tools = ToolRegistry()
-        deps = ToolDeps(
-            workspace=self.project_root,
-            codegraph=self.graph,
-            tool_registry=self.tools,
-            max_output_chars=self.config.max_output_chars,
-        )
-        install_standard_tools(self.tools, deps=deps)
-        install_extra_tools(self.tools, workspace=self.project_root, graph=self.graph)
+        """重新构建各任务模式的工具注册表并加载技能（配置变更后调用）。"""
         self.skill_report = {"loaded": [], "errors": []}
-        if self.config.enable_skills:
-            self.skill_report = load_skills_from_dir(
-                self.tools, self.config.skills_dir, deps=deps
-            )
-        self._register_subagent_tool()
+        self._rebuild_profile_tools()
         return self.skill_report
 
     def compute_stats(self) -> dict[str, Any]:
@@ -461,22 +643,25 @@ class DekacodeEngine:
         return self.client.model
 
 
-class DekacodeSession:
-    """一个 WebSocket 会话：消息历史 + 模式 + 持久化游标。"""
+class DenseChatSession:
+    """一个 WebSocket 会话：消息历史 + 模式 + 任务模式（profile）+ 持久化游标。"""
 
-    def __init__(self, engine: DekacodeEngine):
+    def __init__(self, engine: DenseChatEngine, profile_id: Optional[str] = None):
         self.engine = engine
         self.messages: list[ChatMessage] = []
         self.mode = ModeState()
+        self.profile_id: str = get_profile(profile_id).id
+        self.profile: TaskProfile = get_profile(self.profile_id)
         self.session_id: Optional[str] = None
         self.workspace_id: Optional[str] = engine.workspace_id
+        self.user_id: Optional[str] = None  # 会话归属用户（多用户隔离）
         self._saved_len = 0
         self._stop_requested = False
         self._last_input = ""
         self._turn_index = 0
         self._turn_start_time = 0.0
         self.toolbox = ToolboxManager(
-            RegistryIndexSource(engine.tools),
+            RegistryIndexSource(engine.get_tools(self.profile_id)),
             enabled=True,
             max_activated=30,
         )
@@ -488,15 +673,30 @@ class DekacodeSession:
 
     # ── 持久化 ──
 
-    def load_session(self, session_id: str) -> bool:
+    def load_session(self, session_id: str, user_id: Optional[str] = None) -> bool:
         hist = self.engine.store.load_messages(session_id)
         if not hist:
             return False
+        # 多用户隔离：会话有归属用户且不是本人 → 拒绝（匿名 user_id 不受限）
+        owner = self.engine.store.get_session_user(session_id)
+        if owner and user_id and owner not in (user_id, "anon"):
+            raise PermissionError(f"无权访问会话 {session_id}")
         self.engine.store.set_session(session_id)
         self.session_id = session_id
+        self.user_id = owner
         self.workspace_id = self.engine.store.get_session_workspace(session_id)
         self.messages = hist
         self._saved_len = len(hist)
+        # 恢复任务模式（profile）
+        stored_profile = self.engine.store.get_profile(session_id)
+        if stored_profile:
+            self.profile_id = get_profile(stored_profile).id
+            self.profile = get_profile(self.profile_id)
+            self.toolbox = ToolboxManager(
+                RegistryIndexSource(self.engine.get_tools(self.profile_id)),
+                enabled=True,
+                max_activated=30,
+            )
         mode = self.engine.store.get_mode(session_id)
         if mode:
             try:
@@ -507,7 +707,9 @@ class DekacodeSession:
 
     def _persist(self) -> None:
         if not self.session_id:
-            self.session_id = self.engine.store.create_session(workspace_id=self.workspace_id)
+            self.session_id = self.engine.store.create_session(
+                workspace_id=self.workspace_id, profile=self.profile_id,
+                user_id=self.user_id)
             self._saved_len = 0
         elif self.workspace_id:
             self.engine.store.update_workspace(self.workspace_id, self.session_id)
@@ -515,8 +717,14 @@ class DekacodeSession:
         if unsaved:
             self.engine.store.save_messages(unsaved, session_id=self.session_id)
             self._saved_len = len(self.messages)
+            # 自动提取首条 user 消息作为会话摘要（若尚未设置）
+            first_user_msg = next((m.content for m in self.messages if m.role == "user" and m.content), None)
+            if first_user_msg:
+                preview = " ".join(first_user_msg.strip().split())[:80]
+                self.engine.store.update_summary(preview, session_id=self.session_id)
         if self.session_id:
             self.engine.store.set_mode(self.mode.mode.value, self.session_id)
+            self.engine.store.set_profile(self.profile_id, self.session_id)
 
     def _persist_usage(self) -> None:
         if not self.session_id:
@@ -578,7 +786,8 @@ class DekacodeSession:
             "roles": dict(roles),
             "tool_calls": tool_calls,
             "total_chars": total_chars,
-            "system_prompt": self.engine.system_prompt,
+            "profile": self.profile_id,
+            "system_prompt": self.engine.system_prompt_for(self.profile_id),
             "session_id": self.session_id,
             "workspace_id": self.workspace_id,
         }
@@ -598,6 +807,15 @@ class DekacodeSession:
         self._last_input = user_input
         self._stop_requested = False
         self._turn_start_time = time.time()
+
+        # 占位任务模式（如 anaii）：不调用模型/工具，直接回复占位提示
+        if not self.profile.available:
+            placeholder = self.profile.system_prompt or f"{self.profile.label} 模式即将上线。"
+            await send(type="thinking_start", status="Placeholder")
+            await send(type="text", content=placeholder)
+            await send(type="thinking_done")
+            return
+
         try:
             # 整轮处理加超时安全网：模型/DB 万一无限挂起时能恢复而不是永久卡死
             turn_timeout = getattr(self.engine.config, "turn_timeout", 300)
@@ -619,9 +837,9 @@ class DekacodeSession:
             await send(
                 type="trace", event="error",
                 t=round(time.time() - self._turn_start_time, 3),
-                error=f"{type(e).__name__}: {e}",
+                error=_brief_error(e),
             )
-            await send(type="error", content=f"处理失败: {e}")
+            await send(type="error", content=f"处理失败: {_brief_error(e)}")
             await send(type="thinking_done")
 
     async def _process_agent(
@@ -724,7 +942,7 @@ class DekacodeSession:
     ) -> None:
         loop = AgentLoop(
             self.engine.client,
-            self.engine.tools,
+            self.engine.get_tools(self.profile_id),
             max_steps=self.engine.max_steps,
             toolbox=self.toolbox,
         )
@@ -753,7 +971,7 @@ class DekacodeSession:
 
         async for ev in loop.run_stream(
             self._build_run_context(),
-            system_prompt=self.engine.system_prompt,
+            system_prompt=self.engine.system_prompt_for(self.profile_id),
         ):
             if self._stop_requested:
                 await trace("stopped")

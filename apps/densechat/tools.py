@@ -1,4 +1,4 @@
-# tools.py — Dekacode WebUI 的扩展工具集与技能加载器。
+# tools.py — DenseChat WebUI 的扩展工具集与技能加载器。
 #
 # 在 harness 标准工具之上补齐 coding agent 常用能力：
 #   file.grep / file.glob / code.callers / code.callees / code.read_symbol
@@ -78,7 +78,7 @@ def make_read_symbol(workspace: str, graph: Any):
         if graph is None:
             return "(codegraph 未注入)"
         from harness.codegraph import get_symbol_source
-        return get_symbol_source(graph, symbol) or f"(未找到符号 {symbol})"
+        return get_symbol_source(graph, symbol, workspace=workspace) or f"(未找到符号 {symbol})"
     return read_symbol
 
 
@@ -276,7 +276,7 @@ def load_skills_from_dir(
     for py in sorted(root.glob("*.py")):
         if py.name.startswith("_"):
             continue
-        mod_name = f"dekacode_skill_{py.stem}"
+        mod_name = f"densechat_skill_{py.stem}"
         try:
             spec = importlib.util.spec_from_file_location(mod_name, py)
             if spec is None or spec.loader is None:

@@ -1,4 +1,4 @@
-# config.py — Dekacode WebUI 的配置模型（更多配置键、模型/Provider 管理）。
+# config.py — DenseChat WebUI 的配置模型（更多配置键、模型/Provider 管理）。
 from __future__ import annotations
 
 import os
@@ -25,7 +25,7 @@ def _env_bool(value: str, default: bool = False) -> bool:
 
 
 @dataclass
-class DekacodeConfig:
+class DenseChatConfig:
     # 服务
     host: str = "0.0.0.0"
     port: int = 8080
@@ -62,23 +62,28 @@ class DekacodeConfig:
 
     # 持久化
     db_path: str = ""
+    users_db_path: str = ""
+    # 用户系统：false 时跳过登录直接进入（匿名模式）
+    enable_users: bool = True
 
     def __post_init__(self):
         if not self.project_root:
             self.project_root = str(Path.cwd())
         self.project_root = str(Path(self.project_root).resolve())
         if not self.db_path:
-            self.db_path = str(Path.home() / ".dekacode" / "dekacode.db")
+            self.db_path = str(Path.home() / ".densechat" / "densechat.db")
+        if not self.users_db_path:
+            self.users_db_path = str(Path.home() / ".densechat" / "users.db")
         if not self.providers_file:
-            self.providers_file = str(Path.home() / ".dekacode" / "providers.json")
+            self.providers_file = str(Path.home() / ".densechat" / "providers.json")
         if not self.skills_dir:
             self.skills_dir = str(Path(__file__).parent / "skills")
         if not self.prompts_dir:
             self.prompts_dir = str(Path(__file__).parent / "prompts")
 
     @classmethod
-    def from_env(cls, project_root: str | None = None) -> "DekacodeConfig":
-        root = Path(project_root or os.getenv("DEKACODE_PROJECT") or os.getcwd()).resolve()
+    def from_env(cls, project_root: str | None = None) -> "DenseChatConfig":
+        root = Path(project_root or os.getenv("DENSECHAT_PROJECT") or os.getcwd()).resolve()
         load_dotenv(root / ".env")
 
         def get(*names: str, default: Any = None) -> Any:
@@ -89,35 +94,37 @@ class DekacodeConfig:
             return default
 
         cfg = cls(
-            host=get("DEKACODE_HOST", "HOST", default="0.0.0.0"),
-            port=int(get("DEKACODE_PORT", "PORT", default="8080")),
+            host=get("DENSECHAT_HOST", "HOST", default="0.0.0.0"),
+            port=int(get("DENSECHAT_PORT", "PORT", default="8080")),
             project_root=str(root),
-            max_steps=int(get("DEKACODE_MAX_STEPS", default="12")),
-            max_output_chars=int(get("DEKACODE_MAX_OUTPUT_CHARS", default="6000")),
-            context_budget=int(get("DEKACODE_CONTEXT_BUDGET", default="60000")),
-            max_history_messages=int(get("DEKACODE_MAX_HISTORY_MESSAGES", default="100")),
-            api_key=get("DEKACODE_API_KEY", "OPENAI_API_KEY", default="") or "",
-            base_url=get("DEKACODE_BASE_URL", "OPENAI_API_BASE",
+            max_steps=int(get("DENSECHAT_MAX_STEPS", default="12")),
+            max_output_chars=int(get("DENSECHAT_MAX_OUTPUT_CHARS", default="6000")),
+            context_budget=int(get("DENSECHAT_CONTEXT_BUDGET", default="60000")),
+            max_history_messages=int(get("DENSECHAT_MAX_HISTORY_MESSAGES", default="100")),
+            api_key=get("DENSECHAT_API_KEY", "OPENAI_API_KEY", default="") or "",
+            base_url=get("DENSECHAT_BASE_URL", "OPENAI_API_BASE",
                          default="https://api.deepseek.com/v1"),
-            provider_name=get("DEKACODE_PROVIDER_NAME", default="DeepSeek"),
-            flash_model=get("DEKACODE_FLASH_MODEL", "FLASH_MODEL",
+            provider_name=get("DENSECHAT_PROVIDER_NAME", default="DeepSeek"),
+            flash_model=get("DENSECHAT_FLASH_MODEL", "FLASH_MODEL",
                             default="deepseek-v4-flash"),
-            pro_model=get("DEKACODE_PRO_MODEL", "PRO_MODEL", default="deepseek-v4-pro"),
-            openai_model=get("DEKACODE_OPENAI_MODEL", "OPENAI_MODEL",
+            pro_model=get("DENSECHAT_PRO_MODEL", "PRO_MODEL", default="deepseek-v4-pro"),
+            openai_model=get("DENSECHAT_OPENAI_MODEL", "OPENAI_MODEL",
                              default="gpt-4o-mini"),
-            model_mode=get("DEKACODE_MODEL_MODE", default="flash"),
-            input_price_per_mtok=float(get("DEKACODE_INPUT_PRICE_PER_MTok", default="0.1")),
-            output_price_per_mtok=float(get("DEKACODE_OUTPUT_PRICE_PER_MTok", default="2.0")),
-            providers_file=get("DEKACODE_PROVIDERS_FILE", default=""),
-            active_provider=get("DEKACODE_ACTIVE_PROVIDER", default="default"),
-            skills_dir=get("DEKACODE_SKILLS_DIR", default=""),
-            prompts_dir=get("DEKACODE_PROMPTS_DIR", default=""),
-            enable_skills=_env_bool(get("DEKACODE_ENABLE_SKILLS", default="true"), True),
-            enable_theme=_env_bool(get("DEKACODE_ENABLE_THEME", default="true"), True),
+            model_mode=get("DENSECHAT_MODEL_MODE", default="flash"),
+            input_price_per_mtok=float(get("DENSECHAT_INPUT_PRICE_PER_MTok", default="0.1")),
+            output_price_per_mtok=float(get("DENSECHAT_OUTPUT_PRICE_PER_MTok", default="2.0")),
+            providers_file=get("DENSECHAT_PROVIDERS_FILE", default=""),
+            active_provider=get("DENSECHAT_ACTIVE_PROVIDER", default="default"),
+            skills_dir=get("DENSECHAT_SKILLS_DIR", default=""),
+            prompts_dir=get("DENSECHAT_PROMPTS_DIR", default=""),
+            enable_skills=_env_bool(get("DENSECHAT_ENABLE_SKILLS", default="true"), True),
+            enable_theme=_env_bool(get("DENSECHAT_ENABLE_THEME", default="true"), True),
             thinking_collapsed_default=_env_bool(
                 get("THINKING_COLLAPSED_DEFAULT", default="true"), True),
-            theme=get("DEKACODE_THEME", default="dark"),
-            db_path=get("DEKACODE_DB", default=""),
+            theme=get("DENSECHAT_THEME", default="dark"),
+            db_path=get("DENSECHAT_DB", default=""),
+            users_db_path=get("DENSECHAT_USERS_DB", default=""),
+            enable_users=_env_bool(get("DENSECHAT_ENABLE_USERS", default="true"), True),
         )
         return cfg
 
@@ -143,9 +150,11 @@ class DekacodeConfig:
             new_val = str(value)
         setattr(self, key, new_val)
         if key == "db_path" and not new_val:
-            self.db_path = str(Path.home() / ".dekacode" / "dekacode.db")
+            self.db_path = str(Path.home() / ".densechat" / "densechat.db")
+        if key == "users_db_path" and not new_val:
+            self.users_db_path = str(Path.home() / ".densechat" / "users.db")
         if key == "providers_file" and not new_val:
-            self.providers_file = str(Path.home() / ".dekacode" / "providers.json")
+            self.providers_file = str(Path.home() / ".densechat" / "providers.json")
         if key == "skills_dir" and not new_val:
             self.skills_dir = str(Path(__file__).parent / "skills")
         if key == "prompts_dir" and not new_val:
@@ -157,28 +166,30 @@ class DekacodeConfig:
         env_path = Path(project_root) / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_key = {
-            "host": "DEKACODE_HOST", "port": "DEKACODE_PORT",
-            "max_steps": "DEKACODE_MAX_STEPS",
-            "max_output_chars": "DEKACODE_MAX_OUTPUT_CHARS",
-            "context_budget": "DEKACODE_CONTEXT_BUDGET",
-            "max_history_messages": "DEKACODE_MAX_HISTORY_MESSAGES",
-            "api_key": "DEKACODE_API_KEY", "base_url": "DEKACODE_BASE_URL",
-            "provider_name": "DEKACODE_PROVIDER_NAME",
-            "flash_model": "DEKACODE_FLASH_MODEL",
-            "pro_model": "DEKACODE_PRO_MODEL",
-            "openai_model": "DEKACODE_OPENAI_MODEL",
-            "model_mode": "DEKACODE_MODEL_MODE",
-            "input_price_per_mtok": "DEKACODE_INPUT_PRICE_PER_MTok",
-            "output_price_per_mtok": "DEKACODE_OUTPUT_PRICE_PER_MTok",
-            "providers_file": "DEKACODE_PROVIDERS_FILE",
-            "active_provider": "DEKACODE_ACTIVE_PROVIDER",
-            "skills_dir": "DEKACODE_SKILLS_DIR",
-            "prompts_dir": "DEKACODE_PROMPTS_DIR",
-            "enable_skills": "DEKACODE_ENABLE_SKILLS",
-            "enable_theme": "DEKACODE_ENABLE_THEME",
+            "host": "DENSECHAT_HOST", "port": "DENSECHAT_PORT",
+            "max_steps": "DENSECHAT_MAX_STEPS",
+            "max_output_chars": "DENSECHAT_MAX_OUTPUT_CHARS",
+            "context_budget": "DENSECHAT_CONTEXT_BUDGET",
+            "max_history_messages": "DENSECHAT_MAX_HISTORY_MESSAGES",
+            "api_key": "DENSECHAT_API_KEY", "base_url": "DENSECHAT_BASE_URL",
+            "provider_name": "DENSECHAT_PROVIDER_NAME",
+            "flash_model": "DENSECHAT_FLASH_MODEL",
+            "pro_model": "DENSECHAT_PRO_MODEL",
+            "openai_model": "DENSECHAT_OPENAI_MODEL",
+            "model_mode": "DENSECHAT_MODEL_MODE",
+            "input_price_per_mtok": "DENSECHAT_INPUT_PRICE_PER_MTok",
+            "output_price_per_mtok": "DENSECHAT_OUTPUT_PRICE_PER_MTok",
+            "providers_file": "DENSECHAT_PROVIDERS_FILE",
+            "active_provider": "DENSECHAT_ACTIVE_PROVIDER",
+            "skills_dir": "DENSECHAT_SKILLS_DIR",
+            "prompts_dir": "DENSECHAT_PROMPTS_DIR",
+            "enable_skills": "DENSECHAT_ENABLE_SKILLS",
+            "enable_theme": "DENSECHAT_ENABLE_THEME",
             "thinking_collapsed_default": "THINKING_COLLAPSED_DEFAULT",
-            "theme": "DEKACODE_THEME",
-            "db_path": "DEKACODE_DB",
+            "theme": "DENSECHAT_THEME",
+            "db_path": "DENSECHAT_DB",
+            "users_db_path": "DENSECHAT_USERS_DB",
+            "enable_users": "DENSECHAT_ENABLE_USERS",
         }.get(key)
         if not env_key:
             return

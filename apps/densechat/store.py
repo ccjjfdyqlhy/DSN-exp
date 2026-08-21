@@ -1,6 +1,6 @@
 # store.py — 全局工作区会话存储。
 #
-# 所有会话统一持久化到 ~/.dekacode/dekacode.db，并按 workspace 分组。
+# 所有会话统一持久化到 ~/.densechat/densechat.db，并按 workspace 分组。
 # 兼容 harness SessionStore 的主要接口，同时增加 workspace 维度。
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from typing import Any, Optional
 from harness.models.base import ChatMessage
 from harness.store import Migration, MigrationRunner
 from harness.store.sqlite import SqliteStore
+
+from .profiles import DEFAULT_PROFILE
 
 _MIGRATIONS = [
     Migration("001_workspaces", lambda c: c.executescript(
@@ -57,6 +59,14 @@ _MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
         """
     )),
+    # 任务模式（TaskProfile）：每个会话绑定一个任务模式（dekacode/random/anaii）
+    Migration("002_session_profile", lambda c: c.execute(
+        "ALTER TABLE sessions ADD COLUMN profile TEXT DEFAULT 'dekacode'"
+    )),
+    # 多用户：会话归属（NULL = 匿名/旧数据，对所有用户可见）
+    Migration("003_session_user", lambda c: c.execute(
+        "ALTER TABLE sessions ADD COLUMN user_id TEXT"
+    )),
 ]
 
 
@@ -67,7 +77,7 @@ def _now() -> str:
 class CentralSessionStore:
     def __init__(self, db_path: str = ""):
         if not db_path:
-            db_path = str(Path.home() / ".dekacode" / "dekacode.db")
+            db_path = str(Path.home() / ".densechat" / "densechat.db")
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.store = SqliteStore(db_path)
@@ -101,15 +111,30 @@ class CentralSessionStore:
     def session_id(self) -> Optional[str]:
         return self._session_id
 
-    def create_session(self, workspace_id: Optional[str] = None) -> str:
+    def create_session(self, workspace_id: Optional[str] = None,
+                       profile: Optional[str] = None,
+                       user_id: Optional[str] = None) -> str:
         sid = datetime.now().strftime("%Y%m%d_%H%M%S%f")
         now = _now()
+        profile = profile or DEFAULT_PROFILE
         self.store.execute(
-            "INSERT OR IGNORE INTO sessions (id, workspace_id, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?)",
-            (sid, workspace_id, now, now))
+            "INSERT OR IGNORE INTO sessions (id, workspace_id, profile, user_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, workspace_id, profile, user_id, now, now))
         self._session_id = sid
         return sid
+
+    def ensure_session(self, session_id: str, profile: Optional[str] = None,
+                       workspace_id: Optional[str] = None,
+                       user_id: Optional[str] = None) -> str:
+        """按指定 id 幂等创建会话（群聊房间持久化等固定 id 场景）。"""
+        now = _now()
+        self.store.execute(
+            "INSERT OR IGNORE INTO sessions (id, workspace_id, profile, user_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, workspace_id, profile or DEFAULT_PROFILE, user_id, now, now))
+        self._session_id = session_id
+        return session_id
 
     def set_session(self, session_id: str) -> bool:
         rows = self.store.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
@@ -118,9 +143,11 @@ class CentralSessionStore:
             return True
         return False
 
-    def list_sessions(self, limit: int = 200, workspace_id: Optional[str] = None) -> list[dict]:
+    def list_sessions(self, limit: int = 200, workspace_id: Optional[str] = None,
+                      user_id: Optional[str] = None) -> list[dict]:
         sql = (
             "SELECT s.id, s.workspace_id, s.created_at, s.updated_at, s.summary, s.mode,"
+            " s.profile AS profile, s.user_id AS user_id,"
             " w.path AS workspace_path,"
             " COALESCE(m.cnt, 0) AS message_count,"
             " COALESCE(u.cost, 0) AS total_cost, COALESCE(u.tok, 0) AS total_input"
@@ -131,10 +158,17 @@ class CentralSessionStore:
             " LEFT JOIN (SELECT session_id, SUM(cost) cost, SUM(input_tokens) tok"
             "            FROM turn_usage GROUP BY session_id) u ON s.id = u.session_id"
         )
+        conds: list[str] = []
         params: list = []
         if workspace_id:
-            sql += " WHERE s.workspace_id = ?"
+            conds.append("s.workspace_id = ?")
             params.append(workspace_id)
+        # 用户过滤：已登录用户只看自己的会话；匿名/NULL（旧数据）对所有人生效
+        if user_id and user_id != "anon":
+            conds.append("(s.user_id = ? OR s.user_id IS NULL)")
+            params.append(user_id)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY s.updated_at DESC LIMIT ?"
         params.append(limit)
         return [dict(r) for r in self.store.execute(sql, params)]
@@ -151,6 +185,18 @@ class CentralSessionStore:
         if sid:
             self.store.execute("UPDATE sessions SET mode = ? WHERE id = ?", (mode, sid))
 
+    def get_profile(self, session_id: Optional[str] = None) -> Optional[str]:
+        sid = session_id or self._session_id
+        if not sid:
+            return None
+        rows = self.store.execute("SELECT profile FROM sessions WHERE id = ?", (sid,))
+        return rows[0]["profile"] or DEFAULT_PROFILE if rows else None
+
+    def set_profile(self, profile: str, session_id: Optional[str] = None) -> None:
+        sid = session_id or self._session_id
+        if sid:
+            self.store.execute("UPDATE sessions SET profile = ? WHERE id = ?", (profile, sid))
+
     def update_summary(self, summary: str, session_id: Optional[str] = None) -> None:
         sid = session_id or self._session_id
         if sid:
@@ -166,6 +212,11 @@ class CentralSessionStore:
     def get_session_workspace(self, session_id: str) -> Optional[str]:
         rows = self.store.execute("SELECT workspace_id FROM sessions WHERE id = ?", (session_id,))
         return rows[0]["workspace_id"] if rows else None
+
+    def get_session_user(self, session_id: str) -> Optional[str]:
+        """会话归属用户；None = 匿名/旧数据（不限制访问）。"""
+        rows = self.store.execute("SELECT user_id FROM sessions WHERE id = ?", (session_id,))
+        return rows[0]["user_id"] if rows else None
 
     def get_workspace_path(self, workspace_id: str) -> Optional[str]:
         rows = self.store.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,))

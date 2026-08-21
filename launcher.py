@@ -41,9 +41,9 @@ APPS: dict[str, dict[str, Any]] = {
         "entry": "apps.text_agent.entry",
         "description": "harness 参考应用（纯文本 agent）",
     },
-    "dekacode": {
-        "entry": "apps.dekacode.entry",
-        "description": "基于 harness 复刻的 Dekacode WebUI（代码助手）",
+    "densechat": {
+        "entry": "apps.densechat.entry",
+        "description": "基于 harness 复刻的 DenseChat WebUI（代码助手）",
     },
 }
 

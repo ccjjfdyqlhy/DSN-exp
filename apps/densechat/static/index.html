@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DSN Dekacode</title>
-<link rel="stylesheet" href="/style.css?v=20250817">
+<title>DSN DenseChat</title>
+<link rel="icon" type="image/png" href="/logo.png">
+<link rel="stylesheet" href="/style.css?v=20250822">
 </head>
 <body>
 <div id="app">
@@ -65,10 +66,21 @@
       <div class="settings-content" id="settingsContent"></div>
     </div>
     <div class="chat-area" id="chatArea">
+      <div id="groupBar" class="group-bar" style="display:none">
+        <span class="group-bar-title">🎭 群聊</span>
+        <span class="group-bar-members" id="groupMembers"></span>
+      </div>
       <div id="welcome" class="welcome-centered">
-        <img src="/logo.png" alt="Dekacode" class="welcome-logo" id="welcomeLogo">
+        <img src="/logo.png" alt="DenseChat" class="welcome-logo" id="welcomeLogo">
         <div class="welcome-text" id="welcomeText">How can I help you?</div>
         <div class="welcome-project" id="welcomeProject"></div>
+        <div class="welcome-profile" id="welcomeProfile">
+          <div class="profile-slider-head">任务模式 · 选择智能体</div>
+          <div class="profile-radio-track" id="profileRadioTrack">
+            <!-- 选项与游标由 app.js 注入 -->
+          </div>
+          <div class="profile-slider-desc" id="profileSliderDesc"></div>
+        </div>
       </div>
       <div id="messages"></div>
     </div>
@@ -94,7 +106,7 @@
         <div id="modelPanel" class="model-panel" style="display:none"></div>
       </div>
       <div class="input-hint" id="inputHint"></div>
-      <div id="footerNotice">Dekacode is AI-powered — verify before applying.</div>
+      <div id="footerNotice">DenseChat is AI-powered — verify before applying.</div>
     </div>
   </div>
   <div id="splitter" class="splitter" hidden title="拖动调整右栏宽度"></div>
@@ -107,6 +119,38 @@
   </div>
 </div>
 <div id="toast"></div>
-<script src="/app.js?v=20250817"></script>
+
+<!-- 用户系统：登录 / 注册 -->
+<div id="authOverlay" class="auth-overlay" style="display:none">
+  <div class="auth-card">
+    <img src="/logo.png" alt="DenseChat" class="auth-logo">
+    <h2>DenseChat</h2>
+    <div class="auth-tabs">
+      <button id="authTabLogin" class="auth-tab active" onclick="showAuthTab('login')">登录</button>
+      <button id="authTabRegister" class="auth-tab" onclick="showAuthTab('register')">注册</button>
+    </div>
+    <form id="authForm" onsubmit="submitAuth(event)">
+      <div class="auth-field">
+        <label>用户名</label>
+        <input id="authUsername" type="text" autocomplete="username" placeholder="输入用户名" required>
+      </div>
+      <div class="auth-field" id="authNicknameField" style="display:none">
+        <label>昵称</label>
+        <input id="authNickname" type="text" autocomplete="nickname" placeholder="展示给群聊成员的昵称">
+      </div>
+      <div class="auth-field">
+        <label>密码</label>
+        <input id="authPassword" type="password" autocomplete="current-password" placeholder="至少 6 位" required>
+      </div>
+      <div class="auth-error" id="authError"></div>
+      <button type="submit" class="auth-submit" id="authSubmit">登录</button>
+    </form>
+    <div class="auth-footer" id="authFooter">
+      <a href="javascript:void(0)" onclick="continueAsGuest()">以游客身份继续 →</a>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js?v=20250822"></script>
 </body>
 </html>

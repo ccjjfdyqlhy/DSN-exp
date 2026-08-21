@@ -1,6 +1,6 @@
 # Skills
 
-把任意 `.py` 文件放在此目录（或 `DEKACODE_SKILLS_DIR` 指向的目录），
+把任意 `.py` 文件放在此目录（或 `DENSECHAT_SKILLS_DIR` 指向的目录），
 启动时会自动加载。
 
 约定：
