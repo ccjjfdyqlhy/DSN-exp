@@ -50,6 +50,7 @@ from .context_assembly import (
     SEG_VERBATIM,
     SEG_TAIL,
 )
+from .sdk import Agent, create_agent, tool
 
 __version__ = "0.4.0"
 
@@ -74,6 +75,9 @@ __all__ = [
     "install_standard_tools",
     "ContextGatherer",
     "ParseResult",
+    "Agent",
+    "create_agent",
+    "tool",
     "policy",
     "models",
     "pipeline",

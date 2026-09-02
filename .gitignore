@@ -48,3 +48,5 @@ AGENTS.md
 /apps/dsn/psychoscope/logs/*
 /apps/dsn/psychoscope/temp/*
 /apps/dsn/psychoscope/.dsn_client.json
+
+/.reasonix/
