@@ -23,3 +23,8 @@ coding_agent:
 densechat:
   entry: apps.densechat.entry
   description: 基于 harness 复刻的 DenseChat WebUI（代码助手）
+
+emotion_exp:
+  entry: apps.emotion_exp.entry
+  description: 基于 harness 话题上下文与情绪状态机的伴侣 Agent
+

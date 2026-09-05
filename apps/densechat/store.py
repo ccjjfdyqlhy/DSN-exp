@@ -67,6 +67,9 @@ _MIGRATIONS = [
     Migration("003_session_user", lambda c: c.execute(
         "ALTER TABLE sessions ADD COLUMN user_id TEXT"
     )),
+    Migration("004_message_reasoning", lambda c: c.execute(
+        "ALTER TABLE messages ADD COLUMN reasoning_content TEXT"
+    )),
 ]
 
 
@@ -236,18 +239,18 @@ class CentralSessionStore:
         now = _now()
         self.store.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
         self.store.execute_many(
-            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, name, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, name,"
+                        " reasoning_content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [(sid, m.role, m.content,
               json.dumps(m.tool_calls, ensure_ascii=False) if m.tool_calls else None,
-              m.tool_call_id, m.name, now) for m in messages])
+                            m.tool_call_id, m.name, m.reasoning_content, now) for m in messages])
 
     def load_messages(self, session_id: Optional[str] = None) -> list[ChatMessage]:
         sid = session_id or self._session_id
         if not sid:
             return []
         rows = self.store.execute(
-            "SELECT role, content, tool_calls, tool_call_id, name FROM messages"
+            "SELECT role, content, tool_calls, tool_call_id, name, reasoning_content FROM messages"
             " WHERE session_id = ? ORDER BY id", (sid,))
         msgs = []
         for r in rows:
@@ -259,7 +262,7 @@ class CentralSessionStore:
                     tool_calls = None
             msgs.append(ChatMessage(role=r["role"], content=r["content"] or "",
                                     tool_calls=tool_calls, tool_call_id=r["tool_call_id"],
-                                    name=r["name"]))
+                                    name=r["name"], reasoning_content=r["reasoning_content"]))
         return msgs
 
     # ── Usage ──

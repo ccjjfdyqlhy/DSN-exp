@@ -608,6 +608,8 @@ def create_app(engine: DenseChatEngine) -> FastAPI:
         result = []
         for m in msgs:
             item = {"role": m.role, "content": m.content}
+            if m.reasoning_content:
+                item["reasoning_content"] = m.reasoning_content
             if m.tool_calls:
                 item["tool_calls"] = [
                     {"name": tc.get("function", {}).get("name", ""),
@@ -635,6 +637,7 @@ def create_app(engine: DenseChatEngine) -> FastAPI:
                     "tool_calls": m.tool_calls,
                     "tool_call_id": m.tool_call_id,
                     "name": m.name,
+                    "reasoning_content": m.reasoning_content,
                 }
                 for m in msgs
             ],
@@ -661,6 +664,7 @@ def create_app(engine: DenseChatEngine) -> FastAPI:
                 tool_calls=m.get("tool_calls") or [],
                 tool_call_id=m.get("tool_call_id"),
                 name=m.get("name"),
+                reasoning_content=m.get("reasoning_content"),
             ))
         engine.store.set_session(sid)
         engine.store.save_messages(chat_msgs, session_id=sid)

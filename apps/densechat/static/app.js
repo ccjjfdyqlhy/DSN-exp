@@ -1645,9 +1645,14 @@ function updateSessionList() {
 let _lastHistoricalThinkingBody = null;
 
 function renderHistoricalAssistant(m) {
+  currentAssistantEl = createAssistantMessage();
+  _lastHistoricalThinkingBody = null;
+  if (m.reasoning_content) {
+    appendReasoningDelta(m.reasoning_content);
+    setThinkingCollapsed(true);
+  }
   if (m.content) appendAssistantText(m.content);
   if (m.tool_calls && m.tool_calls.length) {
-    if (!currentAssistantEl) currentAssistantEl = createAssistantMessage();
     ensureThinkingEl(true);
     setThinkingCollapsed(true);
     const body = currentAssistantEl.querySelector('.thinking-details-body');
@@ -1658,15 +1663,13 @@ function renderHistoricalAssistant(m) {
       let detail = '';
       try {
         const args = JSON.parse(argsRaw || '{}');
-        if (args.path) detail = args.path;
-        else if (args.pattern) detail = args.pattern;
-        else if (args.command) detail = String(args.command).split('\n')[0].slice(0, 60);
-        else if (args.url) detail = args.url;
+        detail = JSON.stringify(args);
       } catch (e) {}
       const div = document.createElement('div');
       div.className = 'thinking-tool-item';
       div.style.color = 'var(--text-dim)';
-      div.textContent = `▸ ${name}${detail ? ': ' + detail : ''}`;
+      div.textContent = `${name}${detail ? ': ' + detail : ''}`;
+      div.title = argsRaw;
       body.appendChild(div);
     }
     const banner = currentAssistantEl.querySelector('.thinking-banner-text');
@@ -1679,7 +1682,8 @@ function renderHistoricalToolResult(m) {
   const div = document.createElement('div');
   div.className = 'thinking-tool-item';
   div.style.color = 'var(--text-muted)';
-  div.textContent = `  [tool] ${m.name || ''}`;
+  div.textContent = `[tool result]${m.name ? ' ' + m.name : ''}`;
+  div.title = m.content || '';
   if (body) body.appendChild(div);
   else {
     messagesEl().appendChild(div);
@@ -2907,7 +2911,11 @@ async function loadBackendSession(sid) {
     _lastHistoricalThinkingBody = null;
     messageId = 0;
     for (const m of msgs) {
-      if (m.role === 'user') appendUserMessage(m.content || '');
+      if (m.role === 'user') {
+        currentAssistantEl = null;
+        _lastHistoricalThinkingBody = null;
+        appendUserMessage(m.content || '');
+      }
       else if (m.role === 'assistant') renderHistoricalAssistant(m);
       else if (m.role === 'tool') renderHistoricalToolResult(m);
     }

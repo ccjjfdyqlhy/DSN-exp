@@ -35,6 +35,8 @@ from . import store
 from . import auth
 from . import gateway
 from . import codegraph
+from . import personality
+from .personality import PersonalitySystemV3, CharacterCard, random_indicator_vector
 from .conversation import Conversation, ConversationManager
 from .cache import SemanticCache
 from .prompts import PromptEngine, PromptFragment
@@ -88,5 +90,8 @@ __all__ = [
     "auth",
     "gateway",
     "codegraph",
+    "personality",
+    "PersonalitySystemV3",
+    "CharacterCard",
     "__version__",
 ]
