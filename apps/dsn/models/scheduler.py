@@ -34,6 +34,9 @@ class ModelScheduler(_HarnessModelScheduler):
             profiles_dir=profiles_dir,
         )
 
+        # 自动扫描并注册 profiles 目录中的 llama_cpp 引擎模型
+        self._auto_register_llama_profiles()
+
         # embedding 常驻模型（DSN 专属，不被调度器卸载）
         emb_model = Config.MEMORY_EMBEDDING_MODEL
         if emb_model and Config.MEMORY_EMBEDDING_ENABLED:
@@ -45,6 +48,29 @@ class ModelScheduler(_HarnessModelScheduler):
                 resident=True,
                 orchestrated=False,
             )
+
+    def _auto_register_llama_profiles(self) -> None:
+        """为 YAML profiles 中声明 engine: llama_cpp 的模型自动绑定 LlamaServerLauncher 进程钩子。"""
+        from harness.models.llamacpp import LlamaServerConfig, LlamaServerLauncher
+        for name, profile in self._profiles_by_name.items():
+            if profile.engine in ("llama_cpp", "llamacpp") and profile.llama_config:
+                cfg = LlamaServerConfig.from_dict(profile.llama_config)
+                launcher = LlamaServerLauncher(cfg)
+                load_fn, unload_fn = launcher.create_scheduler_hooks(
+                    load_timeout=profile.load_timeout or 180
+                )
+                self.register(
+                    model_name=name,
+                    base_url=launcher.base_url,
+                    load_fn=load_fn,
+                    unload_fn=unload_fn,
+                    priority=profile.priority,
+                    resident=profile.resident,
+                    immediate=profile.immediate,
+                    orchestrated=profile.orchestrated,
+                    engine=profile.engine,
+                    llama_config=profile.llama_config,
+                )
 
 
 # 兼容导出（原 dsn 模块的公开名）

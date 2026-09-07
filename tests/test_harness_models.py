@@ -50,6 +50,13 @@ def test_dsn_lmstudio_chat_conforms_ichatclient():
     assert chat.model == "lmstudio"  # 未指定模型时回退
 
 
+def test_dsn_llamacpp_chat_conforms_ichatclient():
+    from apps.dsn.models.clients import LlamaCppChat
+    chat = LlamaCppChat(base_url="http://localhost:8080", model_name="qwen-gguf")
+    assert isinstance(chat, IChatClient), "LlamaCppChat 未实现 IChatClient"
+    assert chat.model == "qwen-gguf"
+
+
 def test_model_provider_registry_with_dsn_backends():
     """dsn 后端经 harness ModelProviderRegistry 注册并可解析为 IChatClient。"""
     from apps.dsn.models.clients import OpenAIChat

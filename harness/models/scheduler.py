@@ -48,6 +48,8 @@ class ModelProfile:
     orchestrated: bool = True
     load_timeout: int | None = None
     request_timeout: int | None = None
+    engine: str = "lmstudio"                 # "lmstudio" | "llama_cpp" | "openai"
+    llama_config: dict | None = None          # llama.cpp 专属启动参数（GGUF 路径、分层、上下文等）
 
 
 @dataclass(slots=True)
@@ -123,6 +125,8 @@ class ModelScheduler:
             try:
                 data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
                 name = data.get("model") or data.get("name") or path.stem
+                engine = data.get("engine", "lmstudio")
+                llama_cfg = data.get("llama_config") or data.get("llama_server") or None
                 profiles[str(name)] = ModelProfile(
                     priority=int(data.get("priority", 50)),
                     resident=bool(data.get("resident", False)),
@@ -130,6 +134,8 @@ class ModelScheduler:
                     orchestrated=bool(data.get("orchestrated", True)),
                     load_timeout=data.get("load_timeout"),
                     request_timeout=data.get("request_timeout"),
+                    engine=str(engine),
+                    llama_config=llama_cfg,
                 )
             except Exception:
                 logger.exception("Failed to load model profile: %s", path)
@@ -147,6 +153,8 @@ class ModelScheduler:
         priority: int | None = None,
         immediate: bool | None = None,
         orchestrated: bool | None = None,
+        engine: str | None = None,
+        llama_config: dict | None = None,
     ) -> None:
         """注册模型；显式参数与 YAML profile 合并（显式优先）。"""
         if not model_name:
@@ -159,6 +167,8 @@ class ModelScheduler:
             orchestrated=profile.orchestrated if orchestrated is None else orchestrated,
             load_timeout=profile.load_timeout,
             request_timeout=profile.request_timeout,
+            engine=profile.engine if engine is None else engine,
+            llama_config=profile.llama_config if llama_config is None else llama_config,
         )
         with self._condition:
             existing = self._models.get(model_name)
@@ -175,9 +185,9 @@ class ModelScheduler:
                 unload_fn=unload_fn,
                 profile=merged,
             )
-            logger.info("Registered model: %s priority=%d resident=%s immediate=%s orchestrated=%s",
+            logger.info("Registered model: %s priority=%d resident=%s immediate=%s orchestrated=%s engine=%s",
                         model_name, merged.priority, merged.resident,
-                        merged.immediate, merged.orchestrated)
+                        merged.immediate, merged.orchestrated, merged.engine)
 
     def mark_preloaded(self, model_name: str) -> None:
         with self._condition:

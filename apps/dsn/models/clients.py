@@ -19,6 +19,12 @@ from harness.models.lmstudio import (
     load_lmstudio_model as _load_lmstudio_model,
     unload_lmstudio_model as _unload_lmstudio_model,
 )
+from harness.models.llamacpp import (
+    LlamaServerConfig,
+    LlamaServerLauncher,
+    LlamaCppChat as _HarnessLlamaCppChat,
+    LlamaCppEmbeddingClient,
+)
 
 
 # 全局详细模式标志，由 /detail 命令切换
@@ -652,6 +658,67 @@ class LMStudioChat(_HarnessLMStudioChat):
 
     def __repr__(self):
         return f"<LMStudioChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
+
+
+class LlamaCppChat(_HarnessLlamaCppChat):
+    """
+    本地自部署 llama.cpp 聊天客户端（DSN 扩展）。
+    通用 invoke/stream/原生 toolcall/思考提取由 harness.models.llamacpp 提供，
+    本类保留 DSN 专属对话历史管理与辅助功能。
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:8080",
+        model_name: Optional[str] = None,
+        timeout: float = 300.0,
+        logger: Optional[logging.Logger] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        api_key: Optional[str] = None,
+        launcher: Optional[LlamaServerLauncher] = None,
+    ):
+        super().__init__(
+            base_url=base_url,
+            model_name=model_name,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=api_key,
+            launcher=launcher,
+        )
+        self.messages: List[Dict[str, str]] = []
+
+        if logger is not None:
+            self.logger = logger
+        else:
+            self.logger = logging.getLogger(self.__class__.__name__)
+            self.logger.setLevel(logging.INFO)
+
+        self.logger.info("LlamaCppChat客户端初始化完成，地址：%s，模型：%s", self.base_url, self.model_name)
+
+    def reset_conversation(self):
+        """清空当前对话历史"""
+        self.messages.clear()
+        self.logger.info("对话历史已重置")
+
+    def get_history(self) -> List[Dict[str, str]]:
+        """获取当前对话历史的副本。"""
+        return self.messages.copy()
+
+    def set_model(self, model_name: str):
+        """切换使用的模型。"""
+        self.model_name = model_name
+        self.model = model_name
+        self.logger.info("模型切换为: %s", self.model_name)
+
+    def set_base_url(self, base_url: str):
+        """更新服务地址"""
+        self.base_url = base_url.rstrip('/')
+        self.logger.info("服务地址已更新为: %s", self.base_url)
+
+    def __repr__(self):
+        return f"<LlamaCppChat base_url={self.base_url} model={self.model_name} history_len={len(self.messages)}>"
 
 
 class EmbeddingClient:

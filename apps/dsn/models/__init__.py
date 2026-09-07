@@ -1,6 +1,7 @@
 from .clients import (
     OpenAIChat,
     LMStudioChat,
+    LlamaCppChat,
     LMSummaryModel,
     EmbeddingClient,
     OCRModel,
@@ -32,6 +33,7 @@ from .dynamic_router import (
 __all__ = [
     "OpenAIChat",
     "LMStudioChat",
+    "LlamaCppChat",
     "LMSummaryModel",
     "EmbeddingClient",
     "OCRModel",

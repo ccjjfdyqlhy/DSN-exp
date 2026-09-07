@@ -21,6 +21,12 @@ from .lmstudio import (
     load_lmstudio_model,
     unload_lmstudio_model,
 )
+from .llamacpp import (
+    LlamaServerConfig,
+    LlamaServerLauncher,
+    LlamaCppChat,
+    LlamaCppEmbeddingClient,
+)
 from .dynamic_router import (
     DynamicRouter,
     MonitorStore,
@@ -48,6 +54,11 @@ __all__ = [
     "LMStudioChat",
     "load_lmstudio_model",
     "unload_lmstudio_model",
+    # 本地 llama.cpp 自部署推理引擎支持
+    "LlamaServerConfig",
+    "LlamaServerLauncher",
+    "LlamaCppChat",
+    "LlamaCppEmbeddingClient",
     "DynamicRouter",
     "MonitorStore",
     "ManagedAccount",

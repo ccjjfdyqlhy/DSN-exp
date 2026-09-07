@@ -35,7 +35,7 @@ class Config:
     # ═══════════════════════════════════════════════════════════════════════
 
     # 主对话模型
-    MAIN_MODEL_TYPE = _env("MAIN_MODEL_TYPE", "openai")         # "openai" | "lmstudio"
+    MAIN_MODEL_TYPE = _env("MAIN_MODEL_TYPE", "openai")         # "openai" | "lmstudio" | "llamacpp"
     MAIN_MODEL_NAME = _env("MAIN_MODEL_NAME", "deepseek-v4-flash")
 
     # OpenAI 兼容 API；主模型使用 openai 后端时 API Key 必填。
@@ -83,6 +83,18 @@ class Config:
     LMSTUDIO_TEMPERATURE = float(_env("LMSTUDIO_TEMPERATURE", "0.7"))
     LMSTUDIO_MAX_TOKENS = int(_env("LMSTUDIO_MAX_TOKENS", "4096"))
     LMSTUDIO_TIMEOUT = int(_env("LMSTUDIO_TIMEOUT", "300"))
+
+    # ── 本地自部署 llama.cpp 后端参数 ──
+    LLAMACPP_ENABLED = _env("LLAMACPP_ENABLED", "false").lower() == "true"
+    LLAMACPP_BIN = _env("LLAMACPP_BIN", "~/llama.cpp/build/bin/llama-server")
+    LLAMACPP_BASE_URL = _env("LLAMACPP_BASE_URL", "http://127.0.0.1:8080")
+    LLAMACPP_MODEL_PATH = _env("LLAMACPP_MODEL_PATH", "")
+    LLAMACPP_TEMPERATURE = float(_env("LLAMACPP_TEMPERATURE", "0.7"))
+    LLAMACPP_MAX_TOKENS = int(_env("LLAMACPP_MAX_TOKENS", "4096"))
+    LLAMACPP_TIMEOUT = int(_env("LLAMACPP_TIMEOUT", "300"))
+    LLAMACPP_GPU_LAYERS = int(_env("LLAMACPP_GPU_LAYERS", "-1")) if _env("LLAMACPP_GPU_LAYERS") else None
+    LLAMACPP_CTX_SIZE = int(_env("LLAMACPP_CTX_SIZE", "0")) if _env("LLAMACPP_CTX_SIZE") else None
+    LLAMACPP_REASONING_FORMAT = _env("LLAMACPP_REASONING_FORMAT", "")
 
     # ── 推理模型 ──
     REASONER_ENABLED = _env("REASONER_ENABLED", "true").lower() == "true"

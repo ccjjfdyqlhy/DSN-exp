@@ -24,7 +24,7 @@ from apps.dsn.api.update import update_bp
 from apps.dsn.api.checkin import checkin_bp, init_checkin_api
 from apps.dsn.db.plan_store import set_plan_db
 from apps.dsn.db.chat import ChatDBManager
-from apps.dsn.models import OpenAIChat, LMSummaryModel, LMStudioChat, EmbeddingClient
+from apps.dsn.models import OpenAIChat, LMSummaryModel, LMStudioChat, LlamaCppChat, EmbeddingClient
 from apps.dsn.models import _load_lmstudio_model, _unload_lmstudio_model
 from apps.dsn.memory import MemorySystem
 from apps.dsn.tasks import TaskManager, TaskType
@@ -68,6 +68,14 @@ _auth_manager = None
 def create_chat_client(model_type: str = None):
     if model_type is None:
         model_type = app.config.get("MAIN_MODEL_TYPE", "openai")
+    if model_type in ("llamacpp", "llama_cpp", "gguf"):
+        return LlamaCppChat(
+            base_url=app.config.get("LLAMACPP_BASE_URL", "http://127.0.0.1:8080"),
+            model_name=app.config.get("MAIN_MODEL_NAME"),
+            temperature=app.config.get("LLAMACPP_TEMPERATURE", 0.7),
+            max_tokens=app.config.get("LLAMACPP_MAX_TOKENS", 4096),
+            timeout=app.config.get("LLAMACPP_TIMEOUT", 300),
+        )
     if model_type in ("fast", "lmstudio"):
         return LMStudioChat(
             base_url=app.config.get("LMSTUDIO_BASE_URL", "http://localhost:4501"),
@@ -418,6 +426,14 @@ def create_application():
     _model_provider = ModelProviderRegistry()
 
     def _make_dsn_chat(model_type: str):
+        if model_type in ("llamacpp", "llama_cpp", "gguf"):
+            return LlamaCppChat(
+                base_url=Config.LLAMACPP_BASE_URL,
+                model_name=Config.MAIN_MODEL_NAME,
+                temperature=Config.LLAMACPP_TEMPERATURE,
+                max_tokens=Config.LLAMACPP_MAX_TOKENS,
+                timeout=Config.LLAMACPP_TIMEOUT,
+            )
         if model_type == "lmstudio":
             return LMStudioChat(
                 base_url=Config.LMSTUDIO_BASE_URL,
@@ -437,6 +453,7 @@ def create_application():
 
     _model_provider.register_chat("openai", lambda: _make_dsn_chat("openai"))
     _model_provider.register_chat("lmstudio", lambda: _make_dsn_chat("lmstudio"))
+    _model_provider.register_chat("llamacpp", lambda: _make_dsn_chat("llamacpp"))
     _model_provider.register_embedding("embedding", _make_dsn_embedding)
     harness_runtime.register("model_provider", _model_provider)
 

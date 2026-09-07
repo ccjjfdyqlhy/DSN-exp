@@ -1,0 +1,14 @@
+# apps/dsn/model_profiles/gemma_3_4b_it_gguf.yaml
+# Gemma 3 4B IT (llama.cpp GGUF 基础模型)
+model: gemma-3-4b-it-gguf
+engine: llama_cpp
+priority: 75
+resident: false
+immediate: false
+orchestrated: true
+load_timeout: 120
+request_timeout: 300
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /home/darkstar/.lmstudio/models/lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf

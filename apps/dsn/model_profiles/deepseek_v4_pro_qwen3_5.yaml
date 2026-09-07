@@ -1,0 +1,15 @@
+# apps/dsn/model_profiles/deepseek_v4_pro_qwen3_5.yaml
+# DeepSeek-V4-Pro / Qwen3.5 4B MTP (llama.cpp 推理思考模型)
+model: deepseek-v4-pro-qwen3.5
+engine: llama_cpp
+priority: 90
+resident: false
+immediate: false
+orchestrated: true
+load_timeout: 180
+request_timeout: 600
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /home/darkstar/qwen_weights/Qwen3.5/DeepSeek-V4-Pro-Qwen3.5-4B-MTP-Q8_0.gguf
+  reasoning_format: deepseek

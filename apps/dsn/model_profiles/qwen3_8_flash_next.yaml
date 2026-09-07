@@ -1,0 +1,21 @@
+# apps/dsn/model_profiles/qwen3_8_flash_next.yaml
+# Qwen3.8 Flash Next 模型配置（基于 llama.cpp 分片 GGUF 与 Jinja 模板）
+model: qwen3.8-flash-next
+engine: llama_cpp
+priority: 85
+resident: false
+immediate: false
+orchestrated: true
+load_timeout: 180
+request_timeout: 300
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /home/darkstar/qwen_weights/Qwen3.8-Flash-Next-GGUF/UD-IQ1_M/Qwen3.8-Flash-Next-UD-IQ1_M-00001-of-00003.gguf
+  n_gpu_layers: 17
+  tensor_split: "11,11"
+  ctx_size: 128000
+  temp: 1.0
+  jinja: true
+  chat_template_file: /home/darkstar/qwen_weights/Qwen3.8-Flash-Next-GGUF/chat_template.jinja
+  reasoning_format: deepseek
