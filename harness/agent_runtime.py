@@ -18,7 +18,7 @@ from typing import Any, Optional
 from .agent import AgentLoop, AgentRunResult
 from .conversation import Conversation, ConversationManager
 from .memory import InMemoryStore, MemoryEntry
-from .models.base import IChatClient, IEmbeddingClient
+from .orchestrator.base import IChatClient, IEmbeddingClient
 from .runtime import Runtime
 from .settings import Settings
 from .tools import Tool, ToolRegistry

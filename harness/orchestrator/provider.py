@@ -12,13 +12,14 @@ from .base import IChatClient, IEmbeddingClient
 
 
 class ModelProviderRegistry:
-    """模型提供商注册表。"""
+    """模型提供商注册表，桥接 ModelOrchestrator。"""
 
-    def __init__(self):
+    def __init__(self, orchestrator: Optional[Any] = None):
         self._chat_factories: dict[str, Callable[[], IChatClient]] = {}
         self._embedding_factories: dict[str, Callable[[], IEmbeddingClient]] = {}
         self._chat_instances: dict[str, IChatClient] = {}
         self._embedding_instances: dict[str, IEmbeddingClient] = {}
+        self._orchestrator = orchestrator
 
     def register_chat(self, key: str, factory: Callable[[], IChatClient],
                       *, replace: bool = False) -> "ModelProviderRegistry":
@@ -39,7 +40,13 @@ class ModelProviderRegistry:
     def get_chat_client(self, key: str) -> IChatClient:
         if key not in self._chat_instances:
             if key not in self._chat_factories:
-                raise KeyError(f"对话模型后端未注册: {key}")
+                # 尝试从全局 ModelOrchestrator 解析
+                from .router import ModelOrchestrator
+                orch = self._orchestrator or ModelOrchestrator.get_instance()
+                try:
+                    return orch.get_client(key)
+                except Exception:
+                    raise KeyError(f"对话模型后端未注册: {key}")
             self._chat_instances[key] = self._chat_factories[key]()
         return self._chat_instances[key]
 

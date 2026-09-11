@@ -1,0 +1,19 @@
+# apps/dsn/model_profiles/pro_half_qwen3_8_27b.yaml
+# Pro half 模型 (cmd.txt: Pro half)
+# ~/llama.cpp/build/bin/llama-server --model /home/darkstar/qwen_weights/Qwen3.8-27B-UD-Q4_K_XL/Qwen3.8-27B-UD-Q4_K_XL.gguf --tensor-split 11,11 --ctx-size 50000 --flash-attn on --agent
+model: pro-half-qwen3.8-27b
+engine: llama_cpp
+priority: 70
+resident: false
+immediate: false
+orchestrated: true
+load_timeout: 240
+request_timeout: 600
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /home/darkstar/qwen_weights/Qwen3.8-27B-UD-Q4_K_XL/Qwen3.8-27B-UD-Q4_K_XL.gguf
+  tensor_split: "11,11"
+  ctx_size: 50000
+  flash_attn: "on"
+  agent: true

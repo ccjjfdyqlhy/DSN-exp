@@ -1,66 +1,19 @@
 # harness/models/__init__.py
-# 通用模型抽象层 — 与具体厂商/场景解耦。
+"""harness.models 兼容模块，全面重导出 harness.orchestrator。"""
 
-from .base import (
-    ChatMessage,
-    ToolCall,
-    ChatResponse,
-    IChatClient,
-    IEmbeddingClient,
-    IModelProvider,
-    ChatClientAdapter,
-)
-from .provider import ModelProviderRegistry
-# ModelRouter/TierConfig 唯一实现在 policy.router（旧 models/router.py 已合并删除）
-from ..policy.router import ModelRouter, TierConfig
-# 多模型编排广义实现（从 DSN 应用广义化移植）
-from .scheduler import ModelScheduler, ModelProfile, list_loaded_models
-from .failover import FailoverChat, FailoverEndpoint
-from .lmstudio import (
-    LMStudioChat,
-    load_lmstudio_model,
-    unload_lmstudio_model,
-)
-from .llamacpp import (
-    LlamaServerConfig,
-    LlamaServerLauncher,
-    LlamaCppChat,
-    LlamaCppEmbeddingClient,
-)
-from .dynamic_router import (
-    DynamicRouter,
-    MonitorStore,
-    ManagedAccount,
-    AccountProvider,
-)
+import sys
+from harness import orchestrator
 
-__all__ = [
-    "ChatMessage",
-    "ToolCall",
-    "ChatResponse",
-    "IChatClient",
-    "IEmbeddingClient",
-    "IModelProvider",
-    "ChatClientAdapter",
-    "ModelProviderRegistry",
-    "ModelRouter",
-    "TierConfig",
-    # 多模型编排
-    "ModelScheduler",
-    "ModelProfile",
-    "list_loaded_models",
-    "FailoverChat",
-    "FailoverEndpoint",
-    "LMStudioChat",
-    "load_lmstudio_model",
-    "unload_lmstudio_model",
-    # 本地 llama.cpp 自部署推理引擎支持
-    "LlamaServerConfig",
-    "LlamaServerLauncher",
-    "LlamaCppChat",
-    "LlamaCppEmbeddingClient",
-    "DynamicRouter",
-    "MonitorStore",
-    "ManagedAccount",
-    "AccountProvider",
-]
+# 将 harness.orchestrator 映射进 sys.modules 保持模块一致性
+sys.modules["harness.models"] = orchestrator
+sys.modules["harness.models.base"] = sys.modules.get("harness.orchestrator.base", orchestrator.base)
+sys.modules["harness.models.llamacpp"] = sys.modules.get("harness.orchestrator.llamacpp", orchestrator.llamacpp)
+sys.modules["harness.models.lmstudio"] = sys.modules.get("harness.orchestrator.lmstudio", orchestrator.lmstudio)
+sys.modules["harness.models.openai"] = sys.modules.get("harness.orchestrator.openai", orchestrator.openai)
+sys.modules["harness.models.scheduler"] = sys.modules.get("harness.orchestrator.scheduler", orchestrator.scheduler)
+sys.modules["harness.models.provider"] = sys.modules.get("harness.orchestrator.provider", orchestrator.provider)
+sys.modules["harness.models.failover"] = sys.modules.get("harness.orchestrator.failover", orchestrator.failover)
+sys.modules["harness.models.dynamic_router"] = sys.modules.get("harness.orchestrator.dynamic_router", orchestrator.dynamic_router)
+sys.modules["harness.models.stub"] = sys.modules.get("harness.orchestrator.stub", orchestrator.stub)
+
+from harness.orchestrator import *

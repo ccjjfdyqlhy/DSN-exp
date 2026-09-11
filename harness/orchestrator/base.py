@@ -138,7 +138,7 @@ class ChatClientAdapter:
     def _to_message_dicts(messages: list[Any]) -> list[dict]:
         out = []
         for m in messages:
-            if isinstance(m, ChatMessage):
+            if hasattr(m, "to_dict") and callable(m.to_dict):
                 out.append(m.to_dict())
             elif isinstance(m, dict):
                 out.append(m)

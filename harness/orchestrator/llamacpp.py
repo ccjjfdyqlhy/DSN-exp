@@ -10,12 +10,15 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
+import ctypes
 import json
 import logging
 import os
 import shlex
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +29,36 @@ import requests
 from .base import ChatClientAdapter, ChatResponse, IEmbeddingClient, ToolCall
 
 logger = logging.getLogger("LlamaCpp")
+
+# 全局活跃进程注册表，供 atexit 统一释放
+_ACTIVE_LAUNCHERS: set["LlamaServerLauncher"] = set()
+
+
+def _cleanup_active_launchers():
+    """Python 进程退出或被终止时的兜底显存清理。"""
+    for launcher in list(_ACTIVE_LAUNCHERS):
+        try:
+            launcher.stop()
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_active_launchers)
+
+
+def _set_parent_death_signal():
+    """Linux 平台：当父进程意外死亡时，自动向当前子进程发送 SIGTERM 终止信号。"""
+    try:
+        PR_SET_PDEATHSIG = 1
+        libc = ctypes.CDLL("libc.so.6")
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    except Exception:
+        pass
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except Exception:
+            pass
 
 
 @dataclass
@@ -47,6 +80,8 @@ class LlamaServerConfig:
     api_key: Optional[str] = None
     embeddings: bool = False
     alias: Optional[str] = None
+    flash_attn: Optional[str] = None
+    agent: bool = False
     extra_args: list[str] = field(default_factory=list)
 
     def resolved_binary_path(self) -> str:
@@ -107,6 +142,12 @@ class LlamaServerConfig:
 
         if self.alias:
             cmd.extend(["--alias", str(self.alias)])
+
+        if self.flash_attn:
+            cmd.extend(["--flash-attn", str(self.flash_attn)])
+
+        if self.agent:
+            cmd.append("--agent")
 
         if self.extra_args:
             cmd.extend(self.extra_args)
@@ -175,6 +216,12 @@ class LlamaServerConfig:
             elif arg in ("-a", "--alias") and i + 1 < n:
                 config.alias = tokens[i + 1]
                 i += 2
+            elif arg == "--flash-attn" and i + 1 < n:
+                config.flash_attn = tokens[i + 1]
+                i += 2
+            elif arg == "--agent":
+                config.agent = True
+                i += 1
             else:
                 extra.append(arg)
                 i += 1
@@ -201,6 +248,8 @@ class LlamaServerConfig:
             api_key=data.get("api_key"),
             embeddings=bool(data.get("embeddings", False)),
             alias=data.get("alias"),
+            flash_attn=data.get("flash_attn"),
+            agent=bool(data.get("agent", False)),
             extra_args=list(data.get("extra_args", [])),
         )
 
@@ -221,6 +270,8 @@ class LlamaServerConfig:
             "api_key": self.api_key,
             "embeddings": self.embeddings,
             "alias": self.alias,
+            "flash_attn": self.flash_attn,
+            "agent": self.agent,
             "extra_args": self.extra_args,
         }
 
@@ -275,7 +326,7 @@ class LlamaServerLauncher:
         except Exception:
             return False
 
-    def start(self, wait_ready: bool = True, timeout: float = 180.0) -> bool:
+    def start(self, wait_ready: bool = True, timeout: float = 180.0, progress_callback: Optional[Callable[[float], None]] = None) -> bool:
         """启动 llama-server 实例。"""
         if self.is_running() and self.is_ready():
             logger.info("llama-server 已在运行并就绪: %s", self.base_url)
@@ -306,12 +357,18 @@ class LlamaServerLauncher:
             stderr_dest = self._log_fp
 
         try:
+            sub_env = os.environ.copy()
+            sub_env["LANG"] = "C.UTF-8"
+            sub_env["LC_ALL"] = "C.UTF-8"
+            sub_env["PYTHONIOENCODING"] = "utf-8"
             self._process = subprocess.Popen(
                 cmd,
                 stdout=stdout_dest,
                 stderr=stderr_dest,
-                preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+                env=sub_env,
+                preexec_fn=_set_parent_death_signal,
             )
+            _ACTIVE_LAUNCHERS.add(self)
         except Exception as e:
             logger.error("启动 llama-server 失败: %s", e)
             if self._log_fp:
@@ -334,8 +391,22 @@ class LlamaServerLauncher:
 
             if self.is_ready(timeout=1.5):
                 elapsed = time.time() - start_time
+                if progress_callback:
+                    try:
+                        progress_callback(1.0)
+                    except Exception:
+                        pass
                 logger.info("llama-server 启动成功并就绪 (耗时 %.1fs): %s", elapsed, self.base_url)
                 return True
+
+            if progress_callback:
+                elapsed = time.time() - start_time
+                # 预估平滑进度曲线: 前10秒到75%，后渐进到95%
+                calc_val = min(0.95, round(1.0 - (1.0 / (1.0 + elapsed / 10.0)), 2))
+                try:
+                    progress_callback(calc_val)
+                except Exception:
+                    pass
 
             time.sleep(0.5)
 
@@ -383,6 +454,7 @@ class LlamaServerLauncher:
         except Exception as e:
             logger.warning("停止 llama-server 时发生异常: %s", e)
         finally:
+            _ACTIVE_LAUNCHERS.discard(self)
             self._process = None
             if self._log_fp:
                 try:
@@ -449,7 +521,10 @@ class LlamaCppChat(ChatClientAdapter):
         self._http_session = requests.Session()
 
     def _headers(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json"}
+        h = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "text/event-stream, application/json",
+        }
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
         return h
@@ -576,47 +651,71 @@ class LlamaCppChat(ChatClientAdapter):
                 stream=True,
             )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(None, _request)
         resp.raise_for_status()
 
-        for raw in resp.iter_lines(decode_unicode=True):
-            if not raw or not raw.startswith("data:"):
-                continue
-            data = raw[5:].strip()
-            if data == "[DONE]":
-                break
+        q: asyncio.Queue = asyncio.Queue()
+        resp.encoding = "utf-8"
+
+        def _reader():
             try:
-                chunk = json.loads(data)
-            except (TypeError, ValueError):
-                continue
-            if not chunk.get("choices"):
-                continue
+                for line in resp.iter_lines(decode_unicode=False):
+                    if line:
+                        text_line = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
+                        loop.call_soon_threadsafe(q.put_nowait, text_line)
+            except Exception as ex:
+                loop.call_soon_threadsafe(q.put_nowait, ex)
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, None)
 
-            delta = chunk["choices"][0].get("delta") or {}
+        threading.Thread(target=_reader, daemon=True).start()
 
-            # 处理思维链增量输出
-            if delta.get("reasoning_content"):
-                yield {"reasoning_content": delta["reasoning_content"]}
+        try:
+            while True:
+                item = await q.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
 
-            if delta.get("content"):
-                yield delta["content"]
+                raw = item
+                if not raw or not raw.startswith("data:"):
+                    continue
+                data = raw[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except (TypeError, ValueError):
+                    continue
+                if not chunk.get("choices"):
+                    continue
 
-            tc_delta = delta.get("tool_calls")
-            if tc_delta:
-                emitted = []
-                for tc in tc_delta:
-                    fn = tc.get("function") or {}
-                    emitted.append({
-                        "index": tc.get("index", 0) or 0,
-                        "id": tc.get("id", "") or "",
-                        "name": fn.get("name", "") or "",
-                        "arguments": fn.get("arguments", "") or "",
-                    })
-                if emitted:
-                    yield {"tool_calls": emitted}
+                delta = chunk["choices"][0].get("delta") or {}
 
-        resp.close()
+                # 处理思维链增量输出
+                if delta.get("reasoning_content"):
+                    yield {"reasoning_content": delta["reasoning_content"]}
+
+                if delta.get("content"):
+                    yield delta["content"]
+
+                tc_delta = delta.get("tool_calls")
+                if tc_delta:
+                    emitted = []
+                    for tc in tc_delta:
+                        fn = tc.get("function") or {}
+                        emitted.append({
+                            "index": tc.get("index", 0) or 0,
+                            "id": tc.get("id", "") or "",
+                            "name": fn.get("name", "") or "",
+                            "arguments": fn.get("arguments", "") or "",
+                        })
+                    if emitted:
+                        yield {"tool_calls": emitted}
+        finally:
+            resp.close()
 
 
 class LlamaCppEmbeddingClient(IEmbeddingClient):

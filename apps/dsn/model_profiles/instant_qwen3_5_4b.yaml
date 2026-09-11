@@ -1,0 +1,17 @@
+# apps/dsn/model_profiles/instant_qwen3_5_4b.yaml
+# Instant 模型 (cmd.txt: Instant)
+# ~/llama.cpp/build/bin/llama-server --model /home/darkstar/qwen_weights/Qwen3.5/DeepSeek-V4-Pro-Qwen3.5-4B-MTP-Q8_0.gguf --reasoning-format deepseek --agent
+model: instant-deepseek-qwen3.5-4b
+engine: llama_cpp
+priority: 95
+resident: false
+immediate: true
+orchestrated: true
+load_timeout: 120
+request_timeout: 300
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /home/darkstar/qwen_weights/Qwen3.5/DeepSeek-V4-Pro-Qwen3.5-4B-MTP-Q8_0.gguf
+  reasoning_format: deepseek
+  agent: true

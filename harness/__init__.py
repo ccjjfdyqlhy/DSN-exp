@@ -9,7 +9,8 @@
 #   settings        命名空间化配置
 #   subapps         AppBundle 抽象基类 + 装配器
 #   tools           工具抽象 + 注册表
-#   models          模型抽象 (IChatClient / IEmbeddingClient / 适配器)
+#   orchestrator    模型编排与路由调度 (ModelOrchestrator / IChatClient / 适配器)
+#   models          兼容别名 (指向 orchestrator)
 #   pipeline        通用管线 (Plugin / Pipeline / EventBus / OutputRenderer)
 #   agent           Agent 循环 (AgentLoop / ToolCallAdapter)
 #   memory          记忆抽象 (IMemoryStore / VectorIndex)
@@ -26,6 +27,7 @@ from .settings import Settings
 from .subapps import AppBundle, AppBundleRegistry
 from .tools import Tool, ToolResult, ToolRegistry, ToolboxManager, RegistryIndexSource
 from .agent_runtime import AgentRuntime
+from . import orchestrator
 from . import models
 from . import pipeline
 from . import agent
@@ -81,6 +83,7 @@ __all__ = [
     "create_agent",
     "tool",
     "policy",
+    "orchestrator",
     "models",
     "pipeline",
     "agent",

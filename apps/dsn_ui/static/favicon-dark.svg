@@ -1,0 +1,18 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><g transform="translate(10.24 10.24) scale(0.96)">
+  <!-- Central Neural Diamond / Core -->
+  <path d="M256 48 L432 150 L432 362 L256 464 L80 362 L80 150 Z" 
+        stroke="#fafafa" stroke-width="28" stroke-linejoin="round" stroke-linecap="round" fill="none" opacity="0.9"/>
+  <!-- Inner Dynamic Circuit Lines -->
+  <path d="M256 48 L256 256 L432 362" stroke="#fafafa" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M256 256 L80 362" stroke="#fafafa" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M256 256 L432 150" stroke="#fafafa" stroke-width="18" stroke-dasharray="8 8" stroke-linecap="round" fill="none" opacity="0.6"/>
+  <path d="M256 256 L80 150" stroke="#fafafa" stroke-width="18" stroke-dasharray="8 8" stroke-linecap="round" fill="none" opacity="0.6"/>
+  <!-- Core Nodes -->
+  <circle cx="256" cy="256" r="32" fill="#fafafa"/>
+  <circle cx="256" cy="48" r="20" fill="#fafafa"/>
+  <circle cx="432" cy="150" r="20" fill="#fafafa"/>
+  <circle cx="432" cy="362" r="20" fill="#fafafa"/>
+  <circle cx="256" cy="464" r="20" fill="#fafafa"/>
+  <circle cx="80" cy="362" r="20" fill="#fafafa"/>
+  <circle cx="80" cy="150" r="20" fill="#fafafa"/>
+</g></svg>

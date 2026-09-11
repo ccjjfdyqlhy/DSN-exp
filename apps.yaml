@@ -28,3 +28,7 @@ emotion_exp:
   entry: apps.emotion_exp.entry
   description: 基于 harness 话题上下文与情绪状态机的伴侣 Agent
 
+dsn_ui:
+  entry: apps.dsn_ui.entry
+  description: 现代化统一 Web 控制台与模型调度交互界面（基于 temp/ui_template 设计）
+

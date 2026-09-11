@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, AsyncGenerator, Optional
 
 import requests
@@ -210,42 +211,69 @@ class LMStudioChat(ChatClientAdapter):
 
         def _request():
             url = f"{self.base_url}/v1/chat/completions"
-            headers = {"Content-Type": "application/json"}
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "Accept": "text/event-stream, application/json",
+            }
             return self._http_session.post(
                 url, headers=headers, json=payload, timeout=self.timeout,
                 stream=True)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(None, _request)
         resp.raise_for_status()
 
-        for raw in resp.iter_lines(decode_unicode=True):
-            if not raw or not raw.startswith("data:"):
-                continue
-            data = raw[5:].strip()
-            if data == "[DONE]":
-                break
+        q: asyncio.Queue = asyncio.Queue()
+        resp.encoding = "utf-8"
+
+        def _reader():
             try:
-                chunk = json.loads(data)
-            except (TypeError, ValueError):
-                continue
-            if not chunk.get("choices"):
-                continue
-            delta = chunk["choices"][0].get("delta") or {}
-            if delta.get("content"):
-                yield delta["content"]
-            tc_delta = delta.get("tool_calls")
-            if tc_delta:
-                emitted = []
-                for tc in tc_delta:
-                    fn = tc.get("function") or {}
-                    emitted.append({
-                        "index": tc.get("index", 0) or 0,
-                        "id": tc.get("id", "") or "",
-                        "name": fn.get("name", "") or "",
-                        # 只带本 chunk 的片段，由 AgentLoop 负责按 index 拼接
-                        "arguments": fn.get("arguments", "") or "",
-                    })
-                if emitted:
-                    yield {"tool_calls": emitted}
-        resp.close()
+                for line in resp.iter_lines(decode_unicode=False):
+                    if line:
+                        text_line = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
+                        loop.call_soon_threadsafe(q.put_nowait, text_line)
+            except Exception as ex:
+                loop.call_soon_threadsafe(q.put_nowait, ex)
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, None)
+
+        threading.Thread(target=_reader, daemon=True).start()
+
+        try:
+            while True:
+                item = await q.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+
+                raw = item
+                if not raw or not raw.startswith("data:"):
+                    continue
+                data = raw[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except (TypeError, ValueError):
+                    continue
+                if not chunk.get("choices"):
+                    continue
+                delta = chunk["choices"][0].get("delta") or {}
+                if delta.get("content"):
+                    yield delta["content"]
+                tc_delta = delta.get("tool_calls")
+                if tc_delta:
+                    emitted = []
+                    for tc in tc_delta:
+                        fn = tc.get("function") or {}
+                        emitted.append({
+                            "index": tc.get("index", 0) or 0,
+                            "id": tc.get("id", "") or "",
+                            "name": fn.get("name", "") or "",
+                            "arguments": fn.get("arguments", "") or "",
+                        })
+                    if emitted:
+                        yield {"tool_calls": emitted}
+        finally:
+            resp.close()
