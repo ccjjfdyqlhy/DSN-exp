@@ -1,5 +1,5 @@
 # apps/dsn_ui/engine.py
-"""DSN-UI 后端引擎：连接 harness.orchestrator 与前端通信。"""
+"""DSN-UI 后端引擎：连接 harness.orchestrator、AgentCoordinator 与前端通信。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from apps.dsn_ui.agent import DSNUIAgentCoordinator
 from harness.orchestrator import (
     ChatMessage,
     ChatResponse,
@@ -21,13 +22,23 @@ logger = logging.getLogger("DSNUIEngine")
 
 
 class DSNUIEngine:
-    def __init__(self, max_concurrent_slots: int = 2):
+    def __init__(
+        self,
+        max_concurrent_slots: int = 2,
+        on_topic_converged: Optional[Callable[[str, str], None]] = None,
+    ):
         self.orchestrator = ModelOrchestrator.get_instance(max_concurrent_slots=max_concurrent_slots)
+        self.workspace_root = Path(__file__).resolve().parent.parent.parent
+        self.agent = DSNUIAgentCoordinator(
+            orchestrator=self.orchestrator,
+            workspace_root=self.workspace_root,
+            on_topic_converged=on_topic_converged,
+        )
         self._init_default_profiles()
 
     def _init_default_profiles(self) -> None:
         """从 model_profiles 目录预加载模型定义至 Orchestrator。"""
-        profiles_dir = Path(__file__).resolve().parent.parent / "dsn" / "model_profiles"
+        profiles_dir = self.workspace_root / "apps" / "dsn" / "model_profiles"
         if not profiles_dir.exists():
             return
 

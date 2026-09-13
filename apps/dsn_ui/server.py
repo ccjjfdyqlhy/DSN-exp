@@ -131,8 +131,19 @@ def get_system_resources() -> dict:
 
 
 def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
+    def _on_topic_converged(topic_id: str, title: str):
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        if loop and loop.is_running():
+            asyncio.create_task(sse_broadcaster.broadcast("topic_converged", "", {"topic_id": topic_id, "title": title}))
+
     if engine is None:
-        engine = DSNUIEngine(max_concurrent_slots=UIConfig.DEFAULT_SLOTS)
+        engine = DSNUIEngine(max_concurrent_slots=UIConfig.DEFAULT_SLOTS, on_topic_converged=_on_topic_converged)
+    else:
+        engine.agent.topic_mgr.on_topic_converged = _on_topic_converged
 
     # 注册 Orchestrator 状态变化回调，打通 SSE 广播
     def _on_orchestrator_status_change(model_name: str, status: str, extra: dict):
@@ -315,6 +326,13 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     payload = {"model": m["name"], "event": f"status_{val}", "data": {"status": val}}
                     yield f"event: status_{val}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+                # 同步当前情绪状态与摘要
+                emo_payload = {
+                    "state": engine.agent.get_emotion_state(),
+                    "summary": engine.agent.get_emotion_summary(),
+                }
+                yield f"event: emotion_change\ndata: {json.dumps(emo_payload, ensure_ascii=False)}\n\n"
+
                 while True:
                     msg = await queue.get()
                     yield msg
@@ -372,12 +390,50 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             elif role == "assistant":
                 chat_messages.append(ChatMessage.assistant(str(content)))
 
+        execution_mode = bool(
+            body.get("execution_mode", False) or
+            req.query_params.get("execution_mode") in ("true", "1") or
+            req.headers.get("X-Execution-Mode") in ("true", "1")
+        )
+
+        # 自定义系统提示词超驰：用户在设置页选择自定义时，用其文本替代
+        # harness 动态组装的提示词生态（话题记忆/情绪/工具箱指令不再注入）。
+        system_prompt_override = bool(
+            body.get("system_prompt_override", False) or
+            req.headers.get("X-System-Prompt-Override") in ("true", "1")
+        )
+        custom_system_prompt = ""
+        if system_prompt_override:
+            for m in messages_raw:
+                if m.get("role") == "system":
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        custom_system_prompt = " ".join(
+                            p.get("text", "") for p in c
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        )
+                    else:
+                        custom_system_prompt = str(c)
+                    break
+
         if not stream:
-            resp = engine.orchestrator.invoke(
-                chat_messages,
+            resp = engine.agent.chat_invoke(
+                messages_raw=messages_raw,
                 model_name=model_name,
                 temperature=temperature,
+                execution_mode=execution_mode,
+                system_prompt_override=custom_system_prompt if system_prompt_override else None,
             )
+            emo_payload = {
+                "state": engine.agent.get_emotion_state(),
+                "summary": engine.agent.get_emotion_summary(),
+            }
+            await sse_broadcaster.broadcast("emotion_change", model_name, emo_payload)
+            if engine.agent.topic_mgr.last_converged_topic:
+                conv_t = engine.agent.topic_mgr.last_converged_topic
+                engine.agent.topic_mgr.last_converged_topic = None
+                await sse_broadcaster.broadcast("topic_converged", model_name, {"title": conv_t})
+
             return {
                 "id": f"chatcmpl-dsn-{int(time.time())}",
                 "object": "chat.completion",
@@ -396,27 +452,106 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
         async def _sse_generator():
             try:
-                agen = engine.orchestrator.stream(
-                    chat_messages,
+                provider_sent_timings = False
+                agen = engine.agent.chat_stream(
+                    messages_raw=messages_raw,
                     model_name=model_name,
                     temperature=temperature,
+                    execution_mode=execution_mode,
+                    system_prompt_override=custom_system_prompt if system_prompt_override else None,
                 )
                 async for chunk in agen:
-                    if isinstance(chunk, str):
+                    ctype = chunk.get("type")
+                    if ctype in ("timings", "usage"):
+                        provider_sent_timings = True
+                    if ctype == "context_stats":
+                        # DSN-exp 弹性上下文统计：预算/折叠/截断，供用量指示环展示
+                        payload = {"context_stats": chunk.get("stats", {})}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
+                    if ctype == "timings":
+                        # llama-server 回传了真实 token 用量：按前端 ChatMessageTimings
+                        # 结构透传（prompt_n/prompt_ms/predicted_n/predicted_ms/cache_n）。
+                        t = chunk.get("timings") or {}
                         payload = {
-                            "choices": [{"delta": {"content": chunk}, "index": 0}]
+                            "timings": {
+                                "prompt_n": t.get("prompt_n", 0),
+                                "prompt_ms": t.get("prompt_ms", 0),
+                                "predicted_n": t.get("predicted_n", 0),
+                                "predicted_ms": t.get("predicted_ms", 0),
+                                "cache_n": t.get("cache_n", 0),
+                            }
                         }
-                    elif isinstance(chunk, dict) and "reasoning_content" in chunk:
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
+                    if ctype == "usage":
+                        payload = {"usage": chunk.get("usage", {})}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
+                    if ctype == "delta":
                         payload = {
-                            "choices": [{"delta": {"reasoning_content": chunk["reasoning_content"]}, "index": 0}]
+                            "choices": [{"delta": {"content": chunk["content"]}, "index": 0}]
                         }
-                    elif isinstance(chunk, dict) and "tool_calls" in chunk:
+                    elif ctype == "reasoning":
+                        payload = {
+                            "choices": [{"delta": {"reasoning_content": chunk["content"]}, "index": 0}]
+                        }
+                    elif ctype == "tool_calls":
                         payload = {
                             "choices": [{"delta": {"tool_calls": chunk["tool_calls"]}, "index": 0}]
+                        }
+                    elif ctype == "tool_call":
+                        tc = chunk.get("tool_call", {})
+                        payload = {
+                            "choices": [{
+                                "delta": {
+                                    "tool_calls": [{
+                                        "index": 0,
+                                        "id": tc.get("id", "call_0"),
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.get("name"),
+                                            "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                                        },
+                                    }]
+                                },
+                                "index": 0
+                            }]
                         }
                     else:
                         continue
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+                # 若 provider 未回传 timings（如 llama-server 关闭了 timings 输出），
+                # 退化用弹性上下文的字符统计估算 prompt token，保证用量指示环仍可用。
+                if not provider_sent_timings:
+                    stats = engine.agent.get_context_stats() or {}
+                    injected = int(stats.get("total_injected_chars") or 0)
+                    if injected > 0:
+                        est_tokens = max(1, int(injected / 3.2))
+                        fallback = {
+                            "timings": {
+                                "prompt_n": est_tokens,
+                                "prompt_ms": 0,
+                                "predicted_n": 0,
+                                "predicted_ms": 0,
+                                "cache_n": 0,
+                            },
+                            "estimated": True,
+                        }
+                        yield f"data: {json.dumps(fallback, ensure_ascii=False)}\n\n"
+
+                # 交互完成后推送最新情绪与收敛状态
+                emo_payload = {
+                    "state": engine.agent.get_emotion_state(),
+                    "summary": engine.agent.get_emotion_summary(),
+                }
+                await sse_broadcaster.broadcast("emotion_change", model_name, emo_payload)
+                if engine.agent.topic_mgr.last_converged_topic:
+                    conv_t = engine.agent.topic_mgr.last_converged_topic
+                    engine.agent.topic_mgr.last_converged_topic = None
+                    await sse_broadcaster.broadcast("topic_converged", model_name, {"title": conv_t})
+
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 logger.error("SSE 推理异常: %s", e)
@@ -434,6 +569,85 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 "Content-Type": "text/event-stream; charset=utf-8",
             },
         )
+
+    # ── 6.5 DSN Agent 记忆、情绪与技能状态 API ──
+
+    @app.get("/api/emotion")
+    async def get_emotion():
+        """获取当前 5D 情绪状态与文本摘要。"""
+        return {
+            "state": engine.agent.get_emotion_state(),
+            "summary": engine.agent.get_emotion_summary(),
+        }
+
+    @app.post("/api/emotion/adjust")
+    async def adjust_emotion(req: Request):
+        """手动或事件调节情绪向量。"""
+        body = await req.json()
+        engine.agent.emotion_engine.apply_stimulus(
+            delta_joy=float(body.get("delta_joy", 0.0)),
+            delta_sorrow=float(body.get("delta_sorrow", 0.0)),
+            delta_anger=float(body.get("delta_anger", 0.0)),
+            delta_fear=float(body.get("delta_fear", 0.0)),
+            delta_meta=float(body.get("delta_meta", 0.0)),
+        )
+        emo_payload = {
+            "state": engine.agent.get_emotion_state(),
+            "summary": engine.agent.get_emotion_summary(),
+        }
+        await sse_broadcaster.broadcast("emotion_change", "", emo_payload)
+        return emo_payload
+
+    @app.get("/api/agent/prompt")
+    async def get_agent_prompt(execution_mode: bool = False):
+        """根据是否开启执行模式，动态生成并返回完整的注入提示词。"""
+        prompt = engine.agent.assemble_system_prompt(execution_mode=execution_mode)
+        return {
+            "execution_mode": execution_mode,
+            "prompt": prompt,
+        }
+
+    @app.get("/api/topic/converged")
+    async def get_topic_converged():
+        """获取最新收敛闭锁的话题标题（如果有）。"""
+        return {"converged_topic": engine.agent.topic_mgr.last_converged_topic}
+
+    @app.get("/api/context/stats")
+    async def get_context_stats():
+        """DSN-exp 弹性上下文装配统计：预算、折叠（丢弃）、截断与占比。"""
+        return engine.agent.get_context_stats()
+
+    @app.get("/api/agent/tools")
+    async def get_agent_tools():
+        """当前注册的 harness 工具清单（toolbox 两阶段激活索引）。"""
+        tc = engine.agent.tool_coordinator
+        return {
+            "total": len(tc.tool_names()),
+            "toolbox_enabled": bool(tc.toolbox.enabled),
+            "tools": tc.tool_index(),
+        }
+
+    @app.get("/api/agent/settings")
+    async def get_agent_settings():
+        """Agent 运行时设置（含 AgentLoop 自主循环步数上限）。"""
+        return {
+            "max_steps": engine.agent.get_max_steps(),
+            "execution_mode_default": False,
+        }
+
+    @app.post("/api/agent/settings")
+    async def update_agent_settings(req: Request):
+        """更新 Agent 运行时设置（如 AgentLoop 最大自主循环步数）。"""
+        body = await req.json()
+        if "max_steps" in body:
+            try:
+                steps = int(body["max_steps"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="max_steps 必须是整数")
+            if steps < 0 or steps > 100:
+                raise HTTPException(status_code=400, detail="max_steps 需在 0..100（0 = 不限制）")
+            engine.agent.set_max_steps(steps)
+        return {"status": "ok", "max_steps": engine.agent.get_max_steps()}
 
     # ── 7. 本地系统资源与显存监控 API ──
 

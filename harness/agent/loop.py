@@ -45,6 +45,8 @@ class StreamEvent:
     tool_result: Optional[dict] = None
     reply: str = ""
     hit_max: bool = False
+    # provider 用量信息（llama-server timings / usage），供上层展示上下文占用
+    timings: Optional[dict] = None
 
 
 @dataclass
@@ -287,9 +289,21 @@ class AgentLoop:
                         content_parts.append(chunk)
                         yield StreamEvent(kind="delta", content=chunk, round=step + 1)
                     elif isinstance(chunk, dict):
-                        if chunk.get("reasoning"):
-                            reasoning_parts.append(chunk["reasoning"])
-                            yield StreamEvent(kind="reasoning", content=chunk["reasoning"],
+                        # 各 provider 客户端的思维链增量字段命名不一致：
+                        #   openai.py    -> {"reasoning": ...}
+                        #   llamacpp.py  -> {"reasoning_content": ...}
+                        # 两者都必须识别，否则本地 llama.cpp 的思维链会被静默丢弃。
+                        reasoning_delta = chunk.get("reasoning") or chunk.get("reasoning_content")
+                        if reasoning_delta:
+                            reasoning_parts.append(reasoning_delta)
+                            yield StreamEvent(kind="reasoning", content=reasoning_delta,
+                                              round=step + 1)
+                        # provider 用量透传（llama-server 的 timings / usage）
+                        if chunk.get("timings"):
+                            yield StreamEvent(kind="timings", timings=chunk["timings"],
+                                              round=step + 1)
+                        if chunk.get("usage"):
+                            yield StreamEvent(kind="usage", timings=chunk["usage"],
                                               round=step + 1)
                         for item in chunk.get("tool_calls", []) or []:
                             idx = item.get("index", 0)
@@ -401,30 +415,52 @@ class AgentLoop:
     async def _stream_or_invoke(self, msgs, schema, stream_fn):
         """把 client.stream 的同步/异步生成器统一为 async 迭代。"""
         import inspect
+
+        # 先看函数本身是否是 async 生成器/协程函数；否则实际调用一次，再按
+        # 返回值类型分派——因为部分客户端用普通 def 返回 async generator 对象
+        # （def stream(...): return agen），此时 isasyncgenfunction 为 False，
+        # 误走同步分支会执行 iter(async_generator) 并抛
+        # async_generator is not iterable。
         if inspect.isasyncgenfunction(stream_fn) or asyncio.iscoroutinefunction(stream_fn):
-            # async 生成器 / async 协程（返回可迭代对象）
             async for chunk in stream_fn(msgs, tools=schema):
                 yield chunk
-        else:
-            # 同步生成器 → 在线程池中逐块读取，避免把整个 SSE 流缓冲完才返回。
-            # 每次只取一块，取到后立即 yield 给上层，保证前端能实时收到增量。
-            iterator = iter(stream_fn(msgs, tools=schema))
+            return
 
-            def _next_chunk():
-                try:
-                    return False, next(iterator)
-                except StopIteration:
-                    return True, None
-                except Exception as e:  # noqa: BLE001
-                    return True, e
+        produced = stream_fn(msgs, tools=schema)
 
-            while True:
-                done, chunk = await asyncio.to_thread(_next_chunk)
-                if done:
-                    if isinstance(chunk, Exception):
-                        raise chunk
-                    break
+        # async 迭代器 / async 生成器对象（含普通 def 返回的情形）
+        if hasattr(produced, "__aiter__"):
+            async for chunk in produced:
                 yield chunk
+            return
+
+        # 协程返回 async 迭代器时先 await 一次
+        if inspect.isawaitable(produced):
+            produced = await produced
+            if hasattr(produced, "__aiter__"):
+                async for chunk in produced:
+                    yield chunk
+                return
+
+        # 同步生成器 → 在线程池中逐块读取，避免把整个 SSE 流缓冲完才返回。
+        # 每次只取一块，取到后立即 yield 给上层，保证前端能实时收到增量。
+        iterator = iter(produced)
+
+        def _next_chunk():
+            try:
+                return False, next(iterator)
+            except StopIteration:
+                return True, None
+            except Exception as e:  # noqa: BLE001
+                return True, e
+
+        while True:
+            done, chunk = await asyncio.to_thread(_next_chunk)
+            if done:
+                if isinstance(chunk, Exception):
+                    raise chunk
+                break
+            yield chunk
 
     async def _invoke(self, msgs: list[ChatMessage],
                       schema: list[dict]) -> ChatResponse:

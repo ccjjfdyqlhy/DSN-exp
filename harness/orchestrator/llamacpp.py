@@ -517,6 +517,8 @@ class LlamaCppChat(ChatClientAdapter):
         self._scheduler = scheduler
         self._launcher = launcher
         self.last_usage = None
+        # 最近一次流式/非流式返回的 timings（llama-server 提供 prompt_n/predicted_n 等）
+        self.last_timings = None
         self.last_model = self.model
         self._http_session = requests.Session()
 
@@ -547,6 +549,7 @@ class LlamaCppChat(ChatClientAdapter):
         resp.raise_for_status()
         data = resp.json()
         self.last_usage = data.get("usage")
+        self.last_timings = data.get("timings") or self.last_timings
         self.last_model = data.get("model", self.model_name)
         return data
 
@@ -689,6 +692,18 @@ class LlamaCppChat(ChatClientAdapter):
                     chunk = json.loads(data)
                 except (TypeError, ValueError):
                     continue
+
+                # llama-server 的 timings/usage 可能出现在 choices 为空数组的收尾
+                # chunk 中（或末尾仅带 timings）。必须在过滤 choices 之前提取，
+                # 否则用量数据会被静默丢弃，前端上下文指示环永远拿不到 token 数。
+                timings = chunk.get("timings")
+                if timings:
+                    self.last_timings = timings
+                    yield {"timings": timings}
+                if chunk.get("usage"):
+                    self.last_usage = chunk["usage"]
+                    yield {"usage": chunk["usage"]}
+
                 if not chunk.get("choices"):
                     continue
 

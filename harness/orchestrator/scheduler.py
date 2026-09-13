@@ -200,6 +200,23 @@ class ModelScheduler:
                 self._bump_slot(model_name)
             self._condition.notify_all()
 
+    def mark_unloaded(self, model_name: str) -> None:
+        """标记模型已从显存/内存释放（手动卸载或外部终止后调用）。
+
+        编排器手动卸载模型时并不会走 _do_unload 的驱逐路径，若不同步调度器
+        的 loaded 状态，status() 会一直报告 loaded=True，导致前端永远停留在
+        “已加载”状态且插槽计数无法回收。
+        """
+        with self._condition:
+            info = self._models.get(model_name)
+            if not info:
+                return
+            info.loaded = False
+            info.refcount = 0
+            if model_name in self._slot_order:
+                self._slot_order.remove(model_name)
+            self._condition.notify_all()
+
     @contextmanager
     def use(self, model_name: str, timeout: float | None = None,
             immediate: bool | None = None):

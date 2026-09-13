@@ -373,6 +373,23 @@ class ModelOrchestrator:
                 snap = sched_snap.get(name, {})
                 is_loading = name in self._loading_models
                 is_loaded = snap.get("loaded", spec.source_type == ModelSourceType.API_OPENAI)
+
+                # 自愈：本地托管进程若已意外退出（崩溃/OOM/被外部 kill），
+                # 调度器可能仍记为 loaded，导致 UI 永久卡在“已加载”。这里以
+                # 进程真实存活状态为准，并反向纠正调度器记录。
+                if (
+                    is_loaded
+                    and not is_loading
+                    and spec.source_type == ModelSourceType.LOCAL_LLAMACPP
+                    and spec.launcher is not None
+                    and not spec.launcher.is_running()
+                ):
+                    try:
+                        self._scheduler.mark_unloaded(name)
+                    except Exception:
+                        pass
+                    is_loaded = False
+                    logger.warning("模型 %s 本地进程已退出，已同步为 unloaded", name)
                 models_info.append({
                     "name": name,
                     "source_type": spec.source_type.value,
@@ -451,15 +468,18 @@ class ModelOrchestrator:
         try:
             if spec.source_type == ModelSourceType.LOCAL_LLAMACPP and spec.launcher:
                 ok = spec.launcher.stop()
-                self._notify_status(model_name, "unloaded")
-                return ok
             elif spec.source_type == ModelSourceType.API_LMSTUDIO:
                 ok = unload_lmstudio_model(spec.base_url, spec.remote_model_name or spec.name)
-                self._notify_status(model_name, "unloaded")
-                return ok
+            else:
+                ok = True
+
+            # 无论上游卸载成功与否，都必须同步调度器状态：否则显存已释放但
+            # status() 仍报告 loaded=True，前端会一直卡在“已加载”且插槽不回收。
+            self._scheduler.mark_unloaded(model_name)
             self._notify_status(model_name, "unloaded")
-            return True
+            return ok
         except Exception as e:
+            self._scheduler.mark_unloaded(model_name)
             self._notify_status(model_name, "failed", error=str(e))
             raise
 
