@@ -319,6 +319,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         async def event_generator():
             try:
                 # 初始连接同步当前全量状态
+                yield "retry: 2000\n\n"
                 yield "event: models_reload\ndata: {}\n\n"
                 status = engine.orchestrator.status()
                 for m in status.get("models", []):
@@ -333,15 +334,33 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 }
                 yield f"event: emotion_change\ndata: {json.dumps(emo_payload, ensure_ascii=False)}\n\n"
 
+                # 周期性心跳：SSE 长连接若长时间无数据，会被中间代理/浏览器
+                # 判定为停滞而中断（表现为 ERR_INCOMPLETE_CHUNKED_ENCODING）。
+                # 每 15s 发一个注释帧保活。
                 while True:
-                    msg = await queue.get()
+                    try:
+                        msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield ": keep-alive\n\n"
+                        continue
                     yield msg
             except asyncio.CancelledError:
-                pass
+                # 客户端主动断开属于正常流程
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning("/models/sse 流异常终止: %s", e)
             finally:
                 await sse_broadcaster.unsubscribe(queue)
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # ── 5. /slots 槽位端点 ──
 
@@ -488,6 +507,30 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         payload = {"usage": chunk.get("usage", {})}
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                         continue
+                    if ctype == "round_start":
+                        # 轮次边界：前端为每一轮新建 assistant 消息，
+                        # 避免多轮思考/动作被合并进同一个气泡。
+                        payload = {"round_start": chunk.get("round", 1)}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
+                    if ctype == "tool_result":
+                        # 工具执行结果：前端据此持久化 role=tool 消息。
+                        # 之前没有这个分支，工具结果被静默丢弃，导致
+                        # 1) 工具调用永远显示为"未完成"
+                        # 2) 多轮思考/动作无法按 思考-动作-思考-动作 展开
+                        tr = chunk.get("tool_result", {}) or {}
+                        payload = {
+                            "tool_result": {
+                                "call_id": tr.get("call_id"),
+                                "name": tr.get("name"),
+                                "success": tr.get("success"),
+                                "status": tr.get("status"),
+                                "output": tr.get("output"),
+                                "error": tr.get("error"),
+                            }
+                        }
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
                     if ctype == "delta":
                         payload = {
                             "choices": [{"delta": {"content": chunk["content"]}, "index": 0}]
@@ -616,6 +659,85 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     async def get_context_stats():
         """DSN-exp 弹性上下文装配统计：预算、折叠（丢弃）、截断与占比。"""
         return engine.agent.get_context_stats()
+
+    # ── 6.6 llama-ui 兼容的 /tools 端点 ──
+    # 前端 toolsStore 会请求 GET /tools 与 POST /tools。
+    # dsn_ui 不使用 llama-server 的 server-tools，工具由 harness toolbox 提供，
+    # 因此这里返回 harness 工具清单；未注册就会被 SPA catch-all 吞掉并返回
+    # HTML（表现为 "Unexpected token '<'" / 405），故必须显式注册。
+
+    @app.get("/tools")
+    async def list_tools_compat():
+        """返回 harness 工具清单（llama-ui 的 ServerToolInfo 兼容格式）。
+
+        前端 toolsStore.fetchServerTools() 会读取每项的：
+          - tool: 工具名
+          - uses_cwd: 是否依赖工作目录
+          - definition.function.name: 工具名（OpenAI function 形态）
+        必须返回嵌套的 definition.function，否则前端读 def.function.name
+        会抛 "Cannot read properties of undefined"，导致整个聊天页崩掉。
+        """
+        tc = engine.agent.tool_coordinator
+        cwd_aware = {"file.read", "file.write", "file.edit", "file.list",
+                     "file.tree", "proc.run", "project.summary",
+                     "project.snapshot", "project.todo", "batch.run",
+                     "code.locate_symbol", "code.diagnose"}
+        out = []
+        for item in tc.tool_index():
+            name = item.get("id")
+            if not name:
+                continue
+            out.append({
+                "tool": name,
+                "uses_cwd": name in cwd_aware,
+                "definition": {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": item.get("description", ""),
+                        "parameters": tc.toolbox.source.schema_for(name) or {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    },
+                },
+            })
+        return out
+
+    @app.post("/tools")
+    async def execute_tool_compat(req: Request):
+        """执行 harness 工具。
+
+        注意：正常对话链路中工具由后端 AgentLoop 统一执行，前端不再自行调用。
+        此处仅为兼容 llama-ui 协议保留入口（如调试或外部集成）。
+        """
+        body = await req.json()
+        tool_name = body.get("tool") or body.get("name")
+        params = body.get("params") or body.get("arguments") or {}
+        if not tool_name:
+            raise HTTPException(status_code=400, detail="Missing 'tool' field")
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="params 必须是 JSON 对象")
+
+        tool = engine.agent.tool_coordinator.tool_reg.get(tool_name)
+        if tool is None:
+            raise HTTPException(status_code=404, detail=f"未知工具: {tool_name}")
+
+        try:
+            result = await tool.run_async(**params)
+        except Exception as e:
+            logger.error("工具执行异常 %s: %s", tool_name, e)
+            return {"success": False, "error": str(e)}
+
+        return {
+            "success": result.success,
+            "output": result.output,
+            "error": result.error,
+            "status": result.status,
+        }
 
     @app.get("/api/agent/tools")
     async def get_agent_tools():

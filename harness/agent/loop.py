@@ -25,6 +25,43 @@ from .adapters import ToolCallAdapter, NativeToolCallAdapter
 logger = logging.getLogger("harness.agent")
 
 
+def _merge_tool_arguments(prev: str, frag: str) -> str:
+    """合并工具参数分片，兼容三类 provider 行为。
+
+    1. 真·分片增量（标准 OpenAI 流式）：直接首尾相接。
+    2. 累积值重复回传：frag 以 prev 为前缀 → 用 frag 覆盖。
+    3. 完整新对象重复回传：frag 本身已是合法 JSON 且与 prev 不同 →
+       用 frag 覆盖，避免拼成 '{"a":1}{"b":2}' 这类非法 JSON。
+
+    判断顺序很关键：先识别"新片段是完整且自洽的 JSON"，再退回到拼接，
+    否则情形 3 会被错误地当作情形 1 处理。
+    """
+    if not frag:
+        return prev
+    if not prev:
+        return frag
+    # 情形 2：累积值
+    if frag.startswith(prev):
+        return frag
+
+    def _is_complete_json(s: str) -> bool:
+        s = s.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return False
+        try:
+            json.loads(s)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    # 情形 3：frag 自身就是完整 JSON（且与 prev 不同）→ 覆盖
+    if _is_complete_json(frag):
+        return frag
+
+    # 情形 1：真正的分片增量
+    return prev + frag
+
+
 @dataclass
 class StreamEvent:
     """流式执行事件（AgentLoop.run_stream 产出）。
@@ -310,16 +347,16 @@ class AgentLoop:
                             acc = tool_deltas.setdefault(idx, {})
                             acc["id"] = item.get("id") or acc.get("id", "")
                             acc["name"] = item.get("name") or acc.get("name", "")
-                            # 客户端产出的是本 chunk 的原始片段，这里按 index 拼接。
-                            # 兼容个别客户端仍产出"累积值"的情况：若新片段本身
-                            # 就以已累积内容为前缀，则直接替换而不是再拼一次，
-                            # 否则会得到 '{"ids"{"ids": [...' 这种损坏的 JSON。
-                            prev = acc.get("arguments", "")
+                            # 工具参数分片拼接。三种 provider 行为都要兼容：
+                            #   1) 真·分片增量：逐段拼接（标准 OpenAI 语义）
+                            #   2) 每次回传累积值：新片段以旧值为前缀 → 直接替换
+                            #   3) 每次回传完整的新对象：直接替换
+                            # 若只用 startswith 前缀判断，情形 3 会被错误拼接成
+                            # '{"path":"a"}{"path":"b"}' 这种非法 JSON，
+                            # 导致后续 json.loads 失败、工具根本收不到参数。
+                            prev = acc.get("arguments", "") or ""
                             frag = item.get("arguments") or ""
-                            if frag and prev and frag.startswith(prev):
-                                acc["arguments"] = frag
-                            else:
-                                acc["arguments"] = prev + frag
+                            acc["arguments"] = _merge_tool_arguments(prev, frag)
             else:
                 response = await self._invoke(msgs, schema)
                 if response.content:

@@ -299,7 +299,11 @@ class DSNUIAgentCoordinator:
 
             full_reply_parts = []
             async for ev in loop.run_stream(context_msgs):
-                if ev.kind == "delta" and ev.content:
+                if ev.kind == "round_start":
+                    # 轮次边界：前端据此为每一轮开启独立的 assistant 消息，
+                    # 从而正确呈现「思考-动作-思考-动作-最终回答」的分行顺序。
+                    yield {"type": "round_start", "round": ev.round}
+                elif ev.kind == "delta" and ev.content:
                     full_reply_parts.append(ev.content)
                     yield {"type": "delta", "content": ev.content}
                 elif ev.kind == "reasoning" and ev.content:
