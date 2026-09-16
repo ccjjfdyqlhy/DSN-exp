@@ -24,18 +24,29 @@ logger = logging.getLogger("DSNUITools")
 class DSNUIToolCoordinator:
     """DSN-UI 工具注册与两阶段 toolbox 调度器（纯 harness 实现）。"""
 
-    def __init__(self, workspace_root: Path):
+    def __init__(self, workspace_root: Path, max_output_chars: int = 6000):
         self.workspace_root = workspace_root
+        self.max_output_chars = max_output_chars
         self.tool_reg = ToolRegistry()
+        self._install_tools()
 
-        # 安装 harness 标准工具集（file/text/code/proc/web/project/batch）
-        # 注意：deps 必须是 ToolDeps 实例而非 dict，否则工具内部访问
-        # deps.workspace 会抛 "'dict' object has no attribute 'workspace'"。
+    def _install_tools(self) -> None:
+        self.tool_reg = ToolRegistry()
         try:
-            tool_deps = ToolDeps(workspace=str(workspace_root))
+            tool_deps = ToolDeps(workspace=str(self.workspace_root), max_output_chars=self.max_output_chars)
             install_standard_tools(self.tool_reg, deps=tool_deps)
         except Exception as e:
             logger.warning("安装 harness 标准工具失败: %s", e)
+
+    def set_max_output_chars(self, chars: int) -> None:
+        """更新工具输出最大字符数，并重新生成工具函数闭包。"""
+        new_val = max(500, int(chars))
+        if new_val != self.max_output_chars:
+            self.max_output_chars = new_val
+            self._install_tools()
+            self.index_source = RegistryIndexSource(self.tool_reg)
+            self.toolbox.source = self.index_source
+            self.toolbox._cached_index = None
 
         # 两阶段动态激活：Stage1 只发 toolbox 索引，Stage2 才发已激活工具 schema
         self.index_source = RegistryIndexSource(self.tool_reg)

@@ -253,6 +253,67 @@ class DSNUITopicContextManager:
             return True
         return False
 
+    def compact_topic_if_needed(
+        self,
+        max_safe_chars: int,
+        summarizer_fn: Callable[[str], str],
+    ) -> bool:
+        """当历史消息总字符数逼近模型上下文上限时，触发静默自动话题摘要以释放空间。
+        
+        若要摘要的内容超出安全阈值，自动进行裁剪后再调用模型摘要。
+        将较早轮次压缩为 summary，保留最近的 2~3 轮原文。
+        """
+        cur = self.get_or_create_current_topic()
+        if not cur or len(cur.messages) <= 4:
+            return False
+
+        # 计算当前话题与活跃话题的历史文本总长度
+        total_chars = sum(len(m.content) for m in cur.messages)
+        if total_chars < max_safe_chars:
+            return False
+
+        logger.info(
+            "话题 %s 当前字符数 %d 超过安全上限 %d，启动静默自动摘要释放空间",
+            cur.topic_id, total_chars, max_safe_chars
+        )
+
+        # 保留最近的 4 条消息（2 轮问答），对其余前序历史进行摘要
+        messages_to_summarize = cur.messages[:-4]
+        recent_messages = cur.messages[-4:]
+
+        hist_lines: list[str] = []
+        for m in messages_to_summarize:
+            hist_lines.append(f"{m.role}: {m.content}")
+        hist_text = "\n\n".join(hist_lines)
+
+        # 若要摘要的内容本身就超过了当前模型的上下文容量，先执行安全截断
+        # 优先保留开头和临近部分
+        max_summary_input = int(max_safe_chars * 0.8)
+        if len(hist_text) > max_summary_input:
+            half = max_summary_input // 2
+            hist_text = (
+                hist_text[:half]
+                + "\n\n...[中间部分过长已截断]...\n\n"
+                + hist_text[-half:]
+            )
+
+        try:
+            new_summary = summarizer_fn(hist_text)
+            if new_summary and new_summary.strip():
+                if cur.summary:
+                    cur.summary = f"{cur.summary}\n\n【后续进展摘要】\n{new_summary.strip()}"
+                else:
+                    cur.summary = f"【前序会话进展摘要】\n{new_summary.strip()}"
+                cur.messages = recent_messages
+                if self.store:
+                    self.store.save_topic(cur)
+                logger.info("话题 %s 自动摘要完成，已释放前序历史空间", cur.topic_id)
+                return True
+        except Exception as e:
+            logger.warning("执行静默自动话题摘要失败: %s", e)
+
+        return False
+
     def assemble_context_messages(
         self,
         new_user_message: str,

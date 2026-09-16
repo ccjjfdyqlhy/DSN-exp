@@ -124,6 +124,9 @@ class DSNUIAgentCoordinator:
 
         # AgentLoop 自主循环步数上限（0 = 不限制），可由设置页面调整
         self._max_steps: int = self._load_max_steps()
+        # 工具输出弹性截断字符数上限
+        self._tool_max_output_chars: int = self._load_tool_max_output_chars()
+        self.tool_coordinator.set_max_output_chars(self._tool_max_output_chars)
 
     # ── AgentLoop 步数设置 ──
 
@@ -138,7 +141,7 @@ class DSNUIAgentCoordinator:
             if f.exists():
                 raw = json.loads(f.read_text(encoding="utf-8"))
                 val = int(raw.get("max_steps", default))
-                return val if 0 <= val <= 100 else default
+                return val if 0 <= val <= 10000 else default
         except Exception as e:
             logger.debug("读取 agent_settings 失败: %s", e)
         return default
@@ -146,14 +149,44 @@ class DSNUIAgentCoordinator:
     def get_max_steps(self) -> int:
         return self._max_steps
 
+    def _load_tool_max_output_chars(self) -> int:
+        """从持久化设置读取工具最大输出字符数（默认 6000）。"""
+        default = 6000
+        try:
+            f = self._settings_file()
+            if f.exists():
+                raw = json.loads(f.read_text(encoding="utf-8"))
+                val = int(raw.get("tool_max_output_chars", default))
+                return val if 500 <= val <= 200000 else default
+        except Exception as e:
+            logger.debug("读取 tool_max_output_chars 失败: %s", e)
+        return default
+
+    def get_tool_max_output_chars(self) -> int:
+        return self._tool_max_output_chars
+
+    def set_tool_max_output_chars(self, chars: int) -> None:
+        """更新并持久化工具最大输出字符数，同时更新工具执行环境。"""
+        val = max(500, min(200000, int(chars)))
+        self._tool_max_output_chars = val
+        self.tool_coordinator.set_max_output_chars(val)
+        self._save_settings()
+
     def set_max_steps(self, steps: int) -> None:
         """更新并持久化 AgentLoop 步数上限（0 = 不限制）。"""
-        val = max(0, min(100, int(steps)))
+        val = max(0, min(10000, int(steps)))
         self._max_steps = val
+        self._save_settings()
+
+    def _save_settings(self) -> None:
         try:
             f = self._settings_file()
             f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(json.dumps({"max_steps": val}, ensure_ascii=False), encoding="utf-8")
+            data = {
+                "max_steps": self._max_steps,
+                "tool_max_output_chars": self._tool_max_output_chars,
+            }
+            f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
             logger.warning("保存 agent_settings 失败: %s", e)
 
@@ -256,6 +289,7 @@ class DSNUIAgentCoordinator:
         execution_mode: bool = False,
         system_prompt_override: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        max_steps: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """通过 Agent 循环流式生成回复，支持记忆组装、情绪演化与工具调用。
 
@@ -294,6 +328,29 @@ class DSNUIAgentCoordinator:
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
         eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
+
+        # 上下文溢出智能自愈：若当前会话内容过大，自动启动静默话题摘要并压缩前序历史
+        if system_prompt_override is None:
+            safe_char_limit = int(model_ctx * 2.0)
+            def _silent_summarizer(hist_text: str) -> str:
+                try:
+                    summary_prompt = [
+                        ChatMessage.system("你是一个专业的会话总结助手。请简明扼要地总结以下前序历史对话与工具执行进展，保留核心结论、事实与当前任务状态，用于压缩上下文释放空间："),
+                        ChatMessage.user(hist_text)
+                    ]
+                    resp = self.orchestrator.invoke(summary_prompt, model_name=model_name, max_tokens=1500)
+                    return resp.content or ""
+                except Exception as ex:
+                    logger.warning("静默摘要执行异常: %s", ex)
+                    return ""
+
+            if self.topic_mgr.compact_topic_if_needed(safe_char_limit, _silent_summarizer):
+                # 摘要成功后重新组装上下文，释放空间
+                context_msgs = self.topic_mgr.assemble_context_messages(
+                    new_user_message=user_msg or "你好",
+                    system_prefix=system_prompt,
+                )
+
         client = OrchestratorChatClientWrapper(
             self.orchestrator,
             model_name=model_name,
@@ -304,68 +361,79 @@ class DSNUIAgentCoordinator:
         # 弹性上下文统计先于首轮推理产出，供前端用量环立即展示预算结构
         yield {"type": "context_stats", "stats": self.topic_mgr.get_assembly_stats()}
 
-        if execution_mode:
-            # 启用技能工具体系与 AgentLoop
-            loop = AgentLoop(
-                client=client,
-                tools=self.tool_coordinator.tool_reg,
-                toolbox=self.tool_coordinator.toolbox,
-                max_steps=self._max_steps,
-            )
+        full_reply_parts = []
+        turn_posted = False
 
-            full_reply_parts = []
-            async for ev in loop.run_stream(context_msgs):
-                if ev.kind == "round_start":
-                    # 轮次边界：前端据此为每一轮开启独立的 assistant 消息，
-                    # 从而正确呈现「思考-动作-思考-动作-最终回答」的分行顺序。
-                    yield {"type": "round_start", "round": ev.round}
-                elif ev.kind == "delta" and ev.content:
-                    full_reply_parts.append(ev.content)
-                    yield {"type": "delta", "content": ev.content}
-                elif ev.kind == "reasoning" and ev.content:
-                    yield {"type": "reasoning", "content": ev.content}
-                elif ev.kind == "tool_call" and ev.tool_call:
-                    yield {"type": "tool_call", "tool_call": ev.tool_call}
-                elif ev.kind == "tool_result" and ev.tool_result:
-                    yield {"type": "tool_result", "tool_result": ev.tool_result}
-                elif ev.kind in ("timings", "usage") and ev.timings:
-                    yield {"type": ev.kind, "timings": ev.timings}
-                elif ev.kind == "reply" and ev.reply and not full_reply_parts:
-                    full_reply_parts.append(ev.reply)
-                    yield {"type": "delta", "content": ev.reply}
+        try:
+            if execution_mode:
+                # 启用技能工具体系与 AgentLoop（优先使用单次请求指定的 max_steps，否则使用全局持久化设置）
+                effective_steps = self._max_steps if (max_steps is None or max_steps < 0) else max_steps
+                loop = AgentLoop(
+                    client=client,
+                    tools=self.tool_coordinator.tool_reg,
+                    toolbox=self.tool_coordinator.toolbox,
+                    max_steps=effective_steps,
+                    max_output_chars=self._tool_max_output_chars,
+                )
 
-            full_reply = "".join(full_reply_parts)
-            self._post_turn(user_msg, full_reply)
-        else:
-            # 纯对话模式（由话题记忆装配上下文后流式推理）
-            full_reply_parts = []
-            agen = self.orchestrator.stream(
-                context_msgs,
-                model_name=model_name,
-                temperature=temperature,
-                max_tokens=eff_max_tokens,
-            )
-            async for chunk in agen:
-                if isinstance(chunk, str):
-                    full_reply_parts.append(chunk)
-                    yield {"type": "delta", "content": chunk}
-                elif isinstance(chunk, dict):
-                    # 思维链字段命名各 provider 不一（reasoning / reasoning_content），
-                    # 与 AgentLoop 保持同样兼容，否则本地模型思考过程不显示。
-                    r_delta = chunk.get("reasoning_content") or chunk.get("reasoning")
-                    if r_delta:
-                        yield {"type": "reasoning", "content": r_delta}
-                    if chunk.get("tool_calls"):
-                        yield {"type": "tool_calls", "tool_calls": chunk["tool_calls"]}
-                    # 透传 provider 用量：llama-server 提供 timings 时前端可显示真实
-                    # token 占用；若未提供，前端退化为按字符统计弹性上下文。
-                    if chunk.get("timings"):
-                        yield {"type": "timings", "timings": chunk["timings"]}
-                    if chunk.get("usage"):
-                        yield {"type": "usage", "usage": chunk["usage"]}
+                async for ev in loop.run_stream(context_msgs):
+                    if ev.kind == "round_start":
+                        # 轮次边界：前端据此为每一轮开启独立的 assistant 消息，
+                        # 从而正确呈现「思考-动作-思考-动作-最终回答」的分行顺序。
+                        yield {"type": "round_start", "round": ev.round}
+                    elif ev.kind == "delta" and ev.content:
+                        full_reply_parts.append(ev.content)
+                        yield {"type": "delta", "content": ev.content}
+                    elif ev.kind == "reasoning" and ev.content:
+                        yield {"type": "reasoning", "content": ev.content}
+                    elif ev.kind == "tool_call" and ev.tool_call:
+                        yield {"type": "tool_call", "tool_call": ev.tool_call}
+                    elif ev.kind == "tool_result" and ev.tool_result:
+                        yield {"type": "tool_result", "tool_result": ev.tool_result}
+                    elif ev.kind in ("timings", "usage") and ev.timings:
+                        yield {"type": ev.kind, "timings": ev.timings}
+                    elif ev.kind == "reply" and ev.reply and not full_reply_parts:
+                        full_reply_parts.append(ev.reply)
+                        yield {"type": "delta", "content": ev.reply}
 
-            full_reply = "".join(full_reply_parts)
-            self._post_turn(user_msg, full_reply)
+                full_reply = "".join(full_reply_parts)
+                self._post_turn(user_msg, full_reply)
+                turn_posted = True
+            else:
+                # 纯对话模式（由话题记忆装配上下文后流式推理）
+                agen = self.orchestrator.stream(
+                    context_msgs,
+                    model_name=model_name,
+                    temperature=temperature,
+                    max_tokens=eff_max_tokens,
+                )
+                async for chunk in agen:
+                    if isinstance(chunk, str):
+                        full_reply_parts.append(chunk)
+                        yield {"type": "delta", "content": chunk}
+                    elif isinstance(chunk, dict):
+                        r_delta = chunk.get("reasoning_content") or chunk.get("reasoning")
+                        if r_delta:
+                            yield {"type": "reasoning", "content": r_delta}
+                        if chunk.get("tool_calls"):
+                            yield {"type": "tool_calls", "tool_calls": chunk["tool_calls"]}
+                        if chunk.get("timings"):
+                            yield {"type": "timings", "timings": chunk["timings"]}
+                        if chunk.get("usage"):
+                            yield {"type": "usage", "usage": chunk["usage"]}
+
+                full_reply = "".join(full_reply_parts)
+                self._post_turn(user_msg, full_reply)
+                turn_posted = True
+        finally:
+            # 关键保障：即使中途报错（如 Response ended prematurely）或用户手动终止，
+            # 只要产生了部分回复或执行进展，立即记入话题记忆，确保用户发送「继续」时具有连续上下文！
+            if not turn_posted and (full_reply_parts or user_msg):
+                partial_reply = "".join(full_reply_parts) or "…[生成中断]"
+                try:
+                    self._post_turn(user_msg, partial_reply)
+                except Exception as ex:
+                    logger.debug("中断轮次记忆补偿记录失败: %s", ex)
 
     def chat_invoke(
         self,
@@ -375,6 +443,7 @@ class DSNUIAgentCoordinator:
         execution_mode: bool = False,
         system_prompt_override: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        max_steps: Optional[int] = None,
     ) -> ChatResponse:
         """非流式调用入口。"""
         user_msg = ""
@@ -409,11 +478,12 @@ class DSNUIAgentCoordinator:
         )
 
         if execution_mode:
+            effective_steps = self._max_steps if (max_steps is None or max_steps < 0) else max_steps
             loop = AgentLoop(
                 client=client,
                 tools=self.tool_coordinator.tool_reg,
                 toolbox=self.tool_coordinator.toolbox,
-                max_steps=self._max_steps,
+                max_steps=effective_steps,
             )
             res = loop.run(context_msgs)
             self._post_turn(user_msg, res.reply)

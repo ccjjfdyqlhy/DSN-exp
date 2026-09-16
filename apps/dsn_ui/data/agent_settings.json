@@ -1,1 +1,1 @@
-{"max_steps": 5}
+{"max_steps": 5, "tool_max_output_chars": 6000}

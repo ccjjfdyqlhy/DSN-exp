@@ -445,6 +445,14 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         else:
             effective_max_tokens = int(req_tokens)
 
+        # 支持请求中透传的 Agent 最大迭代步数与工具截断字符数
+        raw_max_steps = body.get("max_steps") or body.get("agent_max_steps") or body.get("agentic_max_turns")
+        effective_max_steps = int(raw_max_steps) if raw_max_steps is not None and int(raw_max_steps) >= 0 else None
+
+        raw_tool_chars = body.get("tool_max_output_chars") or body.get("dsn_tool_max_output_chars")
+        if raw_tool_chars is not None and int(raw_tool_chars) > 0:
+            engine.agent.set_tool_max_output_chars(int(raw_tool_chars))
+
         if not stream:
             resp = engine.agent.chat_invoke(
                 messages_raw=messages_raw,
@@ -453,6 +461,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 execution_mode=execution_mode,
                 system_prompt_override=custom_system_prompt if system_prompt_override else None,
                 max_tokens=effective_max_tokens,
+                max_steps=effective_max_steps,
             )
             emo_payload = {
                 "state": engine.agent.get_emotion_state(),
@@ -490,6 +499,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     execution_mode=execution_mode,
                     system_prompt_override=custom_system_prompt if system_prompt_override else None,
                     max_tokens=effective_max_tokens,
+                    max_steps=effective_max_steps,
                 )
                 async for chunk in agen:
                     ctype = chunk.get("type")
@@ -763,25 +773,40 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
     @app.get("/api/agent/settings")
     async def get_agent_settings():
-        """Agent 运行时设置（含 AgentLoop 自主循环步数上限）。"""
+        """Agent 运行时设置（含 AgentLoop 步数与工具输出截断上限）。"""
         return {
             "max_steps": engine.agent.get_max_steps(),
+            "tool_max_output_chars": engine.agent.get_tool_max_output_chars(),
             "execution_mode_default": False,
         }
 
     @app.post("/api/agent/settings")
     async def update_agent_settings(req: Request):
-        """更新 Agent 运行时设置（如 AgentLoop 最大自主循环步数）。"""
+        """更新 Agent 运行时设置（如 AgentLoop 最大自主循环步数、工具截断字符数）。"""
         body = await req.json()
         if "max_steps" in body:
             try:
                 steps = int(body["max_steps"])
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="max_steps 必须是整数")
-            if steps < 0 or steps > 100:
-                raise HTTPException(status_code=400, detail="max_steps 需在 0..100（0 = 不限制）")
+            if steps < 0 or steps > 10000:
+                raise HTTPException(status_code=400, detail="max_steps 需在 0..10000（0 = 不限制）")
             engine.agent.set_max_steps(steps)
-        return {"status": "ok", "max_steps": engine.agent.get_max_steps()}
+
+        if "tool_max_output_chars" in body:
+            try:
+                chars = int(body["tool_max_output_chars"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="tool_max_output_chars 必须是整数")
+            if chars < 500 or chars > 500000:
+                raise HTTPException(status_code=400, detail="tool_max_output_chars 需在 500..500000 之间")
+            engine.agent.set_tool_max_output_chars(chars)
+
+        return {
+            "status": "ok",
+            "max_steps": engine.agent.get_max_steps(),
+            "tool_max_output_chars": engine.agent.get_tool_max_output_chars(),
+        }
 
     # ── 7. 本地系统资源与显存监控 API ──
 

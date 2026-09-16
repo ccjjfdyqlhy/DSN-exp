@@ -246,7 +246,12 @@ def tool_file_tree(deps: ToolDeps):
                     walk(item, prefix + ("    " if last else "│   "), depth + 1)
         lines.append(str(p))
         walk(p, "", 1)
-        return {"success": True, "tree": NL.join(lines)}
+        full_tree = NL.join(lines)
+        if deps.max_output_chars and len(full_tree) > deps.max_output_chars:
+            truncated_tree = full_tree[:deps.max_output_chars]
+            truncated_tree += f"{NL}...[目录树输出过长，已截断。总共包含 {len(lines)} 项，建议通过 max_depth=1 缩小深度或指定子目录探索]"
+            return {"success": True, "tree": truncated_tree, "truncated": True, "total_items": len(lines)}
+        return {"success": True, "tree": full_tree}
     return run
 
 

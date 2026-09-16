@@ -131,6 +131,7 @@ class AgentLoop:
         adapter: Optional[ToolCallAdapter] = None,
         *,
         max_steps: int = 8,
+        max_output_chars: int = 6000,
         on_progress: Optional[Callable[[int, int, list[str]], None]] = None,
         on_tool_error: Optional[Callable[[str, str], None]] = None,
         toolbox: Optional[Any] = None,
@@ -140,6 +141,7 @@ class AgentLoop:
         self.tools = tools
         self.adapter = adapter or NativeToolCallAdapter()
         self.max_steps = max_steps
+        self.max_output_chars = max_output_chars
         self.on_progress = on_progress
         self.on_tool_error = on_tool_error
         # 两阶段工具激活策略（ToolboxManager 或同构对象；None = 不启用）
@@ -221,12 +223,13 @@ class AgentLoop:
                     self.on_tool_error(tc.name, result.error or "")
                 executions.append(ToolExecution(
                     call_id=tc.id, name=tc.name, arguments=tc.arguments, result=result))
+                safe_output = self._truncate_output(result.output)
                 results.append({
                     "call_id": tc.id,
                     "name": tc.name,
                     "success": result.success,
                     "status": result.status,
-                    "output": result.output,
+                    "output": safe_output,
                     "error": result.error,
                     "hint": result.hint,
                 })
@@ -412,9 +415,10 @@ class AgentLoop:
                               if tool is None else await tool.run_async(**tc.arguments))
                 if not result.success and self.on_tool_error:
                     self.on_tool_error(tc.name, result.error or "")
+                safe_output = self._truncate_output(result.output)
                 results.append({
                     "call_id": tc.id, "name": tc.name, "success": result.success,
-                    "status": result.status, "output": result.output,
+                    "status": result.status, "output": safe_output,
                     "error": result.error, "hint": result.hint,
                 })
                 yield StreamEvent(kind="tool_result", round=step + 1,
@@ -435,6 +439,28 @@ class AgentLoop:
 
         yield StreamEvent(kind="done", reply=final_reply, hit_max=hit_max,
                           round=step + 1)
+
+    def _truncate_output(self, output: Any) -> Any:
+        """弹性截断工具输出，防止过大结果击穿模型上下文。"""
+        if not self.max_output_chars or self.max_output_chars <= 0:
+            return output
+        if output is None:
+            return None
+        if isinstance(output, str):
+            if len(output) > self.max_output_chars:
+                keep = self.max_output_chars
+                return output[:keep] + f"\n...[工具输出过长，已截断。总共 {len(output)} 字符，保留前 {keep} 字符。如需详情请分段请求或指定子路径]"
+            return output
+        if isinstance(output, dict):
+            # 对 dict 中超长的文本属性单独截断
+            out = dict(output)
+            for k, v in out.items():
+                if isinstance(v, str) and len(v) > self.max_output_chars:
+                    keep = self.max_output_chars
+                    out[k] = v[:keep] + f"\n...[输出过长已截断(原长 {len(v)} 字符)]"
+                    out["_truncated"] = True
+            return out
+        return output
 
     def _known_tool_names(self) -> Optional[set]:
         """当前可解析的内部工具名集合（含 toolbox 工具名）。"""
