@@ -33,25 +33,33 @@ logger = logging.getLogger("DSNUIAgent")
 class OrchestratorChatClientWrapper(IChatClient):
     """将 ModelOrchestrator 包装为标准 IChatClient 接口。"""
 
-    def __init__(self, orchestrator: ModelOrchestrator, model_name: str, temperature: Optional[float] = None):
+    def __init__(
+        self,
+        orchestrator: ModelOrchestrator,
+        model_name: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
         self.orchestrator = orchestrator
         self.model_name = model_name
         self.temperature = temperature
+        # 默认最大输出 tokens 设为当前加载模型支持的上下文长度
+        self.max_tokens = max_tokens or orchestrator.get_model_ctx_size(model_name)
 
     def invoke(self, messages: list[ChatMessage], tools: Optional[list[dict]] = None, **kwargs) -> ChatResponse:
+        eff_tokens = kwargs.get("max_tokens") or self.max_tokens
         return self.orchestrator.invoke(
             messages,
             model_name=self.model_name,
             temperature=self.temperature,
+            max_tokens=eff_tokens,
             tools=tools,
             **kwargs,
         )
 
     async def stream(self, messages: list[ChatMessage], tools: Optional[list[dict]] = None, **kwargs) -> AsyncGenerator[Any, None]:
-        # 必须声明为 async def 生成器：AgentLoop._stream_or_invoke 通过
-        # inspect.isasyncgenfunction() 判定客户端流式能力；若此处用普通 def
-        # 返回 async generator 对象，会被误判为同步生成器并执行 iter()，
-        # 从而抛出 "'async_generator' object is not iterable"。
+        eff_tokens = kwargs.get("max_tokens") or self.max_tokens
+        kwargs["max_tokens"] = eff_tokens
         agen = self.orchestrator.stream(
             messages,
             model_name=self.model_name,
@@ -247,6 +255,7 @@ class DSNUIAgentCoordinator:
         temperature: Optional[float] = None,
         execution_mode: bool = False,
         system_prompt_override: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """通过 Agent 循环流式生成回复，支持记忆组装、情绪演化与工具调用。
 
@@ -283,7 +292,14 @@ class DSNUIAgentCoordinator:
                 system_prefix=system_prompt,
             )
 
-        client = OrchestratorChatClientWrapper(self.orchestrator, model_name=model_name, temperature=temperature)
+        model_ctx = self.orchestrator.get_model_ctx_size(model_name)
+        eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
+        client = OrchestratorChatClientWrapper(
+            self.orchestrator,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=eff_max_tokens,
+        )
 
         # 弹性上下文统计先于首轮推理产出，供前端用量环立即展示预算结构
         yield {"type": "context_stats", "stats": self.topic_mgr.get_assembly_stats()}
@@ -323,7 +339,12 @@ class DSNUIAgentCoordinator:
         else:
             # 纯对话模式（由话题记忆装配上下文后流式推理）
             full_reply_parts = []
-            agen = self.orchestrator.stream(context_msgs, model_name=model_name, temperature=temperature)
+            agen = self.orchestrator.stream(
+                context_msgs,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=eff_max_tokens,
+            )
             async for chunk in agen:
                 if isinstance(chunk, str):
                     full_reply_parts.append(chunk)
@@ -353,6 +374,7 @@ class DSNUIAgentCoordinator:
         temperature: Optional[float] = None,
         execution_mode: bool = False,
         system_prompt_override: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> ChatResponse:
         """非流式调用入口。"""
         user_msg = ""
@@ -377,7 +399,14 @@ class DSNUIAgentCoordinator:
                 system_prefix=system_prompt,
             )
 
-        client = OrchestratorChatClientWrapper(self.orchestrator, model_name=model_name, temperature=temperature)
+        model_ctx = self.orchestrator.get_model_ctx_size(model_name)
+        eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
+        client = OrchestratorChatClientWrapper(
+            self.orchestrator,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=eff_max_tokens,
+        )
 
         if execution_mode:
             loop = AgentLoop(
@@ -390,6 +419,11 @@ class DSNUIAgentCoordinator:
             self._post_turn(user_msg, res.reply)
             return ChatResponse(content=res.reply)
         else:
-            resp = self.orchestrator.invoke(context_msgs, model_name=model_name, temperature=temperature)
+            resp = self.orchestrator.invoke(
+                context_msgs,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=eff_max_tokens,
+            )
             self._post_turn(user_msg, resp.content)
             return resp

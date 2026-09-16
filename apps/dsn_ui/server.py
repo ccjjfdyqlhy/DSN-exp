@@ -188,7 +188,8 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     async def get_server_props(model: Optional[str] = None, autoload: Optional[str] = None):
         """返回服务器配置与当前状态，使前端识别为 ROUTER 模式。"""
         status = engine.orchestrator.status()
-        n_ctx = 128000
+        target_model = model or engine.orchestrator.get_default_model()
+        n_ctx = engine.orchestrator.get_model_ctx_size(target_model)
 
         return {
             "role": "router",
@@ -199,7 +200,8 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 "speculative": False,
                 "is_processing": False,
                 "params": {
-                    "n_predict": 4096,
+                    # 每次回复的最大输出 tokens 规定为当前加载模型支持的上下文长度
+                    "n_predict": n_ctx,
                     "seed": -1,
                     "temperature": 0.7,
                     "dynatemp_range": 0.0,
@@ -255,7 +257,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     "input_modalities": ["text", "vision"] if "ocr" in m["name"] or "v" in m["name"] else ["text"]
                 },
                 "meta": {
-                    "n_ctx": 128000,
+                    "n_ctx": engine.orchestrator.get_model_ctx_size(m["name"]),
                     "priority": m["priority"],
                     "resident": m["resident"],
                     "immediate": m["immediate"],
@@ -435,6 +437,14 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         custom_system_prompt = str(c)
                     break
 
+        # 每次回复的最大输出 tokens 规定为当前加载模型支持的上下文长度
+        model_ctx = engine.orchestrator.get_model_ctx_size(model_name)
+        req_tokens = body.get("max_tokens") or body.get("n_predict")
+        if req_tokens is None or int(req_tokens) <= 0 or int(req_tokens) == 4096:
+            effective_max_tokens = model_ctx
+        else:
+            effective_max_tokens = int(req_tokens)
+
         if not stream:
             resp = engine.agent.chat_invoke(
                 messages_raw=messages_raw,
@@ -442,6 +452,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 temperature=temperature,
                 execution_mode=execution_mode,
                 system_prompt_override=custom_system_prompt if system_prompt_override else None,
+                max_tokens=effective_max_tokens,
             )
             emo_payload = {
                 "state": engine.agent.get_emotion_state(),
@@ -478,6 +489,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     temperature=temperature,
                     execution_mode=execution_mode,
                     system_prompt_override=custom_system_prompt if system_prompt_override else None,
+                    max_tokens=effective_max_tokens,
                 )
                 async for chunk in agen:
                     ctype = chunk.get("type")

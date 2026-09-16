@@ -76,11 +76,12 @@ class DSNUIEngine:
                         immediate=immediate,
                         load_timeout=load_to,
                         request_timeout=req_to,
+                        max_tokens=int(data.get("ctx_size", 128000)),
                     )
             except Exception as e:
                 logger.warning("预加载 profile %s 失败: %s", yml_file.name, e)
 
-        # 注册 DeepSeek 云端兜底模型
+        # 注册 DeepSeek 云端兜底模型（输出 tokens 上限设置为当前模型支持的上下文长度 128000）
         api_key = os.getenv("OPENAI_API_KEY", "")
         if api_key:
             self.orchestrator.register_api_openai(
@@ -88,10 +89,12 @@ class DSNUIEngine:
                 api_key=api_key,
                 base_url=os.getenv("OPENAI_API_BASE", "https://api.deepseek.com/v1"),
                 remote_model_name="deepseek-chat",
+                max_tokens=128000,
             )
             self.orchestrator.register_api_openai(
                 name="deepseek-v4-pro",
                 api_key=api_key,
                 base_url=os.getenv("OPENAI_API_BASE", "https://api.deepseek.com/v1"),
                 remote_model_name="deepseek-reasoner",
+                max_tokens=128000,
             )

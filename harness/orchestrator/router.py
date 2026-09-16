@@ -322,6 +322,23 @@ class ModelOrchestrator:
 
     # ── 客户端检索与调用 ──
 
+    def get_model_spec(self, model_name: Optional[str] = None) -> Optional[ModelSpec]:
+        """获取指定或默认模型的规格定义。"""
+        with self._registry_lock:
+            target = model_name or self._default_model
+            return self._specs.get(target) if target else None
+
+    def get_model_ctx_size(self, model_name: Optional[str] = None) -> int:
+        """获取指定或当前加载模型支持的最大上下文长度。"""
+        spec = self.get_model_spec(model_name)
+        if not spec:
+            return 128000
+        if spec.llama_config and spec.llama_config.ctx_size:
+            return int(spec.llama_config.ctx_size)
+        if spec.max_tokens and spec.max_tokens > 0:
+            return int(spec.max_tokens)
+        return 128000
+
     def get_client(self, model_name: Optional[str] = None) -> IChatClient:
         """获取指定或默认模型的调用客户端。"""
         with self._registry_lock:
