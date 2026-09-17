@@ -37,6 +37,13 @@ import uvicorn
 
 from apps.dsn_ui.config import UIConfig
 from apps.dsn_ui.engine import DSNUIEngine
+from apps.dsn_ui.logging_setup import (
+    get_request_id,
+    log_exception,
+    reset_request_id,
+    set_request_id,
+    setup_logging,
+)
 from harness.orchestrator import ChatMessage, LlamaServerConfig
 
 logger = logging.getLogger("DSNUIServer")
@@ -490,7 +497,20 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             }
 
         async def _sse_generator():
+            # 请求关联 id：本次 SSE 流的每条日志都会带上它，
+            # 便于在并发请求中还原「哪一次流在哪一步失败了」。
+            rid = f"{int(time.time() * 1000):x}-{id(_sse_generator) & 0xFFFF:04x}"
+            _rid_token = set_request_id(rid)
+            chunk_count = 0
+            ctype_counts: Dict[str, int] = {}
+            started = time.time()
             try:
+                logger.info(
+                    "SSE 开始: model=%s execution_mode=%s stream=%s max_steps=%s "
+                    "max_tokens=%s override=%s messages=%d",
+                    model_name, execution_mode, stream, effective_max_steps,
+                    effective_max_tokens, system_prompt_override, len(messages_raw),
+                )
                 provider_sent_timings = False
                 agen = engine.agent.chat_stream(
                     messages_raw=messages_raw,
@@ -502,7 +522,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     max_steps=effective_max_steps,
                 )
                 async for chunk in agen:
+                    chunk_count += 1
                     ctype = chunk.get("type")
+                    ctype_counts[ctype] = ctype_counts.get(ctype, 0) + 1
+                    # 逐事件调试日志：能用 DSN_UI_LOG_LEVEL=DEBUG 打开，
+                    # 精确定位是「哪一类事件之后」开始出问题。
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "SSE chunk #%d type=%s keys=%s",
+                            chunk_count, ctype, sorted(chunk.keys()),
+                        )
                     if ctype in ("timings", "usage"):
                         provider_sent_timings = True
                     if ctype == "context_stats":
@@ -553,6 +582,17 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         }
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                         continue
+                    if ctype == "done":
+                        # AgentLoop 收束信号：normal=模型自然结束；
+                        # max_steps=步数耗尽后由收束轮强制给出最终答复。
+                        # 前端据此提示「因达到步数上限而收束」，避免误认为正常完成。
+                        payload = {
+                            "finish_reason": "length" if chunk.get("hit_max") else "stop",
+                            "hit_max_steps": bool(chunk.get("hit_max")),
+                            "round": chunk.get("round"),
+                        }
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
                     if ctype == "delta":
                         payload = {
                             "choices": [{"delta": {"content": chunk["content"]}, "index": 0}]
@@ -587,9 +627,15 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         continue
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+                logger.info(
+                    "SSE 模型流结束: chunks=%d types=%s elapsed=%.2fs",
+                    chunk_count, ctype_counts, time.time() - started,
+                )
+
                 # 若 provider 未回传 timings（如 llama-server 关闭了 timings 输出），
                 # 退化用弹性上下文的字符统计估算 prompt token，保证用量指示环仍可用。
                 if not provider_sent_timings:
+                    logger.debug("provider 未回传 timings，改用弹性上下文字符数估算")
                     stats = engine.agent.get_context_stats() or {}
                     injected = int(stats.get("total_injected_chars") or 0)
                     if injected > 0:
@@ -618,11 +664,45 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     await sse_broadcaster.broadcast("topic_converged", model_name, {"title": conv_t})
 
                 yield "data: [DONE]\n\n"
+                logger.info(
+                    "SSE 正常完成: chunks=%d elapsed=%.2fs",
+                    chunk_count, time.time() - started,
+                )
+            except asyncio.CancelledError:
+                # 客户端主动断开不应被当成推理失败，但要留下痕迹便于排查"假死"。
+                logger.warning(
+                    "SSE 被取消(客户端断开?): chunks=%d elapsed=%.2fs types=%s",
+                    chunk_count, time.time() - started, ctype_counts,
+                )
+                raise
             except Exception as e:
-                logger.error("SSE 推理异常: %s", e)
+                # 关键修复：原实现只打 str(e)，栈信息全部丢失。
+                # 现在记录完整 traceback，并附带失败现场的上下文快照，
+                # 这样即使异常来自 harness 内部也能一眼定位到具体层。
+                log_exception(logger, "SSE 推理异常", e)
+                logger.error(
+                    "SSE 失败现场: chunks=%d types=%s elapsed=%.2fs execution_mode=%s "
+                    "max_steps=%s override=%s model=%s",
+                    chunk_count, ctype_counts, time.time() - started,
+                    execution_mode, effective_max_steps,
+                    system_prompt_override, model_name,
+                )
+                try:
+                    import traceback as _tb
+                    frame_summary = _tb.extract_tb(e.__traceback__)[-1] if e.__traceback__ else None
+                    if frame_summary is not None:
+                        logger.error(
+                            "SSE 异常最深层位置: %s:%s in %s",
+                            frame_summary.filename, frame_summary.lineno, frame_summary.name,
+                        )
+                except Exception:  # noqa: BLE001 - 诊断代码绝不能再抛
+                    pass
                 err_payload = {"error": {"message": str(e), "type": "server_error"}}
                 yield f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
+            finally:
+                logger.debug("SSE 生成器退出: chunks=%d", chunk_count)
+                reset_request_id(_rid_token)
 
         return StreamingResponse(
             _sse_generator(),
@@ -784,10 +864,12 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     async def update_agent_settings(req: Request):
         """更新 Agent 运行时设置（如 AgentLoop 最大自主循环步数、工具截断字符数）。"""
         body = await req.json()
+        logger.info("更新 Agent 运行时设置: %s", sorted(body.keys()))
         if "max_steps" in body:
             try:
                 steps = int(body["max_steps"])
             except (TypeError, ValueError):
+                logger.warning("max_steps 非法: %r", body.get("max_steps"))
                 raise HTTPException(status_code=400, detail="max_steps 必须是整数")
             if steps < 0 or steps > 10000:
                 raise HTTPException(status_code=400, detail="max_steps 需在 0..10000（0 = 不限制）")
@@ -939,8 +1021,13 @@ def main() -> None:
     parser.add_argument("--slots", type=int, default=UIConfig.DEFAULT_SLOTS, help="Concurrent slots")
     args = parser.parse_args()
 
+    # 必须最先配置日志：此前 dsn_ui 从未调用过 basicConfig，
+    # 根 logger 无 handler，任何 logger.exception 都只剩一行裸消息。
+    setup_logging(level=os.getenv("DSN_UI_LOG_LEVEL", "INFO"))
+
     engine = DSNUIEngine(max_concurrent_slots=args.slots)
     app = create_app(engine)
+    logger.info("DSN-exp UI 启动中: http://%s:%s slots=%s", args.host, args.port, args.slots)
     print(f"🚀 DSN-exp UI 正在启动: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
 

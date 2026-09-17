@@ -27,28 +27,39 @@ class DSNUIToolCoordinator:
     def __init__(self, workspace_root: Path, max_output_chars: int = 6000):
         self.workspace_root = workspace_root
         self.max_output_chars = max_output_chars
-        self.tool_reg = ToolRegistry()
-        self._install_tools()
+        # 统一的构建入口：保证 tool_reg / index_source / toolbox 三者始终一致。
+        self._rebuild()
+        logger.info(
+            "工具协调器初始化完成: tools=%d max_output_chars=%d",
+            len(self.tool_names()), self.max_output_chars,
+        )
 
-    def _install_tools(self) -> None:
+    def _rebuild(self) -> None:
+        """重建 tool_reg / index_source / toolbox 三件套（保持引用一致）。
+
+        历史实现对这三者的更新顺序不一致：_install_tools() 会换掉 tool_reg，
+        但 index_source 仍指向旧注册表；而 toolbox 又只在 set_max_output_chars()
+        里创建。结果是刚构造的实例没有 toolbox 属性、索引也可能为空。
+        这里收敛为唯一入口，任何一方变化都同步刷新。
+        """
+        preserved: list[str] = []
+        old_toolbox = getattr(self, "toolbox", None)
+        if old_toolbox is not None:
+            try:
+                preserved = list(old_toolbox.activated)
+            except Exception:  # noqa: BLE001
+                preserved = []
+
         self.tool_reg = ToolRegistry()
         try:
-            tool_deps = ToolDeps(workspace=str(self.workspace_root), max_output_chars=self.max_output_chars)
+            tool_deps = ToolDeps(
+                workspace=str(self.workspace_root),
+                max_output_chars=self.max_output_chars,
+            )
             install_standard_tools(self.tool_reg, deps=tool_deps)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("安装 harness 标准工具失败: %s", e)
 
-    def set_max_output_chars(self, chars: int) -> None:
-        """更新工具输出最大字符数，并重新生成工具函数闭包。"""
-        new_val = max(500, int(chars))
-        if new_val != self.max_output_chars:
-            self.max_output_chars = new_val
-            self._install_tools()
-            self.index_source = RegistryIndexSource(self.tool_reg)
-            self.toolbox.source = self.index_source
-            self.toolbox._cached_index = None
-
-        # 两阶段动态激活：Stage1 只发 toolbox 索引，Stage2 才发已激活工具 schema
         self.index_source = RegistryIndexSource(self.tool_reg)
         self.toolbox = ToolboxManager(
             self.index_source,
@@ -57,6 +68,25 @@ class DSNUIToolCoordinator:
             index_initial=True,
             nested=False,
         )
+        if preserved:
+            # 保留已激活工具，避免重建后模型被迫重新激活、白耗步数预算。
+            self.toolbox._activated = preserved
+            logger.debug("重建后保留已激活工具: %s", preserved)
+
+    def set_max_output_chars(self, chars: int) -> None:
+        """更新工具输出最大字符数，并重新生成工具函数闭包。
+
+        注意：本方法会重建 tool_reg 与 toolbox。若在某个流式请求进行中调用，
+        该请求持有的旧引用会与新对象不一致，因此这里记录前后对象 id 便于排查。
+        """
+        new_val = max(500, int(chars))
+        if new_val != self.max_output_chars:
+            logger.info(
+                "工具输出上限变更: %s → %s，重建工具注册表",
+                self.max_output_chars, new_val,
+            )
+            self.max_output_chars = new_val
+            self._rebuild()
 
     def tool_names(self) -> list[str]:
         return sorted(self.tool_reg.names())

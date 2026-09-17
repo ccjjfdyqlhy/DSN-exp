@@ -309,6 +309,8 @@ class AgentLoop:
                 else [self.tools.require(n).to_openai_schema() for n in tool_names]
 
         final_reply = ""
+        # 步数耗尽后收束轮的全部文本（含本轮已有内容），供 done 事件汇总。
+        final_reply_parts: list[str] = []
         hit_max = False
 
         # max_steps <= 0 表示不限制执行步数
@@ -433,12 +435,72 @@ class AgentLoop:
 
             if self.max_steps > 0 and step >= self.max_steps - 1:
                 hit_max = True
-                final_reply = content or "…"
+                # 步数预算已耗尽，但模型仍在请求工具：不能就此静默截断。
+                # 本轮工具已执行并回喂完毕，这里再追加一次「禁止调用工具」的
+                # 收束轮，强制模型基于已获得的全部工具结果给出最终答复。
+                yield StreamEvent(kind="round_start", round=step + 2)
+                # 本轮已流出的正文先计入最终回复（不再重发 delta），
+                # 随后只把「收束轮」新增的增量作为 delta 补发。
+                if content:
+                    final_reply_parts.append(content)
+                async for piece in self._finalize_after_max_steps(msgs):
+                    if piece:
+                        final_reply_parts.append(piece)
+                        yield StreamEvent(kind="delta", content=piece,
+                                          round=step + 2)
+                final_reply = "".join(final_reply_parts).strip()
+                if not final_reply:
+                    final_reply = (
+                        "…[已达到步数上限，且未能生成收束答复。"
+                        "可发送「继续」以恢复执行。]"
+                    )
                 break
             step += 1
 
         yield StreamEvent(kind="done", reply=final_reply, hit_max=hit_max,
                           round=step + 1)
+
+    async def _finalize_after_max_steps(
+        self,
+        msgs: list[ChatMessage],
+    ) -> AsyncGenerator[str, None]:
+        """步数耗尽后的收束轮（异步生成器，逐段产出收束文本）。
+
+        到达 max_steps 时若模型仍在调用工具，直接把已产生的内容当最终回复
+        会导致「生成戛然而止」——用户看到的是思考/动作突然中断，没有结论。
+        这里追加一条明确的收束指令，并以「空 tools schema」发起最后一次调用，
+        从根上杜绝模型再次请求工具，从而保证一定有最终答复。
+
+        只产出收束轮自身的增量：本轮已有的 content 早已作为 delta 流过，
+        这里绝不重发，否则 UI 会把同一段文字重复渲染一次。
+        收束失败（异常/空回复）时静默降级，不破坏已有进展。
+        """
+        # 收束提示：作为最后一条 user 消息追加，明确禁止继续调用工具。
+        msgs.append(ChatMessage.user(
+            "已达到本次自主执行的步数上限，请立即停止调用任何工具，"
+            "基于以上已获得的全部工具执行结果，直接给出最终的完整答复："
+            "总结已完成的进展与关键结论，并说明还有哪些未完成的部分。"
+        ))
+
+        try:
+            # 收束轮不下发任何 tools schema，从根上杜绝再次产生工具调用。
+            stream_fn = getattr(self.client, "stream", None)
+            if stream_fn is not None:
+                async for chunk in self._stream_or_invoke(msgs, [], stream_fn):
+                    if isinstance(chunk, str):
+                        if chunk:
+                            yield chunk
+                    elif isinstance(chunk, dict):
+                        text = chunk.get("content")
+                        if text:
+                            yield text
+            else:
+                response = await self._invoke(msgs, [])
+                if response.content:
+                    yield response.content
+        except Exception as e:  # noqa: BLE001
+            # 收束轮失败不能反过来毁掉已有进展：保留本轮文本并记录原因。
+            logger.warning("步数耗尽后的收束轮失败: %s", e)
 
     def _truncate_output(self, output: Any) -> Any:
         """弹性截断工具输出，防止过大结果击穿模型上下文。"""

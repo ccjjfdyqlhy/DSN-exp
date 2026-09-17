@@ -27,6 +27,8 @@ from harness.orchestrator import (
 from harness.personality import PersonalitySystemV3
 from harness.store.sqlite import SqliteStore
 
+from apps.dsn_ui.logging_setup import log_exception
+
 logger = logging.getLogger("DSNUIAgent")
 
 
@@ -134,8 +136,12 @@ class DSNUIAgentCoordinator:
         return self.data_dir / "agent_settings.json"
 
     def _load_max_steps(self) -> int:
-        """从持久化设置读取 AgentLoop 步数上限（默认 5，0 = 不限制）。"""
-        default = 5
+        """从持久化设置读取 AgentLoop 步数上限（默认 0 = 不限制）。
+
+        历史默认值是 5，会让复杂的多步任务在「思考-动作」进行到一半时被
+        截断；改为一律默认不限制，需要限制时由用户在设置页显式指定。
+        """
+        default = 0
         try:
             f = self._settings_file()
             if f.exists():
@@ -253,8 +259,16 @@ class DSNUIAgentCoordinator:
 
     def _post_turn(self, user_text: str, reply_text: str) -> None:
         """交互后置：记录轮次、演化特质与持久化情绪。"""
+        logger.debug(
+            "_post_turn 开始: user_chars=%d reply_chars=%d",
+            len(user_text or ""), len(reply_text or ""),
+        )
         # 1. 话题记忆保存
-        self.topic_mgr.record_turn(user_text, reply_text)
+        try:
+            self.topic_mgr.record_turn(user_text, reply_text)
+        except Exception as e:  # noqa: BLE001
+            # 话题记忆写入失败不应影响主回复，但必须留下完整栈。
+            log_exception(logger, "_post_turn: record_turn 失败", e)
 
         # 2. PEV3 动力学分析
         try:
@@ -321,10 +335,27 @@ class DSNUIAgentCoordinator:
 
         if system_prompt_override is None:
             # 3. 话题记忆弹性剪裁组装
-            context_msgs = self.topic_mgr.assemble_context_messages(
-                new_user_message=user_msg or "你好",
-                system_prefix=system_prompt,
+            # 这一段会遍历 topic_mgr.topics（dict）。若其它协程在遍历过程中
+            # 增删话题，就会抛 "dictionary changed size during iteration"。
+            # 因此记录进入/退出与话题规模，便于把异常定位到这一层。
+            logger.debug(
+                "上下文装配开始: topics=%d memos=%d current=%s",
+                len(self.topic_mgr.topics), len(self.topic_mgr.memos),
+                self.topic_mgr.current_topic_id,
             )
+            try:
+                context_msgs = self.topic_mgr.assemble_context_messages(
+                    new_user_message=user_msg or "你好",
+                    system_prefix=system_prompt,
+                )
+            except Exception as e:  # noqa: BLE001
+                log_exception(
+                    logger,
+                    "上下文装配失败(topic_mgr.assemble_context_messages)",
+                    e,
+                )
+                raise
+            logger.debug("上下文装配完成: messages=%d", len(context_msgs))
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
         eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
@@ -395,6 +426,14 @@ class DSNUIAgentCoordinator:
                     elif ev.kind == "reply" and ev.reply and not full_reply_parts:
                         full_reply_parts.append(ev.reply)
                         yield {"type": "delta", "content": ev.reply}
+                    elif ev.kind == "done":
+                        # 终态信号：hit_max 表示模型在步数耗尽后由收束轮给出答复。
+                        # 必须透传，否则前端无法区分「正常完成」与「被步数截断」。
+                        yield {
+                            "type": "done",
+                            "hit_max": bool(ev.hit_max),
+                            "round": ev.round,
+                        }
 
                 full_reply = "".join(full_reply_parts)
                 self._post_turn(user_msg, full_reply)
@@ -433,7 +472,11 @@ class DSNUIAgentCoordinator:
                 try:
                     self._post_turn(user_msg, partial_reply)
                 except Exception as ex:
-                    logger.debug("中断轮次记忆补偿记录失败: %s", ex)
+                    log_exception(logger, "中断轮次记忆补偿记录失败", ex)
+            logger.debug(
+                "chat_stream 退出: turn_posted=%s reply_chars=%d",
+                turn_posted, sum(len(p) for p in full_reply_parts),
+            )
 
     def chat_invoke(
         self,

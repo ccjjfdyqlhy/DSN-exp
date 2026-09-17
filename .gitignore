@@ -64,3 +64,4 @@ test-results/
 debug-storybook.log
 
 *character_cards*
+apps/dsn_ui/logs

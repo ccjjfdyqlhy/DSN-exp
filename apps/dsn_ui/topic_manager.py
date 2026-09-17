@@ -22,10 +22,55 @@ from harness.context_assembly import (
     SEG_VERBATIM,
     SegmentedContextAssembler,
 )
+from apps.dsn_ui.logging_setup import log_exception
 from harness.orchestrator import ChatMessage
 from harness.store.sqlite import SqliteStore
 
 logger = logging.getLogger("DSNUITopicManager")
+
+
+class _IterationGuard:
+    """上下文管理器：安全遍历共享 dict，并诊断「遍历中被修改」的问题。
+
+    背景：dsn_ui 的话题表 self.topics 是跨协程共享的 dict。
+    只要在 `for ... in self.topics.items()` 期间有其它协程增删话题，
+    CPython 就会抛 RuntimeError: dictionary changed size during iteration，
+    而原始栈只会指向循环那一行，缺少"谁改了它、改了什么"的信息。
+
+    用法：
+        with _IterationGuard(self.topics, "assemble.summary") as keys:
+            for tid in keys: ...
+
+    捕获到 RuntimeError 时会打印进入/退出时的大小与差异键，精准定位突变源。
+    """
+
+    def __init__(self, mapping: dict, site: str):
+        self.mapping = mapping
+        self.site = site
+        self.before: Optional[set] = None
+
+    def __enter__(self):
+        self.before = set(self.mapping.keys())
+        return list(self.before)
+
+    def __exit__(self, exc_type, exc, tb):
+        after = set(self.mapping.keys())
+        added = after - (self.before or set())
+        removed = (self.before or set()) - after
+        if exc is not None and isinstance(exc, RuntimeError) and "changed size" in str(exc):
+            logger.error(
+                "检测到字典遍历中被修改: site=%s before=%d after=%d added=%s removed=%s",
+                self.site, len(self.before or ()), len(after),
+                sorted(added)[:10], sorted(removed)[:10],
+            )
+            log_exception(logger, f"话题字典并发修改: {self.site}", exc)
+        elif added or removed:
+            # 遍历期间发生了增删但恰好没触发异常（例如只改值）也要留痕
+            logger.debug(
+                "字典在遍历期间发生变化: site=%s added=%s removed=%s",
+                self.site, sorted(added)[:10], sorted(removed)[:10],
+            )
+        return False  # 不吞异常，交给上层统一处理
 
 
 @dataclass
@@ -202,6 +247,7 @@ class DSNUITopicContextManager:
         if self.current_topic_id and self.current_topic_id in self.topics:
             cur = self.topics[self.current_topic_id]
             if now - cur.last_active_at > self.idle_timeout_seconds and cur.status == "open":
+                logger.debug("空闲话题闭锁: %s", cur.topic_id)
                 self.close_topic(cur.topic_id, summary=f"与【{cur.title}】相关的过往探讨")
                 self.current_topic_id = None
 
@@ -209,6 +255,13 @@ class DSNUITopicContextManager:
             tid = f"topic_{uuid.uuid4().hex[:8]}"
             title = user_text.strip().splitlines()[0][:20] if user_text else "新话题"
             topic = Topic(topic_id=tid, title=title, status="open")
+            # 这里是 topics 的写入点之一：若发生在其它协程遍历 topics 期间，
+            # 就会触发 "dictionary changed size during iteration"。
+            # 记录写入前后规模，便于与装配侧的诊断日志交叉比对。
+            logger.debug(
+                "新建当前话题: %s (topics %d → %d)",
+                tid, len(self.topics), len(self.topics) + 1,
+            )
             self.topics[tid] = topic
             self.current_topic_id = tid
             if self.store:
@@ -218,13 +271,22 @@ class DSNUITopicContextManager:
         return self.topics[self.current_topic_id]
 
     def record_turn(self, user_msg: str, assistant_msg: str) -> None:
+        logger.debug(
+            "record_turn: topics=%d user_chars=%d reply_chars=%d",
+            len(self.topics), len(user_msg or ""), len(assistant_msg or ""),
+        )
         topic = self.get_or_create_current_topic(user_msg)
         topic.add_message(ChatMessage.user(user_msg))
         topic.add_message(ChatMessage.assistant(assistant_msg))
         if self.store:
-            self.store.append_message(topic.topic_id, "user", user_msg)
-            self.store.append_message(topic.topic_id, "assistant", assistant_msg)
-            self.store.save_topic(topic)
+            try:
+                self.store.append_message(topic.topic_id, "user", user_msg)
+                self.store.append_message(topic.topic_id, "assistant", assistant_msg)
+                self.store.save_topic(topic)
+            except Exception as e:  # noqa: BLE001
+                log_exception(logger, f"record_turn 持久化失败 topic={topic.topic_id}", e)
+                raise
+        logger.debug("record_turn 完成: topic=%s messages=%d", topic.topic_id, len(topic.messages))
 
     def close_topic(self, topic_id: str, summary: str = "") -> bool:
         if topic_id in self.topics:
@@ -333,7 +395,11 @@ class DSNUITopicContextManager:
             )
 
         # 2. 闭锁话题摘要
-        for tid, top in self.topics.items():
+        # 先对 keys 做快照再遍历：即便其它协程在这一刻新增/删除话题，
+        # 也只会看到"本次装配的快照"，不再触发 dictionary changed size。
+        with _IterationGuard(self.topics, "assemble.closed_summaries") as _guard_keys:
+            items_snapshot = [(tid, self.topics[tid]) for tid in _guard_keys if tid in self.topics]
+        for tid, top in items_snapshot:
             if top.status == "closed" and top.summary:
                 segments.append(
                     ContextSegment(
@@ -345,8 +411,10 @@ class DSNUITopicContextManager:
                     )
                 )
 
-        # 3. 激活/Pin 的历史话题原文
-        for tid, top in self.topics.items():
+        # 3. 激活/Pin 的历史话题原文（同样基于快照遍历）
+        with _IterationGuard(self.topics, "assemble.active_topics") as _guard_keys:
+            active_snapshot = [(tid, self.topics[tid]) for tid in _guard_keys if tid in self.topics]
+        for tid, top in active_snapshot:
             if tid != self.current_topic_id and (top.is_pinned or top.status == "open"):
                 text = "\n".join(f"{m.role}: {m.content}" for m in top.messages)
                 if text:
