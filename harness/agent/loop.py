@@ -62,6 +62,21 @@ def _merge_tool_arguments(prev: str, frag: str) -> str:
     return prev + frag
 
 
+def _contains_truncation_marker(value: Any) -> bool:
+    """递归判断截断结果里是否带有 _truncated 标记。
+
+    嵌套结构可能是 dict/list 任意组合，只有把标记向上传播，
+    顶层才会正确打上 _truncated，调用方也才能知道"这次输出被截过"。
+    """
+    if isinstance(value, dict):
+        if value.get("_truncated"):
+            return True
+        return any(_contains_truncation_marker(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_truncation_marker(v) for v in value)
+    return False
+
+
 @dataclass
 class StreamEvent:
     """流式执行事件（AgentLoop.run_stream 产出）。
@@ -514,14 +529,38 @@ class AgentLoop:
                 return output[:keep] + f"\n...[工具输出过长，已截断。总共 {len(output)} 字符，保留前 {keep} 字符。如需详情请分段请求或指定子路径]"
             return output
         if isinstance(output, dict):
-            # 对 dict 中超长的文本属性单独截断
+            # 对 dict 中超长的文本属性单独截断。
+            #
+            # 注意：必须在遍历时先把 (键, 值) 快照出来，不能一边 for ... in out.items()
+            # 一边写回 out —— 第一次截断时设置 out["_truncated"] 会改变字典大小，
+            # CPython 随即抛 "dictionary changed size during iteration"。
+            # 这是纯粹的自伤型 bug（与并发无关）：只要任一工具返回值是
+            # "含超长字符串的 dict" 就必然复现。
             out = dict(output)
-            for k, v in out.items():
+            truncated = False
+            for k, v in list(out.items()):
                 if isinstance(v, str) and len(v) > self.max_output_chars:
                     keep = self.max_output_chars
                     out[k] = v[:keep] + f"\n...[输出过长已截断(原长 {len(v)} 字符)]"
-                    out["_truncated"] = True
+                    truncated = True
+                elif isinstance(v, (dict, list, tuple)) and v:
+                    # 递归处理嵌套容器：工具常返回 {"items": [{"text": ...}]} 结构，
+                    # 只截断顶层字符串会让内层超长文本绕过截断。
+                    inner = self._truncate_output(v)
+                    if inner is not v:
+                        out[k] = inner
+                        if _contains_truncation_marker(inner):
+                            truncated = True
+            # 循环结束后再补标记位，避免在迭代期间修改被迭代的字典。
+            if truncated:
+                out["_truncated"] = True
             return out
+        # 其它容器（list/tuple）也要递归处理：工具常返回 {"items": [...]} 这类结构，
+        # 否则内部的超长文本会绕过截断直击上下文。
+        if isinstance(output, list):
+            return [self._truncate_output(item) for item in output]
+        if isinstance(output, tuple):
+            return tuple(self._truncate_output(item) for item in output)
         return output
 
     def _known_tool_names(self) -> Optional[set]:
