@@ -1043,7 +1043,43 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         res = get_system_resources()
         status = engine.orchestrator.status()
         res["orchestrator"] = status
+        # 显存管理开关状态，供硬件页渲染
+        res["kv_offload_disabled"] = engine.orchestrator.get_kv_offload_disabled()
         return res
+
+    @app.get("/api/system/kv-offload")
+    async def get_kv_offload():
+        """读取「卸载上下文(KV cache)到 CPU 内存」开关状态。"""
+        return {
+            "kv_offload_disabled": engine.orchestrator.get_kv_offload_disabled(),
+            "description": (
+                "开启后所有 llama.cpp 模型加载时会附加 --no-kv-offload，"
+                "KV cache 常驻系统内存以降低显存占用；代价是注意力计算需跨 PCIe "
+                "读取缓存，推理速度下降。已加载的模型需重新加载后生效。"
+            ),
+        }
+
+    @app.post("/api/system/kv-offload")
+    async def set_kv_offload(req: Request):
+        """设置「卸载上下文(KV cache)到 CPU 内存」开关。
+
+        参数写入所有 llama.cpp 模型的启动配置，因此**下一次加载**即生效；
+        已在运行的模型需要重新加载（卸载→加载）才会应用新参数。
+        """
+        body = await req.json()
+        if "kv_offload_disabled" not in body:
+            raise HTTPException(status_code=400, detail="缺少参数 kv_offload_disabled")
+        disabled = bool(body["kv_offload_disabled"])
+        affected = engine.orchestrator.set_kv_offload_disabled(disabled)
+        logger.info(
+            "KV offload 开关更新: disabled=%s affected=%d", disabled, affected
+        )
+        return {
+            "status": "ok",
+            "kv_offload_disabled": engine.orchestrator.get_kv_offload_disabled(),
+            "affected_models": affected,
+            "note": "该设置对之后加载的模型生效；已加载模型需重新加载。",
+        }
 
     # ── 8. DSN 全量设置项 API ──
 

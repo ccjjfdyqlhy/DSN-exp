@@ -86,7 +86,47 @@ class ModelOrchestrator:
         self._default_model: Optional[str] = None
         self._registry_lock = threading.RLock()
         self._listeners: list[Callable[[str, str, dict], None]] = []
+        # 显存管理：是否把 KV cache 留在 CPU 内存（--no-kv-offload）。
+        # 默认关闭，保持 llama.cpp 的原生行为（KV cache 随层卸载到显存）。
+        self._kv_offload_disabled: bool = False
         logger.info("ModelOrchestrator 初始化完成 (全局最大插槽数: %d)", self._max_concurrent_slots)
+
+    # ── 显存管理：KV cache 卸载开关 ──
+
+    def set_kv_offload_disabled(self, disabled: bool) -> int:
+        """全局开关：是否把所有 llama.cpp 模型的 KV cache 留在 CPU 内存。
+
+        disabled=True 时会在每个 llama.cpp 模型的启动命令中追加
+        --no-kv-offload（等价于把 KV cache 卸载到 CPU 内存）。
+
+        实现要点：launcher 与 ModelSpec 共享同一个 LlamaServerConfig 对象，
+        而命令行是在 launcher.start() 时才合成的，因此这里直接改写配置即可
+        对「之后发生的每次加载」生效，无需重建 launcher。
+
+        返回受影响的模型数量。已加载的模型不会自动重启 ——
+        需要用户在硬件页手动卸载/重新加载才能让新参数生效。
+        """
+        changed = 0
+        with self._registry_lock:
+            for spec in self._specs.values():
+                if spec.source_type != ModelSourceType.LOCAL_LLAMACPP:
+                    continue
+                cfg = spec.llama_config
+                if cfg is None:
+                    continue
+                if cfg.no_kv_offload != bool(disabled):
+                    cfg.no_kv_offload = bool(disabled)
+                    changed += 1
+        self._kv_offload_disabled = bool(disabled)
+        logger.info(
+            "KV cache 卸载开关: no_kv_offload=%s（受影响模型 %d 个）",
+            disabled, changed,
+        )
+        return changed
+
+    def get_kv_offload_disabled(self) -> bool:
+        """当前是否已开启「卸载 KV cache 到 CPU 内存」。"""
+        return self._kv_offload_disabled
 
     def add_status_listener(self, listener: Callable[[str, str, dict], None]) -> None:
         """添加状态变更监听器: fn(model_name, status_str, extra_dict)"""

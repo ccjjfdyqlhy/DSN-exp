@@ -82,6 +82,10 @@ class LlamaServerConfig:
     alias: Optional[str] = None
     flash_attn: Optional[str] = None
     agent: bool = False
+    # 不把 KV cache 卸载到显存（等价于命令行 --no-kv-offload）。
+    # 开启后 KV cache 常驻系统内存，可显著降低显存占用，
+    # 代价是注意力计算需跨 PCIe 读取 KV，推理速度会下降。
+    no_kv_offload: bool = False
     extra_args: list[str] = field(default_factory=list)
 
     def resolved_binary_path(self) -> str:
@@ -148,6 +152,11 @@ class LlamaServerConfig:
 
         if self.agent:
             cmd.append("--agent")
+
+        # 显存管理：把 KV cache 留在 CPU 内存（--no-kv-offload）。
+        # 放在 extra_args 之前，允许用户通过 extra_args 覆盖。
+        if self.no_kv_offload:
+            cmd.append("--no-kv-offload")
 
         if self.extra_args:
             cmd.extend(self.extra_args)
@@ -222,6 +231,9 @@ class LlamaServerConfig:
             elif arg == "--agent":
                 config.agent = True
                 i += 1
+            elif arg in ("--no-kv-offload", "--no_kv_offload"):
+                config.no_kv_offload = True
+                i += 1
             else:
                 extra.append(arg)
                 i += 1
@@ -250,6 +262,7 @@ class LlamaServerConfig:
             alias=data.get("alias"),
             flash_attn=data.get("flash_attn"),
             agent=bool(data.get("agent", False)),
+            no_kv_offload=bool(data.get("no_kv_offload", False)),
             extra_args=list(data.get("extra_args", [])),
         )
 
@@ -272,6 +285,7 @@ class LlamaServerConfig:
             "alias": self.alias,
             "flash_attn": self.flash_attn,
             "agent": self.agent,
+            "no_kv_offload": self.no_kv_offload,
             "extra_args": self.extra_args,
         }
 
