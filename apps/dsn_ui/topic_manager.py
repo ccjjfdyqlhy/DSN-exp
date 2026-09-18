@@ -146,6 +146,29 @@ class DSNUITopicStore:
             (topic_id, role, content, time.time()),
         )
 
+    def drop_messages(self, topic_id: str, count: int) -> int:
+        """删除某话题最早的 count 条消息（用于 drop_oldest 策略）。
+
+        必须与内存中的裁剪同步，否则下次 load_all_topics 会把"已丢弃"的
+        内容重新读回来，导致策略表面上生效、实际上下文又被撑满。
+        返回实际删除的条数。
+        """
+        if count <= 0:
+            return 0
+        rows = self.store.execute(
+            "SELECT id FROM ui_messages WHERE topic_id = ? ORDER BY id LIMIT ?",
+            (topic_id, count),
+        )
+        ids = [r["id"] for r in rows]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        self.store.execute(
+            f"DELETE FROM ui_messages WHERE id IN ({placeholders})", tuple(ids)
+        )
+        logger.debug("已从话题 %s 删除 %d 条最早消息", topic_id, len(ids))
+        return len(ids)
+
     def load_all_topics(self) -> Dict[str, Topic]:
         rows = self.store.execute("SELECT topic_id, title, status, is_pinned, summary, last_active_at FROM ui_topics")
         topics: Dict[str, Topic] = {}
@@ -375,6 +398,132 @@ class DSNUITopicContextManager:
             logger.warning("执行静默自动话题摘要失败: %s", e)
 
         return False
+
+    # ── 上下文充满策略实现 ──
+
+    def _current_message_chars(self) -> tuple[Optional[Topic], int]:
+        """当前话题及其历史字符数。"""
+        cur = self.get_or_create_current_topic()
+        if not cur:
+            return None, 0
+        return cur, sum(len(m.content or "") for m in cur.messages)
+
+    def drop_oldest_if_needed(self, max_safe_chars: int, keep_recent: int = 6) -> bool:
+        """策略 1：直接丢弃本会话最早的上下文。
+
+        不做任何模型调用（零成本、零延迟），单纯把当前话题最早的若干条消息
+        删除，只保留最近 keep_recent 条（默认 3 轮问答）。
+        被丢弃的内容不会进入摘要，检索时也不再可见 —— 这是它的取舍。
+        """
+        cur, total_chars = self._current_message_chars()
+        if not cur or len(cur.messages) <= keep_recent:
+            return False
+        if total_chars < max_safe_chars:
+            return False
+
+        dropped = len(cur.messages) - keep_recent
+        logger.info(
+            "策略[drop_oldest] 话题 %s 字符数 %d 超过 %d，直接丢弃最早 %d 条消息",
+            cur.topic_id, total_chars, max_safe_chars, dropped,
+        )
+        # 每丢弃一条就同步删库，避免内存与持久层不一致（重载后旧内容又回来）
+        to_drop = cur.messages[:dropped]
+        cur.messages = cur.messages[dropped:]
+        if self.store:
+            try:
+                self.store.drop_messages(cur.topic_id, len(to_drop))
+                self.store.save_topic(cur)
+            except Exception as e:  # noqa: BLE001
+                log_exception(logger, f"drop_oldest 持久化失败 topic={cur.topic_id}", e)
+                raise
+        return True
+
+    def compact_all_if_needed(
+        self,
+        max_safe_chars: int,
+        summarizer_fn: Callable[[str], str],
+        keep_recent: int = 2,
+    ) -> bool:
+        """策略 2：直接 compact 所有内容。
+
+        把**整个会话**（全部话题的原文）压缩成一份摘要，替换掉所有原文，
+        只在当前话题保留最近 keep_recent 条作为衔接。
+        适合"这次任务已经做完、要开新话题"的场景。
+        """
+        cur, total_chars = self._current_message_chars()
+        all_chars = sum(
+            len(m.content or "")
+            for t in self.topics.values()
+            for m in t.messages
+        )
+        if all_chars < max_safe_chars:
+            return False
+        if not self.topics:
+            return False
+
+        logger.info(
+            "策略[compact_all] 全会话字符数 %d 超过 %d，启动整体压缩",
+            all_chars, max_safe_chars,
+        )
+
+        # 汇总所有话题的原文（按时间序）
+        lines: list[str] = []
+        for tid, top in sorted(
+            self.topics.items(), key=lambda kv: kv[1].last_active_at
+        ):
+            if not top.messages:
+                continue
+            lines.append(f"=== 话题《{top.title}》 ===")
+            for m in top.messages:
+                lines.append(f"{m.role}: {m.content}")
+
+        hist_text = "\n\n".join(lines)
+        # 输入本身过长时先安全截断（保留首尾），避免摘要请求自身溢出
+        max_input = int(max_safe_chars * 0.8)
+        if len(hist_text) > max_input:
+            half = max_input // 2
+            hist_text = (
+                hist_text[:half]
+                + "\n\n...[中间部分过长已截断]...\n\n"
+                + hist_text[-half:]
+            )
+
+        new_summary = summarizer_fn(hist_text)
+        if not new_summary or not new_summary.strip():
+            return False
+
+        summary_block = "【全会话压缩摘要】\n" + new_summary.strip()
+
+        # 把摘要写回当前话题，并清空其它话题的原文
+        if cur is None:
+            cur = self.get_or_create_current_topic()
+        recent = cur.messages[-keep_recent:] if keep_recent > 0 else []
+
+        # 其它话题的既有摘要也并入总摘要，避免信息彻底丢失
+        for tid, top in self.topics.items():
+            if tid == cur.topic_id:
+                continue
+            if top.summary:
+                summary_block += "\n\n【" + top.title + "】\n" + top.summary
+            if top.messages:
+                top.messages = []
+            top.summary = ""
+
+        cur.summary = summary_block
+        cur.messages = list(recent)
+
+        if self.store:
+            try:
+                for top in self.topics.values():
+                    self.store.save_topic(top)
+            except Exception as e:  # noqa: BLE001
+                log_exception(logger, "compact_all 持久化失败", e)
+                raise
+        logger.info(
+            "策略[compact_all] 完成：摘要 %d 字符，保留最近 %d 条",
+            len(cur.summary), len(cur.messages),
+        )
+        return True
 
     def assemble_context_messages(
         self,

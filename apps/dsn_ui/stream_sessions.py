@@ -47,6 +47,23 @@ DEFAULT_TTL_SECONDS = 600.0
 # 未被任何订阅者读取时，缓冲区仍持续增长的上限保护
 DONE_MARKER = "data: [DONE]\n\n"
 
+# SSE 保活心跳间隔（秒）。必须明显小于浏览器/代理的空闲超时
+# （常见为 30~60s），也要小于前端 visibilitychange 判定的静默阈值，
+# 这样即便模型正在跑一个耗时几十秒的工具，连接也不会被判死。
+# 前端请求里的 sse_ping_interval=1 会被用作这一间隔。
+DEFAULT_HEARTBEAT_INTERVAL = 1.0
+
+
+def heartbeat_bytes(conversation_id: str = "") -> bytes:
+    """构造一条 SSE 注释行作为心跳。
+
+    以 ':' 开头的是 SSE 注释，规范要求客户端忽略其内容。
+    前端解析器只处理以 'data:' 开头的行，因此这些心跳不会污染消息内容，
+    但足以让 TCP/浏览器/代理看到"连接仍在活动"，从而不触发空闲断开。
+    """
+    ts = int(time.time() * 1000)
+    return f": ping {ts}\n\n".encode("utf-8")
+
 
 @dataclass
 class StreamSession:
@@ -112,6 +129,47 @@ class StreamSession:
         if offset < 0:
             offset = 0
         return bytes(self.buffer[offset:])
+
+    def resolve_offset(self, offset: int) -> int:
+        """把客户端给出的偏移"吸附"到最近的合法 SSE 事件边界。
+
+        背景：客户端为了排除保活心跳等不在缓冲中的字节，会自行推算偏移，
+        这类推算很容易出现 ±几字节的误差。若偏差落在一个事件中间，
+        重连就会从半个 JSON 中间开始，解析失败导致内容丢失。
+
+        这里把偏移向前吸附到最近的 "data: " 起点（即完整事件的开头），
+        确保重连从事件边界开始；找不到就返回原值（从头开始最安全）。
+        """
+        if offset <= 0:
+            return 0
+        if offset >= len(self.buffer):
+            return len(self.buffer)
+
+        # 判定"合法边界"的唯一标准：该位置必须是一个事件的起点，即
+        # 以 "data:" 开头，且它要么在缓冲区开头，要么前面紧跟事件分隔符。
+        def _is_event_start(pos: int) -> bool:
+            if pos == 0:
+                return self.buffer.startswith(b"data:", 0)
+            if not self.buffer.startswith(b"data:", pos):
+                return False
+            # 前一个字符必须是分隔符的结尾（即 pos >= 2 且 buffer[pos-2:pos] == b"\n\n"）
+            return pos >= 2 and self.buffer[pos - 2:pos] == b"\n\n"
+
+        if _is_event_start(offset):
+            return offset
+
+        # 不合法：向前找最近的事件起点（窗口内），找不到就从头开始。
+        # 从头开始只会重发已读内容（客户端按内容幂等处理），
+        # 而从半截 JSON 开始会丢内容，因此前者是安全的降级。
+        window_start = max(0, offset - 65536)
+        search = offset
+        while True:
+            idx = self.buffer.rfind(b"data:", window_start, search)
+            if idx == -1:
+                return 0 if window_start == 0 else window_start
+            if _is_event_start(idx):
+                return idx
+            search = idx
 
     def descriptor(self) -> dict:
         """给 /v1/streams/lookup 用的会话描述。"""
@@ -211,29 +269,50 @@ class StreamSessionRegistry:
         *,
         idle_timeout: float = 15.0,
         max_idle_rounds: Optional[int] = None,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
     ) -> AsyncIterator[bytes]:
         """从 offset 开始回放并实时续传，直到会话结束。
 
         生成器产出的是原始 SSE 字节块。客户端断开时（GeneratorExit）
         只是停止读取，不影响后台生产任务继续跑。
+
+        **保活**：当底层长时间没有新字节（例如模型正在执行一个耗时很久的
+        工具调用，如 90 秒的 nmap 扫描）时，本生成器仍会按 heartbeat_interval
+        周期性下发 SSE 注释行 ": ping"。这是关键 —— 否则连接长时间无任何字节，
+        浏览器/代理会判定连接已死而断开，前端显示「SSE 中断」，
+        但后端其实还在正常执行工具、模型后续仍在生成。
+
+        注意：心跳**只发给当前连接，不写入会话缓冲**。否则重连回放时会把
+        历史 ping 当成正文重放一遍。
         """
         session = await self.get(conversation_id)
         if session is None:
             raise KeyError(conversation_id)
 
         session.subscriber_count += 1
-        sent = max(0, offset)
+        # 吸附到事件边界：客户端偏移可能因心跳/分片存在几字节误差，
+        # 从半个 JSON 中间开始解析会丢内容。
+        sent = session.resolve_offset(max(0, offset))
+        if sent != offset:
+            logger.info(
+                "回放偏移吸附: conv=%s %d -> %d（对齐到事件边界）",
+                conversation_id, offset, sent,
+            )
         idle_rounds = 0
+        # 距离上次向客户端发送"真实数据"的秒数，用于决定何时补心跳
+        since_real_bytes = 0.0
+        hb = max(0.1, heartbeat_interval)
         try:
             logger.info(
-                "开始回放: conv=%s from=%d total=%d done=%s",
-                conversation_id, sent, session.total_bytes, session.is_done,
+                "开始回放: conv=%s from=%d total=%d done=%s heartbeat=%.1fs",
+                conversation_id, sent, session.total_bytes, session.is_done, hb,
             )
             while True:
                 data = session.snapshot_from(sent)
                 if data:
                     sent += len(data)
                     idle_rounds = 0
+                    since_real_bytes = 0.0
                     yield data
                     continue
 
@@ -243,7 +322,18 @@ class StreamSessionRegistry:
                     )
                     return
 
-                await session.wait_for_data(timeout=idle_timeout)
+                # 无新数据：等待 min(心跳间隔, 空闲轮询间隔) 后决定补心跳还是继续等
+                wait_for = min(idle_timeout, hb)
+                await session.wait_for_data(timeout=wait_for)
+                since_real_bytes += wait_for
+
+                # 到点仍未获得真实数据 → 下发心跳保活（不写入缓冲）
+                if since_real_bytes >= hb and session.snapshot_from(sent) == b"":
+                    since_real_bytes = 0.0
+                    yield heartbeat_bytes(conversation_id)
+                    # 心跳不算一次"空闲轮询"，继续等待真实数据
+                    continue
+
                 idle_rounds += 1
                 if max_idle_rounds is not None and idle_rounds >= max_idle_rounds:
                     logger.info(

@@ -73,6 +73,60 @@ class OrchestratorChatClientWrapper(IChatClient):
             yield chunk
 
 
+class SummaryModelChat:
+    """把 orchestrator 上的任意模型适配成 PV3 / 摘要所需的 chat 客户端。
+
+    PV3 的 PersonalityJudge 与 DistillationEngine 期望一个具备
+    send_message()/invoke() 的对象；这里用「专门配置的摘要模型」实现，
+    使得摘要与人格分析可以走独立（通常更便宜/更快）的模型，
+    而不占用对话主模型。
+
+    未配置专用模型时 model_name 为 None，available=False，
+    调用方据此回退（PV3 -> 启发式；摘要 -> 跳过）。
+    """
+
+    def __init__(
+        self,
+        orchestrator: ModelOrchestrator,
+        model_name: Optional[str] = None,
+        max_tokens: int = 1500,
+    ):
+        self.orchestrator = orchestrator
+        self.model_name = model_name
+        # PV3 的 _send_with_temp 会临时改写这两个属性，保留以便其生效
+        self.temperature: Optional[float] = None
+        self.max_tokens = max_tokens
+
+    @property
+    def available(self) -> bool:
+        return bool(self.model_name)
+
+    def send_message(self, prompt: str, **kwargs) -> str:
+        """单轮文本调用（PV3 judge / distillation 使用）。"""
+        if not self.model_name:
+            raise RuntimeError("未配置专用的摘要/分析模型")
+        resp = self.orchestrator.invoke(
+            [ChatMessage.user(prompt)],
+            model_name=self.model_name,
+            temperature=kwargs.get("temperature", self.temperature),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+        )
+        return resp.content or ""
+
+    def invoke(self, messages, **kwargs) -> ChatResponse:
+        if not self.model_name:
+            raise RuntimeError("未配置专用的摘要/分析模型")
+        return self.orchestrator.invoke(
+            messages,
+            model_name=self.model_name,
+            temperature=kwargs.get("temperature", self.temperature),
+            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+        )
+
+    def complete(self, prompt: str, **kwargs) -> str:
+        return self.send_message(prompt, **kwargs)
+
+
 class DSNUIAgentCoordinator:
     """DSN-UI 核心 Agent 调度中枢。"""
 
@@ -121,6 +175,16 @@ class DSNUIAgentCoordinator:
         self.uid = 1
         self.pv3.ensure_user_bound(self.uid)
 
+        # 上下文充满后的策略（三选一，可由设置页切换）
+        #   drop_oldest  直接丢弃本会话最早的上下文
+        #   compact_all  把全部内容压缩成一份摘要
+        #   topic_merge  走记忆系统的话题合并（旧话题摘要 + 保留近期原文）
+        self._context_overflow_strategy: str = self._load_context_strategy()
+        # 专用摘要 / 人格V3分析模型（为空表示沿用当前对话模型）
+        self._summary_model_name: Optional[str] = self._load_summary_model()
+        # 触发阈值：上下文字符数达到 ctx_size * 该比例时触发策略
+        self._context_trigger_ratio: float = self._load_context_trigger_ratio()
+
         # 基础系统设定
         self.base_system_prompt = "你是一个富有共情力、思维敏锐、乐于助人的智能全能伴侣。"
 
@@ -129,6 +193,11 @@ class DSNUIAgentCoordinator:
         # 工具输出弹性截断字符数上限
         self._tool_max_output_chars: int = self._load_tool_max_output_chars()
         self.tool_coordinator.set_max_output_chars(self._tool_max_output_chars)
+
+        # 把已配置的专用摘要/分析模型绑定到 PV3。
+        # 历史实现传入 personality_model_chat=None 且从不更新，
+        # 导致 analyze_interaction 永久退化为启发式、摘要任务无人可用。
+        self._rebind_summary_model()
 
     # ── AgentLoop 步数设置 ──
 
@@ -154,6 +223,104 @@ class DSNUIAgentCoordinator:
 
     def get_max_steps(self) -> int:
         return self._max_steps
+
+    # ── 上下文充满策略 / 专用摘要模型 ──
+
+    VALID_CONTEXT_STRATEGIES = ("drop_oldest", "compact_all", "topic_merge")
+
+    def _load_context_strategy(self) -> str:
+        """读取上下文充满后的策略，默认 topic_merge（保持历史行为）。"""
+        default = "topic_merge"
+        try:
+            f = self._settings_file()
+            if f.exists():
+                raw = json.loads(f.read_text(encoding="utf-8"))
+                val = str(raw.get("context_overflow_strategy", default))
+                return val if val in self.VALID_CONTEXT_STRATEGIES else default
+        except Exception as e:
+            logger.debug("读取 context_overflow_strategy 失败: %s", e)
+        return default
+
+    def get_context_strategy(self) -> str:
+        return self._context_overflow_strategy
+
+    def set_context_strategy(self, strategy: str) -> str:
+        val = str(strategy)
+        if val not in self.VALID_CONTEXT_STRATEGIES:
+            raise ValueError(
+                f"未知的上下文策略: {val}，可选 {self.VALID_CONTEXT_STRATEGIES}"
+            )
+        self._context_overflow_strategy = val
+        self._save_settings()
+        logger.info("上下文充满策略已设置为: %s", val)
+        return val
+
+    def _load_context_trigger_ratio(self) -> float:
+        """触发阈值比例（相对模型上下文长度），默认 0.75。"""
+        default = 0.75
+        try:
+            f = self._settings_file()
+            if f.exists():
+                raw = json.loads(f.read_text(encoding="utf-8"))
+                val = float(raw.get("context_trigger_ratio", default))
+                return val if 0.1 <= val <= 1.0 else default
+        except Exception as e:
+            logger.debug("读取 context_trigger_ratio 失败: %s", e)
+        return default
+
+    def get_context_trigger_ratio(self) -> float:
+        return self._context_trigger_ratio
+
+    def set_context_trigger_ratio(self, ratio: float) -> float:
+        val = max(0.1, min(1.0, float(ratio)))
+        self._context_trigger_ratio = val
+        self._save_settings()
+        return val
+
+    def _load_summary_model(self) -> Optional[str]:
+        """读取专用摘要/分析模型名；空字符串或缺失表示未配置。"""
+        try:
+            f = self._settings_file()
+            if f.exists():
+                raw = json.loads(f.read_text(encoding="utf-8"))
+                val = raw.get("summary_model", "")
+                val = str(val).strip() if val else ""
+                return val or None
+        except Exception as e:
+            logger.debug("读取 summary_model 失败: %s", e)
+        return None
+
+    def get_summary_model(self) -> Optional[str]:
+        return self._summary_model_name
+
+    def set_summary_model(self, model_name: Optional[str]) -> Optional[str]:
+        """设置专用摘要/人格分析模型，并立即重绑定 PV3。
+
+        传空字符串/None 表示取消专用模型，PV3 将回退到启发式、
+        摘要任务跳过（与历史行为一致）。
+        """
+        val = (str(model_name).strip() if model_name else "") or None
+        self._summary_model_name = val
+        self._save_settings()
+        self._rebind_summary_model()
+        logger.info("专用摘要/分析模型已设置为: %s", val or "(未配置)")
+        return val
+
+    def _rebind_summary_model(self) -> None:
+        """把专用模型绑定到 PV3（人格分析）与摘要器。"""
+        try:
+            chat = SummaryModelChat(self.orchestrator, self._summary_model_name)
+            self.pv3.set_personality_model(chat if chat.available else None)
+            logger.info(
+                "PV3 人格分析模型绑定: %s",
+                self._summary_model_name or "(未配置，将使用启发式分类)",
+            )
+        except Exception as e:  # noqa: BLE001
+            log_exception(logger, "绑定 PV3 分析模型失败", e)
+
+    def _resolve_summary_model(self, fallback_model: str) -> str:
+        """摘要调用使用的模型：优先专用模型，否则回退当前对话模型。"""
+        return self._summary_model_name or fallback_model
 
     def _load_tool_max_output_chars(self) -> int:
         """从持久化设置读取工具最大输出字符数（默认 6000）。"""
@@ -191,6 +358,9 @@ class DSNUIAgentCoordinator:
             data = {
                 "max_steps": self._max_steps,
                 "tool_max_output_chars": self._tool_max_output_chars,
+                "context_overflow_strategy": self._context_overflow_strategy,
+                "context_trigger_ratio": self._context_trigger_ratio,
+                "summary_model": self._summary_model_name or "",
             }
             f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
@@ -295,6 +465,81 @@ class DSNUIAgentCoordinator:
         st = self.emotion_engine.state
         self.topic_store.save_emotion(st.joy, st.sorrow, st.anger, st.fear, st.meta)
 
+    # ── 上下文充满策略 ──
+
+    def _context_char_budget(self, model_ctx: int) -> int:
+        """本次请求触发策略的字符阈值。
+
+        以模型上下文长度为基准，按用户配置的比例换算成字符数
+        （约 1 token ≈ 2 字符的经验值，保守留出输出空间）。
+        """
+        ratio = self._context_trigger_ratio
+        return max(1000, int(model_ctx * 2.0 * ratio))
+
+    def _apply_context_strategy(
+        self,
+        model_name: str,
+        model_ctx: int,
+        user_msg: str,
+    ) -> bool:
+        """按配置的策略处理"上下文充满"。
+
+        返回 True 表示已对历史做了压缩/裁剪，调用方需要重新装配上下文。
+        """
+        strategy = self._context_overflow_strategy
+        limit = self._context_char_budget(model_ctx)
+
+        try:
+            if strategy == "drop_oldest":
+                changed = self.topic_mgr.drop_oldest_if_needed(limit)
+            elif strategy == "compact_all":
+                changed = self.topic_mgr.compact_all_if_needed(
+                    limit, self._make_summarizer(model_name)
+                )
+            else:  # topic_merge
+                changed = self.topic_mgr.compact_topic_if_needed(
+                    limit, self._make_summarizer(model_name)
+                )
+        except Exception as e:  # noqa: BLE001 - 策略失败不能拖垮整轮对话
+            log_exception(logger, f"上下文策略 {strategy} 执行失败", e)
+            return False
+
+        if changed:
+            logger.info("上下文策略 %s 已生效（阈值 %d 字符）", strategy, limit)
+        else:
+            logger.debug("上下文策略 %s 未触发（阈值 %d 字符）", strategy, limit)
+        return changed
+
+    def _make_summarizer(self, model_name: str) -> Callable[[str], str]:
+        """构造摘要函数：优先使用专用摘要模型，否则回退当前对话模型。"""
+        target_model = self._resolve_summary_model(model_name)
+
+        def _summarize(hist_text: str) -> str:
+            try:
+                summary_prompt = [
+                    ChatMessage.system(
+                        "你是一个专业的会话总结助手。请简明扼要地总结以下前序历史对话"
+                        "与工具执行进展，保留核心结论、事实与当前任务状态，"
+                        "用于压缩上下文释放空间："
+                    ),
+                    ChatMessage.user(hist_text),
+                ]
+                resp = self.orchestrator.invoke(
+                    summary_prompt, model_name=target_model, max_tokens=1500
+                )
+                logger.info(
+                    "摘要完成: model=%s input_chars=%d output_chars=%d",
+                    target_model, len(hist_text), len(resp.content or ""),
+                )
+                return resp.content or ""
+            except Exception as ex:  # noqa: BLE001
+                log_exception(
+                    logger, f"摘要调用失败(model={target_model})，本次跳过压缩", ex
+                )
+                return ""
+
+        return _summarize
+
     async def chat_stream(
         self,
         messages_raw: List[Dict[str, Any]],
@@ -360,23 +605,14 @@ class DSNUIAgentCoordinator:
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
         eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
 
-        # 上下文溢出智能自愈：若当前会话内容过大，自动启动静默话题摘要并压缩前序历史
+        # 上下文溢出智能自愈：按用户选择的策略处理（见 _apply_context_strategy）
         if system_prompt_override is None:
-            safe_char_limit = int(model_ctx * 2.0)
-            def _silent_summarizer(hist_text: str) -> str:
-                try:
-                    summary_prompt = [
-                        ChatMessage.system("你是一个专业的会话总结助手。请简明扼要地总结以下前序历史对话与工具执行进展，保留核心结论、事实与当前任务状态，用于压缩上下文释放空间："),
-                        ChatMessage.user(hist_text)
-                    ]
-                    resp = self.orchestrator.invoke(summary_prompt, model_name=model_name, max_tokens=1500)
-                    return resp.content or ""
-                except Exception as ex:
-                    logger.warning("静默摘要执行异常: %s", ex)
-                    return ""
-
-            if self.topic_mgr.compact_topic_if_needed(safe_char_limit, _silent_summarizer):
-                # 摘要成功后重新组装上下文，释放空间
+            if self._apply_context_strategy(
+                model_name=model_name,
+                model_ctx=model_ctx,
+                user_msg=user_msg,
+            ):
+                # 策略生效后重新组装上下文，释放空间
                 context_msgs = self.topic_mgr.assemble_context_messages(
                     new_user_message=user_msg or "你好",
                     system_prefix=system_prompt,

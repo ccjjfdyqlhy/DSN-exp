@@ -482,6 +482,18 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         if raw_tool_chars is not None and int(raw_tool_chars) > 0:
             engine.agent.set_tool_max_output_chars(int(raw_tool_chars))
 
+        # SSE 保活心跳间隔：前端按 llama-server 协议传 sse_ping_interval（秒）。
+        # 这个参数以前被后端忽略，导致长时间无输出的工具执行（如 90s 的 nmap）
+        # 期间连接静默、被浏览器/代理判死，前端显示「SSE 中断」而后端仍在跑。
+        try:
+            ping_interval = float(body.get("sse_ping_interval") or 0) or 0.0
+        except (TypeError, ValueError):
+            ping_interval = 0.0
+        # 限制在合理范围：太小会刷屏，太大起不到保活作用
+        heartbeat_interval = (
+            max(0.2, min(30.0, ping_interval)) if ping_interval > 0 else None
+        )
+
         if not stream:
             resp = engine.agent.chat_invoke(
                 messages_raw=messages_raw,
@@ -763,6 +775,15 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         session = await stream_registry.create(conv_id, model=model_name)
         session.task = asyncio.create_task(_produce_sse(session, conv_id))
 
+        # 心跳参数：前端传了 sse_ping_interval 就用它，否则用会话默认值。
+        hb_kwargs: Dict[str, Any] = {}
+        if heartbeat_interval is not None:
+            hb_kwargs["heartbeat_interval"] = heartbeat_interval
+        logger.info(
+            "SSE 保活: conv=%s heartbeat=%s",
+            conv_id, hb_kwargs.get("heartbeat_interval", "default"),
+        )
+
         async def _sse_generator():
             """从会话缓冲实时转发给当前 HTTP 连接。
 
@@ -770,7 +791,9 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             后台的 _produce_sse 不受影响，继续写缓冲。
             """
             try:
-                async for data in stream_registry.replay(conv_id, 0):
+                async for data in stream_registry.replay(
+                    conv_id, 0, **hb_kwargs
+                ):
                     yield data
             except KeyError:
                 # 会话已被回收（极少见）：回一个明确的错误而不是挂起
@@ -926,11 +949,41 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
     @app.get("/api/agent/settings")
     async def get_agent_settings():
-        """Agent 运行时设置（含 AgentLoop 步数与工具输出截断上限）。"""
+        """Agent 运行时设置（步数、工具截断、上下文策略、专用摘要模型）。"""
         return {
             "max_steps": engine.agent.get_max_steps(),
             "tool_max_output_chars": engine.agent.get_tool_max_output_chars(),
+            "context_overflow_strategy": engine.agent.get_context_strategy(),
+            "context_trigger_ratio": engine.agent.get_context_trigger_ratio(),
+            "summary_model": engine.agent.get_summary_model() or "",
             "execution_mode_default": False,
+        }
+
+    @app.get("/api/agent/context-strategies")
+    async def get_context_strategies():
+        """可选策略清单，供前端下拉框渲染（含说明）。"""
+        return {
+            "current": engine.agent.get_context_strategy(),
+            "strategies": [
+                {
+                    "id": "drop_oldest",
+                    "label": "直接丢弃最早上下文",
+                    "description": "不做摘要，直接删除本会话最早的消息，只保留最近几轮。"
+                                   "零延迟、零成本，但被丢弃的内容不可恢复。",
+                },
+                {
+                    "id": "compact_all",
+                    "label": "整体压缩(compact)",
+                    "description": "把整个会话（含所有话题）压缩成一份摘要后替换全部原文，"
+                                   "只保留最近少量消息。适合任务已结束、准备开新话题时。",
+                },
+                {
+                    "id": "topic_merge",
+                    "label": "话题合并(记忆系统)",
+                    "description": "走记忆系统：把较早轮次合并为话题摘要，保留最近原文，"
+                                   "历史结论仍可被检索。默认策略，信息保留最完整。",
+                },
+            ],
         }
 
     @app.post("/api/agent/settings")
@@ -957,10 +1010,29 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail="tool_max_output_chars 需在 500..500000 之间")
             engine.agent.set_tool_max_output_chars(chars)
 
+        if "context_overflow_strategy" in body:
+            try:
+                engine.agent.set_context_strategy(str(body["context_overflow_strategy"]))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        if "context_trigger_ratio" in body:
+            try:
+                engine.agent.set_context_trigger_ratio(float(body["context_trigger_ratio"]))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="context_trigger_ratio 必须是数字")
+
+        if "summary_model" in body:
+            # 允许传空字符串以清除专用模型（回退到当前对话模型 / 启发式分析）
+            engine.agent.set_summary_model(body.get("summary_model"))
+
         return {
             "status": "ok",
             "max_steps": engine.agent.get_max_steps(),
             "tool_max_output_chars": engine.agent.get_tool_max_output_chars(),
+            "context_overflow_strategy": engine.agent.get_context_strategy(),
+            "context_trigger_ratio": engine.agent.get_context_trigger_ratio(),
+            "summary_model": engine.agent.get_summary_model() or "",
         }
 
     # ── 7. 本地系统资源与显存监控 API ──
@@ -1108,9 +1180,21 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             conv_id, offset, session.total_bytes, session.is_done,
         )
 
+        # 重连同样需要保活：断连期间后端可能正在跑耗时工具，
+        # 重连后若长时间没有新字节，连接会再次被判死。
+        try:
+            resume_ping = float(req.query_params.get("sse_ping_interval") or 0) or 0.0
+        except (TypeError, ValueError):
+            resume_ping = 0.0
+        resume_hb: Dict[str, Any] = {}
+        if resume_ping > 0:
+            resume_hb["heartbeat_interval"] = max(0.2, min(30.0, resume_ping))
+
         async def _replay_generator():
             try:
-                async for data in stream_registry.replay(conv_id, offset):
+                async for data in stream_registry.replay(
+                    conv_id, offset, **resume_hb
+                ):
                     yield data
             except KeyError:
                 return
