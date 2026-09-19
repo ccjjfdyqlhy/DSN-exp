@@ -139,6 +139,144 @@ def get_system_resources() -> dict:
     }
 
 
+# ──模型输入模态探测（供 /props 与 /models 共用）──
+# 模态必须来自真实能力：优先问运行中的 llama-server /props，
+# 未加载时回退到配置推断（mmproj_path 表示支持图像）。
+# 历史实现用名字含 'v'/'ocr' 猜测，导致带视觉投影器的
+# bonsai:bonsai2:27B 被误判为纯文本，前端会在发送前丢弃图像。
+# 已探测到的模型模态缓存：{model_name: {"vision": bool, ...}}
+# 从 llama-server 的 /props 读取是最权威的来源；未加载时回退到配置推断。
+_modality_cache: Dict[str, dict] = {}
+
+def _probe_server_modalities(model_name: str, spec) -> Optional[dict]:
+    """向已运行的 llama-server 询问它真实支持的输入模态。
+
+    llama.cpp 的 /props 在启用 mmproj 后返回:
+        {"modalities": {"vision": true, "video": true, "audio": false}}
+    这是最权威的信号 —— 比任何名字/配置推断都可靠。
+    未加载或探测失败时返回 None。
+    """
+    if spec is None or getattr(spec, "launcher", None) is None:
+        return None
+    base_url = getattr(spec, "base_url", None)
+    if not base_url:
+        return None
+    try:
+        import requests
+        headers = {}
+        api_key = getattr(spec, "api_key", None)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = requests.get(f"{base_url.rstrip('/')}/props", headers=headers, timeout=2.0)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        mods = data.get("modalities")
+        if isinstance(mods, dict):
+            return {
+                "vision": bool(mods.get("vision")),
+                "audio": bool(mods.get("audio")),
+                "video": bool(mods.get("video")),
+            }
+    except Exception:  # noqa: BLE001 - 探测失败不是错误，回退到配置推断
+        return None
+    return None
+
+def _lmstudio_vision(spec) -> Optional[bool]:
+    """向 LMStudio 询问该模型是否支持图像输入。
+
+    LMStudio 的 /props 返回 architecture.input_modalities，例如
+        ["text", "image"]  → 支持视觉
+    探测失败返回 None（交由后续回退决定）。
+    """
+    base_url = getattr(spec, "base_url", None)
+    target = getattr(spec, "remote_model_name", None) or getattr(spec, "name", None)
+    if not base_url or not target:
+        return None
+    try:
+        import requests
+        resp = requests.get(
+            f"{base_url.rstrip('/')}/props",
+            params={"model": target},
+            timeout=2.0,
+        )
+        if resp.status_code != 200:
+            return None
+        arch = (resp.json() or {}).get("architecture") or {}
+        mods = arch.get("input_modalities")
+        if isinstance(mods, list):
+            return any(str(x).lower() in ("image", "vision") for x in mods)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _configured_vision(spec) -> bool:
+    """从模型配置/上游推断是否支持视觉输入。
+
+    依据（按可靠性排序）：
+      1. llama.cpp 配置里有 mmproj_path → 挂了视觉投影器，必然支持图像；
+      2. LMStudio 上游 /props 的 input_modalities（真实上报）；
+      3. provider 显式声明（x-dsn-vision）——用于无法探测的远端 API；
+      4. 其它情况视为纯文本。
+    """
+    cfg = getattr(spec, "llama_config", None)
+    if cfg is not None and getattr(cfg, "mmproj_path", None):
+        return True
+
+    source_type = getattr(getattr(spec, "source_type", None), "value", "")
+    if source_type == "api_lmstudio":
+        probe = _lmstudio_vision(spec)
+        if probe is not None:
+            return probe
+
+    extra = getattr(spec, "extra_headers", None)
+    if isinstance(extra, dict) and extra.get("x-dsn-vision") == "true":
+        return True
+    return False
+
+def _modalities_dict(model_name: Optional[str], orchestrator) -> dict:
+    """把输入模态转成前端需要的 {"vision","audio","video"} 结构。"""
+    mods = _input_modalities(model_name or "", orchestrator) if model_name else ["text"]
+    return {
+        "vision": "vision" in mods,
+        "audio": "audio" in mods,
+        "video": "video" in mods,
+    }
+
+
+def _input_modalities(model_name: str, orchestrator) -> list[str]:
+    """返回模型的输入模态列表（供前端判断能否发送图片）。"""
+    spec = orchestrator.get_model_spec(model_name)
+
+    # 1) 优先用运行中服务的真实上报（最可靠）
+    probed = _probe_server_modalities(model_name, spec)
+    if probed is not None:
+        _modality_cache[model_name] = probed
+        out = ["text"]
+        if probed.get("vision"):
+            out.append("vision")
+        if probed.get("audio"):
+            out.append("audio")
+        if probed.get("video"):
+            out.append("video")
+        return out
+
+    # 2) 回退到配置推断；已缓存过就沿用（避免未加载时能力闪烁）
+    cached = _modality_cache.get(model_name)
+    if cached is not None:
+        out = ["text"]
+        if cached.get("vision"):
+            out.append("vision")
+        return out
+
+    out = ["text"]
+    if _configured_vision(spec):
+        out.append("vision")
+        _modality_cache[model_name] = {"vision": True, "audio": False, "video": False}
+    return out
+
+
 def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     def _on_topic_converged(topic_id: str, title: str):
         loop = None
@@ -249,11 +387,10 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 }
             },
             "total_slots": status.get("max_concurrent_slots", 2),
-            "modalities": {
-                "vision": True,
-                "audio": True,
-                "video": False
-            },
+            # 模态来自目标模型的真实能力，不能写死：
+            # 之前恒为 vision/audio=true，会让前端以为所有模型都能收图，
+            # 从而把图片发给纯文本模型（或反向误判）。
+            "modalities": _modalities_dict(target_model, engine.orchestrator),
             "ui_settings": {
                 "theme": "dark",
                 "showBuildVersion": True,
@@ -283,7 +420,12 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     "args": [m["command"]] if m.get("command") else [],
                 },
                 "architecture": {
-                    "input_modalities": ["text", "vision"] if "ocr" in m["name"] or "v" in m["name"] else ["text"]
+                    # 输入模态必须来自**模型真实配置**，不能靠名字猜。
+                    # 历史实现用 'ocr' in name or 'v' in name 判断，
+                    # 于是 bonsai:bonsai2:27B（带 mmproj 视觉投影器）被误判为
+                    # 纯文本 → 前端在发送前把 image_url 内容块全部剥离，
+                    # 表现为"模型说没收到图片附件"。
+                    "input_modalities": _input_modalities(m["name"], engine.orchestrator)
                 },
                 "meta": {
                     "n_ctx": engine.orchestrator.get_model_ctx_size(m["name"]),
@@ -1252,6 +1394,146 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             "status": "loaded" if ok else "failed",
             "transient": True,
         }
+
+    # ── 远程 API Provider 管理（设置页「API 模型管理」）──
+
+    @app.get("/api/providers")
+    async def list_providers():
+        """列出所有已配置的 API provider（API Key 已脱敏）。"""
+        from apps.dsn_ui.api_providers import public_view
+        return {
+            "providers": [public_view(p) for p in engine.provider_store.list()],
+            "protocols": [
+                {"id": "chat", "label": "OpenAI Chat Completions",
+                 "endpoint": "/v1/chat/completions"},
+                {"id": "responses", "label": "OpenAI Responses",
+                 "endpoint": "/v1/responses"},
+                {"id": "anthropic", "label": "Anthropic Messages",
+                 "endpoint": "/v1/messages"},
+            ],
+        }
+
+    @app.post("/api/providers")
+    async def upsert_provider(req: Request):
+        """新增或更新一个 provider，并立即重建其模型注册。"""
+        from apps.dsn_ui.api_providers import public_view
+        body = await req.json()
+
+        # 更新前先取快照：unregister 必须基于**旧**模型列表，
+        # 否则旧模型名会残留成僵尸注册（列表里同时出现新旧两条）。
+        snapshot = None
+        if body.get("id"):
+            snapshot = engine.provider_store.get(str(body["id"]))
+            # 前端不回传 api_key（脱敏为空）时沿用已保存的 key
+            if not body.get("api_key") and snapshot:
+                body["api_key"] = snapshot.get("api_key") or ""
+
+        try:
+            record = engine.provider_store.upsert(body)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # 用旧快照清理，再按新配置重建
+        if snapshot:
+            engine.unregister_provider_models(record["id"], snapshot=snapshot)
+        engine.reload_api_providers()
+        logger.info("Provider 已保存并注册: %s", record.get("label"))
+        return {"status": "ok", "provider": public_view(record)}
+
+    @app.delete("/api/providers/{provider_id}")
+    async def delete_provider(provider_id: str):
+        """删除 provider 并注销其全部模型。"""
+        removed = engine.unregister_provider_models(provider_id)
+        ok = engine.provider_store.delete(provider_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="provider 不存在")
+        engine.reload_api_providers()
+        return {"status": "ok", "removed_models": removed}
+
+    @app.post("/api/providers/test")
+    async def test_provider(req: Request):
+        """测试连通性并向远端询问可用模型。
+
+        请求体可给 {protocol, base_url, api_key}，或给 {id} 复用已存 provider
+        （api_key 留空表示沿用已保存的 key）。成功后把发现的模型写回。
+        """
+        from apps.dsn_ui.api_providers import (
+            ANTHROPIC_FALLBACK_MODELS, discover_models, public_view,
+        )
+        body = await req.json()
+
+        provider = None
+        if body.get("id"):
+            provider = engine.provider_store.get(str(body["id"]))
+            if provider is None:
+                raise HTTPException(status_code=404, detail="provider 不存在")
+
+        protocol = str(body.get("protocol") or (provider or {}).get("protocol") or "chat")
+        base_url = str(body.get("base_url") or (provider or {}).get("base_url") or "")
+        api_key = str(body.get("api_key") or (provider or {}).get("api_key") or "")
+
+        if not base_url:
+            raise HTTPException(status_code=400, detail="缺少 base_url")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="缺少 api_key")
+
+        try:
+            models = await asyncio.to_thread(
+                discover_models,
+                protocol=protocol,
+                base_url=base_url,
+                api_key=api_key,
+            )
+            warning = None
+        except Exception as e:  # noqa: BLE001
+            # Anthropic 的 /v1/models 并非所有端点都支持：退回内置列表，
+            # 让用户仍可手动挑选模型，而不是完全卡死。
+            if protocol == "anthropic":
+                models = list(ANTHROPIC_FALLBACK_MODELS)
+                warning = f"远端模型列表不可用（{e}），已提供常用模型名供手动选择"
+                logger.warning("Anthropic 模型发现失败，使用兜底列表: %s", e)
+            else:
+                logger.warning("模型发现失败: %s", e)
+                return JSONResponse(
+                    status_code=502,
+                    content={"status": "error", "error": str(e)},
+                )
+
+        if provider is not None:
+            provider["models"] = models
+            engine.provider_store.upsert(provider)
+            engine.unregister_provider_models(provider["id"])
+            engine.reload_api_providers()
+
+        logger.info("Provider 测试成功: %s -> %d 个模型", base_url, len(models))
+        return {
+            "status": "ok",
+            "models": models,
+            "count": len(models),
+            "warning": warning,
+            "provider": public_view(provider) if provider else None,
+        }
+
+    @app.get("/api/providers/models")
+    async def list_provider_models():
+        """所有 provider 贡献的、已注册进 orchestrator 的模型清单。"""
+        out = []
+        status = engine.orchestrator.status()
+        by_name = {m["name"]: m for m in status.get("models", [])}
+        for p in engine.provider_store.list():
+            label = p.get("label") or "Provider"
+            for model in p.get("models") or []:
+                name = f"{label} / {model}"
+                out.append({
+                    "provider_id": p.get("id"),
+                    "provider_label": label,
+                    "protocol": p.get("protocol"),
+                    "model": model,
+                    "registered_name": name,
+                    "registered": name in by_name,
+                    "base_url": p.get("base_url"),
+                })
+        return {"models": out, "total": len(out)}
 
     @app.get("/api/integration/bonsai")
     async def get_bonsai_status():

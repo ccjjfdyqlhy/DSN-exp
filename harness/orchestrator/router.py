@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from .base import ChatClientAdapter, ChatMessage, ChatResponse, IChatClient, IEmbeddingClient, ToolCall
+from .anthropic import AnthropicCompatClient
 from .llamacpp import LlamaCppChat, LlamaCppEmbeddingClient, LlamaServerConfig, LlamaServerLauncher
 from .lmstudio import LMStudioChat, load_lmstudio_model, unload_lmstudio_model
 from .openai import OpenAICompatClient
@@ -55,6 +56,9 @@ class ModelSpec:
     # 运行时绑定
     launcher: Optional[LlamaServerLauncher] = None
     client_instance: Optional[IChatClient] = None
+    # 远程 API 专有：请求协议（chat / responses / anthropic）与来源标签
+    protocol: Optional[str] = None
+    provider_label: Optional[str] = None
 
 
 class ModelOrchestrator:
@@ -404,25 +408,48 @@ class ModelOrchestrator:
         max_tokens: int = 4096,
         timeout: float = 300.0,
         extra_headers: Optional[dict] = None,
+        protocol: str = "chat",
+        provider_label: Optional[str] = None,
     ) -> None:
-        """注册通用远程 OpenAI 兼容 API 模型（不负责本地调度，可全并发访问）。"""
+        """注册通用远程 API 模型（不负责本地调度，可全并发访问）。
+
+        protocol:
+          * "chat"      OpenAI Chat Completions（/v1/chat/completions）
+          * "responses" OpenAI Responses API（/v1/responses）
+          * "anthropic" Anthropic Messages（/v1/messages）
+        """
         target_name = remote_model_name or name
-        client = OpenAICompatClient(
-            api_key=api_key,
-            base_url=base_url,
-            model=target_name,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            extra_headers=extra_headers or {},
-        )
+
+        if protocol == "anthropic":
+            client: IChatClient = AnthropicCompatClient(
+                api_key=api_key,
+                base_url=base_url,
+                model=target_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                extra_headers=extra_headers or {},
+            )
+            engine_name = "anthropic"
+        else:
+            client = OpenAICompatClient(
+                api_key=api_key,
+                base_url=base_url,
+                model=target_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                extra_headers=extra_headers or {},
+                protocol=protocol,
+            )
+            engine_name = f"openai:{protocol}"
 
         profile = ModelProfile(
             priority=10,
             resident=True,
             orchestrated=False,  # 不计入硬件显存插槽
             request_timeout=int(timeout),
-            engine="openai",
+            engine=engine_name,
         )
 
         spec = ModelSpec(
@@ -439,11 +466,18 @@ class ModelOrchestrator:
             client_instance=client,
         )
 
+        # 记录协议与来源标签，供状态接口展示
+        spec.protocol = protocol
+        spec.provider_label = provider_label
+
         with self._registry_lock:
             self._specs[name] = spec
             if self._default_model is None:
                 self._default_model = name
-        logger.info("已注册外部 OpenAI API 模型: %s -> %s (%s)", name, target_name, base_url)
+        logger.info(
+            "已注册外部 API 模型: %s -> %s (%s, protocol=%s)",
+            name, target_name, base_url, protocol,
+        )
 
     # ── 客户端检索与调用 ──
 

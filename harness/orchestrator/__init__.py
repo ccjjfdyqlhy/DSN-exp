@@ -27,6 +27,8 @@ from .llamacpp import (
     LlamaCppChat,
     LlamaCppEmbeddingClient,
 )
+from .openai import OpenAICompatClient
+from .anthropic import AnthropicCompatClient
 from .router import (
     ModelSourceType,
     ModelSpec,
@@ -46,6 +48,7 @@ from . import (
     base,
     llamacpp,
     lmstudio,
+    anthropic,
     openai,
     scheduler,
     provider,
@@ -64,6 +67,8 @@ __all__ = [
     "IModelProvider",
     "ChatClientAdapter",
     "ModelProviderRegistry",
+    "OpenAICompatClient",
+    "AnthropicCompatClient",
     "ModelRouter",
     "TierConfig",
     # 多模型编排

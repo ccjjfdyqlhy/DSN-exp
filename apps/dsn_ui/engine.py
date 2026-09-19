@@ -39,6 +39,87 @@ class DSNUIEngine:
         # 使「保存为预设」的设置跨重启持续生效。
         self._apply_saved_launch_overrides()
 
+    # ── 远程 API Provider 管理 ──
+
+    def reload_api_providers(self) -> int:
+        """把持久化的 provider 全部注册/重建到 orchestrator。
+
+        每次增删改 provider 后调用，使其模型立即可被选用。
+        返回成功注册的模型数量。
+        """
+        from apps.dsn_ui.api_providers import discovered_model_name
+
+        registered = 0
+        for provider in self.provider_store.list():
+            if not provider.get("enabled", True):
+                continue
+            label = provider.get("label") or "Provider"
+            protocol = provider.get("protocol") or "chat"
+            base_url = provider.get("base_url") or ""
+            api_key = provider.get("api_key") or ""
+            # provider 可显式声明 vision 能力：远端模型的模态无法自动探测，
+            # 由用户在设置页勾选（存进 extra_headers 供服务端读取）。
+            headers = dict(provider.get("extra_headers") or {})
+            if provider.get("vision"):
+                headers["x-dsn-vision"] = "true"
+            else:
+                headers.pop("x-dsn-vision", None)
+
+            for model in provider.get("models") or []:
+                name = discovered_model_name(label, str(model))
+                try:
+                    self.orchestrator.register_api_openai(
+                        name=name,
+                        api_key=api_key,
+                        base_url=base_url,
+                        remote_model_name=str(model),
+                        temperature=0.7,
+                        max_tokens=int(provider.get("max_tokens") or 4096),
+                        timeout=float(provider.get("timeout") or 300),
+                        extra_headers=headers,
+                        protocol=protocol,
+                        provider_label=label,
+                    )
+                    registered += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("注册 API 模型 %s 失败: %s", name, e)
+        if registered:
+            logger.info("已注册 %d 个远程 API 模型", registered)
+        return registered
+
+    def unregister_provider_models(
+        self, provider_id: str, *, snapshot: Optional[dict] = None
+    ) -> int:
+        """从 orchestrator 移除某 provider 的模型注册。
+
+        Args:
+            provider_id: provider 标识
+            snapshot: 更新前的 provider 快照。**更新场景必须传入** ——
+                否则 store 里已是新模型列表，旧模型名会残留成僵尸注册
+                （表现为改名/换模型后列表里同时出现新旧两条）。
+
+        返回移除的模型数量。
+        """
+        provider = snapshot or self.provider_store.get(provider_id)
+        if not provider:
+            return 0
+        label = provider.get("label") or "Provider"
+
+        # 传入 snapshot（= 更新前的状态）时，要把该 provider 的**全部**旧注册
+        # 清掉，因为模型列表可能已变；调用方随后会用新配置重建。
+        # 不传 snapshot（= 删除场景）时同样全清。
+        # 因此这里不存在需要保留的条目 —— keep 恒为空。
+        removed = 0
+        with self.orchestrator._registry_lock:
+            for name, spec in list(self.orchestrator._specs.items()):
+                if getattr(spec, "provider_label", None) != label:
+                    continue
+                self.orchestrator._specs.pop(name, None)
+                removed += 1
+        if removed:
+            logger.info("已移除 provider %s 的 %d 个模型注册", label, removed)
+        return removed
+
     # ── 启动参数覆盖持久化 ──
 
     def _launch_overrides_file(self) -> Path:
@@ -131,6 +212,9 @@ class DSNUIEngine:
                         request_timeout=req_to,
                     )
                 elif engine == "lmstudio":
+                    # profile 可声明 vision: true 表示该模型支持图像输入
+                    if data.get("vision"):
+                        logger.info("profile %s 声明支持视觉输入", yml_file.name)
                     self.orchestrator.register_api_lmstudio(
                         name=str(name),
                         base_url="http://localhost:4501",
