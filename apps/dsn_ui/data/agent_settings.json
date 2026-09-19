@@ -1,1 +1,0 @@
-{"max_steps": 5, "tool_max_output_chars": 6000, "context_overflow_strategy": "topic_merge", "context_trigger_ratio": 1.0, "summary_model": ""}
