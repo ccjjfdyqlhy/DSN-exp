@@ -26,7 +26,7 @@ from typing import Any, AsyncGenerator, Callable, Optional
 
 import requests
 
-from .base import ChatClientAdapter, ChatResponse, IEmbeddingClient, ToolCall
+from .base import ChatClientAdapter, ChatMessage, ChatResponse, IEmbeddingClient, ToolCall
 
 logger = logging.getLogger("LlamaCpp")
 
@@ -86,6 +86,16 @@ class LlamaServerConfig:
     # 开启后 KV cache 常驻系统内存，可显著降低显存占用，
     # 代价是注意力计算需跨 PCIe 读取 KV，推理速度会下降。
     no_kv_offload: bool = False
+    # 多模态投影器（mmproj GGUF）。设置后该模型具备图像理解能力，
+    # 命令行会附加 --mmproj <path>，调用方可传 image_url 内容块。
+    mmproj_path: Optional[str] = None
+    # 把投影器放在 CPU/RAM 而非显存（--no-mmproj-offload）。
+    # 显存紧张时可回收约 0.9GiB，代价是图像预处理变慢。
+    mmproj_no_offload: bool = False
+    # 图像视觉 token 上限（--image-max-tokens）。0 表示不限制。
+    image_max_tokens: Optional[int] = None
+    # llama-server 的额外环境变量（如自定义二进制所需的 LD_LIBRARY_PATH）。
+    env: dict = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
 
     def resolved_binary_path(self) -> str:
@@ -152,6 +162,16 @@ class LlamaServerConfig:
 
         if self.agent:
             cmd.append("--agent")
+
+        # 多模态：投影器文件 + 可选放在 CPU、图像 token 上限
+        if self.mmproj_path:
+            cmd.extend(["--mmproj", os.path.abspath(
+                os.path.expanduser(os.path.expandvars(self.mmproj_path))
+            )])
+            if self.mmproj_no_offload:
+                cmd.append("--no-mmproj-offload")
+        if self.image_max_tokens is not None:
+            cmd.extend(["--image-max-tokens", str(self.image_max_tokens)])
 
         # 显存管理：把 KV cache 留在 CPU 内存（--no-kv-offload）。
         # 放在 extra_args 之前，允许用户通过 extra_args 覆盖。
@@ -234,6 +254,15 @@ class LlamaServerConfig:
             elif arg in ("--no-kv-offload", "--no_kv_offload"):
                 config.no_kv_offload = True
                 i += 1
+            elif arg == "--mmproj" and i + 1 < n:
+                config.mmproj_path = tokens[i + 1]
+                i += 2
+            elif arg in ("--no-mmproj-offload", "--no_mmproj_offload"):
+                config.mmproj_no_offload = True
+                i += 1
+            elif arg == "--image-max-tokens" and i + 1 < n:
+                config.image_max_tokens = int(tokens[i + 1])
+                i += 2
             else:
                 extra.append(arg)
                 i += 1
@@ -263,6 +292,13 @@ class LlamaServerConfig:
             flash_attn=data.get("flash_attn"),
             agent=bool(data.get("agent", False)),
             no_kv_offload=bool(data.get("no_kv_offload", False)),
+            mmproj_path=data.get("mmproj_path") or data.get("mmproj"),
+            mmproj_no_offload=bool(data.get("mmproj_no_offload", False)),
+            image_max_tokens=(
+                int(data["image_max_tokens"])
+                if data.get("image_max_tokens") is not None else None
+            ),
+            env=dict(data.get("env") or {}),
             extra_args=list(data.get("extra_args", [])),
         )
 
@@ -286,6 +322,10 @@ class LlamaServerConfig:
             "flash_attn": self.flash_attn,
             "agent": self.agent,
             "no_kv_offload": self.no_kv_offload,
+            "mmproj_path": self.mmproj_path,
+            "mmproj_no_offload": self.mmproj_no_offload,
+            "image_max_tokens": self.image_max_tokens,
+            "env": dict(self.env),
             "extra_args": self.extra_args,
         }
 
@@ -346,6 +386,19 @@ class LlamaServerLauncher:
             logger.info("llama-server 已在运行并就绪: %s", self.base_url)
             return True
 
+        # 端口占用检测：本 launcher 自己没有子进程，但端口已有服务在响应，
+        # 说明该端口被**外部/其它模型**的 llama-server 占用（常见于用户
+        # 手动跑了 ~/Bonsai-demo 的 start_llama_server.sh）。
+        # 此时若继续启动，新进程会 bind 失败，而就绪探测又会命中那个外部服务，
+        # 造成"看起来加载成功、实际用的是别的模型"的静默错配 —— 必须显式告警。
+        if not self.is_running() and self.is_ready(timeout=1.0):
+            logger.warning(
+                "端口 %s 已被其它 llama-server 占用（非本进程托管）。"
+                "本次加载不会真正拉起新实例，后续请求将命中该外部服务。"
+                "如需 DSN 独立托管，请改用其它端口或先停止外部服务。",
+                self.base_url,
+            )
+
         binary_path = self.config.resolved_binary_path()
         if not os.path.isfile(binary_path) or not os.access(binary_path, os.X_OK):
             raise FileNotFoundError(
@@ -375,6 +428,24 @@ class LlamaServerLauncher:
             sub_env["LANG"] = "C.UTF-8"
             sub_env["LC_ALL"] = "C.UTF-8"
             sub_env["PYTHONIOENCODING"] = "utf-8"
+
+            # 自定义 llama.cpp 构建（如 ~/Bonsai-demo/bin/cuda）把 .so 放在
+            # 二进制同目录，必须把该目录加入 LD_LIBRARY_PATH，否则启动时
+            # 会报 "error while loading shared libraries: libllama.so.0"。
+            # 这里自动注入，并允许 config.env 覆盖/补充。
+            bin_dir = os.path.dirname(self.config.resolved_binary_path())
+            if bin_dir:
+                existing = sub_env.get("LD_LIBRARY_PATH", "")
+                parts = [p for p in existing.split(":") if p]
+                if bin_dir not in parts:
+                    sub_env["LD_LIBRARY_PATH"] = (
+                        bin_dir + (":" + existing if existing else "")
+                    )
+            for k, v in (self.config.env or {}).items():
+                sub_env[str(k)] = str(v)
+            if self.config.env:
+                logger.info("llama-server 额外环境变量: %s", sorted(self.config.env))
+
             self._process = subprocess.Popen(
                 cmd,
                 stdout=stdout_dest,
@@ -545,11 +616,116 @@ class LlamaCppChat(ChatClientAdapter):
             h["Authorization"] = f"Bearer {self.api_key}"
         return h
 
+    @staticmethod
+    def _raise_for_status(resp) -> None:
+        """带响应体上下文的 raise_for_status。
+
+        llama-server 的失败原因（模型不兼容、显存不足、模板错误、参数非法等）
+        **只在响应体里**，而 requests 的默认 raise_for_status 会把它丢掉，
+        上层只剩下 "500 Server Error" 这种无信息量的报错。
+        这里把响应体解析出来拼进异常消息，让日志能直接看出根因。
+        """
+        if resp.status_code < 400:
+            return
+        detail = ""
+        try:
+            raw = resp.text or ""
+        except Exception:  # noqa: BLE001 - 读取 body 失败不应掩盖原始错误
+            raw = ""
+        if raw:
+            # 尝试解析为结构化错误（llama-server 返回 {"error":{"message":...}}）
+            try:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    err = data.get("error")
+                    if isinstance(err, dict):
+                        detail = str(err.get("message") or err)
+                    elif err:
+                        detail = str(err)
+                    else:
+                        detail = str(data.get("message") or raw)
+                else:
+                    detail = raw
+            except (TypeError, ValueError):
+                detail = raw
+        detail = (detail or "").strip()
+        if len(detail) > 2000:
+            detail = detail[:2000] + "…[已截断]"
+
+        msg = (
+            f"llama-server 返回 HTTP {resp.status_code}"
+            f" ({resp.request.url if resp.request is not None else ''})"
+        )
+        if detail:
+            msg += f"：{detail}"
+        logger.error("llama.cpp 上游错误: %s", msg)
+        raise RuntimeError(msg)
+
     def _ensure_launcher_running(self) -> None:
         """如果绑定了 launcher 且未就绪，自动拉起。"""
         if self._launcher and not self._launcher.is_ready():
             logger.info("检测到 llama.cpp 引擎未就绪，通过 launcher 启动...")
             self._launcher.start(wait_ready=True, timeout=self.timeout)
+
+    @staticmethod
+    def _normalize_system_messages(msgs: list[Any]) -> list[Any]:
+        """把多条 system 消息合并为开头的一条。
+
+        严格的 Jinja chat template（Bonsai、部分 Qwen/Llama 官方模板）会
+        直接报错 "System message must be at the beginning."，导致上游 500。
+        而应用层出于模块化，可能按段追加多条 system（DSN 的记忆注入即如此）。
+
+        这里做最后一道归一化，语义等价（系统内容都是前缀上下文）：
+          * 开头的连续 system 合并为一条；
+          * 夹在中间的 system 并入开头那条（避免被模板拒绝或静默丢弃）。
+        """
+        if not isinstance(msgs, list) or not msgs:
+            return msgs
+
+        def _content_of(m: Any) -> str:
+            c = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):
+                return "\n".join(
+                    p.get("text", "") for p in c
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            return str(c or "")
+
+        system_texts: list[str] = []
+        rest: list[Any] = []
+        for m in msgs:
+            role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
+            if role == "system":
+                t = _content_of(m)
+                if t.strip():
+                    system_texts.append(t)
+            else:
+                rest.append(m)
+
+        if not system_texts:
+            # 没有非空 system 内容：若原本没有 system 消息则原样返回，
+            # 否则把空 system 全部剔除（严格模板同样不接受空 system）。
+            if len(rest) == len(msgs):
+                return msgs
+            logger.debug("已剔除 %d 条空白 system 消息", len(msgs) - len(rest))
+            return rest
+
+        # 只有一条且本来就在开头 → 无需改动
+        if len(system_texts) == 1 and len(rest) == len(msgs) - 1:
+            first = msgs[0]
+            role = first.get("role") if isinstance(first, dict) else getattr(first, "role", "")
+            if role == "system":
+                return msgs
+
+        merged = "\n\n".join(system_texts)
+        if isinstance(msgs[0], dict):
+            head: Any = {"role": "system", "content": merged}
+        else:
+            head = ChatMessage.system(merged)
+        logger.debug("已将 %d 条 system 消息合并为 1 条", len(system_texts))
+        return [head] + rest
 
     def _do_http_request(self, payload: dict) -> dict:
         url = f"{self.base_url}/v1/chat/completions"
@@ -560,7 +736,7 @@ class LlamaCppChat(ChatClientAdapter):
             json=payload,
             timeout=self.timeout,
         )
-        resp.raise_for_status()
+        self._raise_for_status(resp)
         data = resp.json()
         self.last_usage = data.get("usage")
         self.last_timings = data.get("timings") or self.last_timings
@@ -576,7 +752,7 @@ class LlamaCppChat(ChatClientAdapter):
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
     ) -> ChatResponse:
-        msgs = self._to_message_dicts(messages)
+        msgs = self._normalize_system_messages(self._to_message_dicts(messages))
         payload: dict[str, Any] = {
             "messages": msgs,
             "temperature": temperature if temperature is not None else self.temperature,
@@ -644,7 +820,7 @@ class LlamaCppChat(ChatClientAdapter):
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
         """SSE 流式交互生成器。"""
-        msgs = self._to_message_dicts(messages)
+        msgs = self._normalize_system_messages(self._to_message_dicts(messages))
         payload: dict[str, Any] = {
             "messages": msgs,
             "temperature": kwargs.get("temperature", self.temperature),
@@ -670,7 +846,9 @@ class LlamaCppChat(ChatClientAdapter):
 
         loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(None, _request)
-        resp.raise_for_status()
+        # 用带响应体上下文的版本替换 raise_for_status：
+        # 否则上游 500 的真实原因（显存不足/模板不兼容等）会被丢弃。
+        self._raise_for_status(resp)
 
         q: asyncio.Queue = asyncio.Queue()
         resp.encoding = "utf-8"

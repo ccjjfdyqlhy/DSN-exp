@@ -429,16 +429,22 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         for m in messages_raw:
             role = m.get("role", "user")
             content = m.get("content", "")
+            # 多模态：content 为数组时必须**保留结构**（含 image_url 内容块），
+            # 不能拍平成字符串 —— 否则图像在到达模型前就被丢弃，
+            # 表现为"传了图但模型看不到"。
             if isinstance(content, list):
-                text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-                content = " ".join(text_parts) if text_parts else str(content)
+                from apps.dsn_ui.integration_api import openai_content_to_parts
+                content = openai_content_to_parts(content)
 
             if role == "system":
-                chat_messages.append(ChatMessage.system(str(content)))
+                chat_messages.append(ChatMessage.system(
+                    content if isinstance(content, str) else str(content)))
             elif role == "user":
-                chat_messages.append(ChatMessage.user(str(content)))
+                # ChatMessage.user 接受 str；多模态时直接构造以保留 parts
+                chat_messages.append(ChatMessage(role="user", content=content))
             elif role == "assistant":
-                chat_messages.append(ChatMessage.assistant(str(content)))
+                chat_messages.append(ChatMessage.assistant(
+                    content if isinstance(content, str) else str(content)))
 
         execution_mode = bool(
             body.get("execution_mode", False) or
@@ -470,7 +476,10 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         model_ctx = engine.orchestrator.get_model_ctx_size(model_name)
         req_tokens = body.get("max_tokens") or body.get("n_predict")
         if req_tokens is None or int(req_tokens) <= 0 or int(req_tokens) == 4096:
-            effective_max_tokens = model_ctx
+            # 不直接取满上下文：输入本身要占 token，若 max_tokens == ctx_size
+            # 则 input+output > ctx，llama-server 直接 500。
+            # 交给 agent 统一按比例预留（见 _resolve_max_tokens），这里传 None。
+            effective_max_tokens = None
         else:
             effective_max_tokens = int(req_tokens)
 
@@ -1141,6 +1150,118 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     async def health():
         return {"status": "ok", "app": "dsn_ui"}
 
+    # ── 模型启动参数预设（UI 右侧面板）──
+
+    def _require_local_model(model_name: str):
+        """校验模型存在且为本地 llama.cpp 模型。"""
+        if not model_name:
+            raise HTTPException(status_code=400, detail="缺少 model 字段")
+        if model_name not in engine.orchestrator._specs:
+            raise HTTPException(status_code=404, detail=f"未知模型: {model_name}")
+        return model_name
+
+    @app.get("/api/models/launch-params")
+    async def get_launch_params(model: str):
+        """读取某模型的当前启动参数（用于预设面板回显）。"""
+        _require_local_model(model)
+        try:
+            params = engine.orchestrator.get_launch_params(model)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        params["has_override"] = model in engine.load_launch_overrides()
+        return params
+
+    @app.post("/api/models/launch-params/preview")
+    async def preview_launch_params(req: Request):
+        """预览参数合成出的命令行（不落地、不启动）。"""
+        body = await req.json()
+        model = _require_local_model(body.get("model") or "")
+        base = engine.orchestrator.get_launch_params(model)
+        merged = {**base, **(body.get("params") or {})}
+        from harness.orchestrator import LlamaServerConfig
+        cfg = LlamaServerConfig.from_dict(merged)
+        return {"command": cfg.to_command_string()}
+
+    @app.post("/api/models/launch-params/save")
+    async def save_launch_params(req: Request):
+        """★ 保存为持久化预设：覆盖当前 profile 参数，跨重启有效。
+
+        请求体: { model, params }
+        """
+        body = await req.json()
+        model = _require_local_model(body.get("model") or "")
+        params = body.get("params") or {}
+        try:
+            changed = engine.orchestrator.apply_launch_params(model, params)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        saved = engine.save_launch_override(model, params)
+        logger.info("保存启动参数预设: model=%s changed=%s", model, sorted(changed))
+        return {
+            "status": "ok",
+            "model": model,
+            "changed": sorted(changed),
+            "saved": saved,
+            "note": "已持久化；下一次加载该模型时生效",
+        }
+
+    @app.post("/api/models/launch-params/reset")
+    async def reset_launch_params(req: Request):
+        """清除持久化覆盖，恢复 profile 原始参数。"""
+        body = await req.json()
+        model = _require_local_model(body.get("model") or "")
+        cleared = engine.clear_launch_override(model)
+        return {"status": "ok", "model": model, "cleared": cleared}
+
+    @app.post("/api/models/launch-once")
+    async def launch_once(req: Request):
+        """★ 用给定参数**启动一次**（不保存）。
+
+        用一个临时请求体覆盖配置加载一次，加载完成后把配置恢复原样，
+        因此不会影响后续的默认加载行为。
+        """
+        body = await req.json()
+        model = _require_local_model(body.get("model") or "")
+        params = body.get("params") or {}
+
+        # 记录原值以便恢复
+        original = engine.orchestrator.get_launch_params(model)
+        try:
+            engine.orchestrator.apply_launch_params(model, params)
+            logger.info("一次性启动(自定义参数): %s", model)
+            ok = await asyncio.to_thread(engine.orchestrator.load_model, model)
+        except Exception as e:  # noqa: BLE001
+            log_exception(logger, f"一次性启动失败: {model}", e)
+            engine.orchestrator.apply_launch_params(model, original)
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "model": model, "error": str(e)},
+            )
+        finally:
+            # 恢复原配置：一次性启动不应污染持久设置
+            try:
+                restore = {k: v for k, v in original.items()
+                           if k not in ("model", "has_override", "command_preview")}
+                engine.orchestrator.apply_launch_params(model, restore)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("恢复启动参数失败 %s: %s", model, e)
+
+        return {
+            "success": bool(ok),
+            "model": model,
+            "status": "loaded" if ok else "failed",
+            "transient": True,
+        }
+
+    @app.get("/api/integration/bonsai")
+    async def get_bonsai_status():
+        """Bonsai-demo 集成状态：自定义二进制与多模态模型发现结果。
+
+        供前端/集成方确认「自定义 llama.cpp + 本地多模态」是否就绪。
+        """
+        from apps.dsn_ui.bonsai_integration import bonsai_status
+        return bonsai_status()
+
     @app.get("/api/orchestrator/status")
     async def get_orchestrator_status():
         return engine.orchestrator.status()
@@ -1256,6 +1377,19 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         cancelled = await stream_registry.cancel(conv_id)
         logger.info("stream_cancel: conv=%s cancelled=%s", conv_id, cancelled)
         return {"status": "ok", "cancelled": cancelled}
+
+    # ── 9.9 DSN 集成 API（OpenAI / Anthropic 兼容 + 显存管理）──
+    # 关键：必须在下方 SPA catch-all (/{full_path:path}) **之前**注册。
+    # FastAPI 按注册顺序匹配，catch-all 会吞掉所有在它之后注册的 GET 路由
+    # （表现为返回 index.html 而不是 JSON）。
+    try:
+        from apps.dsn_ui.integration_api import register_integration_routes
+        register_integration_routes(app, engine)
+        logger.info(
+            "DSN 集成 API 已启用: /v1/messages, /v1/models/load|unload, /api/integration/*"
+        )
+    except Exception as e:  # noqa: BLE001
+        log_exception(logger, "挂载 DSN 集成 API 失败", e)
 
     # ── 10. 静态资源与 SPA 路由 ──
 

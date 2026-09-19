@@ -598,13 +598,28 @@ class DSNUITopicContextManager:
         # 结果直接构造消息，既保证统计与实际注入一致，也避免二次剪裁。
         raw_segments = list(segments)
         plan = self.assembler.plan(raw_segments)
-        assembled: List[ChatMessage] = []
-        if system_prefix:
-            assembled.append(ChatMessage.system(system_prefix))
 
+        # 关键：所有系统内容必须**合并成一条** system 消息，且只能出现在开头。
+        #
+        # 历史实现给每个记忆段（备忘/话题摘要/原文历史）各发一条 role=system，
+        # 于是消息序列成了 system,system,system,…,user。这在 llama.cpp 的默认
+        # 模板下能跑，但严格的 Jinja 模板会直接报错：
+        #     "System message must be at the beginning."
+        # （Bonsai 27B、部分 Qwen/Llama 官方模板都如此）→ 上游 500。
+        #
+        # 合并后语义完全等价（都是前缀上下文），且兼容所有模板。
+        system_parts: List[str] = []
+        if system_prefix:
+            system_parts.append(system_prefix)
         for seg in plan.kept:
             text = seg.label + "\n" + seg.content if seg.label else seg.content
-            assembled.append(ChatMessage(role="system", content=text))
+            if text:
+                system_parts.append(text)
+
+        assembled: List[ChatMessage] = []
+        merged_system = "\n\n".join(p for p in system_parts if p)
+        if merged_system:
+            assembled.append(ChatMessage.system(merged_system))
 
         assembled.append(ChatMessage.user(new_user_message))
 

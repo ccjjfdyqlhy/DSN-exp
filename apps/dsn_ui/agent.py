@@ -366,6 +366,35 @@ class DSNUIAgentCoordinator:
         except Exception as e:
             logger.warning("保存 agent_settings 失败: %s", e)
 
+    # 为 prompt 预留的输出预算比例：max_tokens 至少要给输入留出空间，
+    # 否则 input + max_tokens > ctx_size，llama-server 会直接返回 HTTP 500
+    # （表现为 SSE 一起手就 "500 Server Error"，没有任何模型输出）。
+    _OUTPUT_BUDGET_RATIO = 0.5
+
+    def _resolve_max_tokens(
+        self, requested: Optional[int], model_ctx: int
+    ) -> int:
+        """计算安全的 max_tokens。
+
+        历史实现直接把 max_tokens 设为整个上下文长度，导致任何非空 prompt
+        都会让 input+output 超出 ctx_size 而被 llama-server 拒绝（HTTP 500）。
+        这里为输入预留至少一半上下文；用户显式指定的值也会被夹到安全上限内。
+        """
+        if model_ctx and model_ctx > 0:
+            safe_cap = max(256, int(model_ctx * self._OUTPUT_BUDGET_RATIO))
+        else:
+            safe_cap = 4096
+
+        if requested is not None and requested > 0:
+            if requested > safe_cap:
+                logger.warning(
+                    "请求的 max_tokens=%d 超过安全上限 %d（上下文 %d 的一半），已夹取",
+                    requested, safe_cap, model_ctx,
+                )
+                return safe_cap
+            return requested
+        return safe_cap
+
     def get_emotion_summary(self) -> str:
         return self.emotion_engine.summary_text()
 
@@ -386,14 +415,18 @@ class DSNUIAgentCoordinator:
                 continue
             content = m.get("content", "")
             if isinstance(content, list):
-                content = " ".join(
-                    p.get("text", "") for p in content
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
+                # 保留多模态结构（image_url 等），不能拍平 —— 否则图像丢失。
+                from apps.dsn_ui.integration_api import openai_content_to_parts
+                content = openai_content_to_parts(content)
             if role == "user":
-                out.append(ChatMessage.user(str(content)))
+                # 纯文本走 ChatMessage.user；多模态直接构造以保留 parts
+                if isinstance(content, str):
+                    out.append(ChatMessage.user(content))
+                else:
+                    out.append(ChatMessage(role="user", content=content))
             elif role == "assistant":
-                out.append(ChatMessage.assistant(str(content)))
+                out.append(ChatMessage.assistant(
+                    content if isinstance(content, str) else str(content)))
         return out
 
     def assemble_system_prompt(self, execution_mode: bool = False) -> str:
@@ -603,7 +636,7 @@ class DSNUIAgentCoordinator:
             logger.debug("上下文装配完成: messages=%d", len(context_msgs))
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
-        eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
+        eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
 
         # 上下文溢出智能自愈：按用户选择的策略处理（见 _apply_context_strategy）
         if system_prompt_override is None:
@@ -748,7 +781,7 @@ class DSNUIAgentCoordinator:
             )
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
-        eff_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else model_ctx
+        eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
         client = OrchestratorChatClientWrapper(
             self.orchestrator,
             model_name=model_name,

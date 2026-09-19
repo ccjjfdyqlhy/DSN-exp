@@ -91,6 +91,86 @@ class ModelOrchestrator:
         self._kv_offload_disabled: bool = False
         logger.info("ModelOrchestrator 初始化完成 (全局最大插槽数: %d)", self._max_concurrent_slots)
 
+    # ── 启动参数覆盖（UI 自定义启动指令预设）──
+
+    def get_launch_params(self, model_name: str) -> dict:
+        """导出某 llama.cpp 模型的可编辑启动参数（用于 UI 预设面板）。"""
+        with self._registry_lock:
+            spec = self._specs.get(model_name)
+            if spec is None:
+                raise KeyError(f"模型未找到: {model_name}")
+            cfg = spec.llama_config
+            if cfg is None:
+                raise ValueError(f"模型 {model_name} 不是本地 llama.cpp 模型")
+            return {
+                "model": model_name,
+                "binary_path": cfg.binary_path,
+                "model_path": cfg.model_path,
+                "host": cfg.host,
+                "port": cfg.port,
+                "n_gpu_layers": cfg.n_gpu_layers,
+                "tensor_split": cfg.tensor_split,
+                "ctx_size": cfg.ctx_size,
+                "threads": cfg.threads,
+                "flash_attn": cfg.flash_attn,
+                "jinja": cfg.jinja,
+                "reasoning_format": cfg.reasoning_format,
+                "no_kv_offload": cfg.no_kv_offload,
+                "mmproj_path": cfg.mmproj_path,
+                "mmproj_no_offload": cfg.mmproj_no_offload,
+                "image_max_tokens": cfg.image_max_tokens,
+                "extra_args": list(cfg.extra_args),
+                "command_preview": cfg.to_command_string(),
+            }
+
+    def apply_launch_params(self, model_name: str, params: dict) -> dict:
+        """把参数写入模型配置（**对之后每次加载生效**）。
+
+        只接受白名单字段，避免 UI 误传把配置改坏。
+        返回被实际修改的字段。
+        """
+        editable = {
+            "binary_path", "model_path", "host", "port", "n_gpu_layers",
+            "tensor_split", "ctx_size", "threads", "flash_attn", "jinja",
+            "reasoning_format", "no_kv_offload", "mmproj_path",
+            "mmproj_no_offload", "image_max_tokens", "extra_args",
+        }
+        changed: dict = {}
+        with self._registry_lock:
+            spec = self._specs.get(model_name)
+            if spec is None:
+                raise KeyError(f"模型未找到: {model_name}")
+            cfg = spec.llama_config
+            if cfg is None:
+                raise ValueError(f"模型 {model_name} 不是本地 llama.cpp 模型")
+
+            for key, value in (params or {}).items():
+                if key not in editable:
+                    continue
+                if key == "extra_args":
+                    if not isinstance(value, list):
+                        continue
+                    value = [str(v) for v in value]
+                elif key in ("n_gpu_layers", "port", "ctx_size", "threads", "image_max_tokens"):
+                    if value is None or value == "":
+                        value = None
+                    else:
+                        try:
+                            value = int(value)
+                        except (TypeError, ValueError):
+                            continue
+                elif key in ("jinja", "no_kv_offload", "mmproj_no_offload"):
+                    value = bool(value)
+                elif key == "model_path" and not value:
+                    # 不允许清空模型路径
+                    continue
+                if getattr(cfg, key, None) != value:
+                    setattr(cfg, key, value)
+                    changed[key] = value
+        if changed:
+            logger.info("模型 %s 启动参数已更新: %s", model_name, sorted(changed))
+        return changed
+
     # ── 显存管理：KV cache 卸载开关 ──
 
     def set_kv_offload_disabled(self, disabled: bool) -> int:
@@ -209,12 +289,17 @@ class ModelOrchestrator:
             llama_config=config.to_dict(),
         )
 
+        # 默认输出上限留出输入空间：直接用 ctx_size 会导致
+        # input+output > ctx，llama-server 返回 HTTP 500。
+        default_out = (
+            max(256, int(config.ctx_size * 0.5)) if config.ctx_size else 4096
+        )
         client = LlamaCppChat(
             base_url=launcher.base_url,
             model_name=name,
             timeout=float(request_timeout),
             temperature=config.temp or 0.7,
-            max_tokens=config.ctx_size or 4096,
+            max_tokens=default_out,
             api_key=config.api_key,
             scheduler=self._scheduler if orchestrated else None,
             launcher=launcher,

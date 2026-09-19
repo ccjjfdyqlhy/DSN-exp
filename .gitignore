@@ -65,3 +65,4 @@ debug-storybook.log
 
 *character_cards*
 apps/dsn_ui/logs
+apps/dsn_ui/data
