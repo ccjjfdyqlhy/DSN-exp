@@ -730,6 +730,14 @@ class DSNUIAgentCoordinator:
                         if chunk.get("usage"):
                             yield {"type": "usage", "usage": chunk["usage"]}
 
+                # 关键：纯对话模式同样必须发出终态信号。
+                # 上层 server 依赖 done 生成标准 OpenAI 终态块
+                # （choices[0].finish_reason），缺失会导致严格客户端报
+                # "Stream ended without finish_reason"。
+                # 历史实现只在 execution_mode 分支转发 done，纯对话分支
+                # 直接静默结束 —— 这正是该报错的根因。
+                yield {"type": "done", "hit_max": False, "round": 1}
+
                 full_reply = "".join(full_reply_parts)
                 self._post_turn(user_msg, full_reply)
                 turn_posted = True

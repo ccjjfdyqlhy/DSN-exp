@@ -716,6 +716,29 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     max_tokens=effective_max_tokens,
                     max_steps=effective_max_steps,
                 )
+                # 标准 OpenAI chunk 信封。所有 delta 都必须包在
+                # {"choices":[{"index":0,"delta":{...}}]} 里，且带 object/created/model，
+                # 否则严格客户端无法解析（部分库直接报错或丢弃整个流）。
+                _chunk_seq = 0
+                # 是否已下发过标准终态块（choices[0].finish_reason）。
+                # 循环结束后若仍为 False，会补发一个 stop 终态块兜底。
+                terminal_sent = False
+
+                def emit_openai_delta(delta: dict, finish_reason=None) -> None:
+                    nonlocal _chunk_seq
+                    _chunk_seq += 1
+                    emit("data: " + json.dumps({
+                        "id": f"chatcmpl-dsn-{int(time.time() * 1000)}-{_chunk_seq}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": delta,
+                            "finish_reason": finish_reason,
+                        }],
+                    }, ensure_ascii=False) + "\n\n")
+
                 async for chunk in agen:
                     chunk_count += 1
                     ctype = chunk.get("type")
@@ -778,54 +801,83 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         emit(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
                         continue
                     if ctype == "done":
-                        # AgentLoop 收束信号：normal=模型自然结束；
-                        # max_steps=步数耗尽后由收束轮强制给出最终答复。
-                        # 前端据此提示「因达到步数上限而收束」，避免误认为正常完成。
+                        # 终态块：必须用 **标准 OpenAI chunk 形状**下发
+                        # choices[0].finish_reason，否则严格客户端（OpenAI SDK、
+                        # LangChain、Continue、Cline…）会报
+                        # "Stream ended without finish_reason"。
+                        #
+                        # 历史实现把 finish_reason 放在**顶层**，不符合协议
+                        # ——客户端只读 choices[0].finish_reason，因此永远拿不到。
+                        #
+                        # 同时补上 object/created/model/id 等标准字段，并把
+                        # DSN 扩展（步数收束提示）放进 delta 之外的自定义键，
+                        # 不影响严格客户端解析。
+                        hit_max = bool(chunk.get("hit_max"))
+                        terminal_sent = True
                         payload = {
-                            "finish_reason": "length" if chunk.get("hit_max") else "stop",
-                            "hit_max_steps": bool(chunk.get("hit_max")),
+                            "id": f"chatcmpl-dsn-{int(time.time() * 1000)}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model_name,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "length" if hit_max else "stop",
+                            }],
+                            # DSN 扩展（非标准字段，放在顶层，严格客户端会忽略）
+                            "hit_max_steps": hit_max,
                             "round": chunk.get("round"),
                         }
                         emit(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
                         continue
+                    # 以下全部经由 emit_openai_delta 生成**标准 OpenAI chunk**，
+                    # 保证 object/created/model/id 与 choices[].delta 结构完整。
                     if ctype == "delta":
-                        payload = {
-                            "choices": [{"delta": {"content": chunk["content"]}, "index": 0}]
-                        }
+                        emit_openai_delta({"content": chunk["content"]})
                     elif ctype == "reasoning":
-                        payload = {
-                            "choices": [{"delta": {"reasoning_content": chunk["content"]}, "index": 0}]
-                        }
+                        # reasoning_content 是 DeepSeek 风格扩展字段，
+                        # 放在 delta 内是业界通行做法（llama-server 亦如此）。
+                        emit_openai_delta({"reasoning_content": chunk["content"]})
                     elif ctype == "tool_calls":
-                        payload = {
-                            "choices": [{"delta": {"tool_calls": chunk["tool_calls"]}, "index": 0}]
-                        }
+                        emit_openai_delta({"tool_calls": chunk["tool_calls"]})
                     elif ctype == "tool_call":
                         tc = chunk.get("tool_call", {})
-                        payload = {
-                            "choices": [{
-                                "delta": {
-                                    "tool_calls": [{
-                                        "index": 0,
-                                        "id": tc.get("id", "call_0"),
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc.get("name"),
-                                            "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
-                                        },
-                                    }]
-                                },
-                                "index": 0
-                            }]
-                        }
+                        emit_openai_delta({"tool_calls": [{
+                            "index": 0,
+                            "id": tc.get("id", "call_0"),
+                            "type": "function",
+                            "function": {
+                                "name": tc.get("name"),
+                                "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                            },
+                        }]})
                     else:
                         continue
-                    emit(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
 
                 logger.info(
                     "SSE 模型流结束: chunks=%d types=%s elapsed=%.2fs",
                     chunk_count, ctype_counts, time.time() - started,
                 )
+
+                # 兜底：无论上游是否发出 done，都必须补一个标准终态块
+                # （choices[0].finish_reason），否则严格 OpenAI 客户端会报
+                # "Stream ended without finish_reason" 并丢弃整次响应。
+                if not terminal_sent:
+                    logger.warning(
+                        "上游未发出 done 事件（types=%s），补发标准 finish_reason=stop",
+                        ctype_counts,
+                    )
+                    emit("data: " + json.dumps({
+                        "id": f"chatcmpl-dsn-{int(time.time() * 1000)}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }],
+                    }, ensure_ascii=False) + "\n\n")
 
                 # 若 provider 未回传 timings（如 llama-server 关闭了 timings 输出），
                 # 退化用弹性上下文的字符统计估算 prompt token，保证用量指示环仍可用。
