@@ -49,6 +49,25 @@ AGENTS.md
 /apps/dsn/psychoscope/temp/*
 /apps/dsn/psychoscope/.dsn_client.json
 
+# ── DSN 学习特化应用 (apps/dsn_study/) 运行时目录与用户内容 ──
+/apps/dsn_study/website/*
+/apps/dsn_study/logs/*
+/apps/dsn_study/.dsn/*
+/apps/dsn_study/temp/*
+/apps/dsn_study/skills/claw_skills/*
+/apps/dsn_study/skills/builtin/ncm_music/music/*
+/apps/dsn_study/character_cards/*
+/apps/dsn_study/character_cards/materials/*
+/apps/dsn_study/character_cards/backups/*
+/apps/dsn_study/psychoscope/logs/*
+/apps/dsn_study/psychoscope/temp/*
+/apps/dsn_study/psychoscope/.dsn_client.json
+/apps/dsn_study/.env
+/apps/dsn_study/.env.*
+/apps/dsn_study/*.db
+/apps/dsn_study/*.key
+/apps/dsn_study/*.enc
+
 /.reasonix/
 /.zcode/
 

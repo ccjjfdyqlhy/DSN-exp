@@ -1,0 +1,140 @@
+name: exam_review
+display_name: "考试回顾"
+description: "查看考试历史记录、错题本、错误类型统计和薄弱点趋势分析。支持模拟考试和扫描试卷两种来源。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 68
+
+tools:
+  - name: get_exam_history
+    display_name: "考试历史"
+    description: "查看历史考试列表，包括分数、学科、时间。支持按学科筛选。"
+    module: "tools.exam_review"
+    class: "ExamReviewTool"
+    methods:
+      - name: get_exam_history
+        description: "获取历史考试记录列表"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户 ID，默认 0（当前用户）"
+            required: false
+          subject:
+            type: string
+            description: "学科代码筛选（可选）"
+            required: false
+          limit:
+            type: integer
+            description: "返回条数"
+            default: 10
+
+  - name: get_exam_detail
+    display_name: "考试详情"
+    description: "查看某次考试的详细信息，包括每道题的题目、正确答案和知识点。支持按 result_id 或 session_id 查询。"
+    module: "tools.exam_review"
+    class: "ExamReviewTool"
+    methods:
+      - name: get_exam_detail
+        description: "查看指定考试的每道题详情"
+        parameters:
+          result_id:
+            type: integer
+            description: "考试结果 ID（与 session_id 二选一）"
+            required: false
+          session_id:
+            type: string
+            description: "考试会话 ID（与 result_id 二选一）"
+            required: false
+
+  - name: get_error_summary
+    display_name: "错题统计"
+    description: "按错误类型和学科统计错题分布。错误类型包括：粗心、知识点不清、审题错误、计算错误、概念混淆。"
+    module: "tools.exam_review"
+    class: "ExamReviewTool"
+    methods:
+      - name: get_error_summary
+        description: "获取错题统计汇总"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+          subject:
+            type: string
+            description: "学科代码筛选（可选）"
+            required: false
+
+  - name: get_wrong_questions
+    display_name: "错题列表"
+    description: "列出未掌握的错题，可按学科和错误类型筛选。返回每道错题的内容、学生答案、正确答案、错误原因和尝试次数。"
+    module: "tools.exam_review"
+    class: "ExamReviewTool"
+    methods:
+      - name: get_wrong_questions
+        description: "获取未掌握的错题列表"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码（可选）"
+            required: false
+          error_type:
+            type: string
+            description: "错误类型筛选（如 粗心/知识点不清/审题错误/计算错误/概念混淆）"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+          limit:
+            type: integer
+            description: "返回条数"
+            default: 20
+
+  - name: mark_mastered
+    display_name: "标记掌握"
+    description: "将某道错题标记为已掌握，移出错题本。适用于学生确认已掌握该知识点后。"
+    module: "tools.exam_review"
+    class: "ExamReviewTool"
+    methods:
+      - name: mark_mastered
+        description: "标记错题为已掌握"
+        parameters:
+          log_id:
+            type: integer
+            description: "错题记录 ID（从 get_wrong_questions 的 log_id 字段获取）"
+            required: true
+
+  - name: get_weakness_trend
+    display_name: "薄弱趋势"
+    description: "分析近期的错题变化趋势，展示每天错题数量和各类错误的增减趋势。帮助了解学习进步情况。"
+    module: "tools.exam_review"
+    class: "ExamReviewTool"
+    methods:
+      - name: get_weakness_trend
+        description: "获取错题趋势分析"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码（可选）"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+          days:
+            type: integer
+            description: "分析天数"
+            default: 30
+
+activation:
+  keywords: ["考试回顾", "考试历史", "错题本", "错题统计", "薄弱点", "错题趋势", "exam_review",
+             "查看错题", "复习错题", "错误分析", "掌握情况"]
+  auto_activate: false
+
+dependencies:
+  - question_store
+tags: [exam, review, error, analysis, history]

@@ -1,0 +1,65 @@
+name: question_print
+display_name: "出题打印"
+description: "出题并打印成纸质试卷：从题库组卷或直接使用题目，生成 A4 PDF 并通过打印机输出。"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 68
+
+tools:
+  - name: print_paper
+    display_name: "出题打印"
+    description: "出题并打印成纸质试卷。可从题库自动组卷（subject+count+difficulty），也可直接用 AI 自出的题目（questions 参数）。生成 A4 PDF 后发送到打印机。"
+    module: "tools.print_tool"
+    class: "QuestionPrintTool"
+    methods:
+      - name: print_paper
+        description: "组卷/AI出题并打印为纸质试卷"
+        parameters:
+          subject:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese/biology/politics/history/geography)"
+            default: "math"
+          count:
+            type: integer
+            description: "组卷题目数量，默认 10（传入 questions 时忽略）"
+            default: 10
+          difficulty:
+            type: integer
+            description: "平均难度 1-5，默认 3"
+            default: 3
+          include_answer:
+            type: boolean
+            description: "是否在试卷上打印答案与解析，默认 false（答案另附）"
+            default: false
+          copies:
+            type: integer
+            description: "打印份数，默认 1"
+            default: 1
+          title:
+            type: string
+            description: "试卷标题，留空自动生成"
+            default: ""
+          questions:
+            type: array
+            description: "直接指定题目列表（AI 自出题或从题库检索的题目）。每题为 {content, options, answer, explanation, type_name} 的对象。传入后忽略 count/difficulty"
+            default: []
+          printer:
+            type: string
+            description: "打印机名称，留空用系统默认打印机"
+            default: ""
+          user_id:
+            type: integer
+            description: "用户 ID，用于保存 PDF 到工作区"
+            default: 0
+
+activation:
+  keywords: ["打印", "打出来", "纸质", "试卷", "出题打印", "练习题", "印出来"]
+  auto_activate: false
+
+dependencies:
+  - question_store
+tags: [question, print, paper, exam, study]

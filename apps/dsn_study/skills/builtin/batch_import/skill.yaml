@@ -1,0 +1,44 @@
+name: batch_import
+display_name: "批量导入题目"
+description: "一次传入多道结构化题目（JSON 数组），支持预览模式先查看再入库。适合批量录入试卷、习题集。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 71
+
+tools:
+  - name: import_questions
+    display_name: "批量导入"
+    description: "一次性导入多道结构化题目。支持 dry_run 模式先预览结果，确认后再正式 commit 入库。"
+    module: "tools.batch_import"
+    class: "BatchImportTool"
+    methods:
+      - name: import_questions
+        description: "批量导入题目，可选预览或正式提交"
+        parameters:
+          questions:
+            type: array
+            description: "题目列表，每道题包含 content(必填), answer(必填), subject(可替代顶层subject), type_name, subtype, difficulty, options, explanation, knowledge_points, tags"
+            required: true
+            items:
+              type: object
+          subject:
+            type: string
+            description: "学科代码，questions 中未指定 subject 时使用此默认值 (math/physics/chemistry/english/chinese/biology)"
+            required: false
+          mode:
+            type: string
+            description: "操作模式: 'commit' 直接入库, 'dry_run' 仅预览不入库"
+            default: "commit"
+
+activation:
+  keywords: ["批量导入", "批量录入", "导入题目", "批量", "batch", "import_questions"]
+  auto_activate: false
+
+dependencies:
+  - question_store
+  - template_manager
+tags: [question, import, batch, bulk]

@@ -45,6 +45,10 @@ APPS: dict[str, dict[str, Any]] = {
         "entry": "apps.densechat.entry",
         "description": "基于 harness 复刻的 DenseChat WebUI（代码助手）",
     },
+    "dsn_study": {
+        "entry": "apps.dsn_study.entry",
+        "description": "DSN 学习特化应用（题库、模拟考试、知识图谱）",
+    },
 }
 
 

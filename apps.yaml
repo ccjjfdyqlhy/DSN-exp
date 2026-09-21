@@ -32,3 +32,8 @@ dsn_ui:
   entry: apps.dsn_ui.entry
   description: 现代化统一 Web 控制台与模型调度交互界面（基于 temp/ui_template 设计）
 
+dsn_study:
+  entry: apps.dsn_study.entry
+  description: DSN 学习特化应用（题库、模拟考试、知识图谱、学习计划）
+
+
