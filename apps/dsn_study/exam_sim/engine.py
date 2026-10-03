@@ -59,7 +59,7 @@ class ExamEngine:
         q_ids = config.get("question_ids", [])
         if not q_ids and self._store:
             # 自动组卷
-            from question_bank.composer import ExamComposer, ComposeParams
+            from apps.dsn_study.question_bank.composer import ExamComposer, ComposeParams
             composer = ExamComposer(question_store=self._store)
             params = ComposeParams(
                 subject=config.get("subject", "math"),

@@ -5,7 +5,7 @@
 
 from flask import Blueprint, request, jsonify, g
 
-from db.study_timetable import (
+from apps.dsn_study.db.study_timetable import (
     StudyTimetableStore, TimetableSlot, StudySession,
     DAY_NAMES, get_study_db,
 )

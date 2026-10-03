@@ -40,7 +40,7 @@ class DocToQuestionsTool:
             return {"success": False, "error": "题库管线未就绪，无法处理"}
 
         try:
-            from document.hmd import HmdClient
+            from apps.dsn_study.document.hmd import HmdClient
             data = HmdClient.read_hmd(hmd_path)
         except Exception as e:
             logger.error("读取 .hmd 失败 %s: %s", hmd_path, e)

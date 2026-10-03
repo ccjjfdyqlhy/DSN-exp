@@ -8,7 +8,7 @@ class ErrorAnalysisTool:
         self._models = models_plugin
 
     def _analyzer(self):
-        from question_bank.error_analyzer import ErrorAnalyzer
+        from apps.dsn_study.question_bank.error_analyzer import ErrorAnalyzer
         return ErrorAnalyzer(
             question_store=self._store,
             models_plugin=self._models,

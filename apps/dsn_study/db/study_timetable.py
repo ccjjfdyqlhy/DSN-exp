@@ -474,7 +474,7 @@ class StudyTimetableStore:
             activity_type=r["activity_type"] or "study",
             goal_id=r["goal_id"] or "", kp_code=r["kp_code"] or "",
             enabled=bool(r["enabled"]),
-            created_at=r.get("created_at", "") or "",
+            created_at=r["created_at"] or "",
         )
 
     @staticmethod
@@ -488,5 +488,5 @@ class StudyTimetableStore:
             actual_start=r["actual_start"] or "",
             actual_end=r["actual_end"] or "",
             duration_min=r["duration_min"] or 0, status=r["status"],
-            note=r["note"] or "", created_at=r.get("created_at", "") or "",
+            note=r["note"] or "", created_at=r["created_at"] or "",
         )

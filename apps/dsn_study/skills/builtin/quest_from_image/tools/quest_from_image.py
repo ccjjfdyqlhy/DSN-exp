@@ -28,7 +28,7 @@ class QuestFromImageTool:
             return {"success": False, "error": f"文件不存在: {file_path}"}
 
         try:
-            from models import VisionModel
+            from apps.dsn_study.models.clients import VisionModel
             data_url = VisionModel.encode_image(file_path)
         except Exception as e:
             return {"success": False, "error": f"读取图片失败: {e}"}
@@ -36,12 +36,12 @@ class QuestFromImageTool:
         prompt = self._build_photo_prompt(subject)
 
         try:
-            from config import Config
+            from apps.dsn_study.config import Config
             if Config.VISION_API_KEY:
                 vm = VisionModel()
                 raw = vm.ask(data_url, prompt, max_tokens=8192, temperature=0.1)
             else:
-                from models import LMStudioChat
+                from apps.dsn_study.models.clients import LMStudioVisionFallback
                 chat = LMStudioChat(model_name=None)
                 raw = chat.describe_image(data_url, prompt)
         except Exception as e:

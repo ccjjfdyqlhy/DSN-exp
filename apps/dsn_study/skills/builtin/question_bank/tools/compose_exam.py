@@ -6,7 +6,7 @@ class ComposeExamTool:
         self._store = question_store
 
     def _composer(self):
-        from question_bank.composer import ExamComposer
+        from apps.dsn_study.question_bank.composer import ExamComposer
         return ExamComposer(question_store=self._store)
 
     def compose_exam(self, **kwargs) -> dict:
@@ -14,7 +14,7 @@ class ComposeExamTool:
 
     def compose(self, subject: str, count: int = 10, difficulty: int = 3,
                 knowledge_points: list = None, **kwargs) -> dict:
-        from question_bank.composer import ComposeParams
+        from apps.dsn_study.question_bank.composer import ComposeParams
         composer = self._composer()
         params = ComposeParams(
             subject=subject,

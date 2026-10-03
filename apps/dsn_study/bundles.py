@@ -1,5 +1,11 @@
 # apps/dsn_study/bundles.py
 # DSN 学习特化应用（dsn_study）的 AppBundle 拆包定义。
+#
+# 学习应用不承载语音/陪伴/媒体等场景，bundle 集合收敛为:
+#   core           — 数据库、模型客户端、工作区（无路由）
+#   study          — 扫题/扫印、学习时间表、异步任务
+#   plan           — 计划系统（Goal/Phase/DailyTask）
+#   agent_chat     — 对话入口
 
 from __future__ import annotations
 
@@ -30,85 +36,37 @@ class DsnStudyBundle(AppBundle):
 
 class CoreBundle(DsnStudyBundle):
     name = "core"
-    description = "认证、数据库、任务管理、工作区、模型客户端"
-    settings_namespaces = ["model", "memory", "cache"]
-    blueprint_names = ["auth", "update"]
-
-
-class VoiceBundle(DsnStudyBundle):
-    name = "voice"
-    description = "ASR / ASR过滤 / TTS / 心跳 / 打卡 + 语音前端"
-    settings_namespaces = ["voice"]
-    blueprint_names = ["heartbeat", "checkin"]
-
-
-class CompanionBundle(DsnStudyBundle):
-    name = "companion"
-    description = "人格 V2/V3、世界模拟、叙事、印象、剧本"
-    settings_namespaces = ["companion"]
+    description = "题库主库、模型客户端、认证垫片、工作区"
+    settings_namespaces = ["model", "study"]
     blueprint_names = []
-
-
-class PersonalBundle(DsnStudyBundle):
-    name = "personal"
-    description = "提醒 / 闹钟 / 待办 / 计划"
-    settings_namespaces = ["personal"]
-    blueprint_names = ["todo", "reminder", "plan", "alarm"]
 
 
 class StudyBundle(DsnStudyBundle):
     name = "study"
-    description = "题库、考点知识图谱、模考系统与做题/学习时间表"
-    settings_namespaces = ["study"]
-    blueprint_names = ["scan", "study_timetable"]
+    description = "扫题/扫印、学习时间表、异步任务状态"
+    settings_namespaces = ["study", "vision"]
+    blueprint_names = ["scan", "study_timetable", "async_tasks"]
 
 
-class MediaBundle(DsnStudyBundle):
-    name = "media"
-    description = "网易云音乐"
+class PlanBundle(DsnStudyBundle):
+    name = "plan"
+    description = "计划系统 REST（Goal/Phase/DailyTask）"
     settings_namespaces = []
-    blueprint_names = ["music"]
+    blueprint_names = ["plan"]
 
 
-class VisionBundle(DsnStudyBundle):
-    name = "vision"
-    description = "摄像头 / OCR / 文档 / 主动视觉"
-    settings_namespaces = ["vision"]
-    blueprint_names = ["vision"]
-
-
-class TrackingBundle(DsnStudyBundle):
-    name = "tracking"
-    description = "用户行为日记（多模态记录 / 作息与进度建模）"
-    settings_namespaces = ["tracking"]
-    blueprint_names = []
-
-
-class AgentApiBundle(DsnStudyBundle):
-    name = "agent_api"
-    description = "对外 Agent API（本地 AI Agent 接口）"
+class AgentChatBundle(DsnStudyBundle):
+    name = "agent_chat"
+    description = "AI 对话入口（harness AgentLoop）"
     settings_namespaces = []
-    blueprint_names = ["agent", "async_tasks"]
-
-
-class MaintenanceBundle(DsnStudyBundle):
-    name = "maintenance"
-    description = "维护系统（记忆压缩 / 人格蒸馏 / 日志清理）"
-    settings_namespaces = []
-    blueprint_names = ["maintenance"]
+    blueprint_names = ["chat"]
 
 
 def make_dsn_study_bundles(blueprints: dict[str, Any]) -> list[DsnStudyBundle]:
     """按装配顺序构造所有 DSN 学习版 bundles。"""
     return [
         CoreBundle(blueprints=blueprints),
-        CompanionBundle(blueprints=blueprints),
-        VoiceBundle(blueprints=blueprints),
-        PersonalBundle(blueprints=blueprints),
         StudyBundle(blueprints=blueprints),
-        MediaBundle(blueprints=blueprints),
-        VisionBundle(blueprints=blueprints),
-        TrackingBundle(blueprints=blueprints),
-        AgentApiBundle(blueprints=blueprints),
-        MaintenanceBundle(blueprints=blueprints),
+        PlanBundle(blueprints=blueprints),
+        AgentChatBundle(blueprints=blueprints),
     ]

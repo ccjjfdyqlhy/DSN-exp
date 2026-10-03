@@ -25,7 +25,7 @@ import uuid
 
 from flask import Blueprint, request, jsonify, g, current_app
 
-from plugins.base import PluginContext
+from apps.dsn_study.engine_support import PluginContext
 
 logger = logging.getLogger("Scan")
 
@@ -82,8 +82,8 @@ def _get_question_store(engine):
     if engine and engine.question_store:
         return engine.question_store
     from config import Config
-    from db.question_bank import QuestionBankDBManager
-    from question_bank.store import QuestionStore
+    from apps.dsn_study.db.question_bank import QuestionBankDBManager
+    from apps.dsn_study.question_bank.store import QuestionStore
     return QuestionStore(db=QuestionBankDBManager(db_path=Config.QUESTION_BANK_DB_PATH))
 
 
@@ -91,8 +91,8 @@ def _get_template_manager(engine):
     if engine and engine.template_manager:
         return engine.template_manager
     from config import Config
-    from db.question_bank import QuestionBankDBManager
-    from question_bank.template_manager import SubjectTemplateManager
+    from apps.dsn_study.db.question_bank import QuestionBankDBManager
+    from apps.dsn_study.question_bank.template_manager import SubjectTemplateManager
     return SubjectTemplateManager(db=QuestionBankDBManager(db_path=Config.QUESTION_BANK_DB_PATH))
 
 
@@ -139,7 +139,7 @@ def _choose_document_camera(frames: list, user_id: int = 0) -> str:
     if len(named) == 1:
         chosen = named[0]
     else:
-        from models.clients import VisionModel
+        from apps.dsn_study.models.clients import VisionModel
         vm = VisionModel()
         prompt = (
             "请判断这张摄像头拍摄的画面：画面里是否有桌面上的纸质文档"
@@ -420,7 +420,7 @@ def _match_subject(subjects: list, raw: str, fallback_code: str) -> int:
 
 def _extract_and_store(engine, image_data: str, subject_code: str) -> dict:
     """VLM 从图片提取题目 JSON（含自动标签/科目/题图描述）→ 逐题入库。返回统计。"""
-    from models.clients import VisionModel
+    from apps.dsn_study.models.clients import VisionModel
     vm = VisionModel()
     prompt = (
         "请仔细识别这张图片中的所有题目，返回 JSON 数组。\n"
@@ -624,10 +624,10 @@ def _scanprint_worker(engine, task_id: str, user_id: int, chat_id) -> None:
 
 def _scanprint_run(engine, user_id: int) -> dict:
     """主流程：第一台扫描仪扫描 → VisionModel 直接结构化 → 入库 → 可打印文档 → 打印。"""
-    from document.scanner import ScannerTool
-    from document.printer import PrinterTool
-    from models.clients import VisionModel
-    from utils.workspace import get_workspace_manager
+    from apps.dsn_study.document.scanner import ScannerTool
+    from apps.dsn_study.document.printer import PrinterTool
+    from apps.dsn_study.models.clients import VisionModel
+    from apps.dsn_study.workspace import get_workspace_manager
 
     # 1. 扫描（最前面一台扫描仪，300 DPI）
     scanners = ScannerTool.list_scanners()
@@ -777,7 +777,7 @@ def _parse_scanprint(text: str) -> tuple:
 def _build_printable_doc(questions: list, subject: str, page_desc: str,
                          user_id: int) -> dict:
     """生成可打印文档（优先 PDF，回退 TXT），返回 {path, fmt}。"""
-    from utils.workspace import get_workspace_manager
+    from apps.dsn_study.workspace import get_workspace_manager
     wm = get_workspace_manager()
     doc_dir = str(wm.user_documents_dir(uid=user_id or 1))
     os.makedirs(doc_dir, exist_ok=True)

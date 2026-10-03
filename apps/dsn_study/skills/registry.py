@@ -124,7 +124,7 @@ class SkillRegistry:
         return index
 
     def get_tools_schema(self) -> list[dict]:
-        from skills.loader import SkillLoader
+        from .loader import SkillLoader
         loader = SkillLoader()
         tools = []
         for key, spec in self._tool_specs.items():

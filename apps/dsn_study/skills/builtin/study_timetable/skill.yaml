@@ -1,0 +1,104 @@
+name: study_timetable
+display_name: "学习时间表"
+description: "查看每日学习时段、自习签到/签退、学习时长统计（今日/本周/分科）。"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 71
+
+tools:
+  - name: get_today
+    display_name: "今日时间表"
+    description: "查看今日学习时段与当前进行中的自习"
+    module: "tools.timetable_tools"
+    class: "StudyTimetableTool"
+    methods:
+      - name: get_today
+        description: "获取今日时段列表与活跃会话"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID（默认本地用户）"
+            required: false
+
+  - name: check_in
+    display_name: "学习签到"
+    description: "开始一段自习（签到）"
+    module: "tools.timetable_tools"
+    class: "StudyTimetableTool"
+    methods:
+      - name: check_in
+        description: "开始自习"
+        parameters:
+          subject:
+            type: string
+            description: "学习科目，默认 '自习'"
+            required: false
+          user_id:
+            type: integer
+            description: "用户ID（默认本地用户）"
+            required: false
+          slot_id:
+            type: string
+            description: "关联的时段ID（可选）"
+            required: false
+
+  - name: check_out
+    display_name: "学习签退"
+    description: "结束当前自习并累计时长"
+    module: "tools.timetable_tools"
+    class: "StudyTimetableTool"
+    methods:
+      - name: check_out
+        description: "结束自习"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID（默认本地用户）"
+            required: false
+          note:
+            type: string
+            description: "本次自习备注"
+            required: false
+
+  - name: get_stats
+    display_name: "学习统计"
+    description: "查询今日/本周/分科学习时长统计"
+    module: "tools.timetable_tools"
+    class: "StudyTimetableTool"
+    methods:
+      - name: get_stats
+        description: "获取学习统计"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID（默认本地用户）"
+            required: false
+          subject:
+            type: string
+            description: "只统计指定科目（可选）"
+            required: false
+
+  - name: generate_sessions
+    display_name: "生成今日自习"
+    description: "按今日启用的时段生成自习任务（幂等）"
+    module: "tools.timetable_tools"
+    class: "StudyTimetableTool"
+    methods:
+      - name: generate_sessions
+        description: "生成今日自习任务"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户ID（默认本地用户）"
+            required: false
+
+activation:
+  keywords: ["时间表", "课程表", "签到", "签退", "自习", "学习时长"]
+  auto_activate: false
+
+dependencies: []
+tags: [study, timetable, habits]

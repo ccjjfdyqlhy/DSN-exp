@@ -7,8 +7,10 @@ logger = logging.getLogger("GraphEngine")
 
 class GraphEngine:
 
-    def __init__(self, graph_store: Optional['GraphStore'] = None):
+    def __init__(self, graph_store: Optional['GraphStore'] = None,
+                 models_plugin=None):
         self._store = graph_store
+        self._models = models_plugin
 
     def find_weak_path(self, user_id: int, kp_code: str) -> list[dict]:
         """薄弱路径分析: 从不会的知识点 BFS 回溯到根因"""
@@ -128,11 +130,11 @@ class GraphEngine:
                     self._store.update_node(pk, {"confidence": new_conf})
 
     def build_initial_graph(self, subject: str, textbook_outline: str) -> dict:
-        """从教材目录生成初始知识图 (需要外部 LLM 调用)"""
-        return {
-            "success": False,
-            "error": "需要 LLM 调用，请使用 KnowledgeGraphBuilder"
-        }
+        """从教材目录生成初始知识图（委托 KnowledgeGraphBuilder 走 LLM）"""
+        from apps.dsn_study.knowledge_graph.builder import KnowledgeGraphBuilder
+        builder = KnowledgeGraphBuilder(graph_store=self._store,
+                                        models_plugin=self._models)
+        return builder.build_from_syllabus(subject, textbook_outline)
 
     def get_mastery_summary(self, user_id: int, subject: str) -> dict:
         """掌握度概览"""

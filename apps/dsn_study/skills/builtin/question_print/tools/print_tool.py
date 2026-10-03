@@ -19,8 +19,8 @@ class QuestionPrintTool:
     def _store_impl(self):
         """懒加载题库存储（未注入时自建）。"""
         if self._store is None:
-            from question_bank.store import QuestionStore
-            from db.question_bank import QuestionBankDBManager
+            from apps.dsn_study.question_bank.store import QuestionStore
+            from apps.dsn_study.db.question_bank import QuestionBankDBManager
             self._store = QuestionStore(db=QuestionBankDBManager())
         return self._store
 
@@ -92,7 +92,7 @@ class QuestionPrintTool:
     # ── 组卷 ──
 
     def _compose(self, store, subject: str, count: int, difficulty: int) -> list[dict]:
-        from question_bank.composer import ExamComposer, ComposeParams
+        from apps.dsn_study.question_bank.composer import ExamComposer, ComposeParams
         composer = ExamComposer(question_store=store)
         params = ComposeParams(
             subject=subject,

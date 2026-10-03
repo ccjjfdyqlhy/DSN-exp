@@ -44,7 +44,9 @@ class QuestionStore:
     def get_question(self, question_id: int) -> Optional[dict]:
         conn = self._db._get_connection()
         row = conn.execute(
-            "SELECT * FROM questions WHERE question_id = ?", (question_id,)
+            "SELECT q.*, t.name AS type_name FROM questions q "
+            "LEFT JOIN question_types t ON q.type_id = t.type_id "
+            "WHERE q.question_id = ?", (question_id,)
         ).fetchone()
         if not row:
             return None
@@ -111,7 +113,8 @@ class QuestionStore:
         offset: int = 0,
     ) -> list[dict]:
         conn = self._db._get_connection()
-        query = "SELECT q.* FROM questions q"
+        query = ("SELECT q.*, t.name AS type_name FROM questions q "
+                 "LEFT JOIN question_types t ON q.type_id = t.type_id")
         conditions = []
         params = []
 
@@ -157,7 +160,9 @@ class QuestionStore:
         conn = self._db._get_connection()
         placeholders = ",".join("?" for _ in ids)
         rows = conn.execute(
-            f"SELECT * FROM questions WHERE question_id IN ({placeholders})",
+            f"SELECT q.*, t.name AS type_name FROM questions q "
+            f"LEFT JOIN question_types t ON q.type_id = t.type_id "
+            f"WHERE q.question_id IN ({placeholders})",
             ids,
         ).fetchall()
         result = [self._row_to_question(r) for r in rows]
@@ -170,14 +175,17 @@ class QuestionStore:
         conn = self._db._get_connection()
         if subject:
             row = conn.execute(
-                "SELECT q.* FROM questions q "
+                "SELECT q.*, t.name AS type_name FROM questions q "
                 "JOIN subjects s ON q.subject_id = s.subject_id "
+                "LEFT JOIN question_types t ON q.type_id = t.type_id "
                 "WHERE q.content = ? AND s.code = ? LIMIT 1",
                 (content, subject),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT * FROM questions WHERE content = ? LIMIT 1",
+                "SELECT q.*, t.name AS type_name FROM questions q "
+                "LEFT JOIN question_types t ON q.type_id = t.type_id "
+                "WHERE q.content = ? LIMIT 1",
                 (content,),
             ).fetchone()
         return self._row_to_question(row) if row else None

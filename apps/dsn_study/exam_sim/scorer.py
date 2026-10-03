@@ -252,7 +252,7 @@ class ExamScorer:
         analysis = {"error_type": "未分类", "error_reason": ""}
 
         if self._models:
-            from question_bank.error_analyzer import ErrorAnalyzer
+            from apps.dsn_study.question_bank.error_analyzer import ErrorAnalyzer
             try:
                 analyzer = ErrorAnalyzer(
                     question_store=self._store,
