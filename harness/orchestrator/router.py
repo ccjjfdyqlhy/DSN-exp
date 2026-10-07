@@ -4,6 +4,7 @@
 # 架构原则：
 #   1. 模型分类分轨：
 #      - 本地模型 (LOCAL_LLAMACPP): 基于 llama.cpp 引擎（动态指令合成、子进程拉起、健康轮询、受显存插槽调度）
+#      - 本地模型 (LOCAL_STRATA): 基于 Strata 引擎（serve/server.py + run config JSON，同样子进程拉起与显存调度）
 #      - API 模型 (API_LMSTUDIO): 本地/内网 LMStudio（通过 HTTP 加载/卸载模型，受显存插槽调度）
 #      - API 模型 (API_OPENAI): 云端或外部 OpenAI 兼容 API（直接调用，不参与本地显存调度）
 #   2. 全局插槽与优先级调度：
@@ -15,6 +16,7 @@
 from __future__ import annotations
 
 import enum
+import json
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -23,6 +25,12 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from .base import ChatClientAdapter, ChatMessage, ChatResponse, IChatClient, IEmbeddingClient, ToolCall
 from .anthropic import AnthropicCompatClient
 from .llamacpp import LlamaCppChat, LlamaCppEmbeddingClient, LlamaServerConfig, LlamaServerLauncher
+from .local_engine import LocalServerLauncher
+from .strata import (
+    StrataChat,
+    StrataEngineConfig,
+    StrataServerLauncher,
+)
 from .lmstudio import LMStudioChat, load_lmstudio_model, unload_lmstudio_model
 from .openai import OpenAICompatClient
 from .scheduler import ModelProfile, ModelScheduler
@@ -33,8 +41,13 @@ logger = logging.getLogger("ModelOrchestrator")
 class ModelSourceType(str, enum.Enum):
     """模型上游来源分类。"""
     LOCAL_LLAMACPP = "local_llamacpp"      # 本地 llama.cpp（子进程调度）
+    LOCAL_STRATA = "local_strata"          # 本地 Strata（子进程调度，run config JSON）
     API_LMSTUDIO = "api_lmstudio"          # 本地/网络 LMStudio（HTTP 动态加载调度）
     API_OPENAI = "api_openai"              # 外部 OpenAI 兼容 API（纯调用，无本地插槽调度）
+
+
+#: 本地托管引擎（需要子进程生命周期 + 显存插槽调度）的来源
+LOCAL_ENGINE_SOURCES = (ModelSourceType.LOCAL_LLAMACPP, ModelSourceType.LOCAL_STRATA)
 
 
 @dataclass
@@ -45,6 +58,8 @@ class ModelSpec:
     profile: ModelProfile = field(default_factory=ModelProfile)
     # 本地 llama.cpp 参数
     llama_config: Optional[LlamaServerConfig] = None
+    # 本地 Strata 参数
+    strata_config: Optional[StrataEngineConfig] = None
     # API 参数 (LMStudio 或 OpenAI)
     base_url: Optional[str] = None
     api_key: Optional[str] = None
@@ -54,7 +69,7 @@ class ModelSpec:
     timeout: float = 300.0
     extra_headers: dict = field(default_factory=dict)
     # 运行时绑定
-    launcher: Optional[LlamaServerLauncher] = None
+    launcher: Optional[LocalServerLauncher] = None
     client_instance: Optional[IChatClient] = None
     # 远程 API 专有：请求协议（chat / responses / anthropic）与来源标签
     protocol: Optional[str] = None
@@ -98,15 +113,30 @@ class ModelOrchestrator:
     # ── 启动参数覆盖（UI 自定义启动指令预设）──
 
     def get_launch_params(self, model_name: str) -> dict:
-        """导出某 llama.cpp 模型的可编辑启动参数（用于 UI 预设面板）。"""
+        """导出某本地引擎模型的可编辑启动参数（用于 UI 预设面板）。
+
+        llama.cpp 与 Strata 返回同一套外壳字段（engine / model / port /
+        host / command_preview / config_preview），再加上各自的引擎专有字段：
+          * llama_cpp -> llama-server 开关（n_gpu_layers / ctx_size / ...）
+          * strata    -> run config 路径与引擎参数（args / gpu / lib_dirs / ...）
+        """
         with self._registry_lock:
             spec = self._specs.get(model_name)
             if spec is None:
                 raise KeyError(f"模型未找到: {model_name}")
+            if spec.source_type == ModelSourceType.LOCAL_STRATA:
+                cfg = spec.strata_config
+                if cfg is None:
+                    raise ValueError(f"模型 {model_name} 不是本地 Strata 模型")
+                params = {"engine": "strata", "model": model_name}
+                params.update(cfg.to_dict())
+                params["run_script_preview"] = cfg.run_script_text()
+                return params
             cfg = spec.llama_config
             if cfg is None:
-                raise ValueError(f"模型 {model_name} 不是本地 llama.cpp 模型")
+                raise ValueError(f"模型 {model_name} 不是本地推理引擎模型")
             return {
+                "engine": "llama_cpp",
                 "model": model_name,
                 "binary_path": cfg.binary_path,
                 "model_path": cfg.model_path,
@@ -127,53 +157,87 @@ class ModelOrchestrator:
                 "command_preview": cfg.to_command_string(),
             }
 
+    def preview_launch_params(self, model_name: str, params: dict) -> dict:
+        """用给定参数（不改动运行中配置）合成命令行预览。
+
+        返回 {"command": ..., "engine": ..., "run_script"?: ...}。
+        """
+        with self._registry_lock:
+            spec = self._specs.get(model_name)
+            if spec is None:
+                raise KeyError(f"模型未找到: {model_name}")
+            strata = spec.source_type == ModelSourceType.LOCAL_STRATA
+        base = self.get_launch_params(model_name)
+        merged = {**base, **(params or {})}
+        if strata:
+            cfg = _strata_config_from_params(merged)
+            return {
+                "engine": "strata",
+                "command": cfg.to_command_string(),
+                "run_script": cfg.run_script_text(),
+            }
+        return {
+            "engine": "llama_cpp",
+            "command": LlamaServerConfig.from_dict(merged).to_command_string(),
+        }
+
     def apply_launch_params(self, model_name: str, params: dict) -> dict:
         """把参数写入模型配置（**对之后每次加载生效**）。
 
         只接受白名单字段，避免 UI 误传把配置改坏。
-        返回被实际修改的字段。
+        返回被实际修改的字段。`config_path` 单独处理：它只决定「保存到哪里」，
+        不参与启动命令的合成（命令用的是当前内存配置对应的文件路径）。
         """
-        editable = {
+        llama_editable = {
             "binary_path", "model_path", "host", "port", "n_gpu_layers",
             "tensor_split", "ctx_size", "threads", "flash_attn", "jinja",
             "reasoning_format", "no_kv_offload", "mmproj_path",
             "mmproj_no_offload", "image_max_tokens", "extra_args",
+        }
+        strata_editable = {
+            "python_path", "server_script", "host", "port", "open_browser",
+            "lazy", "api_key", "mcp_config", "idle_unload_s",
+            "min_free_vram_mib", "slot_save_path", "server_extra_args",
+            "exe", "args", "cwd", "tokenizer", "model_name", "log",
+            "lib_dirs", "gpu", "extra",
+            # ctx_size 不是 run config 的字段：它是 args 里 --max-context 的视图
+            "ctx_size",
         }
         changed: dict = {}
         with self._registry_lock:
             spec = self._specs.get(model_name)
             if spec is None:
                 raise KeyError(f"模型未找到: {model_name}")
-            cfg = spec.llama_config
-            if cfg is None:
-                raise ValueError(f"模型 {model_name} 不是本地 llama.cpp 模型")
-
-            for key, value in (params or {}).items():
-                if key not in editable:
-                    continue
-                if key == "extra_args":
-                    if not isinstance(value, list):
-                        continue
-                    value = [str(v) for v in value]
-                elif key in ("n_gpu_layers", "port", "ctx_size", "threads", "image_max_tokens"):
-                    if value is None or value == "":
-                        value = None
-                    else:
-                        try:
-                            value = int(value)
-                        except (TypeError, ValueError):
-                            continue
-                elif key in ("jinja", "no_kv_offload", "mmproj_no_offload"):
-                    value = bool(value)
-                elif key == "model_path" and not value:
-                    # 不允许清空模型路径
-                    continue
-                if getattr(cfg, key, None) != value:
-                    setattr(cfg, key, value)
-                    changed[key] = value
+            if spec.source_type == ModelSourceType.LOCAL_STRATA:
+                cfg = spec.strata_config
+                if cfg is None:
+                    raise ValueError(f"模型 {model_name} 不是本地 Strata 模型")
+                changed = _apply_strata_params(cfg, params, strata_editable)
+            else:
+                cfg = spec.llama_config
+                if cfg is None:
+                    raise ValueError(f"模型 {model_name} 不是本地推理引擎模型")
+                changed = _apply_llama_params(cfg, params, llama_editable)
         if changed:
             logger.info("模型 %s 启动参数已更新: %s", model_name, sorted(changed))
         return changed
+
+    def save_launch_params(self, model_name: str, params: dict) -> dict:
+        """把参数持久化进模型自己的配置文件（llama profile 由应用层负责）。
+
+        Strata 的 run config 是引擎自己读的文件，因此这里直接写回它
+        （原子替换 + .bak），使 `run-<model>.sh` 与 harness 保持一致。
+        """
+        with self._registry_lock:
+            spec = self._specs.get(model_name)
+            if spec is None:
+                raise KeyError(f"模型未找到: {model_name}")
+            if spec.source_type != ModelSourceType.LOCAL_STRATA or spec.strata_config is None:
+                return {}
+            target = params.get("config_path") or spec.strata_config.resolved_config_path()
+            saved = spec.strata_config.save_config(target)
+        logger.info("Strata run config 已保存: %s", saved)
+        return {"config_path": str(saved)}
 
     # ── 显存管理：KV cache 卸载开关 ──
 
@@ -252,6 +316,8 @@ class ModelOrchestrator:
         with self._registry_lock:
             return self._default_model
 
+    # ── 启动参数的字段合并工具（模块级函数见文件末尾）──
+
     # ── 模型注册接口 ──
 
     def register_local_llamacpp(
@@ -327,6 +393,84 @@ class ModelOrchestrator:
             if self._default_model is None:
                 self._default_model = name
         logger.info("已注册本地 llama.cpp 模型: %s (端口 %d, 优先级 %d)", name, config.port, priority)
+
+    def register_local_strata(
+        self,
+        name: str,
+        config: StrataEngineConfig,
+        priority: int = 50,
+        resident: bool = False,
+        immediate: bool = False,
+        orchestrated: bool = True,
+        load_timeout: int = 180,
+        request_timeout: int = 600,
+    ) -> None:
+        """注册本地 Strata 推理引擎模型（同样受调度器显存插槽排队管理）。
+
+        Strata 与 llama.cpp 在 harness 里是同构的本地引擎：一条命令行拉起一个
+        OpenAI 兼容 HTTP 服务，由 LlamaServerLauncher/StrataServerLauncher 托管
+        子进程、就绪探针与停机。差异仅在命令行合成（run config JSON）。
+        """
+        launcher = StrataServerLauncher(config)
+        load_fn, unload_fn = launcher.create_scheduler_hooks(load_timeout=load_timeout)
+
+        profile = ModelProfile(
+            priority=priority,
+            resident=resident,
+            immediate=immediate,
+            orchestrated=orchestrated,
+            load_timeout=load_timeout,
+            request_timeout=request_timeout,
+            engine="strata",
+            llama_config=config.to_dict(),
+        )
+
+        self._scheduler.register(
+            model_name=name,
+            base_url=launcher.base_url,
+            load_fn=load_fn,
+            unload_fn=unload_fn,
+            priority=priority,
+            resident=resident,
+            immediate=immediate,
+            orchestrated=orchestrated,
+            engine="strata",
+            llama_config=config.to_dict(),
+        )
+
+        # 默认输出上限留出输入空间（与 llama.cpp 同理：input+output 超上下文会 500）。
+        ctx = config.resolved_ctx_size()
+        default_out = max(256, int(ctx * 0.5)) if ctx else 8192
+        client = StrataChat(
+            base_url=launcher.base_url,
+            model_name=name,
+            timeout=float(request_timeout),
+            max_tokens=default_out,
+            api_key=config.api_key,
+            scheduler=self._scheduler if orchestrated else None,
+            launcher=launcher,
+        )
+
+        spec = ModelSpec(
+            name=name,
+            source_type=ModelSourceType.LOCAL_STRATA,
+            profile=profile,
+            strata_config=config,
+            base_url=launcher.base_url,
+            api_key=config.api_key,
+            timeout=float(request_timeout),
+            launcher=launcher,
+            client_instance=client,
+        )
+
+        with self._registry_lock:
+            self._specs[name] = spec
+            if self._default_model is None:
+                self._default_model = name
+        logger.info(
+            "已注册本地 Strata 模型: %s (端口 %d, 优先级 %d, run config %s)",
+            name, config.port, priority, config.resolved_config_path() or "(未指定)",
+        )
 
     def register_api_lmstudio(
         self,
@@ -492,6 +636,10 @@ class ModelOrchestrator:
         spec = self.get_model_spec(model_name)
         if not spec:
             return 128000
+        if spec.strata_config is not None:
+            ctx = spec.strata_config.resolved_ctx_size()
+            if ctx:
+                return int(ctx)
         if spec.llama_config and spec.llama_config.ctx_size:
             return int(spec.llama_config.ctx_size)
         if spec.max_tokens and spec.max_tokens > 0:
@@ -556,7 +704,7 @@ class ModelOrchestrator:
                 if (
                     is_loaded
                     and not is_loading
-                    and spec.source_type == ModelSourceType.LOCAL_LLAMACPP
+                    and spec.source_type in LOCAL_ENGINE_SOURCES
                     and spec.launcher is not None
                     and not spec.launcher.is_running()
                 ):
@@ -569,7 +717,8 @@ class ModelOrchestrator:
                 models_info.append({
                     "name": name,
                     "source_type": spec.source_type.value,
-                    "is_local": spec.source_type == ModelSourceType.LOCAL_LLAMACPP,
+                    "is_local": spec.source_type in LOCAL_ENGINE_SOURCES,
+                    "engine": spec.profile.engine,
                     "is_scheduled": spec.profile.orchestrated,
                     "loaded": is_loaded,
                     "is_loading": is_loading,
@@ -578,7 +727,7 @@ class ModelOrchestrator:
                     "resident": spec.profile.resident,
                     "immediate": spec.profile.immediate,
                     "base_url": spec.base_url,
-                    "command": spec.llama_config.to_command_string() if spec.llama_config else None,
+                    "command": _launch_command(spec),
                 })
 
             loaded_count = sum(1 for m in models_info if m["is_scheduled"] and m["loaded"] and not m["resident"])
@@ -606,7 +755,7 @@ class ModelOrchestrator:
             self._notify_status(model_name, "loading", progress={"stages": ["text_model"], "current": "text_model", "value": val})
 
         try:
-            if spec.source_type == ModelSourceType.LOCAL_LLAMACPP and spec.launcher:
+            if spec.source_type in LOCAL_ENGINE_SOURCES and spec.launcher:
                 ok = spec.launcher.start(wait_ready=True, timeout=spec.profile.load_timeout or 180, progress_callback=_on_launcher_progress)
                 if ok:
                     self._scheduler.mark_preloaded(model_name)
@@ -642,7 +791,7 @@ class ModelOrchestrator:
             self._loading_models.discard(model_name)
 
         try:
-            if spec.source_type == ModelSourceType.LOCAL_LLAMACPP and spec.launcher:
+            if spec.source_type in LOCAL_ENGINE_SOURCES and spec.launcher:
                 ok = spec.launcher.stop()
             elif spec.source_type == ModelSourceType.API_LMSTUDIO:
                 ok = unload_lmstudio_model(spec.base_url, spec.remote_model_name or spec.name)
@@ -668,3 +817,178 @@ class ModelOrchestrator:
                         spec.launcher.stop()
                     except Exception as e:
                         logger.warning("关闭 launcher 异常: %s", e)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 模块级工具：本地引擎启动参数（llama.cpp / Strata）的字段合并
+# ════════════════════════════════════════════════════════════════════════════
+
+#: Strata 启动参数里允许用逗号分隔字符串输入的列表字段
+_STRATA_LIST_FIELDS = ("args", "lib_dirs", "server_extra_args")
+#: Strata 启动参数里的浮点字段
+_STRATA_FLOAT_FIELDS = ("idle_unload_s",)
+#: Strata 启动参数里的整数字段
+_STRATA_INT_FIELDS = ("port", "min_free_vram_mib")
+
+
+def _launch_command(spec) -> Optional[str]:
+    """模型当前配置合成出的启动命令行（供状态接口展示）。"""
+    if spec.llama_config is not None:
+        return spec.llama_config.to_command_string()
+    if spec.strata_config is not None:
+        return spec.strata_config.to_command_string()
+    return None
+
+
+def _launch_params_snapshot(spec) -> dict:
+    """已注册模型的原始启动参数（用于「一次性启动」后恢复原状）。"""
+    if spec.strata_config is not None:
+        return dict(spec.strata_config.to_dict())
+    if spec.llama_config is not None:
+        return {
+            "binary_path": spec.llama_config.binary_path,
+            "model_path": spec.llama_config.model_path,
+            "host": spec.llama_config.host,
+            "port": spec.llama_config.port,
+            "n_gpu_layers": spec.llama_config.n_gpu_layers,
+            "tensor_split": spec.llama_config.tensor_split,
+            "ctx_size": spec.llama_config.ctx_size,
+            "threads": spec.llama_config.threads,
+            "flash_attn": spec.llama_config.flash_attn,
+            "jinja": spec.llama_config.jinja,
+            "reasoning_format": spec.llama_config.reasoning_format,
+            "no_kv_offload": spec.llama_config.no_kv_offload,
+            "mmproj_path": spec.llama_config.mmproj_path,
+            "mmproj_no_offload": spec.llama_config.mmproj_no_offload,
+            "image_max_tokens": spec.llama_config.image_max_tokens,
+            "extra_args": list(spec.llama_config.extra_args),
+        }
+    return {}
+
+
+def _as_list(value) -> Optional[list]:
+    """把列表/换行/逗号分隔的字符串归一化为字符串列表。"""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str):
+        text = value.replace(",", "\n")
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    return None
+
+
+def _apply_llama_params(cfg: LlamaServerConfig, params: dict, editable: set) -> dict:
+    """把白名单内的字段写入 LlamaServerConfig，返回被实际修改的字段。"""
+    changed: dict = {}
+    for key, value in (params or {}).items():
+        if key not in editable:
+            continue
+        if key == "extra_args":
+            value = _as_list(value)
+            if value is None:
+                continue
+        elif key in ("n_gpu_layers", "port", "ctx_size", "threads", "image_max_tokens"):
+            if value is None or value == "":
+                value = None
+            else:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    continue
+        elif key in ("jinja", "no_kv_offload", "mmproj_no_offload"):
+            value = bool(value)
+        elif key == "model_path" and not value:
+            continue  # 不允许清空模型路径
+        if getattr(cfg, key, None) != value:
+            setattr(cfg, key, value)
+            changed[key] = value
+    return changed
+
+
+def _apply_strata_params(cfg: StrataEngineConfig, params: dict, editable: set) -> dict:
+    """把白名单内的字段写入 StrataEngineConfig，返回被实际修改的字段。
+
+    UI 里数组字段（args / lib_dirs / server_extra_args）以多行文本提交，
+    `extra` 字段以 JSON 对象提交；两者都在这里做类型归一化，非法输入
+    按「跳过该项」处理（与 llama.cpp 分支一致，不抛异常打断整批修改）。
+    """
+    changed: dict = {}
+    for key, value in (params or {}).items():
+        if key not in editable:
+            continue
+        if key == "ctx_size":
+            # 上下文长度在 run config 里就是 args 的 --max-context，
+            # 所以这里改写参数而不是新增一个字段。
+            if value is None or value == "":
+                continue
+            try:
+                size = int(value)
+            except (TypeError, ValueError):
+                continue
+            if cfg.resolved_ctx_size() != size:
+                cfg.set_ctx_size(size)
+                changed[key] = size
+            continue
+        if key in _STRATA_LIST_FIELDS:
+            value = _as_list(value)
+            if value is None:
+                continue
+        elif key in _STRATA_INT_FIELDS:
+            if value is None or value == "":
+                value = None
+            else:
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    continue
+        elif key in _STRATA_FLOAT_FIELDS:
+            if value is None or value == "":
+                value = None
+            else:
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    continue
+        elif key == "extra":
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value) if value.strip() else {}
+                except ValueError:
+                    continue
+            if not isinstance(value, dict):
+                continue
+        elif key in ("open_browser", "lazy"):
+            value = bool(value)
+        elif key == "api_key" and not value:
+            value = None
+        if getattr(cfg, key, None) != value:
+            setattr(cfg, key, value)
+            changed[key] = value
+    return changed
+
+
+def _strata_config_from_params(params: dict) -> StrataEngineConfig:
+    """从「启动参数预览」的合并字典构造一份临时 StrataEngineConfig（不落地）。
+
+    预览与实际启动共用同一套字段，因此这里只做类型归一化，缺省值沿用
+    已注册模型导出的快照（缺失键不传，由 dataclass 默认值填充）。
+    """
+    cfg = StrataEngineConfig()
+    str_fields = (
+        "python_path", "server_script", "host", "mcp_config", "exe", "cwd",
+        "tokenizer", "model_name", "log",
+    )
+    for key in str_fields:
+        value = params.get(key)
+        if isinstance(value, str):
+            setattr(cfg, key, value)
+    cfg.config_path = str(params.get("config_path") or "")
+    if isinstance(params.get("port"), (int, str)) and str(params["port"]).strip().isdigit():
+        cfg.port = int(params["port"])
+    for key in ("open_browser", "lazy"):
+        if key in params:
+            setattr(cfg, key, bool(params[key]))
+    if isinstance(params.get("api_key"), str):
+        # to_dict() 出于安全只导出布尔，真值在已注册模型里 —— 预览不需要它
+        cfg.api_key = params["api_key"] or None
+    _apply_strata_params(cfg, params, set(params))
+    return cfg

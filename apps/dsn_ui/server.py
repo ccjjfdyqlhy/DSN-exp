@@ -411,7 +411,9 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 "id": m["name"],
                 "name": m["name"],
                 "object": "model",
-                "owned_by": "llamacpp" if m["is_local"] else m["source_type"],
+                # owned_by 直接取引擎名：llama.cpp 与 Strata 都是本地托管引擎，
+                # 前端/客户端靠它区分是哪一套引擎在跑这个模型。
+                "owned_by": (m.get("engine") or m["source_type"]) if m["is_local"] else m["source_type"],
                 "created": now,
                 "in_cache": True,
                 "path": m.get("command") or f"models/{m['name']}.gguf",
@@ -432,6 +434,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     "priority": m["priority"],
                     "resident": m["resident"],
                     "immediate": m["immediate"],
+                    "engine": m.get("engine"),
                     "command": m.get("command"),
                 }
             })
@@ -1347,22 +1350,36 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     # ── 模型启动参数预设（UI 右侧面板）──
 
     def _require_local_model(model_name: str):
-        """校验模型存在且为本地 llama.cpp 模型。"""
+        """校验模型存在且为**本地托管引擎**（llama.cpp / Strata）模型。"""
         if not model_name:
             raise HTTPException(status_code=400, detail="缺少 model 字段")
-        if model_name not in engine.orchestrator._specs:
+        spec = engine.orchestrator._specs.get(model_name)
+        if spec is None:
             raise HTTPException(status_code=404, detail=f"未知模型: {model_name}")
+        if not getattr(spec, "llama_config", None) and not getattr(spec, "strata_config", None):
+            raise HTTPException(
+                status_code=400,
+                detail=f"模型 {model_name} 不是本地托管引擎模型（无可编辑的启动参数）",
+            )
         return model_name
 
     @app.get("/api/models/launch-params")
     async def get_launch_params(model: str):
-        """读取某模型的当前启动参数（用于预设面板回显）。"""
+        """读取某模型的当前启动参数（用于预设面板回显）。
+
+        返回体带 `engine` 字段：llama_cpp 走 llama-server 开关表单，
+        strata 走 run config（args / gpu / lib_dirs / server 开关）表单。
+        """
         _require_local_model(model)
         try:
             params = engine.orchestrator.get_launch_params(model)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        params["has_override"] = model in engine.load_launch_overrides()
+        # 覆盖持久化只针对 llama.cpp 的 profile（Strata 的参数写在它自己的
+        # run config 里，由 /api/models/launch-params/save 直接回写）。
+        params["has_override"] = (
+            model in engine.load_launch_overrides() if params.get("engine") == "llama_cpp" else False
+        )
         return params
 
     @app.post("/api/models/launch-params/preview")
@@ -1370,15 +1387,18 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         """预览参数合成出的命令行（不落地、不启动）。"""
         body = await req.json()
         model = _require_local_model(body.get("model") or "")
-        base = engine.orchestrator.get_launch_params(model)
-        merged = {**base, **(body.get("params") or {})}
-        from harness.orchestrator import LlamaServerConfig
-        cfg = LlamaServerConfig.from_dict(merged)
-        return {"command": cfg.to_command_string()}
+        try:
+            return engine.orchestrator.preview_launch_params(model, body.get("params") or {})
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.post("/api/models/launch-params/save")
     async def save_launch_params(req: Request):
-        """★ 保存为持久化预设：覆盖当前 profile 参数，跨重启有效。
+        """★ 保存启动参数。
+
+        * llama.cpp：写入 profile 覆盖（跨重启生效，持久化由应用负责）；
+        * Strata：直接回写它的 run config JSON（原子替换 + .bak），
+          使 harness 与用户的 `run-<model>.sh` 保持一致。
 
         请求体: { model, params }
         """
@@ -1389,11 +1409,29 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             changed = engine.orchestrator.apply_launch_params(model, params)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+        is_strata = engine.orchestrator._specs[model].strata_config is not None
+        if is_strata:
+            try:
+                written = engine.orchestrator.save_launch_params(model, params)
+            except (OSError, ValueError) as e:
+                raise HTTPException(status_code=500, detail=f"写入 run config 失败: {e}")
+            logger.info("保存 Strata run config: model=%s changed=%s", model, sorted(changed))
+            return {
+                "status": "ok",
+                "model": model,
+                "engine": "strata",
+                "changed": sorted(changed),
+                "saved": written,
+                "note": "已写入 run config；下一次加载该模型时生效",
+            }
+
         saved = engine.save_launch_override(model, params)
         logger.info("保存启动参数预设: model=%s changed=%s", model, sorted(changed))
         return {
             "status": "ok",
             "model": model,
+            "engine": "llama_cpp",
             "changed": sorted(changed),
             "saved": saved,
             "note": "已持久化；下一次加载该模型时生效",
@@ -1406,6 +1444,31 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         model = _require_local_model(body.get("model") or "")
         cleared = engine.clear_launch_override(model)
         return {"status": "ok", "model": model, "cleared": cleared}
+
+    @app.get("/api/models/launch-params/default")
+    async def default_launch_params(model: str):
+        """返回该模型**未经覆盖**的默认参数（用于「恢复默认」对比）。
+
+        Strata：重新读取磁盘上的 run config；
+        llama.cpp：返回当前配置（应用层的覆盖记录在 overrides 文件里，
+        由 /reset 清除后重新拉取即可见）。
+        """
+        model = _require_local_model(model)
+        spec = engine.orchestrator._specs[model]
+        if spec.strata_config is not None:
+            from harness.orchestrator import StrataEngineConfig
+            try:
+                fresh = StrataEngineConfig.load(spec.strata_config.resolved_config_path())
+            except (OSError, ValueError) as e:
+                raise HTTPException(status_code=500, detail=str(e))
+            fresh.server_script = spec.strata_config.server_script
+            fresh.python_path = spec.strata_config.python_path
+            fresh.port = spec.strata_config.port
+            return {"engine": "strata", "model": model, **fresh.to_dict()}
+        params = engine.orchestrator.get_launch_params(model)
+        params["engine"] = "llama_cpp"
+        params["model"] = model
+        return params
 
     @app.post("/api/models/launch-once")
     async def launch_once(req: Request):
@@ -1432,10 +1495,15 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 content={"success": False, "model": model, "error": str(e)},
             )
         finally:
-            # 恢复原配置：一次性启动不应污染持久设置
+            # 恢复原配置：一次性启动不应污染持久设置。
+            # 与 get_launch_params() 的导出键对应（含两种引擎的外壳字段与
+            # Strata 的只读预览字段），这些不参与回写。
+            skipped = {
+                "model", "engine", "has_override", "config_path",
+                "command_preview", "run_script_preview",
+            }
             try:
-                restore = {k: v for k, v in original.items()
-                           if k not in ("model", "has_override", "command_preview")}
+                restore = {k: v for k, v in original.items() if k not in skipped}
                 engine.orchestrator.apply_launch_params(model, restore)
             except Exception as e:  # noqa: BLE001
                 logger.warning("恢复启动参数失败 %s: %s", model, e)
@@ -1595,6 +1663,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         """
         from apps.dsn_ui.bonsai_integration import bonsai_status
         return bonsai_status()
+
+    @app.get("/api/integration/strata")
+    async def get_strata_status():
+        """Strata 集成状态：检出目录、run config 与启动命令行预览。
+
+        供前端/集成方确认「本地 Strata 引擎」是否就绪（与 llama.cpp 同构，
+        但由 serve/server.py + run config JSON 拉起）。
+        """
+        from apps.dsn_ui.strata_integration import strata_status
+        return strata_status()
 
     @app.get("/api/orchestrator/status")
     async def get_orchestrator_status():

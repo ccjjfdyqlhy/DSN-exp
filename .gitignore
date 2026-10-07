@@ -71,6 +71,9 @@ AGENTS.md
 /.reasonix/
 /.zcode/
 
+# ── pi 编程代理的本地状态（任务日志、会话缓存；不属于项目源码）──
+/.pi/
+
 # ── 前端构建与源码（dsn_ui 只跟踪构建产物 static/，忽略 frontend/ 源码与缓存）──
 apps/dsn_ui/frontend/
 node_modules/

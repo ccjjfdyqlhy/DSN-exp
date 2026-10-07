@@ -1,64 +1,31 @@
-# harness/models/llamacpp.py
+# harness/orchestrator/llamacpp.py
 # 本地自部署 llama.cpp 推理引擎（GGUF 格式）支持模块。
 #
 # 功能：
 #   1. LlamaServerConfig: llama-server 启动参数配置与指令合成器（支持双向解析与生成）。
 #   2. LlamaServerLauncher: llama-server 子进程生命周期管理、就绪探针轮询与优雅停机。
-#   3. LlamaCppChat: 符合 IChatClient 契约的 OpenAI 兼容对话客户端（支持 SSE 流式、DeepSeek 思考流、Tool Call、ModelScheduler 协同）。
+#   3. LlamaCppChat: 符合 IChatClient 契约的 OpenAI 兼容对话客户端。
 #   4. LlamaCppEmbeddingClient: 符合 IEmbeddingClient 契约的向量提取客户端。
+#
+# 进程管理与 OpenAI 兼容协议交互的公共实现已上移到
+#   * local_engine.py —— LocalServerLauncher（子进程 / 就绪探针 / 停机 / 调度钩子）
+#   * local_chat.py   —— OpenAICompatChat / OpenAICompatEmbeddingClient
+# 本模块只保留 llama-server 特有的部分：命令行合成与二进制/模型校验。
+# 另一类本地引擎（Strata）见 strata.py，两者共享同一套基类。
 
 from __future__ import annotations
 
-import asyncio
-import atexit
-import ctypes
-import json
 import logging
 import os
 import shlex
-import signal
-import subprocess
-import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, Optional
 
-import requests
-
-from .base import ChatClientAdapter, ChatMessage, ChatResponse, IEmbeddingClient, ToolCall
+from .local_chat import OpenAICompatChat, OpenAICompatEmbeddingClient
+from .local_engine import LocalServerLauncher
 
 logger = logging.getLogger("LlamaCpp")
-
-# 全局活跃进程注册表，供 atexit 统一释放
-_ACTIVE_LAUNCHERS: set["LlamaServerLauncher"] = set()
-
-
-def _cleanup_active_launchers():
-    """Python 进程退出或被终止时的兜底显存清理。"""
-    for launcher in list(_ACTIVE_LAUNCHERS):
-        try:
-            launcher.stop()
-        except Exception:
-            pass
-
-
-atexit.register(_cleanup_active_launchers)
-
-
-def _set_parent_death_signal():
-    """Linux 平台：当父进程意外死亡时，自动向当前子进程发送 SIGTERM 终止信号。"""
-    try:
-        PR_SET_PDEATHSIG = 1
-        libc = ctypes.CDLL("libc.so.6")
-        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
-    except Exception:
-        pass
-    if hasattr(os, "setsid"):
-        try:
-            os.setsid()
-        except Exception:
-            pass
 
 
 @dataclass
@@ -188,7 +155,7 @@ class LlamaServerConfig:
         return " ".join(shlex.quote(arg) for arg in self.build_command())
 
     @classmethod
-    def from_command_string(cls, cmd_str: str) -> "LlamaServerConfig":
+    def from_command_string(cls, cmd_str: str) -> LlamaServerConfig:
         """从命令行字符串（如 ~/qwen_weights/cmd.txt 中的指令）反向解析为结构化配置。"""
         tokens = shlex.split(cmd_str.strip())
         if not tokens:
@@ -271,7 +238,7 @@ class LlamaServerConfig:
         return config
 
     @classmethod
-    def from_dict(cls, data: dict) -> "LlamaServerConfig":
+    def from_dict(cls, data: dict) -> LlamaServerConfig:
         """从字典或 YAML profile 解析。"""
         return cls(
             binary_path=data.get("binary_path") or data.get("bin") or "~/llama.cpp/build/bin/llama-server",
@@ -330,75 +297,44 @@ class LlamaServerConfig:
         }
 
 
-class LlamaServerLauncher:
+class LlamaServerLauncher(LocalServerLauncher):
     """llama-server 引擎子进程生命周期管理器。
 
-    提供：
-      - 启动子进程并合成指令
-      - 健康检查探测与就绪等待（/health 或 /v1/models）
-      - 优雅停机与显存释放（SIGTERM -> SIGKILL）
-      - 生成适用于 ModelScheduler 的 (load_fn, unload_fn) 钩子
+    只负责 llama.cpp 特有的部分：二进制与 GGUF 校验、命令行合成、私有 .so
+    目录注入；启动、就绪探针、停机与 ModelScheduler 钩子全部继承自
+    LocalServerLauncher（与 Strata 等其它本地引擎共用一套实现）。
     """
+
+    engine_label = "llama-server"
+    ready_paths = ("/health", "/v1/models")
 
     def __init__(
         self,
         config: LlamaServerConfig,
-        log_file: Optional[str | Path] = None,
+        log_file: str | Path | None = None,
     ):
+        super().__init__(log_file=log_file)
         self.config = config
-        self.log_file = Path(log_file) if log_file else None
-        self._process: Optional[subprocess.Popen] = None
-        self._log_fp = None
 
     @property
     def base_url(self) -> str:
         return f"http://{self.config.host}:{self.config.port}"
 
-    def is_running(self) -> bool:
-        """检查内部托管的子进程是否存活。"""
-        if self._process is None:
-            return False
-        return self._process.poll() is None
+    def build_command(self) -> list[str]:
+        return self.config.build_command()
 
-    def is_ready(self, timeout: float = 2.0) -> bool:
-        """通过 HTTP 端点探测服务是否已完全就绪提供推理服务。"""
-        url = f"{self.base_url}/health"
-        headers = {}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        try:
-            resp = requests.get(url, headers=headers, timeout=timeout)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
+    def api_key(self) -> str | None:
+        return self.config.api_key
 
-        # 备用探测 /v1/models
-        try:
-            resp = requests.get(f"{self.base_url}/v1/models", headers=headers, timeout=timeout)
-            return resp.status_code == 200
-        except Exception:
-            return False
+    def child_env(self) -> dict:
+        """llama-server 的额外环境变量（等价于命令行前注入 env）。"""
+        return dict(self.config.env or {})
 
-    def start(self, wait_ready: bool = True, timeout: float = 180.0, progress_callback: Optional[Callable[[float], None]] = None) -> bool:
-        """启动 llama-server 实例。"""
-        if self.is_running() and self.is_ready():
-            logger.info("llama-server 已在运行并就绪: %s", self.base_url)
-            return True
+    def describe_target(self) -> str:
+        return self.config.resolved_model_path() or self.base_url
 
-        # 端口占用检测：本 launcher 自己没有子进程，但端口已有服务在响应，
-        # 说明该端口被**外部/其它模型**的 llama-server 占用（常见于用户
-        # 手动跑了 ~/Bonsai-demo 的 start_llama_server.sh）。
-        # 此时若继续启动，新进程会 bind 失败，而就绪探测又会命中那个外部服务，
-        # 造成"看起来加载成功、实际用的是别的模型"的静默错配 —— 必须显式告警。
-        if not self.is_running() and self.is_ready(timeout=1.0):
-            logger.warning(
-                "端口 %s 已被其它 llama-server 占用（非本进程托管）。"
-                "本次加载不会真正拉起新实例，后续请求将命中该外部服务。"
-                "如需 DSN 独立托管，请改用其它端口或先停止外部服务。",
-                self.base_url,
-            )
-
+    def preflight(self) -> None:
+        """启动前校验 llama-server 二进制与 GGUF 模型文件是否就位。"""
         binary_path = self.config.resolved_binary_path()
         if not os.path.isfile(binary_path) or not os.access(binary_path, os.X_OK):
             raise FileNotFoundError(
@@ -411,553 +347,26 @@ class LlamaServerLauncher:
         if model_path and not os.path.exists(model_path):
             raise FileNotFoundError(f"未找到指定的 GGUF 模型文件: {model_path}")
 
-        cmd = self.config.build_command()
-        logger.info("正在启动 llama-server: %s", " ".join(shlex.quote(c) for c in cmd))
-
-        stdout_dest = subprocess.DEVNULL
-        stderr_dest = subprocess.DEVNULL
-
-        if self.log_file:
-            self.log_file.parent.mkdir(parents=True, exist_ok=True)
-            self._log_fp = open(self.log_file, "a", encoding="utf-8")
-            stdout_dest = self._log_fp
-            stderr_dest = self._log_fp
-
-        try:
-            sub_env = os.environ.copy()
-            sub_env["LANG"] = "C.UTF-8"
-            sub_env["LC_ALL"] = "C.UTF-8"
-            sub_env["PYTHONIOENCODING"] = "utf-8"
-
-            # 自定义 llama.cpp 构建（如 ~/Bonsai-demo/bin/cuda）把 .so 放在
-            # 二进制同目录，必须把该目录加入 LD_LIBRARY_PATH，否则启动时
-            # 会报 "error while loading shared libraries: libllama.so.0"。
-            # 这里自动注入，并允许 config.env 覆盖/补充。
-            bin_dir = os.path.dirname(self.config.resolved_binary_path())
-            if bin_dir:
-                existing = sub_env.get("LD_LIBRARY_PATH", "")
-                parts = [p for p in existing.split(":") if p]
-                if bin_dir not in parts:
-                    sub_env["LD_LIBRARY_PATH"] = (
-                        bin_dir + (":" + existing if existing else "")
-                    )
-            for k, v in (self.config.env or {}).items():
-                sub_env[str(k)] = str(v)
-            if self.config.env:
-                logger.info("llama-server 额外环境变量: %s", sorted(self.config.env))
-
-            self._process = subprocess.Popen(
-                cmd,
-                stdout=stdout_dest,
-                stderr=stderr_dest,
-                env=sub_env,
-                preexec_fn=_set_parent_death_signal,
-            )
-            _ACTIVE_LAUNCHERS.add(self)
-        except Exception as e:
-            logger.error("启动 llama-server 失败: %s", e)
-            if self._log_fp:
-                self._log_fp.close()
-                self._log_fp = None
-            raise
-
-        if not wait_ready:
-            return True
-
-        # 轮询探测直到服务就绪
-        start_time = time.time()
-        logger.info("等待 llama-server 服务就绪 (%s, 超时 %ds)...", self.base_url, timeout)
-        while time.time() - start_time < timeout:
-            if self._process.poll() is not None:
-                ret = self._process.returncode
-                logger.error("llama-server 进程异常退出，退出码: %d", ret)
-                self.stop()
-                raise RuntimeError(f"llama-server 启动后立即退出，返回码: {ret}")
-
-            if self.is_ready(timeout=1.5):
-                elapsed = time.time() - start_time
-                if progress_callback:
-                    try:
-                        progress_callback(1.0)
-                    except Exception:
-                        pass
-                logger.info("llama-server 启动成功并就绪 (耗时 %.1fs): %s", elapsed, self.base_url)
-                return True
-
-            if progress_callback:
-                elapsed = time.time() - start_time
-                # 预估平滑进度曲线: 前10秒到75%，后渐进到95%
-                calc_val = min(0.95, round(1.0 - (1.0 / (1.0 + elapsed / 10.0)), 2))
-                try:
-                    progress_callback(calc_val)
-                except Exception:
-                    pass
-
-            time.sleep(0.5)
-
-        self.stop()
-        raise TimeoutError(f"llama-server 启动超时 ({timeout}s)，服务未在 {self.base_url} 就绪")
-
-    def stop(self, timeout: float = 15.0) -> bool:
-        """优雅关闭 llama-server 进程并释放显存。"""
-        if self._process is None:
-            return True
-
-        pid = self._process.pid
-        logger.info("正在停止 llama-server 进程 (PID %d)...", pid)
-
-        try:
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-                try:
-                    pgid = os.getpgid(pid)
-                    os.killpg(pgid, signal.SIGTERM)
-                except Exception:
-                    self._process.terminate()
-            else:
-                self._process.terminate()
-
-            # 等待退出
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                if self._process.poll() is not None:
-                    break
-                time.sleep(0.2)
-
-            # 强制杀死
-            if self._process.poll() is None:
-                logger.warning("llama-server 未在 %ds 内响应 SIGTERM，发送 SIGKILL...", timeout)
-                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-                    try:
-                        pgid = os.getpgid(pid)
-                        os.killpg(pgid, signal.SIGKILL)
-                    except Exception:
-                        self._process.kill()
-                else:
-                    self._process.kill()
-                self._process.wait(timeout=5.0)
-
-        except Exception as e:
-            logger.warning("停止 llama-server 时发生异常: %s", e)
-        finally:
-            _ACTIVE_LAUNCHERS.discard(self)
-            self._process = None
-            if self._log_fp:
-                try:
-                    self._log_fp.close()
-                except Exception:
-                    pass
-                self._log_fp = None
-
-        logger.info("llama-server 已完全停止")
-        return True
-
-    def create_scheduler_hooks(self, load_timeout: int = 180) -> tuple[Callable[[], bool], Callable[[], bool]]:
-        """生成与 ModelScheduler 对接的 (load_fn, unload_fn) 钩子回调。"""
-        def _load() -> bool:
-            try:
-                return self.start(wait_ready=True, timeout=float(load_timeout))
-            except Exception as e:
-                logger.error("ModelScheduler 调用 llama.cpp load_fn 失败: %s", e)
-                return False
-
-        def _unload() -> bool:
-            try:
-                return self.stop()
-            except Exception as e:
-                logger.error("ModelScheduler 调用 llama.cpp unload_fn 失败: %s", e)
-                return False
-
-        return _load, _unload
+    # llama.cpp 的私有 .so 目录由 Launcher 基类自动注入 LD_LIBRARY_PATH；
+    # 这里保留一个别名，兼容旧调用方对 config.env 的直接读取。
+    def resolved_env(self) -> dict:
+        return dict(self.config.env or {})
 
 
-class LlamaCppChat(ChatClientAdapter):
+class LlamaCppChat(OpenAICompatChat):
     """本地自部署 llama.cpp 聊天客户端。
 
-    完全符合 IChatClient 契约，支持：
-      - OpenAI 兼容的 /v1/chat/completions 协议
-      - DeepSeek reasoning 思考链提取 (<think> 标签与 reasoning_content 字段)
-      - SSE 流式推送增量与 Tool Call 解析
-      - ModelScheduler 显存管理联动
-      - 可选关联 LlamaServerLauncher 自动拉起
+    完全符合 IChatClient 契约；协议交互（invoke / stream / SSE / 思考链 /
+    Tool Call / 上游错误体解析 / system 消息归一化）由 OpenAICompatChat 提供。
     """
 
-    def __init__(
-        self,
-        base_url: str = "http://127.0.0.1:8080",
-        model_name: Optional[str] = None,
-        timeout: float = 300.0,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        api_key: Optional[str] = None,
-        scheduler: Optional[Any] = None,
-        launcher: Optional[LlamaServerLauncher] = None,
-    ):
-        self.base_url = base_url.rstrip("/")
-        self.model_name = model_name or "llama-cpp"
-        self.model: str = self.model_name
-        self.timeout = timeout
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.api_key = api_key
-        self._scheduler = scheduler
-        self._launcher = launcher
-        self.last_usage = None
-        # 最近一次流式/非流式返回的 timings（llama-server 提供 prompt_n/predicted_n 等）
-        self.last_timings = None
-        self.last_model = self.model
-        self._http_session = requests.Session()
-
-    def _headers(self) -> dict[str, str]:
-        h = {
-            "Content-Type": "application/json; charset=utf-8",
-            "Accept": "text/event-stream, application/json",
-        }
-        if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
-        return h
-
-    @staticmethod
-    def _raise_for_status(resp) -> None:
-        """带响应体上下文的 raise_for_status。
-
-        llama-server 的失败原因（模型不兼容、显存不足、模板错误、参数非法等）
-        **只在响应体里**，而 requests 的默认 raise_for_status 会把它丢掉，
-        上层只剩下 "500 Server Error" 这种无信息量的报错。
-        这里把响应体解析出来拼进异常消息，让日志能直接看出根因。
-        """
-        if resp.status_code < 400:
-            return
-        detail = ""
-        try:
-            raw = resp.text or ""
-        except Exception:  # noqa: BLE001 - 读取 body 失败不应掩盖原始错误
-            raw = ""
-        if raw:
-            # 尝试解析为结构化错误（llama-server 返回 {"error":{"message":...}}）
-            try:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    err = data.get("error")
-                    if isinstance(err, dict):
-                        detail = str(err.get("message") or err)
-                    elif err:
-                        detail = str(err)
-                    else:
-                        detail = str(data.get("message") or raw)
-                else:
-                    detail = raw
-            except (TypeError, ValueError):
-                detail = raw
-        detail = (detail or "").strip()
-        if len(detail) > 2000:
-            detail = detail[:2000] + "…[已截断]"
-
-        msg = (
-            f"llama-server 返回 HTTP {resp.status_code}"
-            f" ({resp.request.url if resp.request is not None else ''})"
-        )
-        if detail:
-            msg += f"：{detail}"
-        logger.error("llama.cpp 上游错误: %s", msg)
-        raise RuntimeError(msg)
-
-    def _ensure_launcher_running(self) -> None:
-        """如果绑定了 launcher 且未就绪，自动拉起。"""
-        if self._launcher and not self._launcher.is_ready():
-            logger.info("检测到 llama.cpp 引擎未就绪，通过 launcher 启动...")
-            self._launcher.start(wait_ready=True, timeout=self.timeout)
-
-    @staticmethod
-    def _normalize_system_messages(msgs: list[Any]) -> list[Any]:
-        """把多条 system 消息合并为开头的一条。
-
-        严格的 Jinja chat template（Bonsai、部分 Qwen/Llama 官方模板）会
-        直接报错 "System message must be at the beginning."，导致上游 500。
-        而应用层出于模块化，可能按段追加多条 system（DSN 的记忆注入即如此）。
-
-        这里做最后一道归一化，语义等价（系统内容都是前缀上下文）：
-          * 开头的连续 system 合并为一条；
-          * 夹在中间的 system 并入开头那条（避免被模板拒绝或静默丢弃）。
-        """
-        if not isinstance(msgs, list) or not msgs:
-            return msgs
-
-        def _content_of(m: Any) -> str:
-            c = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
-            if isinstance(c, str):
-                return c
-            if isinstance(c, list):
-                return "\n".join(
-                    p.get("text", "") for p in c
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
-            return str(c or "")
-
-        system_texts: list[str] = []
-        rest: list[Any] = []
-        for m in msgs:
-            role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
-            if role == "system":
-                t = _content_of(m)
-                if t.strip():
-                    system_texts.append(t)
-            else:
-                rest.append(m)
-
-        if not system_texts:
-            # 没有非空 system 内容：若原本没有 system 消息则原样返回，
-            # 否则把空 system 全部剔除（严格模板同样不接受空 system）。
-            if len(rest) == len(msgs):
-                return msgs
-            logger.debug("已剔除 %d 条空白 system 消息", len(msgs) - len(rest))
-            return rest
-
-        # 只有一条且本来就在开头 → 无需改动
-        if len(system_texts) == 1 and len(rest) == len(msgs) - 1:
-            first = msgs[0]
-            role = first.get("role") if isinstance(first, dict) else getattr(first, "role", "")
-            if role == "system":
-                return msgs
-
-        merged = "\n\n".join(system_texts)
-        if isinstance(msgs[0], dict):
-            head: Any = {"role": "system", "content": merged}
-        else:
-            head = ChatMessage.system(merged)
-        logger.debug("已将 %d 条 system 消息合并为 1 条", len(system_texts))
-        return [head] + rest
-
-    def _do_http_request(self, payload: dict) -> dict:
-        url = f"{self.base_url}/v1/chat/completions"
-        self._ensure_launcher_running()
-        resp = self._http_session.post(
-            url,
-            headers=self._headers(),
-            json=payload,
-            timeout=self.timeout,
-        )
-        self._raise_for_status(resp)
-        data = resp.json()
-        self.last_usage = data.get("usage")
-        self.last_timings = data.get("timings") or self.last_timings
-        self.last_model = data.get("model", self.model_name)
-        return data
-
-    def invoke(
-        self,
-        messages: list[Any],
-        tools: Optional[list[dict]] = None,
-        *,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        timeout: Optional[float] = None,
-    ) -> ChatResponse:
-        msgs = self._normalize_system_messages(self._to_message_dicts(messages))
-        payload: dict[str, Any] = {
-            "messages": msgs,
-            "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
-            "stream": False,
-        }
-        if self.model_name:
-            payload["model"] = self.model_name
-        if tools:
-            payload["tools"] = [{"type": "function", "function": t} for t in tools]
-
-        if timeout is not None:
-            old_to = self.timeout
-            self.timeout = timeout
-
-        try:
-            if self._scheduler is not None and self.model_name:
-                with self._scheduler.use(self.model_name, timeout=self.timeout):
-                    result = self._do_http_request(payload)
-            else:
-                result = self._do_http_request(payload)
-        finally:
-            if timeout is not None:
-                self.timeout = old_to
-
-        choice = (result.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        content = message.get("content") or ""
-        reasoning_content = message.get("reasoning_content")
-
-        # 如果 content 中包含 <think>...</think> 且 reasoning_content 为空，自动提取
-        if not reasoning_content and "<think>" in content and "</think>" in content:
-            start = content.find("<think>") + len("<think>")
-            end = content.find("</think>")
-            if end > start:
-                reasoning_content = content[start:end].strip()
-                content = (content[:content.find("<think>")] + content[end + len("</think>"):].strip()).strip()
-
-        tool_calls: list[ToolCall] = []
-        for tc in message.get("tool_calls") or []:
-            fn = tc.get("function") or {}
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except (TypeError, ValueError):
-                args = {}
-            tool_calls.append(ToolCall(
-                id=tc.get("id", ""),
-                name=fn.get("name", ""),
-                arguments=args,
-            ))
-
-        return ChatResponse(
-            content=content,
-            tool_calls=tool_calls,
-            usage=self.last_usage or {},
-            model=self.last_model or self.model,
-            finish_reason=choice.get("finish_reason"),
-            reasoning_content=reasoning_content,
-        )
-
-    async def stream(
-        self,
-        messages: list[Any],
-        tools: Optional[list[dict]] = None,
-        **kwargs: Any,
-    ) -> AsyncGenerator[Any, None]:
-        """SSE 流式交互生成器。"""
-        msgs = self._normalize_system_messages(self._to_message_dicts(messages))
-        payload: dict[str, Any] = {
-            "messages": msgs,
-            "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "stream": True,
-        }
-        if self.model_name:
-            payload["model"] = self.model_name
-        if tools:
-            payload["tools"] = [{"type": "function", "function": t} for t in tools]
-
-        self._ensure_launcher_running()
-
-        def _request():
-            url = f"{self.base_url}/v1/chat/completions"
-            return self._http_session.post(
-                url,
-                headers=self._headers(),
-                json=payload,
-                timeout=self.timeout,
-                stream=True,
-            )
-
-        loop = asyncio.get_running_loop()
-        resp = await loop.run_in_executor(None, _request)
-        # 用带响应体上下文的版本替换 raise_for_status：
-        # 否则上游 500 的真实原因（显存不足/模板不兼容等）会被丢弃。
-        self._raise_for_status(resp)
-
-        q: asyncio.Queue = asyncio.Queue()
-        resp.encoding = "utf-8"
-
-        def _reader():
-            try:
-                for line in resp.iter_lines(decode_unicode=False):
-                    if line:
-                        text_line = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else line
-                        loop.call_soon_threadsafe(q.put_nowait, text_line)
-            except Exception as ex:
-                loop.call_soon_threadsafe(q.put_nowait, ex)
-            finally:
-                loop.call_soon_threadsafe(q.put_nowait, None)
-
-        threading.Thread(target=_reader, daemon=True).start()
-
-        try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-
-                raw = item
-                if not raw or not raw.startswith("data:"):
-                    continue
-                data = raw[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except (TypeError, ValueError):
-                    continue
-
-                # llama-server 的 timings/usage 可能出现在 choices 为空数组的收尾
-                # chunk 中（或末尾仅带 timings）。必须在过滤 choices 之前提取，
-                # 否则用量数据会被静默丢弃，前端上下文指示环永远拿不到 token 数。
-                timings = chunk.get("timings")
-                if timings:
-                    self.last_timings = timings
-                    yield {"timings": timings}
-                if chunk.get("usage"):
-                    self.last_usage = chunk["usage"]
-                    yield {"usage": chunk["usage"]}
-
-                if not chunk.get("choices"):
-                    continue
-
-                delta = chunk["choices"][0].get("delta") or {}
-
-                # 处理思维链增量输出
-                if delta.get("reasoning_content"):
-                    yield {"reasoning_content": delta["reasoning_content"]}
-
-                if delta.get("content"):
-                    yield delta["content"]
-
-                tc_delta = delta.get("tool_calls")
-                if tc_delta:
-                    emitted = []
-                    for tc in tc_delta:
-                        fn = tc.get("function") or {}
-                        emitted.append({
-                            "index": tc.get("index", 0) or 0,
-                            "id": tc.get("id", "") or "",
-                            "name": fn.get("name", "") or "",
-                            "arguments": fn.get("arguments", "") or "",
-                        })
-                    if emitted:
-                        yield {"tool_calls": emitted}
-        finally:
-            resp.close()
+    def __init__(self, *args: Any, **kwargs: Any):
+        kwargs.setdefault("label", "llama-server")
+        super().__init__(*args, **kwargs)
 
 
-class LlamaCppEmbeddingClient(IEmbeddingClient):
-    """llama.cpp 向量嵌入客户端。"""
+class LlamaCppEmbeddingClient(OpenAICompatEmbeddingClient):
+    """llama.cpp 向量嵌入客户端（llama-server --embeddings）。"""
 
-    def __init__(
-        self,
-        base_url: str = "http://127.0.0.1:8080",
-        model_name: Optional[str] = None,
-        timeout: float = 60.0,
-        api_key: Optional[str] = None,
-    ):
-        self.base_url = base_url.rstrip("/")
-        self.model_name = model_name or "llama-cpp-embedding"
-        self.timeout = timeout
-        self.api_key = api_key
-        self._session = requests.Session()
-
-    def _headers(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json"}
-        if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
-        return h
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        url = f"{self.base_url}/v1/embeddings"
-        payload = {"input": texts, "model": self.model_name}
-        resp = self._session.post(url, headers=self._headers(), json=payload, timeout=self.timeout)
-        resp.raise_for_status()
-        data = resp.json()
-        embeddings = [item["embedding"] for item in data.get("data", [])]
-        return embeddings
-
-    def embed_one(self, text: str) -> list[float]:
-        res = self.embed([text])
-        return res[0] if res else []
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)

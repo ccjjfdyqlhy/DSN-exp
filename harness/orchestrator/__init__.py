@@ -1,5 +1,5 @@
-# harness/models/__init__.py
-# 通用模型抽象层 — 与具体厂商/场景解耦。
+# harness/orchestrator/__init__.py
+# 模型抽象层 + 多引擎编排（llama.cpp / Strata / LMStudio / 外部 API）。
 
 from .base import (
     ChatMessage,
@@ -21,11 +21,25 @@ from .lmstudio import (
     load_lmstudio_model,
     unload_lmstudio_model,
 )
+# 本地引擎公共基类（子进程生命周期 / OpenAI 兼容协议）
+from .local_chat import OpenAICompatChat, OpenAICompatEmbeddingClient
+from .local_engine import LocalServerLauncher
 from .llamacpp import (
     LlamaServerConfig,
     LlamaServerLauncher,
     LlamaCppChat,
     LlamaCppEmbeddingClient,
+)
+from .strata import (
+    StrataEngineConfig,
+    StrataServerLauncher,
+    StrataChat,
+    StrataEmbeddingClient,
+    StrataRun,
+    build_engine_config,
+    default_python_for_script,
+    discover_runs,
+    find_strata_root,
 )
 from .openai import OpenAICompatClient
 from .anthropic import AnthropicCompatClient
@@ -43,19 +57,6 @@ from .dynamic_router import (
 from .stub import (
     StubChatClient,
     StubEmbeddingClient,
-)
-from . import (
-    base,
-    llamacpp,
-    lmstudio,
-    anthropic,
-    openai,
-    scheduler,
-    provider,
-    failover,
-    dynamic_router,
-    stub,
-    router,
 )
 
 __all__ = [
@@ -80,11 +81,25 @@ __all__ = [
     "LMStudioChat",
     "load_lmstudio_model",
     "unload_lmstudio_model",
+    # 本地引擎公共基类
+    "LocalServerLauncher",
+    "OpenAICompatChat",
+    "OpenAICompatEmbeddingClient",
     # 本地 llama.cpp 自部署推理引擎支持
     "LlamaServerConfig",
     "LlamaServerLauncher",
     "LlamaCppChat",
     "LlamaCppEmbeddingClient",
+    # 本地 Strata 推理引擎支持（run config JSON + serve/server.py）
+    "StrataEngineConfig",
+    "StrataServerLauncher",
+    "StrataChat",
+    "StrataEmbeddingClient",
+    "StrataRun",
+    "discover_runs",
+    "build_engine_config",
+    "find_strata_root",
+    "default_python_for_script",
     # 双轨制全局模型编排系统
     "ModelSourceType",
     "ModelSpec",

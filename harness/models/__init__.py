@@ -15,5 +15,8 @@ sys.modules["harness.models.provider"] = sys.modules.get("harness.orchestrator.p
 sys.modules["harness.models.failover"] = sys.modules.get("harness.orchestrator.failover", orchestrator.failover)
 sys.modules["harness.models.dynamic_router"] = sys.modules.get("harness.orchestrator.dynamic_router", orchestrator.dynamic_router)
 sys.modules["harness.models.stub"] = sys.modules.get("harness.orchestrator.stub", orchestrator.stub)
+sys.modules["harness.models.local_engine"] = sys.modules.get("harness.orchestrator.local_engine", orchestrator.local_engine)
+sys.modules["harness.models.local_chat"] = sys.modules.get("harness.orchestrator.local_chat", orchestrator.local_chat)
+sys.modules["harness.models.strata"] = sys.modules.get("harness.orchestrator.strata", orchestrator.strata)
 
 from harness.orchestrator import *

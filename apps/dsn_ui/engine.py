@@ -258,3 +258,14 @@ class DSNUIEngine:
                 logger.info("Bonsai-demo 集成就绪，已注册 %d 个模型: %s", len(names), names)
         except Exception as e:  # noqa: BLE001
             logger.warning("Bonsai-demo 集成失败（忽略，不影响启动）: %s", e)
+
+        # ── Strata 集成（可选）──
+        # 自动发现 ~/Strata 的 run config（strata-<model>.json）与 serve/server.py，
+        # 注册成与 llama.cpp 同构的本地引擎模型（子进程拉起 + 显存插槽调度）。
+        try:
+            from apps.dsn_ui.strata_integration import register_strata_models
+            names = register_strata_models(self.orchestrator)
+            if names:
+                logger.info("Strata 集成就绪，已注册 %d 个模型: %s", len(names), names)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Strata 集成失败（忽略，不影响启动）: %s", e)
