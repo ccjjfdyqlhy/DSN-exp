@@ -25,7 +25,7 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from .base import ChatClientAdapter, ChatMessage, ChatResponse, IChatClient, IEmbeddingClient, ToolCall
 from .anthropic import AnthropicCompatClient
 from .llamacpp import LlamaCppChat, LlamaCppEmbeddingClient, LlamaServerConfig, LlamaServerLauncher
-from .local_engine import LocalServerLauncher
+from .local_engine import LaunchCancelled, LocalServerLauncher
 from .strata import (
     StrataChat,
     StrataEngineConfig,
@@ -773,6 +773,16 @@ class ModelOrchestrator:
                 return ok
             self._notify_status(model_name, "loaded")
             return True
+        except LaunchCancelled:
+            # 用户在加载途中点了「终止」：这不是失败，模型并没有被加载。
+            # 必须以 unloaded 收尾，否则前端会一直停在 loading 转圈上。
+            logger.info("模型 %s 的加载已被取消，回退为未加载状态", model_name)
+            try:
+                self._scheduler.mark_unloaded(model_name)
+            except Exception:  # noqa: BLE001 - 调度器清理失败不应掩盖取消语义
+                logger.debug("取消加载后同步调度器状态失败: %s", model_name, exc_info=True)
+            self._notify_status(model_name, "unloaded")
+            return False
         except Exception as e:
             self._notify_status(model_name, "failed", error=str(e))
             raise

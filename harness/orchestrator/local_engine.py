@@ -28,13 +28,21 @@ import os
 import shlex
 import signal
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 import requests
 
+from .base import local_http_session
+
 logger = logging.getLogger("LocalEngine")
+
+
+class LaunchCancelled(RuntimeError):
+    """启动过程中被 stop()/unload 取消（不是失败）。"""
+
 
 # 全局活跃进程注册表，供 atexit 统一释放
 _ACTIVE_LAUNCHERS: set[LocalServerLauncher] = set()
@@ -124,6 +132,14 @@ class LocalServerLauncher:
         self.last_command: list[str] | None = None
         #: 子进程额外环境变量（子类在 child_env() 里补充）
         self.last_env: dict | None = None
+        #: 启动取消信号。stop() 会置位，正在等待就绪的 start() 据此**干净退出**。
+        #:
+        #: 修复的现场：用户在模型加载中途点「终止」，unload 线程调用 stop() 把
+        #: self._process 置为 None，而 start() 的就绪等待循环仍在下一次迭代里
+        #: 调用 self._process.poll() → AttributeError: 'NoneType' object has no
+        #: attribute 'poll'。该异常冒泡成 500，前端表现为「模型其实已经加载完，
+        #: 界面却一直卡在加载中」。
+        self._cancel_event = threading.Event()
 
     # ── 子类差异点 ──
 
@@ -162,6 +178,11 @@ class LocalServerLauncher:
             return False
         return self._process.poll() is None
 
+    @property
+    def cancel_requested(self) -> bool:
+        """最近一次启动是否被 stop() 取消（供上层区分「取消」与「失败」）。"""
+        return self._cancel_event.is_set()
+
     def is_ready(self, timeout: float = 2.0) -> bool:
         """通过 HTTP 端点探测服务是否已完全就绪提供推理服务。"""
         headers = {}
@@ -170,7 +191,11 @@ class LocalServerLauncher:
             headers["Authorization"] = f"Bearer {key}"
         for path in self.ready_paths:
             try:
-                resp = requests.get(f"{self.base_url}{path}", headers=headers, timeout=timeout)
+                # 必须走忽略代理的会话：ALL_PROXY 会把 localhost 请求也交给代理，
+                # 代理不可用时探针 100% 失败 → 模型已就绪却永远判不出来。
+                resp = local_http_session().get(
+                    f"{self.base_url}{path}", headers=headers, timeout=timeout
+                )
                 if resp.status_code == 200:
                     return True
             except requests.RequestException as e:
@@ -186,7 +211,15 @@ class LocalServerLauncher:
         timeout: float = 180.0,
         progress_callback: Callable[[float], None] | None = None,
     ) -> bool:
-        """启动引擎实例（可选等待就绪）。"""
+        """启动引擎实例（可选等待就绪）。
+
+        取消语义：等待就绪期间若另一线程调用 stop()（用户在 UI 上点「终止加载」，
+        或 /models/unload 抢先到达），本次启动会抛出 LaunchCancelled 干净退出，
+        而不是继续对已被置空的 _process 取属性。
+        """
+        # 每次启动都重置取消信号：stop() 会置位，本轮 start() 据此干净退出。
+        self._cancel_event.clear()
+
         if self.is_running() and self.is_ready():
             logger.info("%s 已在运行并就绪: %s", self.engine_label, self.base_url)
             return True
@@ -262,12 +295,24 @@ class LocalServerLauncher:
         if not wait_ready:
             return True
 
+        # 就地捕获进程句柄：等待期间别的线程可能调用 stop() 把 self._process
+        # 置空（用户点「终止加载」），此时不能再对 self._process 取属性。
+        proc = self._process
+
         start_time = time.time()
         logger.info("等待 %s 服务就绪 (%s, 超时 %ds)...", self.engine_label, self.base_url, timeout)
         while time.time() - start_time < timeout:
-            if self._process.poll() is not None:
-                ret = self._process.returncode
-                logger.error("%s 进程异常退出，退出码: %d", self.engine_label, ret)
+            # 1) 已被显式取消（stop()/unload 抢在前面）
+            if self._cancel_event.is_set() or self._process is not proc:
+                logger.info("%s 启动被取消（进程已停止）: %s", self.engine_label, self.base_url)
+                raise LaunchCancelled(
+                    f"{self.engine_label} 启动已取消：进程在就绪前被停止"
+                )
+
+            # 2) 子进程自己退出了（崩溃 / 参数错误 / 显存不足）
+            if proc.poll() is not None:
+                ret = proc.returncode
+                logger.error("%s 进程异常退出，退出码: %s", self.engine_label, ret)
                 self.stop()
                 raise RuntimeError(
                     f"{self.engine_label} 启动后立即退出，返回码: {ret}"
@@ -292,7 +337,8 @@ class LocalServerLauncher:
                 with contextlib.suppress(Exception):
                     progress_callback(calc_val)
 
-            time.sleep(0.5)
+            # 用 Event.wait 代替 sleep：被取消时立即醒来，而不是再等半个周期
+            self._cancel_event.wait(0.5)
 
         self.stop()
         raise TimeoutError(
@@ -300,7 +346,14 @@ class LocalServerLauncher:
         )
 
     def stop(self, timeout: float = 15.0) -> bool:
-        """优雅关闭引擎进程（整进程组）并释放显存。"""
+        """优雅关闭引擎进程（整进程组）并释放显存。
+
+        同时置位取消信号：若此刻有 start() 正在等待就绪（用户在加载途中点
+        「终止」），它会立刻醒来并以 LaunchCancelled 退出，而不是在下一轮循环里
+        对已被置空的 self._process 调用 poll() 而抛 AttributeError。
+        """
+        self._cancel_event.set()
+
         if self._process is None:
             return True
 

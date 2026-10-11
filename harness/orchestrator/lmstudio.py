@@ -18,7 +18,7 @@ from typing import Any, AsyncGenerator, Optional
 
 import requests
 
-from .base import ChatClientAdapter, ChatResponse, ToolCall
+from .base import ChatClientAdapter, ChatResponse, ToolCall, local_http_session
 
 logger = logging.getLogger("LMStudioChat")
 
@@ -50,7 +50,7 @@ def load_lmstudio_model(base_url: str, model_name: str, label: str,
         return False
     try:
         logger.info("正在加载 %s: %s", label, model_name)
-        load_resp = requests.post(
+        load_resp = local_http_session().post(
             f"{base_url}/api/v1/models/load",
             json={"model": model_name},
             timeout=timeout,
@@ -73,7 +73,7 @@ def unload_lmstudio_model(base_url: str, model_name: str) -> bool:
     if not model_name:
         return False
     try:
-        resp = requests.post(
+        resp = local_http_session().post(
             f"{base_url}/api/v1/models/unload",
             json={"instance_id": model_name, "model": model_name},
             timeout=30,
@@ -111,7 +111,8 @@ class LMStudioChat(ChatClientAdapter):
         self.last_usage = None
         self.last_model = self.model
         self._scheduler = scheduler
-        self._http_session = requests.Session()
+        # 忽略代理：LMStudio 在 127.0.0.1，不能被 ALL_PROXY 接管
+        self._http_session = local_http_session()
 
     # ── 底层调用 ──
 

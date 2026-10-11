@@ -22,12 +22,14 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -86,22 +88,23 @@ class SSEBroadcaster:
 sse_broadcaster = SSEBroadcaster()
 
 
-def get_system_resources() -> dict:
-    """获取 CPU、内存及 NVIDIA GPU 显存使用情况。"""
-    vm = psutil.virtual_memory()
-    ram_info = {
-        "total_gb": round(vm.total / (1024 ** 3), 2),
-        "used_gb": round(vm.used / (1024 ** 3), 2),
-        "free_gb": round(vm.available / (1024 ** 3), 2),
-        "percent": vm.percent,
-    }
+#: GPU 状态缓存 {monotonic 时间戳, [gpu, ...]}。
+#:
+#: nvidia-smi 每次都要 fork/exec 一个新进程（实测 50~200ms）。硬件页每 2s 轮询
+#: 一次 /api/system/resources，每次都起进程既慢又吵。这里按 TTL 复用结果。
+_GPU_CACHE_TTL_S = 1.0
+_gpu_cache: Optional[tuple] = None
 
-    cpu_info = {
-        "percent": psutil.cpu_percent(interval=0.1),
-        "cores": psutil.cpu_count(logical=True),
-    }
 
-    gpus = []
+def _query_gpus() -> list:
+    """读取 NVIDIA GPU 状态（带 1s 缓存）。失败返回上次结果或空列表。"""
+    global _gpu_cache
+
+    now = time.monotonic()
+    if _gpu_cache is not None and (now - _gpu_cache[0]) < _GPU_CACHE_TTL_S:
+        return _gpu_cache[1]
+
+    gpus: list = []
     if shutil.which("nvidia-smi"):
         try:
             cmd = [
@@ -132,10 +135,36 @@ def get_system_resources() -> dict:
         except Exception as e:
             logger.debug("Query nvidia-smi failed: %s", e)
 
+    _gpu_cache = (now, gpus)
+    return gpus
+
+
+def get_system_resources() -> dict:
+    """获取 CPU、内存及 NVIDIA GPU 显存使用情况。
+
+    **阻塞函数**：会调用 psutil 与 nvidia-smi。调用方必须放到线程里执行
+    （见 /api/system/resources 的 asyncio.to_thread），否则会卡住事件循环。
+    """
+    vm = psutil.virtual_memory()
+    ram_info = {
+        "total_gb": round(vm.total / (1024 ** 3), 2),
+        "used_gb": round(vm.used / (1024 ** 3), 2),
+        "free_gb": round(vm.available / (1024 ** 3), 2),
+        "percent": vm.percent,
+    }
+
+    # interval=None 表示「距上次调用以来的平均占用」，立即返回。
+    # 原先的 interval=0.1 会让每次轮询都**硬睡 100ms**，在事件循环上就是
+    # 每 2 秒把整个服务冻结 100ms（连带拖慢会话打开、模型列表、SSE 推送）。
+    cpu_info = {
+        "percent": psutil.cpu_percent(interval=None),
+        "cores": psutil.cpu_count(logical=True),
+    }
+
     return {
         "ram": ram_info,
         "cpu": cpu_info,
-        "gpus": gpus,
+        "gpus": _query_gpus(),
     }
 
 
@@ -144,30 +173,98 @@ def get_system_resources() -> dict:
 # 未加载时回退到配置推断（mmproj_path 表示支持图像）。
 # 历史实现用名字含 'v'/'ocr' 猜测，导致带视觉投影器的
 # bonsai:bonsai2:27B 被误判为纯文本，前端会在发送前丢弃图像。
-# 已探测到的模型模态缓存：{model_name: {"vision": bool, ...}}
-# 从 llama-server 的 /props 读取是最权威的来源；未加载时回退到配置推断。
-_modality_cache: Dict[str, dict] = {}
+# 模态探测结果缓存：{model_name: (monotonic 时间戳, {"vision": bool, ...})}
+#
+# 性能要点（重要）：探测是**阻塞 HTTP 请求**，而 /models、/v1/models、/props
+# 都会对每个模型调用本函数。此前缓存只在「探测成功」或「配置推断为 True」时写入，
+# 于是未加载模型每次请求都要重新发一次带 2s 超时的请求 —— 6 个本地模型就是
+# 最多 12s，前端表现为「打开会话 / 加载模型列表 / 同步调度状态」明显变慢。
+# 现在改为：只探测确实在运行的模型 + 正负结果一律带 TTL 缓存。
+_MODALITY_CACHE_TTL_S = 10.0
+#: 探测超时。本地 /props 正常在毫秒级返回，2s 只会在上游卡死时白白拖慢列表。
+_MODALITY_PROBE_TIMEOUT_S = 0.6
+
+#: 「某 base_url 上有没有服务在监听」的缓存 TTL。
+#:
+#: 实测：本机 4501（LMStudio 未启动）**不是拒绝连接而是直接挂住** ——
+#: localhost 先解析到 ::1，那条路径没有 RST，于是每次探测都要等满整个超时。
+#: 一个 base_url 上往往挂着多个模型（model_profiles 里有 5 个 lmstudio 模型
+#: 都指向 :4501），逐个探测就是 5 × 超时，实测首屏 /models 要 5s。
+#: 因此先做一次「端口是否可达」的判断并缓存，不可达时该 base_url 下的
+#: 所有模型直接走配置推断，只付一次超时代价、且在 TTL 内不再重复。
+_ENDPOINT_REACHABLE_TTL_S = 30.0
+#: 可达性探测（TCP connect）的超时，比 HTTP 探测更短。
+_ENDPOINT_PROBE_TIMEOUT_S = 0.4
+_endpoint_reachable_cache: Dict[str, tuple] = {}
+
+_modality_cache: Dict[str, tuple] = {}
+
+
+def _endpoint_reachable(base_url: str) -> bool:
+    """快速判断 base_url 上是否有服务在监听（结果按 TTL 缓存）。
+
+    用 TCP connect 而不是 HTTP 请求：只关心「端口通不通」，不需要等对方
+    走完整个 HTTP 事务，因此可以用更短的超时。
+    """
+    if not base_url:
+        return False
+    now = time.monotonic()
+    cached = _endpoint_reachable_cache.get(base_url)
+    if cached is not None and (now - cached[0]) < _ENDPOINT_REACHABLE_TTL_S:
+        return cached[1]
+
+    ok = False
+    try:
+        parsed = urlparse(base_url if "//" in base_url else f"//{base_url}")
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if host:
+            with socket.create_connection((host, port), timeout=_ENDPOINT_PROBE_TIMEOUT_S):
+                ok = True
+    except OSError:
+        ok = False
+    except Exception:  # noqa: BLE001 - 可达性判断失败一律按不可达处理
+        ok = False
+
+    _endpoint_reachable_cache[base_url] = (now, ok)
+    return ok
 
 def _probe_server_modalities(model_name: str, spec) -> Optional[dict]:
-    """向已运行的 llama-server 询问它真实支持的输入模态。
+    """向**正在运行**的本地引擎询问它真实支持的输入模态。
 
     llama.cpp 的 /props 在启用 mmproj 后返回:
         {"modalities": {"vision": true, "video": true, "audio": false}}
     这是最权威的信号 —— 比任何名字/配置推断都可靠。
-    未加载或探测失败时返回 None。
+
+    只有本模型自己的子进程存活时才探测：本地模型共用端口（如都指向 8080），
+    未加载时去探测会命中「恰好加载在同一个端口上的**别的**模型」，
+    既拿到错误的模态，又要为一个明知不存在的服务白等一个超时。
     """
-    if spec is None or getattr(spec, "launcher", None) is None:
+    if spec is None:
+        return None
+    launcher = getattr(spec, "launcher", None)
+    if launcher is None:
+        return None
+    try:
+        if not launcher.is_running():
+            return None
+    except Exception:  # noqa: BLE001 - 探测失败不是错误，回退到配置推断
         return None
     base_url = getattr(spec, "base_url", None)
     if not base_url:
         return None
     try:
-        import requests
+        from harness.orchestrator.base import local_http_session
         headers = {}
         api_key = getattr(spec, "api_key", None)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        resp = requests.get(f"{base_url.rstrip('/')}/props", headers=headers, timeout=2.0)
+        # 走忽略代理的会话：本地引擎在 127.0.0.1，被 ALL_PROXY 接管会直接失败
+        resp = local_http_session().get(
+            f"{base_url.rstrip('/')}/props",
+            headers=headers,
+            timeout=_MODALITY_PROBE_TIMEOUT_S,
+        )
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -193,12 +290,15 @@ def _lmstudio_vision(spec) -> Optional[bool]:
     target = getattr(spec, "remote_model_name", None) or getattr(spec, "name", None)
     if not base_url or not target:
         return None
+    # 该 base_url 上没有服务时直接跳过：否则同一端口下的每个模型都要各等一次超时
+    if not _endpoint_reachable(base_url):
+        return None
     try:
-        import requests
-        resp = requests.get(
+        from harness.orchestrator.base import local_http_session
+        resp = local_http_session().get(
             f"{base_url.rstrip('/')}/props",
             params={"model": target},
-            timeout=2.0,
+            timeout=_MODALITY_PROBE_TIMEOUT_S,
         )
         if resp.status_code != 200:
             return None
@@ -245,36 +345,45 @@ def _modalities_dict(model_name: Optional[str], orchestrator) -> dict:
     }
 
 
+def _modalities_from_flags(flags: dict) -> list[str]:
+    """{"vision":..,"audio":..,"video":..} → ["text", ...]（顺序稳定）。"""
+    out = ["text"]
+    if flags.get("vision"):
+        out.append("vision")
+    if flags.get("audio"):
+        out.append("audio")
+    if flags.get("video"):
+        out.append("video")
+    return out
+
+
 def _input_modalities(model_name: str, orchestrator) -> list[str]:
-    """返回模型的输入模态列表（供前端判断能否发送图片）。"""
+    """返回模型的输入模态列表（供前端判断能否发送图片）。
+
+    **热路径**：/models、/v1/models、/props 都会逐模型调用它，因此这里必须
+    避免每次都发阻塞 HTTP 探测。策略：
+      1. 命中 TTL 缓存直接返回（正负结果都缓存，未加载模型不再反复探测）；
+      2. 只对**确实在运行**的本地引擎探测其 /props（最权威）；
+      3. 其余情况用配置推断（mmproj_path / x-dsn-vision / LMStudio 上报）。
+    """
+    now = time.monotonic()
+    cached = _modality_cache.get(model_name)
+    if cached is not None and (now - cached[0]) < _MODALITY_CACHE_TTL_S:
+        return _modalities_from_flags(cached[1])
+
     spec = orchestrator.get_model_spec(model_name)
 
     # 1) 优先用运行中服务的真实上报（最可靠）
     probed = _probe_server_modalities(model_name, spec)
     if probed is not None:
-        _modality_cache[model_name] = probed
-        out = ["text"]
-        if probed.get("vision"):
-            out.append("vision")
-        if probed.get("audio"):
-            out.append("audio")
-        if probed.get("video"):
-            out.append("video")
-        return out
+        _modality_cache[model_name] = (now, probed)
+        return _modalities_from_flags(probed)
 
-    # 2) 回退到配置推断；已缓存过就沿用（避免未加载时能力闪烁）
-    cached = _modality_cache.get(model_name)
-    if cached is not None:
-        out = ["text"]
-        if cached.get("vision"):
-            out.append("vision")
-        return out
-
-    out = ["text"]
-    if _configured_vision(spec):
-        out.append("vision")
-        _modality_cache[model_name] = {"vision": True, "audio": False, "video": False}
-    return out
+    # 2) 回退到配置推断。无论结果如何都写入缓存 —— 负结果同样要缓存，
+    #    否则「探测失败 → 不缓存 → 下次再探测」会让列表接口每次都变慢。
+    flags = {"vision": bool(_configured_vision(spec)), "audio": False, "video": False}
+    _modality_cache[model_name] = (now, flags)
+    return _modalities_from_flags(flags)
 
 
 def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
@@ -462,6 +571,30 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 await sse_broadcaster.broadcast("status_change", model_id, {"status": "loaded"})
                 return {"success": True, "model": model_id, "status": "loaded"}
             else:
+                # 区分「用户主动终止」与「真的启动失败」：前者不是错误，必须以
+                # unloaded 收尾，否则前端会一直停在 loading 转圈上。
+                cancelled = False
+                try:
+                    _spec = engine.orchestrator.get_model_spec(model_id)
+                    _launcher = getattr(_spec, "launcher", None)
+                    cancelled = bool(_launcher is not None and _launcher.cancel_requested)
+                except Exception:  # noqa: BLE001 - 判定失败按普通失败处理
+                    cancelled = False
+
+                if cancelled:
+                    logger.info("模型 %s 的加载已被用户终止", model_id)
+                    await sse_broadcaster.broadcast("status_unloaded", model_id, {"status": "unloaded"})
+                    await sse_broadcaster.broadcast("status_change", model_id, {"status": "unloaded"})
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "error": "加载已取消",
+                            "model": model_id,
+                            "status": "unloaded",
+                            "cancelled": True,
+                        },
+                    )
+
                 await sse_broadcaster.broadcast("status_failed", model_id, {"status": "failed", "exit_code": 1})
                 return JSONResponse(status_code=500, content={"error": "Launch failed", "model": model_id})
         except Exception as e:
@@ -1245,13 +1378,22 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
     @app.get("/api/system/resources")
     async def get_system_resources_api():
-        """返回 CPU、系统内存及所有显卡的显存监控数据。"""
-        res = get_system_resources()
-        status = engine.orchestrator.status()
-        res["orchestrator"] = status
-        # 显存管理开关状态，供硬件页渲染
-        res["kv_offload_disabled"] = engine.orchestrator.get_kv_offload_disabled()
-        return res
+        """返回 CPU、系统内存及所有显卡的显存监控数据。
+
+        硬件页每 2s 轮询一次（SSE 状态变更时还会额外触发）。采集过程包含
+        psutil 采样与 nvidia-smi 子进程，都是阻塞调用；如果直接写在 async
+        处理函数里，就会把整个事件循环冻结 —— 同一时刻的 /v1/streams/lookup
+        （打开会话）、/models（模型列表）与正在进行的 SSE 推理推送全部被拖住。
+        因此这里统一丢到线程池执行。
+        """
+        def _collect() -> dict:
+            data = get_system_resources()
+            data["orchestrator"] = engine.orchestrator.status()
+            # 显存管理开关状态，供硬件页渲染
+            data["kv_offload_disabled"] = engine.orchestrator.get_kv_offload_disabled()
+            return data
+
+        return await asyncio.to_thread(_collect)
 
     @app.get("/api/system/kv-offload")
     async def get_kv_offload():

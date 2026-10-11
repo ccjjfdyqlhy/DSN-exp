@@ -6,6 +6,37 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Optional, Protocol, runtime_checkable
 
+import requests
+
+#: 面向本地引擎（127.0.0.1）复用的 HTTP 会话，见 local_http_session()。
+_LOCAL_HTTP_SESSION: requests.Session | None = None
+
+
+def local_http_session() -> requests.Session:
+    """返回一个**忽略代理环境变量**的 requests.Session（进程内复用）。
+
+    本地推理引擎（llama-server / Strata / LMStudio）只监听 127.0.0.1，但
+    requests 默认 trust_env=True 会读取 ALL_PROXY / HTTP_PROXY，把发往
+    localhost 的请求也交给代理。实测在 ALL_PROXY=socks5h://127.0.0.1:10808
+    且该代理未运行时，**所有**本地请求直接 ConnectionError：
+
+        requests.get("http://127.0.0.1:8080/health")
+        -> ConnectionError: SOCKSHTTPConnectionPool ... Connection refused
+
+    后果是就绪探针永远失败 —— 模型其实已经加载完成，界面却一直卡在加载中，
+    直到 180s 超时。注意 proxies={"http": None} **不足以**覆盖环境变量，
+    必须显式关掉 trust_env。
+
+    会话可跨线程复用：底层 urllib3 连接池是线程安全的，这里也只用它发
+    不带 cookie/状态的本地请求。
+    """
+    global _LOCAL_HTTP_SESSION
+    if _LOCAL_HTTP_SESSION is None:
+        session = requests.Session()
+        session.trust_env = False
+        _LOCAL_HTTP_SESSION = session
+    return _LOCAL_HTTP_SESSION
+
 
 @dataclass
 class ChatMessage:

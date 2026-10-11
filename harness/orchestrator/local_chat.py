@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -33,9 +34,57 @@ from .base import (
     ChatResponse,
     IEmbeddingClient,
     ToolCall,
+    local_http_session,
 )
 
 logger = logging.getLogger("LocalOpenAIChat")
+
+#: 连接级瞬时故障的重试次数（仅用于「尚未产出任何字节」的请求）。
+#:
+#: 背景：llama-server / Strata 在空闲或长请求之间会主动关闭 keep-alive 连接，
+#: 而 requests 的默认连接池会继续复用那条已被对端关闭的 socket，于是下一次
+#: POST 在 conn.getresponse() 处直接抛 RemoteDisconnected，被包成
+#: requests.ConnectionError: "Connection aborted / Remote end closed
+#: connection without response"。它既不是模型错误也不是参数错误，重发即可。
+#:
+#: 之所以必须限制在「尚未产出任何字节」，是因为 chat/completions 不幂等：
+#: 一旦已经收到并转发了部分 SSE 增量，重发会让前端看到重复内容。而连接在
+#: 握手阶段就被拒绝时，上游不可能已经开始生成，重发是安全的。
+DEFAULT_STREAM_RETRIES = 2
+
+#: 重试前的退避基数（秒），按尝试次数线性放大。
+_RETRY_BACKOFF_BASE = 0.25
+
+#: 判定为「可安全重发」的异常类型。
+_RETRYABLE_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ContentDecodingError,
+)
+
+#: 连接级错误的文案特征（urllib3 的 ProtocolError 会被包进 ConnectionError）。
+_RETRYABLE_HINTS = (
+    "remote end closed connection",
+    "connection aborted",
+    "connection reset",
+    "connection refused",
+    "remotedisconnected",
+    "protocolerror",
+    "broken pipe",
+)
+
+
+def _is_retryable_connection_error(exc: BaseException) -> bool:
+    """判断异常是否为「连接级瞬时故障」，可以安全重发。
+
+    只认连接/传输层异常，且必须命中已知的断开特征 —— 刻意不把
+    requests.Timeout 算进来：本地推理超时通常意味着模型真的在长时间生成，
+    重发只会更慢，而且可能叠加成两次生成。
+    """
+    if isinstance(exc, _RETRYABLE_EXCEPTIONS):
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(hint in text for hint in _RETRYABLE_HINTS)
 
 
 class OpenAICompatChat(ChatClientAdapter):
@@ -75,7 +124,8 @@ class OpenAICompatChat(ChatClientAdapter):
         # 最近一次流式/非流式返回的 timings（llama-server / Strata 都提供 timings）
         self.last_timings = None
         self.last_model = self.model
-        self._http_session = requests.Session()
+        # 走忽略代理的会话：本地引擎在 127.0.0.1，绝不能被 ALL_PROXY 接管
+        self._http_session = local_http_session()
 
     # ── HTTP 基础 ──
 
@@ -137,6 +187,20 @@ class OpenAICompatChat(ChatClientAdapter):
         if self._launcher is not None and not self._launcher.is_ready():
             logger.info("检测到 %s 引擎未就绪，通过 launcher 启动...", self.label)
             self._launcher.start(wait_ready=True, timeout=self.timeout)
+
+    def _discard_pooled_connections(self) -> None:
+        """丢弃连接池里的空闲连接，强制下一次请求重建 TCP 连接。
+
+        用于连接级故障后的重试：出问题的那条 socket 已经被对端关闭，
+        如果不清掉，重试会从池里捞出同一条死连接，再失败一次。
+
+        只影响**空闲**连接：正在被其它请求持有的连接已从池中取出，
+        clear() 不会碰到它们，因此并发中的流不会被这个操作打断。
+        """
+        try:
+            self._http_session.close()
+        except Exception:  # noqa: BLE001 - 清理失败不应掩盖原始错误
+            logger.debug("清理 %s 连接池失败（忽略）", self.label, exc_info=True)
 
     # ── 消息归一化 ──
 
@@ -225,14 +289,43 @@ class OpenAICompatChat(ChatClientAdapter):
         return payload
 
     def _do_http_request(self, payload: dict) -> dict:
+        """单次非流式请求，带连接级故障重发。
+
+        非流式请求只有在完整拿到响应体后才算成功，因此连接阶段失败时
+        重发不会产生重复结果（没有半个响应可言）。
+        """
         url = f"{self.base_url}/v1/chat/completions"
-        self._ensure_launcher_running()
-        resp = self._http_session.post(
-            url,
-            headers=self._headers(),
-            json=payload,
-            timeout=self.timeout,
-        )
+        attempts = max(1, DEFAULT_STREAM_RETRIES + 1)
+        last_exc: BaseException | None = None
+
+        for attempt in range(attempts):
+            self._ensure_launcher_running()
+            try:
+                resp = self._http_session.post(
+                    url,
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - 判定后决定是否重发
+                if attempt + 1 >= attempts or not _is_retryable_connection_error(exc):
+                    raise
+                last_exc = exc
+                self._discard_pooled_connections()
+                backoff = _RETRY_BACKOFF_BASE * (attempt + 1)
+                logger.warning(
+                    "%s 非流式请求连接中断（%s: %s），%.2fs 后重发 %d/%d",
+                    self.label, type(exc).__name__, exc, backoff,
+                    attempt + 1, DEFAULT_STREAM_RETRIES,
+                )
+                time.sleep(backoff)
+                continue
+            break
+        else:  # pragma: no cover - 循环内必然 break 或 raise
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError(f"{self.label} 请求失败")
+
         self._raise_for_status(resp)
         data = resp.json()
         self.last_usage = data.get("usage")
@@ -312,7 +405,12 @@ class OpenAICompatChat(ChatClientAdapter):
         tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
-        """SSE 流式交互生成器。"""
+        """SSE 流式交互生成器。
+
+        在「本次请求尚未产出任何增量」的前提下，对连接级瞬时故障自动重发
+        （见 DEFAULT_STREAM_RETRIES 的说明）。一旦已经 yield 过内容就不再
+        重试 —— 重发会让前端看到重复的思考/回答。
+        """
         payload = self._build_payload(
             messages, tools,
             temperature=kwargs.get("temperature"),
@@ -320,6 +418,41 @@ class OpenAICompatChat(ChatClientAdapter):
             stream=True,
         )
 
+        retries = int(kwargs.get("retries", DEFAULT_STREAM_RETRIES) or 0)
+        attempts = max(1, retries + 1)
+        last_exc: BaseException | None = None
+
+        for attempt in range(attempts):
+            produced = False
+            try:
+                async for item in self._stream_once(payload):
+                    produced = True
+                    yield item
+                return
+            except Exception as exc:  # noqa: BLE001 - 判定后决定是否重发
+                if (
+                    produced
+                    or attempt + 1 >= attempts
+                    or not _is_retryable_connection_error(exc)
+                ):
+                    raise
+                last_exc = exc
+                self._discard_pooled_connections()
+                backoff = _RETRY_BACKOFF_BASE * (attempt + 1)
+                logger.warning(
+                    "%s 连接在握手阶段中断（%s: %s），%.2fs 后重发 %d/%d",
+                    self.label, type(exc).__name__, exc, backoff,
+                    attempt + 1, retries,
+                )
+                await asyncio.sleep(backoff)
+                # 上游可能刚好在这段时间里退出，重发前再确认一次引擎在线
+                self._ensure_launcher_running()
+
+        if last_exc is not None:  # pragma: no cover - 循环内必然 return 或 raise
+            raise last_exc
+
+    async def _stream_once(self, payload: dict) -> AsyncGenerator[Any, None]:
+        """单次 SSE 请求：建连、读流、解析增量。不做重试。"""
         self._ensure_launcher_running()
 
         def _request():
@@ -428,7 +561,7 @@ class OpenAICompatEmbeddingClient(IEmbeddingClient):
         self.model_name = model_name or "local-embedding"
         self.timeout = timeout
         self.api_key = api_key
-        self._session = requests.Session()
+        self._session = local_http_session()
 
     def _headers(self) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
