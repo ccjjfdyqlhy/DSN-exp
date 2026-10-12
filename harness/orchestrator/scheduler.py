@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 import yaml
 
-from .base import local_http_session
+from .base import local_probe_session
 
 logger = logging.getLogger("ModelScheduler")
 
@@ -34,7 +34,7 @@ def list_loaded_models(base_url: str) -> list[str]:
     """查询远端当前已加载模型（LMStudio OpenAI 兼容 /v1/models）。"""
     try:
         # 忽略代理：LMStudio 在 127.0.0.1，被 ALL_PROXY 接管会查不到已加载模型
-        resp = local_http_session().get(f"{base_url}/v1/models", timeout=10)
+        resp = local_probe_session().get(f"{base_url}/v1/models", timeout=10)
         resp.raise_for_status()
         data = resp.json()
         return [m.get("id", "") for m in data.get("data", []) if m.get("id")]

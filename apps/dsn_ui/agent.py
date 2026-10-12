@@ -12,11 +12,13 @@ import logging
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
+from apps.dsn_ui.config import API_MODE_PASSTHROUGH
 from apps.dsn_ui.emotion import DSNUIEmotionEngine, EmotionalState
 from apps.dsn_ui.tools import DSNUIToolCoordinator
 from apps.dsn_ui.topic_manager import DSNUITopicContextManager, DSNUITopicStore
 from harness.agent.loop import AgentLoop, StreamEvent
 from harness.agent.adapters import NativeToolCallAdapter
+from harness.orchestrator.base import content_shape, count_image_parts
 from harness.orchestrator import (
     ChatMessage,
     ChatResponse,
@@ -30,6 +32,36 @@ from harness.store.sqlite import SqliteStore
 from apps.dsn_ui.logging_setup import log_exception
 
 logger = logging.getLogger("DSNUIAgent")
+
+
+def extract_last_user_turn(
+    messages_raw: List[Dict[str, Any]],
+) -> tuple[str, Optional[List[Dict[str, Any]]]]:
+    """从客户端消息里取出「本轮用户输入」。
+
+    返回 (纯文本, 原始 content parts)。
+
+    parts 只有在 content 本来就是数组（多模态）时才非 None —— 调用方据此
+    决定最终那条 user 消息用结构化 parts 还是纯文本。**不能只取 text 字段**：
+    那样 image_url 会在进入上下文装配前就被丢掉，表现为"上传了图片但模型
+    说没有图片"。
+    """
+    for m in reversed(messages_raw or []):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content", "")
+        if isinstance(c, list):
+            from apps.dsn_ui.integration_api import openai_content_to_parts
+            normalized = openai_content_to_parts(c)
+            if isinstance(normalized, list) and normalized:
+                text = " ".join(
+                    str(part.get("text", "")) for part in normalized
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+                return text, normalized
+            return str(normalized), None
+        return str(c), None
+    return "", None
 
 
 class OrchestratorChatClientWrapper(IChatClient):
@@ -406,6 +438,41 @@ class DSNUIAgentCoordinator:
         return self.topic_mgr.get_assembly_stats()
 
     @staticmethod
+    @staticmethod
+    def _build_passthrough_messages(
+        messages_raw: List[Dict[str, Any]],
+    ) -> List[ChatMessage]:
+        """passthrough 模式：请求方的 messages **原样**变成上下文。
+
+        不追加任何 system 提示词、不注入记忆/情绪/人格、不做任何改写。
+        多模态 content parts 保留结构（见 _build_override_messages 的同类处理）。
+        调用方给什么就是什么 —— 这是"完全交给请求方"的字面含义。
+        """
+        out: List[ChatMessage] = []
+        for m in messages_raw or []:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if isinstance(content, list):
+                from apps.dsn_ui.integration_api import openai_content_to_parts
+                content = openai_content_to_parts(content)
+
+            if role == "system":
+                out.append(ChatMessage.system(
+                    content if isinstance(content, str) else str(content)))
+            elif role == "assistant":
+                out.append(ChatMessage.assistant(
+                    content if isinstance(content, str) else str(content)))
+            elif role == "tool":
+                out.append(ChatMessage(
+                    role="tool",
+                    content=content if isinstance(content, str) else str(content),
+                    tool_call_id=m.get("tool_call_id"),
+                ))
+            else:
+                # 多模态直接构造以保留 parts
+                out.append(ChatMessage(role="user", content=content))
+        return out
+
     def _build_override_messages(messages_raw: List[Dict[str, Any]], system_prompt: str) -> List[ChatMessage]:
         """自定义系统提示词模式：直接使用客户端消息，替换其 system 段。"""
         out: List[ChatMessage] = [ChatMessage.system(system_prompt)]
@@ -582,36 +649,56 @@ class DSNUIAgentCoordinator:
         system_prompt_override: Optional[str] = None,
         max_tokens: Optional[int] = None,
         max_steps: Optional[int] = None,
+        api_mode: str = "dsn",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """通过 Agent 循环流式生成回复，支持记忆组装、情绪演化与工具调用。
 
         system_prompt_override 非 None 时，用该文本替代 harness 动态组装的
         提示词生态（话题记忆/情绪/工具箱指令不再注入），即用户自定义超驰。
-        """
-        # 提取用户最新输入（streaming 入口）
-        user_msg = ""
-        for m in reversed(messages_raw):
-            if m.get("role") == "user":
-                c = m.get("content", "")
-                if isinstance(c, list):
-                    user_msg = " ".join(part.get("text", "") for part in c if isinstance(part, dict))
-                else:
-                    user_msg = str(c)
-                break
 
-        # 1. 情绪启发式刺激
-        if user_msg:
+        api_mode:
+          * "dsn"（默认）—— 完整 DSN-exp 能力；
+          * "passthrough" —— 完全交给请求方：不注入任何提示词，不跑情绪
+            系统，不读写记忆与人格。请求里的 messages 原样送进模型。
+        """
+        passthrough = api_mode == API_MODE_PASSTHROUGH
+        # 提取用户最新输入（streaming 入口）
+        #
+        # 同时保留原始 content parts：多模态（image_url 等）必须原样传给
+        # 最终那条 user 消息。此前只取 text 字段，图像在进入上下文装配前
+        # 就被丢掉，表现为"上传了图片但模型说没有图片"。
+        user_msg, user_parts = extract_last_user_turn(messages_raw)
+
+        if user_parts is not None or count_image_parts(messages_raw):
+            logger.info(
+                "多模态入口: 入站消息=%d 入站图片=%d 提取到parts=%s 提取到图片=%d text_chars=%d",
+                len(messages_raw),
+                count_image_parts(messages_raw),
+                "有" if user_parts else "无",
+                count_image_parts([{"content": user_parts}]) if user_parts else 0,
+                len(user_msg),
+            )
+
+        # 1. 情绪启发式刺激（passthrough 模式下完全不跑情绪系统）
+        if user_msg and not passthrough:
             self.emotion_engine.evaluate_text_stimulus(user_msg)
 
-        # 2. 系统提示词合成：自定义超驰优先，否则由 harness 动态组装
-        if system_prompt_override is not None:
+        # 2. 系统提示词合成：passthrough 不注入；超驰用请求方文本；否则动态组装
+        if passthrough:
+            system_prompt = ""
+            context_msgs = self._build_passthrough_messages(messages_raw)
+            logger.info(
+                "passthrough 模式: 不注入提示词/不跑情绪与记忆，messages=%d",
+                len(context_msgs),
+            )
+        elif system_prompt_override is not None:
             system_prompt = system_prompt_override
             # 超驰模式下不走话题记忆装配，客户端消息即完整上下文
             context_msgs = self._build_override_messages(messages_raw, system_prompt)
         else:
             system_prompt = self.assemble_system_prompt(execution_mode=execution_mode)
 
-        if system_prompt_override is None:
+        if system_prompt_override is None and not passthrough:
             # 3. 话题记忆弹性剪裁组装
             # 这一段会遍历 topic_mgr.topics（dict）。若其它协程在遍历过程中
             # 增删话题，就会抛 "dictionary changed size during iteration"。
@@ -625,6 +712,7 @@ class DSNUIAgentCoordinator:
                 context_msgs = self.topic_mgr.assemble_context_messages(
                     new_user_message=user_msg or "你好",
                     system_prefix=system_prompt,
+                    new_user_parts=user_parts,
                 )
             except Exception as e:  # noqa: BLE001
                 log_exception(
@@ -634,21 +722,30 @@ class DSNUIAgentCoordinator:
                 )
                 raise
             logger.debug("上下文装配完成: messages=%d", len(context_msgs))
+            if user_parts is not None or count_image_parts(context_msgs):
+                logger.info(
+                    "多模态上下文: 消息=%d 图片=%d 形状=%s",
+                    len(context_msgs),
+                    count_image_parts(context_msgs),
+                    [f"{m.role}:{content_shape(m.content)}" for m in context_msgs],
+                )
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
         eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
 
         # 上下文溢出智能自愈：按用户选择的策略处理（见 _apply_context_strategy）
-        if system_prompt_override is None:
+        # passthrough 下上下文由请求方负责，dsn_ui 不做任何改写。
+        if system_prompt_override is None and not passthrough:
             if self._apply_context_strategy(
                 model_name=model_name,
                 model_ctx=model_ctx,
                 user_msg=user_msg,
             ):
-                # 策略生效后重新组装上下文，释放空间
+                # 策略生效后重新组装上下文，释放空间（同样保留多模态 parts）
                 context_msgs = self.topic_mgr.assemble_context_messages(
                     new_user_message=user_msg or "你好",
                     system_prefix=system_prompt,
+                    new_user_parts=user_parts,
                 )
 
         client = OrchestratorChatClientWrapper(
@@ -658,8 +755,10 @@ class DSNUIAgentCoordinator:
             max_tokens=eff_max_tokens,
         )
 
-        # 弹性上下文统计先于首轮推理产出，供前端用量环立即展示预算结构
-        yield {"type": "context_stats", "stats": self.topic_mgr.get_assembly_stats()}
+        # 弹性上下文统计先于首轮推理产出，供前端用量环立即展示预算结构。
+        # passthrough 模式没有 DSN 上下文预算，不发这个事件。
+        if not passthrough:
+            yield {"type": "context_stats", "stats": self.topic_mgr.get_assembly_stats()}
 
         full_reply_parts = []
         turn_posted = False
@@ -705,7 +804,8 @@ class DSNUIAgentCoordinator:
                         }
 
                 full_reply = "".join(full_reply_parts)
-                self._post_turn(user_msg, full_reply)
+                if not passthrough:
+                    self._post_turn(user_msg, full_reply)
                 turn_posted = True
             else:
                 # 纯对话模式（由话题记忆装配上下文后流式推理）
@@ -739,12 +839,13 @@ class DSNUIAgentCoordinator:
                 yield {"type": "done", "hit_max": False, "round": 1}
 
                 full_reply = "".join(full_reply_parts)
-                self._post_turn(user_msg, full_reply)
+                if not passthrough:
+                    self._post_turn(user_msg, full_reply)
                 turn_posted = True
         finally:
             # 关键保障：即使中途报错（如 Response ended prematurely）或用户手动终止，
             # 只要产生了部分回复或执行进展，立即记入话题记忆，确保用户发送「继续」时具有连续上下文！
-            if not turn_posted and (full_reply_parts or user_msg):
+            if not passthrough and not turn_posted and (full_reply_parts or user_msg):
                 partial_reply = "".join(full_reply_parts) or "…[生成中断]"
                 try:
                     self._post_turn(user_msg, partial_reply)
@@ -764,28 +865,29 @@ class DSNUIAgentCoordinator:
         system_prompt_override: Optional[str] = None,
         max_tokens: Optional[int] = None,
         max_steps: Optional[int] = None,
+        api_mode: str = "dsn",
     ) -> ChatResponse:
-        """非流式调用入口。"""
-        user_msg = ""
-        for m in reversed(messages_raw):
-            if m.get("role") == "user":
-                c = m.get("content", "")
-                if isinstance(c, list):
-                    user_msg = " ".join(part.get("text", "") for part in c if isinstance(part, dict))
-                else:
-                    user_msg = str(c)
-                break
+        """非流式调用入口。
 
-        if user_msg:
+        api_mode 语义与 chat_stream 一致：passthrough 时不注入提示词、
+        不跑情绪与记忆，请求方的 messages 原样送进模型。
+        """
+        passthrough = api_mode == API_MODE_PASSTHROUGH
+        user_msg, _user_parts = extract_last_user_turn(messages_raw)
+
+        if user_msg and not passthrough:
             self.emotion_engine.evaluate_text_stimulus(user_msg)
 
-        if system_prompt_override is not None:
+        if passthrough:
+            context_msgs = self._build_passthrough_messages(messages_raw)
+        elif system_prompt_override is not None:
             context_msgs = self._build_override_messages(messages_raw, system_prompt_override)
         else:
             system_prompt = self.assemble_system_prompt(execution_mode=execution_mode)
             context_msgs = self.topic_mgr.assemble_context_messages(
                 new_user_message=user_msg or "你好",
                 system_prefix=system_prompt,
+                new_user_parts=_user_parts,
             )
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
@@ -806,7 +908,8 @@ class DSNUIAgentCoordinator:
                 max_steps=effective_steps,
             )
             res = loop.run(context_msgs)
-            self._post_turn(user_msg, res.reply)
+            if not passthrough:
+                self._post_turn(user_msg, res.reply)
             return ChatResponse(content=res.reply)
         else:
             resp = self.orchestrator.invoke(
@@ -815,5 +918,6 @@ class DSNUIAgentCoordinator:
                 temperature=temperature,
                 max_tokens=eff_max_tokens,
             )
-            self._post_turn(user_msg, resp.content)
+            if not passthrough:
+                self._post_turn(user_msg, resp.content)
             return resp

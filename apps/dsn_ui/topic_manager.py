@@ -24,6 +24,7 @@ from harness.context_assembly import (
 )
 from apps.dsn_ui.logging_setup import log_exception
 from harness.orchestrator import ChatMessage
+from harness.orchestrator.base import content_shape, count_image_parts
 from harness.store.sqlite import SqliteStore
 
 logger = logging.getLogger("DSNUITopicManager")
@@ -529,7 +530,17 @@ class DSNUITopicContextManager:
         self,
         new_user_message: str,
         system_prefix: str = "",
+        new_user_parts: Optional[List[Dict[str, Any]]] = None,
     ) -> List[ChatMessage]:
+        """组装本轮上下文。
+
+        new_user_parts: 本轮用户消息的 OpenAI 风格 content parts（含 image_url）。
+        传入时最后一条 user 消息直接用它构造，**保留多模态结构**；否则退回
+        纯文本 new_user_message。
+
+        历史/记忆段始终是文本（话题摘要与原文本来就是文本投影），
+        只有「本轮输入」需要保留原始 parts —— 图像属于本轮，不属于历史。
+        """
         segments: List[ContextSegment] = []
 
         # 1. 常驻备忘段
@@ -621,7 +632,25 @@ class DSNUITopicContextManager:
         if merged_system:
             assembled.append(ChatMessage.system(merged_system))
 
-        assembled.append(ChatMessage.user(new_user_message))
+        # 本轮用户消息：有原始 parts（多模态）就保留结构，否则用纯文本。
+        if new_user_parts:
+            assembled.append(ChatMessage(role="user", content=list(new_user_parts)))
+        else:
+            assembled.append(ChatMessage.user(new_user_message))
+
+        # 多模态链路追踪：确认图像内容块在「上下文装配」这一层没有掉。
+        if new_user_parts is not None or count_image_parts(assembled):
+            logger.info(
+                "上下文装配(多模态): 传入parts=%s 传入图片=%d 输出消息=%d 输出图片=%d",
+                "有" if new_user_parts else "无",
+                count_image_parts([{"content": new_user_parts}]) if new_user_parts else 0,
+                len(assembled),
+                count_image_parts(assembled),
+            )
+            logger.debug(
+                "上下文装配输出形状: %s",
+                [f"{m.role}:{content_shape(m.content)}" for m in assembled],
+            )
 
         self.last_assembly_stats = self._build_assembly_stats(
             plan, raw_segments, system_prefix=system_prefix, assembled=assembled,

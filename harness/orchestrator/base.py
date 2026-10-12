@@ -38,11 +38,78 @@ def local_http_session() -> requests.Session:
     return _LOCAL_HTTP_SESSION
 
 
+#: 面向本地引擎的「探测」专用会话，见 local_probe_session()。
+_PROBE_HTTP_SESSION: requests.Session | None = None
+
+
+def local_probe_session() -> requests.Session:
+    """专用于健康检查/属性探测的本地会话（与 local_http_session 分开）。
+
+    为什么要分开：流式响应（SSE）通常在读到 [DONE] 就提前 close()，
+    底层连接还剩一点字节没读完。urllib3 仍可能把这条连接放回连接池，
+    于是**下一个复用到它的请求会失败**。
+
+    实测后果：一次流式对话之后，同一会话上的 /health 探测返回失败 →
+    is_ready() 判为未就绪 → 触发一次毫无必要的重新拉起，并广播一次
+    假的 loading/loaded 状态。
+
+    探测都是完整读取的简单 GET，单独一条会话即可保证连接始终干净。
+    """
+    global _PROBE_HTTP_SESSION
+    if _PROBE_HTTP_SESSION is None:
+        session = requests.Session()
+        session.trust_env = False
+        _PROBE_HTTP_SESSION = session
+    return _PROBE_HTTP_SESSION
+
+
+def content_shape(content: Any) -> str:
+    """把一条消息的 content 概括成可读形状，用于多模态链路排查。
+
+    形如 text(12c) / parts[image_url=1,text=1](9400000c) —— 一眼看出
+    图像内容块在哪一层掉了。
+    """
+    if isinstance(content, str):
+        return f"text({len(content)}c)"
+    if isinstance(content, (list, tuple)):
+        counts: dict[str, int] = {}
+        total = 0
+        for part in content:
+            if isinstance(part, dict):
+                ptype = str(part.get("type") or ("text" if "text" in part else "?"))
+                counts[ptype] = counts.get(ptype, 0) + 1
+                url = part.get("image_url")
+                if isinstance(url, dict):
+                    total += len(str(url.get("url") or ""))
+                else:
+                    total += len(str(part.get("text") or ""))
+            else:
+                counts["?"] = counts.get("?", 0) + 1
+        detail = ",".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        return f"parts[{detail}]({total}c)"
+    return f"{type(content).__name__}"
+
+
+def count_image_parts(messages: Any) -> int:
+    """统计消息列表里 image_url 内容块的数量（多模态链路的关键指标）。"""
+    total = 0
+    for m in messages or []:
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+        if isinstance(content, (list, tuple)):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    total += 1
+    return total
+
+
 @dataclass
 class ChatMessage:
     """统一的对话消息表示，与厂商无关。"""
     role: str                       # system | user | assistant | tool
-    content: str
+    #: 纯文本时为 str；多模态时是 OpenAI 风格的 content parts 列表
+    #: （[{"type":"text",...}, {"type":"image_url",...}]）。刻意不强制转成
+    #: 字符串 —— 拍平会把图像内容块丢掉。
+    content: Any = ""
     name: Optional[str] = None
     tool_calls: list[dict] = field(default_factory=list)
     tool_call_id: Optional[str] = None

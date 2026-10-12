@@ -31,11 +31,12 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
 
-from .base import local_http_session
+from .base import local_probe_session
 
 logger = logging.getLogger("LocalEngine")
 
@@ -46,6 +47,20 @@ class LaunchCancelled(RuntimeError):
 
 # 全局活跃进程注册表，供 atexit 统一释放
 _ACTIVE_LAUNCHERS: set[LocalServerLauncher] = set()
+
+#: 拉起子进程专用的常驻线程（单线程池，与进程同生命周期，不主动关闭）。
+#:
+#: 子进程通过 PR_SET_PDEATHSIG 绑定到 fork 它的**父线程**：那条线程一退出，
+#: 内核立刻给子进程发 SIGTERM。若直接用 asyncio.to_thread（事件循环的默认
+#: 线程池），一旦事件循环关闭、线程池被回收，已经跑起来的模型就会莫名其妙
+#: 被杀掉（表现为"刚加载好就变成未加载"）。
+#: 因此所有 Popen 都交给这条专用线程执行，它的生命周期 = 进程生命周期。
+_LAUNCH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="engine-launch")
+
+
+def _popen_on_launch_thread(*args, **kwargs) -> subprocess.Popen:
+    """在专用常驻线程里执行 Popen（见 _LAUNCH_EXECUTOR 的说明）。"""
+    return _LAUNCH_EXECUTOR.submit(subprocess.Popen, *args, **kwargs).result()
 
 
 def _cleanup_active_launchers() -> None:
@@ -191,9 +206,12 @@ class LocalServerLauncher:
             headers["Authorization"] = f"Bearer {key}"
         for path in self.ready_paths:
             try:
-                # 必须走忽略代理的会话：ALL_PROXY 会把 localhost 请求也交给代理，
-                # 代理不可用时探针 100% 失败 → 模型已就绪却永远判不出来。
-                resp = local_http_session().get(
+                # 必须走忽略代理的**探测专用**会话：
+                #   * 忽略代理 —— ALL_PROXY 会把 localhost 请求也交给代理，
+                #     代理不可用时探针 100% 失败，模型已就绪却永远判不出来；
+                #   * 专用会话 —— 流式响应提前 close 会弄脏共享连接池，
+                #     复用脏连接的探测会误判为"未就绪"，引发无谓的重新拉起。
+                resp = local_probe_session().get(
                     f"{self.base_url}{path}", headers=headers, timeout=timeout
                 )
                 if resp.status_code == 200:
@@ -277,7 +295,9 @@ class LocalServerLauncher:
                 logger.info("%s 额外环境变量: %s", self.engine_label, sorted(extra))
             self.last_env = dict(extra)
 
-            self._process = subprocess.Popen(
+            # 走专用常驻线程：PDEATHSIG 绑定的是 fork 线程，
+            # 用事件循环的默认线程池会在 loop 关闭时把模型一起带走。
+            self._process = _popen_on_launch_thread(
                 cmd,
                 stdout=stdout_dest,
                 stderr=stderr_dest,

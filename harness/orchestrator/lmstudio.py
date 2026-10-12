@@ -18,7 +18,15 @@ from typing import Any, AsyncGenerator, Optional
 
 import requests
 
-from .base import ChatClientAdapter, ChatResponse, ToolCall, local_http_session
+from .base import (
+    ChatClientAdapter,
+    ChatResponse,
+    ToolCall,
+    content_shape,
+    count_image_parts,
+    local_http_session,
+    local_probe_session,
+)
 
 logger = logging.getLogger("LMStudioChat")
 
@@ -50,7 +58,7 @@ def load_lmstudio_model(base_url: str, model_name: str, label: str,
         return False
     try:
         logger.info("正在加载 %s: %s", label, model_name)
-        load_resp = local_http_session().post(
+        load_resp = local_probe_session().post(
             f"{base_url}/api/v1/models/load",
             json={"model": model_name},
             timeout=timeout,
@@ -73,7 +81,7 @@ def unload_lmstudio_model(base_url: str, model_name: str) -> bool:
     if not model_name:
         return False
     try:
-        resp = local_http_session().post(
+        resp = local_probe_session().post(
             f"{base_url}/api/v1/models/unload",
             json={"instance_id": model_name, "model": model_name},
             timeout=30,
@@ -209,6 +217,15 @@ class LMStudioChat(ChatClientAdapter):
             payload["model"] = self.model_name
         if tools:
             payload["tools"] = [{"type": "function", "function": t} for t in tools]
+
+        # 多模态终检：确认图片到达了发往 LMStudio 的 payload
+        _imgs = count_image_parts(msgs)
+        if _imgs or any(not isinstance(m.get("content"), str) for m in msgs):
+            logger.info(
+                "LMStudio 上行 payload: messages=%d images=%d 形状=%s",
+                len(msgs), _imgs,
+                [f"{m.get('role')}:{content_shape(m.get('content'))}" for m in msgs],
+            )
 
         def _request():
             url = f"{self.base_url}/v1/chat/completions"

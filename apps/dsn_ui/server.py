@@ -38,8 +38,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from apps.dsn_ui.config import UIConfig
+from apps.dsn_ui.config import API_MODES, UIConfig
 from apps.dsn_ui.engine import DSNUIEngine
+from harness.orchestrator.base import content_shape, count_image_parts
 from apps.dsn_ui.stream_sessions import registry as stream_registry
 from apps.dsn_ui.logging_setup import (
     get_request_id,
@@ -86,6 +87,9 @@ class SSEBroadcaster:
 
 
 sse_broadcaster = SSEBroadcaster()
+
+#: 保存运行中的事件循环，供工作线程投递 SSE（见 _schedule_broadcast）
+_event_loop_holder: Dict[str, Any] = {"loop": None}
 
 
 #: GPU 状态缓存 {monotonic 时间戳, [gpu, ...]}。
@@ -254,13 +258,13 @@ def _probe_server_modalities(model_name: str, spec) -> Optional[dict]:
     if not base_url:
         return None
     try:
-        from harness.orchestrator.base import local_http_session
+        from harness.orchestrator.base import local_probe_session
         headers = {}
         api_key = getattr(spec, "api_key", None)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         # 走忽略代理的会话：本地引擎在 127.0.0.1，被 ALL_PROXY 接管会直接失败
-        resp = local_http_session().get(
+        resp = local_probe_session().get(
             f"{base_url.rstrip('/')}/props",
             headers=headers,
             timeout=_MODALITY_PROBE_TIMEOUT_S,
@@ -294,8 +298,8 @@ def _lmstudio_vision(spec) -> Optional[bool]:
     if not _endpoint_reachable(base_url):
         return None
     try:
-        from harness.orchestrator.base import local_http_session
-        resp = local_http_session().get(
+        from harness.orchestrator.base import local_probe_session
+        resp = local_probe_session().get(
             f"{base_url.rstrip('/')}/props",
             params={"model": target},
             timeout=_MODALITY_PROBE_TIMEOUT_S,
@@ -402,13 +406,31 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         engine.agent.topic_mgr.on_topic_converged = _on_topic_converged
 
     # 注册 Orchestrator 状态变化回调，打通 SSE 广播
-    def _on_orchestrator_status_change(model_name: str, status: str, extra: dict):
-        loop = None
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
+    def _schedule_broadcast(event: str, model: str, payload: dict) -> None:
+        """把一次 SSE 广播投递到事件循环（可在任意线程调用）。
 
+        模型加载有两条路：
+          * UI 点「加载」→ 走 asyncio.to_thread；
+          * 请求时自动拉起（重试历史消息等）→ 也在工作线程里。
+        两者都不在事件循环线程上，直接 asyncio.create_task 会失败，
+        状态事件就会静默丢失，前端永远等不到 loading/loaded。
+        """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running is not None:
+            asyncio.create_task(sse_broadcaster.broadcast(event, model, payload))
+            return
+
+        target = _event_loop_holder.get("loop")
+        if target is not None and target.is_running():
+            asyncio.run_coroutine_threadsafe(
+                sse_broadcaster.broadcast(event, model, payload), target
+            )
+
+    def _on_orchestrator_status_change(model_name: str, status: str, extra: dict):
         data_payload = {"status": status}
         if "error" in extra:
             data_payload["exit_code"] = 1
@@ -416,9 +438,13 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         if "progress" in extra:
             data_payload["progress"] = extra["progress"]
 
-        if loop and loop.is_running():
-            asyncio.create_task(sse_broadcaster.broadcast(f"status_{status}", model_name, data_payload))
-            asyncio.create_task(sse_broadcaster.broadcast("status_change", model_name, data_payload))
+        logger.info(
+            "模型状态变更: %s → %s%s",
+            model_name, status,
+            f" ({extra['error']})" if extra.get("error") else "",
+        )
+        _schedule_broadcast(f"status_{status}", model_name, data_payload)
+        _schedule_broadcast("status_change", model_name, data_payload)
 
     engine.orchestrator.add_status_listener(_on_orchestrator_status_change)
 
@@ -434,6 +460,10 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     raise
                 except Exception as e:  # noqa: BLE001 - 清理失败不应拖垮服务
                     log_exception(logger, "流会话清理任务异常", e)
+
+        # 记录事件循环：状态回调可能来自工作线程（自动拉起模型），
+        # 需要用 run_coroutine_threadsafe 才能把 SSE 投递回来。
+        _event_loop_holder["loop"] = asyncio.get_running_loop()
 
         prune_task = asyncio.create_task(_prune_loop())
         logger.info("流会话清理任务已启动")
@@ -724,6 +754,34 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 chat_messages.append(ChatMessage.assistant(
                     content if isinstance(content, str) else str(content)))
 
+        # ── 多模态入口追踪 ──
+        # 这里是浏览器 → 后端的第一个落点。若这里就看不到 image_url，
+        # 说明问题在前端（附件没被序列化进 content parts）；
+        # 若这里看得到、下游某层变成 0，问题就在那一层。
+        _inbound_images = count_image_parts(messages_raw)
+        if _inbound_images or any(
+            isinstance(m.get("content"), (list, tuple)) for m in messages_raw
+        ):
+            logger.info(
+                "多模态入站: model=%s messages=%d images=%d 形状=%s",
+                model_name,
+                len(messages_raw),
+                _inbound_images,
+                [f"{m.get('role')}:{content_shape(m.get('content'))}" for m in messages_raw],
+            )
+            logger.debug(
+                "多模态入站原始 content 类型: %s",
+                [type(m.get("content")).__name__ for m in messages_raw],
+            )
+
+        # ── API 模式：dsn（完整 DSN-exp）| passthrough（完全交给请求方）──
+        # 由应用配置决定；配置里锁定时忽略请求方覆盖。
+        api_mode = UIConfig.resolve_api_mode(
+            body.get("api_mode")
+            or req.query_params.get("api_mode")
+            or req.headers.get("X-DSN-Api-Mode")
+        )
+
         execution_mode = bool(
             body.get("execution_mode", False) or
             req.query_params.get("execution_mode") in ("true", "1") or
@@ -790,6 +848,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 system_prompt_override=custom_system_prompt if system_prompt_override else None,
                 max_tokens=effective_max_tokens,
                 max_steps=effective_max_steps,
+                api_mode=api_mode,
             )
             emo_payload = {
                 "state": engine.agent.get_emotion_state(),
@@ -851,6 +910,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     system_prompt_override=custom_system_prompt if system_prompt_override else None,
                     max_tokens=effective_max_tokens,
                     max_steps=effective_max_steps,
+                    api_mode=api_mode,
                 )
                 # 标准 OpenAI chunk 信封。所有 delta 都必须包在
                 # {"choices":[{"index":0,"delta":{...}}]} 里，且带 object/created/model，
@@ -1436,6 +1496,17 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         """读取 DSN 全局设置命名空间。"""
         from apps.dsn.config import Config
         return {
+            # 对外 API 模式：dsn（完整 DSN-exp）| passthrough（完全交给请求方）。
+            # 供 UI / 集成方确认当前实例是否注入提示词、是否启用情绪与记忆。
+            "api": {
+                "mode": UIConfig.resolve_api_mode(),
+                "locked": UIConfig.API_MODE_LOCKED,
+                "available_modes": list(API_MODES),
+                "note": (
+                    "passthrough 不注入任何提示词、不跑情绪与记忆系统，"
+                    "请求方 messages 原样送进模型"
+                ),
+            },
             "orchestrator": {
                 "max_concurrent_slots": engine.orchestrator.max_concurrent_slots,
                 "llamacpp_bin": Config.LLAMACPP_BIN,

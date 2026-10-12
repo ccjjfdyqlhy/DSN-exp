@@ -24,7 +24,7 @@ import logging
 import threading
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -34,6 +34,8 @@ from .base import (
     ChatResponse,
     IEmbeddingClient,
     ToolCall,
+    content_shape,
+    count_image_parts,
     local_http_session,
 )
 
@@ -109,6 +111,7 @@ class OpenAICompatChat(ChatClientAdapter):
         scheduler: Any | None = None,
         launcher: Any | None = None,
         label: str = "本地推理服务",
+        on_status: "Callable[[str, dict], None] | None" = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name or "local-model"
@@ -120,6 +123,14 @@ class OpenAICompatChat(ChatClientAdapter):
         self.label = label
         self._scheduler = scheduler
         self._launcher = launcher
+        #: 引擎状态回调（loading/loaded/failed/unloaded）。
+        #:
+        #: 请求时发现引擎未就绪会**自行拉起**，这条路不经过
+        #: ModelOrchestrator.load_model()，因此必须靠这个回调把状态同步给
+        #: 调度器与 SSE 订阅者 —— 否则模型列表/显存页会一直显示"未加载"。
+        self._on_status = on_status
+        #: 保证并发请求只拉起一次引擎
+        self._launch_lock = threading.Lock()
         self.last_usage = None
         # 最近一次流式/非流式返回的 timings（llama-server / Strata 都提供 timings）
         self.last_timings = None
@@ -182,11 +193,44 @@ class OpenAICompatChat(ChatClientAdapter):
         logger.error("%s 上游错误: %s", self.label, msg)
         raise RuntimeError(msg)
 
+    def _notify_engine_status(self, status: str, **extra: Any) -> None:
+        """向编排器上报引擎状态（无回调时静默）。"""
+        if self._on_status is None:
+            return
+        try:
+            self._on_status(status, **extra)
+        except Exception:  # noqa: BLE001 - 状态上报失败不能影响推理
+            logger.debug("引擎状态回调失败: %s %s", self.label, status, exc_info=True)
+
     def _ensure_launcher_running(self) -> None:
-        """如果绑定了 launcher 且未就绪，自动拉起。"""
-        if self._launcher is not None and not self._launcher.is_ready():
+        """如果绑定了 launcher 且未就绪，自动拉起。
+
+        **阻塞函数**：模型加载可能耗时数十秒到数分钟。异步调用方必须用
+        asyncio.to_thread 包起来，否则会把整个事件循环冻住
+        （连带所有 SSE 推送与其它请求一起卡死）。
+
+        拉起过程中会上报 loading → loaded/failed，让模型列表与显存调度页
+        同步反映真实状态 —— 这是"重试历史消息时后端自动加载了模型，前端
+        却仍显示没有可用模型"的根因。
+        """
+        if self._launcher is None or self._launcher.is_ready():
+            return
+
+        # 并发请求可能同时发现引擎未就绪：加锁 + 二次确认，保证只拉起一次
+        with self._launch_lock:
+            if self._launcher.is_ready():
+                return
+
             logger.info("检测到 %s 引擎未就绪，通过 launcher 启动...", self.label)
-            self._launcher.start(wait_ready=True, timeout=self.timeout)
+            self._notify_engine_status("loading")
+            try:
+                self._launcher.start(wait_ready=True, timeout=self.timeout)
+            except Exception as e:
+                logger.error("%s 自动拉起失败: %s", self.label, e)
+                self._notify_engine_status("failed", error=str(e))
+                raise
+            logger.info("%s 已就绪（请求时自动拉起）", self.label)
+            self._notify_engine_status("loaded")
 
     def _discard_pooled_connections(self) -> None:
         """丢弃连接池里的空闲连接，强制下一次请求重建 TCP 连接。
@@ -286,6 +330,20 @@ class OpenAICompatChat(ChatClientAdapter):
             payload["model"] = self.model_name
         if tools:
             payload["tools"] = [{"type": "function", "function": t} for t in tools]
+
+        # ── 多模态终检：这是发往引擎的最后一站 ──
+        # 在这里打日志可以直接回答「图片到底有没有上线」。
+        # 只有确实涉及多模态（有 image_url 或存在非文本 content）时才记录，
+        # 避免给纯文本请求刷屏。
+        _imgs = count_image_parts(msgs)
+        if _imgs or any(not isinstance(m.get("content"), str) for m in msgs):
+            logger.info(
+                "%s 上行 payload: messages=%d images=%d 形状=%s",
+                self.label, len(msgs), _imgs,
+                [f"{m.get('role')}:{content_shape(m.get('content'))}" for m in msgs],
+            )
+        else:
+            logger.debug("%s 上行 payload(纯文本): messages=%d", self.label, len(msgs))
         return payload
 
     def _do_http_request(self, payload: dict) -> dict:
@@ -445,15 +503,18 @@ class OpenAICompatChat(ChatClientAdapter):
                     attempt + 1, retries,
                 )
                 await asyncio.sleep(backoff)
-                # 上游可能刚好在这段时间里退出，重发前再确认一次引擎在线
-                self._ensure_launcher_running()
+                # 上游可能刚好在这段时间里退出，重发前再确认一次引擎在线。
+                # 放线程里：拉起模型是阻塞操作，不能冻住事件循环。
+                await asyncio.to_thread(self._ensure_launcher_running)
 
         if last_exc is not None:  # pragma: no cover - 循环内必然 return 或 raise
             raise last_exc
 
     async def _stream_once(self, payload: dict) -> AsyncGenerator[Any, None]:
         """单次 SSE 请求：建连、读流、解析增量。不做重试。"""
-        self._ensure_launcher_running()
+        # 自动拉起引擎是阻塞操作（可能数十秒），必须离开事件循环，
+        # 否则整台服务器（含所有 SSE 推送）都会被冻住。
+        await asyncio.to_thread(self._ensure_launcher_running)
 
         def _request():
             url = f"{self.base_url}/v1/chat/completions"

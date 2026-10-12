@@ -3,6 +3,40 @@
 dsn_ui 启动后对外暴露三类 API，可被 Open WebUI、Continue、Cline、LangChain、
 Anthropic SDK 等标准客户端直接使用。
 
+## 0. 运行模式：DSN-exp 能力 vs 完全透传
+
+同一个实例有两种对外行为，**由应用配置决定**：
+
+| 模式 | 行为 |
+|------|------|
+| `dsn`（默认） | 完整 DSN-exp：动态组装系统提示词、话题记忆、情绪动力学、人格系统、工具箱 |
+| `passthrough` | **完全交给请求方**：不注入任何提示词，不跑情绪系统，不读写记忆与人格；请求里的 `messages` 原样送进模型 |
+
+配置：
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `DSN_UI_API_MODE` | `dsn` | `dsn` 或 `passthrough` |
+| `DSN_UI_API_MODE_LOCKED` | `false` | `true` 时忽略请求方的单次覆盖，强制使用上面的模式 |
+
+单次请求覆盖（未锁定时可用）：请求体 `"api_mode"` 字段、查询串 `?api_mode=`、
+或请求头 `X-DSN-Api-Mode`。
+
+当前模式可查询：`GET /api/settings` 的 `api` 段。
+
+```bash
+# 把 dsn_ui 当纯 OpenAI 兼容后端用（不注入提示词、不碰记忆/情绪）
+curl http://127.0.0.1:8888/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'X-DSN-Api-Mode: passthrough' \
+  -d '{"model":"bonsai:bonsai2:27B","stream":false,
+       "messages":[{"role":"system","content":"你是一个翻译引擎"},
+                   {"role":"user","content":"hello"}]}'
+```
+
+> `passthrough` 下 system 消息完全由调用方提供；若一条都没给，模型就收不到
+> 任何系统提示词。多模态 content parts 仍然原样保留。
+
 ## 1. OpenAI Chat Completions 兼容
 
 | 方法 | 路径 | 说明 |

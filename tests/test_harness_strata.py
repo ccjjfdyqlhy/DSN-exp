@@ -262,8 +262,8 @@ def test_strata_launcher_start_and_stop(mock_popen, strata_tree: Path):
     cfg.server_script = str(strata_tree / "serve" / "server.py")
     launcher = StrataServerLauncher(cfg)
 
-    # 就绪探针走 local_http_session().get(...)（绕开 ALL_PROXY），不是 requests.get
-    with patch("harness.orchestrator.local_engine.local_http_session") as mock_session:
+    # 就绪探针走 local_probe_session().get(...)（绕开 ALL_PROXY），不是 requests.get
+    with patch("harness.orchestrator.local_engine.local_probe_session") as mock_session:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_session.return_value.get.return_value = mock_resp
@@ -291,7 +291,7 @@ def test_llama_launcher_still_works(mock_popen, mock_exists, mock_access, mock_i
 
     cfg = LlamaServerConfig(binary_path="/mock/llama-server", model_path="/mock/m.gguf", port=8090)
     launcher = LlamaServerLauncher(cfg)
-    with patch("harness.orchestrator.local_engine.local_http_session") as mock_session:
+    with patch("harness.orchestrator.local_engine.local_probe_session") as mock_session:
         mock_session.return_value.get.return_value = MagicMock(status_code=200)
         assert launcher.start(wait_ready=True, timeout=5.0) is True
     assert launcher.base_url == "http://127.0.0.1:8090"

@@ -287,6 +287,41 @@ class ModelOrchestrator:
             if listener in self._listeners:
                 self._listeners.remove(listener)
 
+    def _make_engine_status_cb(self, model_name: str) -> "Callable[..., None]":
+        """构造本地引擎「请求时自拉起」的状态回调。
+
+        OpenAICompatChat 发现引擎未就绪会自行拉起（重试历史消息、外部客户端
+        直接调 API 都会触发）。这条路不经过 load_model()，因此必须由回调把
+        状态同步给调度器与 SSE 订阅者 —— 否则模型列表与显存调度页会一直显示
+        "没有可用模型"，即便模型实际上已经被拉起来了。
+        """
+
+        def _cb(status: str, **extra) -> None:
+            try:
+                if status == "loading":
+                    with self._registry_lock:
+                        self._loading_models.add(model_name)
+                elif status == "loaded":
+                    with self._registry_lock:
+                        self._loading_models.discard(model_name)
+                    try:
+                        self._scheduler.mark_preloaded(model_name)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("自动加载后同步调度器失败: %s", model_name, exc_info=True)
+                elif status in ("failed", "unloaded"):
+                    with self._registry_lock:
+                        self._loading_models.discard(model_name)
+                    try:
+                        self._scheduler.mark_unloaded(model_name)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("同步调度器为未加载失败: %s", model_name, exc_info=True)
+            except Exception:  # noqa: BLE001 - 状态同步失败不应影响推理
+                logger.debug("同步引擎状态失败: %s %s", model_name, status, exc_info=True)
+
+            self._notify_status(model_name, status, **extra)
+
+        return _cb
+
     def _notify_status(self, model_name: str, status: str, **kwargs) -> None:
         for fn in list(self._listeners):
             try:
@@ -373,6 +408,7 @@ class ModelOrchestrator:
             api_key=config.api_key,
             scheduler=self._scheduler if orchestrated else None,
             launcher=launcher,
+            on_status=self._make_engine_status_cb(name),
         )
 
         spec = ModelSpec(
@@ -449,6 +485,7 @@ class ModelOrchestrator:
             api_key=config.api_key,
             scheduler=self._scheduler if orchestrated else None,
             launcher=launcher,
+            on_status=self._make_engine_status_cb(name),
         )
 
         spec = ModelSpec(
