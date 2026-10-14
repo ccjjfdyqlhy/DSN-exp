@@ -349,6 +349,127 @@ def _modalities_dict(model_name: Optional[str], orchestrator) -> dict:
     }
 
 
+def _normalize_request_tools(raw: Any) -> Optional[list]:
+    """把请求里的 OpenAI tools 归一化成 harness 需要的 function 结构。
+
+    接受两种写法：
+      [{"type": "function", "function": {...}}]   ← OpenAI 标准
+      [{"name": ..., "description": ..., "parameters": ...}]  ← 裸 function
+
+    返回 None 表示没有可用工具（保持"未传 tools"的语义，避免空列表
+    把调用方误判成"声明了 0 个工具"）。
+    """
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+
+    out: list = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") if item.get("type") == "function" else item
+        if isinstance(fn, dict) and fn.get("name"):
+            out.append(fn)
+    return out or None
+
+
+def _normalize_tool_call_deltas(raw: Any) -> list:
+    """把上游的扁平工具调用增量转成标准 OpenAI 形状。
+
+    上游（llama-server / Strata）流式给出的是：
+        {"index": 0, "id": "...", "name": "get_weather", "arguments": "{\"city\":"}
+    而标准 OpenAI 增量要求：
+        {"index": 0, "id": "...", "type": "function",
+         "function": {"name": "get_weather", "arguments": "{\"city\":"}}
+
+    按协议解析的消费方（OpenAI SDK / LangChain / Cline / Continue，以及本仓库
+    自己的前端 mergeToolCallDeltas）只读 delta.function.name / .arguments，
+    扁平结构会被静默忽略 —— 这正是"模型调不了工具"的直接原因。
+    """
+    out: list = []
+    for tc in raw or []:
+        if not isinstance(tc, dict):
+            continue
+        item: dict = {"index": tc.get("index", 0) or 0}
+        if tc.get("id"):
+            item["id"] = tc["id"]
+            item["type"] = "function"
+        fn: dict = {}
+        if tc.get("name"):
+            fn["name"] = tc["name"]
+        fn["arguments"] = tc.get("arguments", "") or ""
+        item["function"] = fn
+        out.append(item)
+    return out
+
+
+def _timing_totals(t: dict) -> tuple[int, int, int, int, float, float]:
+    """拆解 llama-server 的 timings，返回 (prompt_n, cache_n, total, predicted_n, prompt_ms, predicted_ms)。
+
+    **关键语义**（容易搞错）：llama.cpp 的 timings 里
+        prompt_n  是本轮**实际评估**的 token 数（缓存未命中的部分）
+        cache_n   是**复用前缀缓存**的 token 数
+    因此完整 prompt 长度 = prompt_n + cache_n。
+    直接拿 cache_n / prompt_n 当命中率会得到 >100% 的荒谬值
+    （实测 cache_n=79、prompt_n=4 → 1975%）。
+    """
+    t = t or {}
+    prompt_n = int(t.get("prompt_n") or 0)
+    cache_n = int(t.get("cache_n") or 0)
+    predicted_n = int(t.get("predicted_n") or 0)
+    prompt_ms = float(t.get("prompt_ms") or 0)
+    predicted_ms = float(t.get("predicted_ms") or 0)
+    return prompt_n, cache_n, prompt_n + cache_n, predicted_n, prompt_ms, predicted_ms
+
+
+def _openai_usage_from_timings(t: dict) -> dict:
+    """llama-server 的 timings → 标准 OpenAI usage（含缓存命中）。
+
+    字段对应关系：
+        完整 prompt = prompt_n + cache_n  → prompt_tokens
+        predicted_n                       → completion_tokens
+        cache_n                           → prompt_tokens_details.cached_tokens
+
+    另外附 cache_hit_rate —— 标准字段里没有"命中百分比"，客户端想显示就得自己算。
+    """
+    prompt_n, cache_n, total_prompt, predicted_n, _, _ = _timing_totals(t)
+
+    usage: dict = {
+        "prompt_tokens": total_prompt,
+        "completion_tokens": predicted_n,
+        "total_tokens": total_prompt + predicted_n,
+    }
+    if total_prompt > 0:
+        usage["prompt_tokens_details"] = {
+            "cached_tokens": cache_n,
+            # 缓存命中率（0~1）：复用部分 / 完整 prompt
+            "cache_hit_rate": round(cache_n / total_prompt, 4),
+        }
+    return usage
+
+
+def _dsn_usage_extras(t: dict) -> dict:
+    """DSN 扩展用量块：缓存命中百分比 + 读写耗时（标准 usage 放不下）。
+
+    百分比口径与前端 context-stats 保持一致：
+        完整 prompt = prompt_n + cache_n
+        cache_hit_rate  = cache_n / 完整 prompt     （复用比例）
+        prompt_read_rate = prompt_n / 完整 prompt   （真正需要读取/预填充的比例）
+    """
+    prompt_n, cache_n, total_prompt, predicted_n, prompt_ms, predicted_ms = _timing_totals(t)
+    return {
+        "prompt_tokens": total_prompt,
+        "prompt_evaluated_tokens": prompt_n,
+        "predicted_tokens": predicted_n,
+        "cached_tokens": cache_n,
+        "cache_hit_rate": round(cache_n / total_prompt, 4) if total_prompt else 0.0,
+        "prompt_read_rate": round(prompt_n / total_prompt, 4) if total_prompt else 0.0,
+        "prompt_ms": prompt_ms,
+        "predicted_ms": predicted_ms,
+        "prompt_tokens_per_second": round(prompt_n / (prompt_ms / 1000), 2) if prompt_ms > 0 else 0.0,
+        "predicted_tokens_per_second": round(predicted_n / (predicted_ms / 1000), 2) if predicted_ms > 0 else 0.0,
+    }
+
+
 def _modalities_from_flags(flags: dict) -> list[str]:
     """{"vision":..,"audio":..,"video":..} → ["text", ...]（顺序稳定）。"""
     out = ["text"]
@@ -774,6 +895,12 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 [type(m.get("content")).__name__ for m in messages_raw],
             )
 
+        # ── 请求方声明的工具（标准 OpenAI function calling）──
+        # body.tools 形如 [{"type":"function","function":{name,description,parameters}}]，
+        # harness 内部只需要里面的 function 对象。历史实现完全没有读取它，
+        # 于是 API 客户端（以及本仓库 UI 的 MCP 工具）声明的工具模型根本看不到。
+        client_tools = _normalize_request_tools(body.get("tools"))
+
         # ── API 模式：dsn（完整 DSN-exp）| passthrough（完全交给请求方）──
         # 由应用配置决定；配置里锁定时忽略请求方覆盖。
         api_mode = UIConfig.resolve_api_mode(
@@ -849,6 +976,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 max_tokens=effective_max_tokens,
                 max_steps=effective_max_steps,
                 api_mode=api_mode,
+                client_tools=client_tools,
             )
             emo_payload = {
                 "state": engine.agent.get_emotion_state(),
@@ -860,20 +988,51 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 engine.agent.topic_mgr.last_converged_topic = None
                 await sse_broadcaster.broadcast("topic_converged", model_name, {"title": conv_t})
 
+            # 工具调用必须按标准 OpenAI 形状回传，否则客户端不知道要执行什么。
+            tool_calls = [
+                {
+                    "id": tc.id or f"call_{i}",
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments or {}, ensure_ascii=False),
+                    },
+                }
+                for i, tc in enumerate(getattr(resp, "tool_calls", None) or [])
+            ]
+            message: dict = {
+                "role": "assistant",
+                "content": resp.content,
+                "reasoning_content": resp.reasoning_content,
+            }
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            finish_reason = resp.finish_reason or ("tool_calls" if tool_calls else "stop")
+
+            # 本地引擎通常只回 timings 不回 usage，这里补一次映射，
+            # 让非流式客户端同样能拿到 token 数与缓存命中。
+            usage = resp.usage or {}
+            if not usage.get("prompt_tokens"):
+                try:
+                    _client = engine.orchestrator.get_client(model_name)
+                    _t = getattr(_client, "last_timings", None)
+                    if isinstance(_t, dict) and _t:
+                        usage = _openai_usage_from_timings(_t)
+                except Exception:  # noqa: BLE001 - 取不到用量不影响正常返回
+                    usage = {}
+            if not usage:
+                usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
             return {
                 "id": f"chatcmpl-dsn-{int(time.time())}",
                 "object": "chat.completion",
                 "model": model_name,
                 "choices": [{
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": resp.content,
-                        "reasoning_content": resp.reasoning_content,
-                    },
-                    "finish_reason": resp.finish_reason or "stop",
+                    "message": message,
+                    "finish_reason": finish_reason,
                 }],
-                "usage": resp.usage or {"prompt_tokens": 0, "completion_tokens": 0},
+                "usage": usage,
             }
 
         async def _produce_sse(session, conv_id: str):
@@ -902,6 +1061,11 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     effective_max_tokens, system_prompt_override, len(messages_raw),
                 )
                 provider_sent_timings = False
+                #: 最近一次真实用量（llama-server timings / usage），
+                #: 用于在终态块里给出标准 OpenAI usage + 缓存命中信息。
+                last_timings: Dict[str, Any] = {}
+                #: 终态块里是否已经带上了 usage（避免重复下发）
+                terminal_carried_usage = False
                 agen = engine.agent.chat_stream(
                     messages_raw=messages_raw,
                     model_name=model_name,
@@ -911,6 +1075,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     max_tokens=effective_max_tokens,
                     max_steps=effective_max_steps,
                     api_mode=api_mode,
+                    client_tools=client_tools,
                 )
                 # 标准 OpenAI chunk 信封。所有 delta 都必须包在
                 # {"choices":[{"index":0,"delta":{...}}]} 里，且带 object/created/model，
@@ -948,6 +1113,11 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         )
                     if ctype in ("timings", "usage"):
                         provider_sent_timings = True
+                        # 记下最近一次真实用量：终态块要用它生成标准 OpenAI
+                        # usage（含缓存命中），供 API 客户端读取。
+                        _t = chunk.get("timings") or chunk.get("usage") or {}
+                        if isinstance(_t, dict) and _t:
+                            last_timings.update(_t)
                     if ctype == "context_stats":
                         # DSN-exp 弹性上下文统计：预算/折叠/截断，供用量指示环展示
                         payload = {"context_stats": chunk.get("stats", {})}
@@ -969,7 +1139,14 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         emit(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
                         continue
                     if ctype == "usage":
-                        payload = {"usage": chunk.get("usage", {})}
+                        # agent 侧无论 timings 还是 usage 事件都把负载放在
+                        # "timings" 键下，历史实现只取 chunk["usage"]，于是这里
+                        # 永远发出一个空的 {"usage": {}}。
+                        raw_usage = chunk.get("usage") or chunk.get("timings") or {}
+                        payload = {
+                            "usage": _openai_usage_from_timings(raw_usage),
+                            "dsn_usage": _dsn_usage_extras(raw_usage),
+                        }
                         emit(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
                         continue
                     if ctype == "round_start":
@@ -1010,6 +1187,12 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         # 不影响严格客户端解析。
                         hit_max = bool(chunk.get("hit_max"))
                         terminal_sent = True
+                        # 模型返回过工具调用时必须以 tool_calls 收尾，否则客户端
+                        # 会当成普通回复，永远不去执行工具。
+                        finish_reason = (
+                            chunk.get("finish_reason")
+                            or ("length" if hit_max else "stop")
+                        )
                         payload = {
                             "id": f"chatcmpl-dsn-{int(time.time() * 1000)}",
                             "object": "chat.completion.chunk",
@@ -1018,12 +1201,19 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                             "choices": [{
                                 "index": 0,
                                 "delta": {},
-                                "finish_reason": "length" if hit_max else "stop",
+                                "finish_reason": finish_reason,
                             }],
                             # DSN 扩展（非标准字段，放在顶层，严格客户端会忽略）
                             "hit_max_steps": hit_max,
                             "round": chunk.get("round"),
                         }
+                        # 把用量挂在终态块上：这样**所有**客户端都能直接拿到，
+                        # 不需要额外的 choices:[] 块（llama-server 也是这么做的）。
+                        if last_timings:
+                            payload["usage"] = _openai_usage_from_timings(last_timings)
+                            payload["dsn_usage"] = _dsn_usage_extras(last_timings)
+                            payload["timings"] = last_timings
+                            terminal_carried_usage = True
                         emit(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
                         continue
                     # 以下全部经由 emit_openai_delta 生成**标准 OpenAI chunk**，
@@ -1035,7 +1225,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         # 放在 delta 内是业界通行做法（llama-server 亦如此）。
                         emit_openai_delta({"reasoning_content": chunk["content"]})
                     elif ctype == "tool_calls":
-                        emit_openai_delta({"tool_calls": chunk["tool_calls"]})
+                        # 上游给的是**扁平**结构 {index,id,name,arguments}，
+                        # 而标准 OpenAI 增量要求
+                        #   {index,id,type,function:{name,arguments}}
+                        # 历史实现直接原样透传，于是所有按协议解析的消费方
+                        # （OpenAI SDK / LangChain / Cline，以及本仓库自己的前端
+                        # mergeToolCallDeltas）都读不到工具名与参数 ——
+                        # 表现为"模型调不了工具"。
+                        emit_openai_delta({
+                            "tool_calls": _normalize_tool_call_deltas(chunk["tool_calls"]),
+                        })
                     elif ctype == "tool_call":
                         tc = chunk.get("tool_call", {})
                         emit_openai_delta({"tool_calls": [{
@@ -1077,23 +1276,53 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
                 # 若 provider 未回传 timings（如 llama-server 关闭了 timings 输出），
                 # 退化用弹性上下文的字符统计估算 prompt token，保证用量指示环仍可用。
+                estimated_usage = False
                 if not provider_sent_timings:
                     logger.debug("provider 未回传 timings，改用弹性上下文字符数估算")
                     stats = engine.agent.get_context_stats() or {}
                     injected = int(stats.get("total_injected_chars") or 0)
                     if injected > 0:
                         est_tokens = max(1, int(injected / 3.2))
+                        last_timings.update({
+                            "prompt_n": est_tokens,
+                            "prompt_ms": 0,
+                            "predicted_n": 0,
+                            "predicted_ms": 0,
+                            "cache_n": 0,
+                        })
+                        estimated_usage = True
                         fallback = {
-                            "timings": {
-                                "prompt_n": est_tokens,
-                                "prompt_ms": 0,
-                                "predicted_n": 0,
-                                "predicted_ms": 0,
-                                "cache_n": 0,
-                            },
+                            "timings": dict(last_timings),
+                            "usage": _openai_usage_from_timings(last_timings),
+                            "dsn_usage": _dsn_usage_extras(last_timings),
                             "estimated": True,
                         }
                         emit(f"data: {json.dumps(fallback, ensure_ascii=False)}\n\n")
+
+                # ── 标准 OpenAI 用量块 ──
+                # 协议：当 stream_options.include_usage 为真时，在 [DONE] 之前补一个
+                # choices 为空、只带 usage 的收尾块。另外，如果终态块没能带上用量
+                # （例如 timings 比 done 晚到、或用了估算值），也在这里补齐，
+                # 保证任何客户端都能拿到 prompt/completion 与缓存命中信息。
+                want_usage_chunk = False
+                _so = body.get("stream_options")
+                if isinstance(_so, dict):
+                    want_usage_chunk = bool(_so.get("include_usage"))
+
+                if last_timings and (want_usage_chunk or not terminal_carried_usage):
+                    usage_payload = {
+                        "id": f"chatcmpl-dsn-{int(time.time() * 1000)}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name,
+                        "choices": [],
+                        "usage": _openai_usage_from_timings(last_timings),
+                        "dsn_usage": _dsn_usage_extras(last_timings),
+                        "timings": dict(last_timings),
+                    }
+                    if estimated_usage:
+                        usage_payload["estimated"] = True
+                    emit(f"data: {json.dumps(usage_payload, ensure_ascii=False)}\n\n")
 
                 # 交互完成后推送最新情绪与收敛状态
                 emo_payload = {

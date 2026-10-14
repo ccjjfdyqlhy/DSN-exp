@@ -439,6 +439,65 @@ class DSNUIAgentCoordinator:
 
     @staticmethod
     @staticmethod
+    def _convert_raw_message(m: Dict[str, Any]) -> Optional[ChatMessage]:
+        """把一条 OpenAI 风格消息转成 ChatMessage（保留多模态与工具字段）。"""
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            from apps.dsn_ui.integration_api import openai_content_to_parts
+            content = openai_content_to_parts(content)
+
+        if role == "system":
+            return ChatMessage.system(content if isinstance(content, str) else str(content))
+        if role == "assistant":
+            msg = ChatMessage.assistant(
+                content if isinstance(content, str) else str(content))
+            # 工具调用必须一起带回去：后续的 role=tool 消息靠 tool_call_id
+            # 与之对应，缺了它上游模板会直接报错或把结果丢弃。
+            raw_calls = m.get("tool_calls")
+            if isinstance(raw_calls, list) and raw_calls:
+                msg.tool_calls = raw_calls
+            if m.get("reasoning_content"):
+                msg.reasoning_content = m["reasoning_content"]
+            return msg
+        if role == "tool":
+            return ChatMessage(
+                role="tool",
+                content=content if isinstance(content, str) else str(content),
+                tool_call_id=m.get("tool_call_id"),
+            )
+        return ChatMessage(role="user", content=content)
+
+    @classmethod
+    def _build_conversation_messages(
+        cls,
+        messages_raw: List[Dict[str, Any]],
+        system_prompt: str,
+    ) -> List[ChatMessage]:
+        """请求方消息 + DSN 合成的 system 提示词，原样保留工具往返。
+
+        用于「DSN 模式 + 客户端声明了 tools」：此时对话历史里会有
+            assistant(tool_calls) → tool(tool_call_id, 结果) → …
+        这一串必须完整回传，模型才能看到工具执行结果并据此作答。
+        历史实现把上下文交给话题记忆装配，而话题记忆只产出一条 system +
+        一条 user —— **工具结果被整段丢掉**，模型于是反复调用同一个工具
+        （或声称没有拿到结果）。
+
+        注意：DsnUIAgentCoordinator 是 __new__ 构造的（见 _build_passthrough
+        的用法），所以这里刻意做成 classmethod 而不是实例方法。
+        """
+        out: List[ChatMessage] = []
+        if system_prompt:
+            out.append(ChatMessage.system(system_prompt))
+        for m in messages_raw or []:
+            if m.get("role") == "system":
+                continue
+            converted = cls._convert_raw_message(m)
+            if converted is not None:
+                out.append(converted)
+        return out
+
+    @staticmethod
     def _build_passthrough_messages(
         messages_raw: List[Dict[str, Any]],
     ) -> List[ChatMessage]:
@@ -496,7 +555,52 @@ class DSNUIAgentCoordinator:
                     content if isinstance(content, str) else str(content)))
         return out
 
-    def assemble_system_prompt(self, execution_mode: bool = False) -> str:
+    #: 缓存前一次 system 提示词，键含（执行模式 / 是否有工具 / 工具 schema）。
+    #:
+    #: 这是让前缀缓存真正命中的关键：llama-server 的 KV 前缀缓存要求**从头
+    #: 开始逐 token 一致**。而 DSN 的 system 提示词里含 PEV3 人格与情绪状态
+    #: （每轮都会变），只要它变了，后面全部失效 —— 实测 cache_n 恒为 0，
+    #: 前端显示"缓存命中 0%"，即使对话内容完全相同。
+    #:
+    #: 对策：同一（模式, 工具集）下沿用同一条提示词，让会话前缀在轮次之间
+    #: 保持一致。人格/情绪的逐轮变化仍会经 _post_turn 影响记忆与状态，
+    #: 只是不再每轮重写 system 头部。
+    _system_prompt_cache: Dict[Any, str] = {}
+
+    @staticmethod
+    def _tools_signature(tools: Optional[List[Dict[str, Any]]]) -> str:
+        """工具集的稳定指纹（顺序无关，避免同样工具因排序不同而重建缓存）。"""
+        if not tools:
+            return ""
+        names = sorted(
+            str(t.get("name") or "")
+            for t in tools if isinstance(t, dict)
+        )
+        return "::".join(n for n in names if n)
+
+    def assemble_system_prompt(
+        self,
+        execution_mode: bool = False,
+        client_tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        key = (bool(execution_mode), self._tools_signature(client_tools))
+        cached = self._system_prompt_cache.get(key)
+        if cached is not None:
+            return cached
+
+        built = self._build_system_prompt(execution_mode=execution_mode, client_tools=client_tools)
+        self._system_prompt_cache[key] = built
+        logger.debug(
+            "system 提示词已缓存: execution_mode=%s tools=%s chars=%d",
+            execution_mode, key[1] or "无", len(built),
+        )
+        return built
+
+    def _build_system_prompt(
+        self,
+        execution_mode: bool = False,
+        client_tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         prompts = [self.base_system_prompt]
 
         # 1. PEV3 动态人格 Prompt
@@ -521,6 +625,23 @@ class DSNUIAgentCoordinator:
                 "可用工具不会一次性全部下发：请先调用 toolbox 工具激活本次任务需要的工具 id，"
                 "再调用这些工具。当用户提出具体任务、查找、计算或操作需求时，"
                 "请主动激活并调用合适的工具，并基于工具输出给出精准回答。"
+            )
+        elif client_tools:
+            # 客户端函数调用：说明"谁执行"这件事，并固定工具清单文本。
+            #
+            # 工具 schema 本身是作为顶层 tools 参数下发的，但很多模板会把它
+            # 渲染进系统区；只要 schema 顺序变了前缀缓存就失效。这里按名字
+            # 排序列出，保证同一工具集每轮产生逐字节相同的提示词。
+            names = sorted(
+                str(t.get("name")) for t in client_tools
+                if isinstance(t, dict) and t.get("name")
+            )
+            prompts.append(
+                "【函数调用模式】本次请求由调用方提供了可调用的函数。"
+                "需要外部数据或执行操作时，请直接发起函数调用；"
+                "函数的结果会以 tool 消息返回给你，请基于返回内容继续作答，"
+                "不要臆测结果，也不要在拿到结果前重复调用同一个函数。"
+                f"\n可用函数（按名称排序）：{', '.join(names)}"
             )
         else:
             prompts.append("【执行模式已关闭】当前处于纯对话模式。")
@@ -650,8 +771,15 @@ class DSNUIAgentCoordinator:
         max_tokens: Optional[int] = None,
         max_steps: Optional[int] = None,
         api_mode: str = "dsn",
+        client_tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """通过 Agent 循环流式生成回复，支持记忆组装、情绪演化与工具调用。
+
+        client_tools: 请求方在 body.tools 里声明的函数（已归一化为 harness 的
+        function 结构）。**仅在非 execution_mode 下生效**，此时走标准 OpenAI
+        函数调用语义：把工具声明给模型，模型产生的 tool_calls 原样透传给调用方
+        由其自行执行，服务端不执行任何工具。
+        历史实现完全忽略 body.tools，API 客户端声明的工具模型根本看不到。
 
         system_prompt_override 非 None 时，用该文本替代 harness 动态组装的
         提示词生态（话题记忆/情绪/工具箱指令不再注入），即用户自定义超驰。
@@ -696,9 +824,27 @@ class DSNUIAgentCoordinator:
             # 超驰模式下不走话题记忆装配，客户端消息即完整上下文
             context_msgs = self._build_override_messages(messages_raw, system_prompt)
         else:
-            system_prompt = self.assemble_system_prompt(execution_mode=execution_mode)
+            system_prompt = self.assemble_system_prompt(
+                execution_mode=execution_mode, client_tools=client_tools,
+            )
 
-        if system_prompt_override is None and not passthrough:
+        # 请求方声明了工具时，必须保留完整的对话结构。
+        #
+        # 话题记忆装配只产出「一条 system + 一条 user」，工具往返
+        # （assistant.tool_calls → role=tool 的结果）会被整段丢弃，
+        # 模型因此永远看不到工具执行结果 —— 表现为反复调用同一个工具，
+        # 或者回答"我没有收到工具返回"。
+        # 这种情况下直接用请求方的消息 + DSN 合成的 system 提示词。
+        preserve_conversation = bool(client_tools) and not passthrough
+        if preserve_conversation:
+            context_msgs = self._build_conversation_messages(messages_raw, system_prompt)
+            logger.info(
+                "工具会话模式: 保留完整对话结构，messages=%d（其中 tool=%d）",
+                len(context_msgs),
+                sum(1 for m in context_msgs if m.role == "tool"),
+            )
+
+        if system_prompt_override is None and not passthrough and not preserve_conversation:
             # 3. 话题记忆弹性剪裁组装
             # 这一段会遍历 topic_mgr.topics（dict）。若其它协程在遍历过程中
             # 增删话题，就会抛 "dictionary changed size during iteration"。
@@ -762,6 +908,14 @@ class DSNUIAgentCoordinator:
 
         full_reply_parts = []
         turn_posted = False
+        # 标准 OpenAI 函数调用：服务端只声明、不执行，tool_calls 交给调用方。
+        use_client_tools = bool(client_tools) and not execution_mode
+        if use_client_tools:
+            logger.info(
+                "客户端函数调用模式: 声明 %d 个工具（服务端不执行）: %s",
+                len(client_tools or []),
+                [t.get("name") for t in (client_tools or [])][:10],
+            )
 
         try:
             if execution_mode:
@@ -809,12 +963,17 @@ class DSNUIAgentCoordinator:
                 turn_posted = True
             else:
                 # 纯对话模式（由话题记忆装配上下文后流式推理）
+                #
+                # 请求方声明了工具时把 schema 一并下发 —— 这是标准 OpenAI
+                # 函数调用的关键一步；缺了它模型永远看不到任何工具。
                 agen = self.orchestrator.stream(
                     context_msgs,
                     model_name=model_name,
                     temperature=temperature,
                     max_tokens=eff_max_tokens,
+                    tools=client_tools if use_client_tools else None,
                 )
+                saw_tool_calls = False
                 async for chunk in agen:
                     if isinstance(chunk, str):
                         full_reply_parts.append(chunk)
@@ -824,6 +983,7 @@ class DSNUIAgentCoordinator:
                         if r_delta:
                             yield {"type": "reasoning", "content": r_delta}
                         if chunk.get("tool_calls"):
+                            saw_tool_calls = True
                             yield {"type": "tool_calls", "tool_calls": chunk["tool_calls"]}
                         if chunk.get("timings"):
                             yield {"type": "timings", "timings": chunk["timings"]}
@@ -836,7 +996,16 @@ class DSNUIAgentCoordinator:
                 # "Stream ended without finish_reason"。
                 # 历史实现只在 execution_mode 分支转发 done，纯对话分支
                 # 直接静默结束 —— 这正是该报错的根因。
-                yield {"type": "done", "hit_max": False, "round": 1}
+                #
+                # finish_reason 按标准语义给出：模型返回了工具调用时必须报
+                # "tool_calls"，否则客户端（OpenAI SDK / LangChain / Cline…）
+                # 会当成普通回复，永远不去执行工具。
+                yield {
+                    "type": "done",
+                    "hit_max": False,
+                    "round": 1,
+                    "finish_reason": "tool_calls" if saw_tool_calls else "stop",
+                }
 
                 full_reply = "".join(full_reply_parts)
                 if not passthrough:
@@ -866,11 +1035,15 @@ class DSNUIAgentCoordinator:
         max_tokens: Optional[int] = None,
         max_steps: Optional[int] = None,
         api_mode: str = "dsn",
+        client_tools: Optional[List[Dict[str, Any]]] = None,
     ) -> ChatResponse:
         """非流式调用入口。
 
         api_mode 语义与 chat_stream 一致：passthrough 时不注入提示词、
         不跑情绪与记忆，请求方的 messages 原样送进模型。
+
+        client_tools 语义与 chat_stream 一致：非 execution_mode 时把请求方
+        声明的工具下发（标准 OpenAI 函数调用，服务端不执行）。
         """
         passthrough = api_mode == API_MODE_PASSTHROUGH
         user_msg, _user_parts = extract_last_user_turn(messages_raw)
@@ -883,12 +1056,19 @@ class DSNUIAgentCoordinator:
         elif system_prompt_override is not None:
             context_msgs = self._build_override_messages(messages_raw, system_prompt_override)
         else:
-            system_prompt = self.assemble_system_prompt(execution_mode=execution_mode)
-            context_msgs = self.topic_mgr.assemble_context_messages(
-                new_user_message=user_msg or "你好",
-                system_prefix=system_prompt,
-                new_user_parts=_user_parts,
+            system_prompt = self.assemble_system_prompt(
+                execution_mode=execution_mode, client_tools=client_tools,
             )
+            # 同 chat_stream：带了工具就必须保留完整对话结构，
+            # 否则 assistant.tool_calls → role=tool 的往返会被丢掉。
+            if client_tools:
+                context_msgs = self._build_conversation_messages(messages_raw, system_prompt)
+            else:
+                context_msgs = self.topic_mgr.assemble_context_messages(
+                    new_user_message=user_msg or "你好",
+                    system_prefix=system_prompt,
+                    new_user_parts=_user_parts,
+                )
 
         model_ctx = self.orchestrator.get_model_ctx_size(model_name)
         eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
@@ -917,6 +1097,7 @@ class DSNUIAgentCoordinator:
                 model_name=model_name,
                 temperature=temperature,
                 max_tokens=eff_max_tokens,
+                tools=client_tools if (client_tools and not execution_mode) else None,
             )
             if not passthrough:
                 self._post_turn(user_msg, resp.content)

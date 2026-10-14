@@ -336,10 +336,11 @@ class OpenAICompatChat(ChatClientAdapter):
         # 只有确实涉及多模态（有 image_url 或存在非文本 content）时才记录，
         # 避免给纯文本请求刷屏。
         _imgs = count_image_parts(msgs)
-        if _imgs or any(not isinstance(m.get("content"), str) for m in msgs):
+        if _imgs or tools or any(not isinstance(m.get("content"), str) for m in msgs):
             logger.info(
-                "%s 上行 payload: messages=%d images=%d 形状=%s",
+                "%s 上行 payload: messages=%d images=%d tools=%s 形状=%s",
                 self.label, len(msgs), _imgs,
+                [t.get("name") for t in (tools or [])][:10] if tools else "无",
                 [f"{m.get('role')}:{content_shape(m.get('content'))}" for m in msgs],
             )
         else:

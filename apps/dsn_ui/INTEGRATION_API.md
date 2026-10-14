@@ -37,6 +37,82 @@ curl http://127.0.0.1:8888/v1/chat/completions \
 > `passthrough` 下 system 消息完全由调用方提供；若一条都没给，模型就收不到
 > 任何系统提示词。多模态 content parts 仍然原样保留。
 
+## 0.5 函数调用（tools）与用量/缓存命中
+
+### 工具调用
+
+请求里带标准 OpenAI 的 `tools` 即可，服务端会把 schema 下发给模型，
+并把模型的 `tool_calls` **按标准形状**回传，由调用方自己执行：
+
+```bash
+curl http://127.0.0.1:8888/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "bonsai:bonsai2:27B",
+    "stream": true,
+    "messages": [{"role":"user","content":"上海天气怎么样？"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "查询城市天气",
+        "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}
+      }
+    }]
+  }'
+```
+
+流式增量形状：
+
+```json
+{"choices":[{"index":0,"delta":{"tool_calls":[
+  {"index":0,"id":"call_x","type":"function",
+   "function":{"name":"get_weather","arguments":"{\"city\":"}}
+]},"finish_reason":null}]}
+```
+
+终态块为 `"finish_reason": "tool_calls"`。调用方执行完工具后，把
+`{"role":"tool","tool_call_id":"call_x","content":"..."}` 追加进 messages 再发一次。
+
+> **与 execution_mode 的区别**：`tools` 走标准函数调用 —— 服务端只声明、
+> 不执行；`execution_mode: true` 则由 DSN 的 AgentLoop 在**服务端**执行内置
+> 工具箱（文件/命令/网页等）。两者互斥，`execution_mode` 优先。
+
+### 用量与缓存命中
+
+用量同时出现在三处，兼容不同客户端：
+
+1. **终态块**（所有客户端都能拿到）：
+
+```json
+{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+ "usage":{"prompt_tokens":83,"completion_tokens":87,"total_tokens":170,
+          "prompt_tokens_details":{"cached_tokens":79,"cache_hit_rate":0.9518}},
+ "dsn_usage":{"prompt_tokens":83,"prompt_evaluated_tokens":4,"cached_tokens":79,
+              "cache_hit_rate":0.9518,"prompt_read_rate":0.0482,
+              "prompt_ms":1234.5,"predicted_ms":2100.0,
+              "prompt_tokens_per_second":640.2,"predicted_tokens_per_second":41.4},
+ "timings":{"prompt_n":4,"cache_n":79,"predicted_n":87,"prompt_ms":1234.5,"predicted_ms":2100.0}}
+```
+
+2. **独立 usage 块**：请求带 `"stream_options": {"include_usage": true}` 时，
+   按 OpenAI 协议在 `[DONE]` 之前额外发一个 `choices: []` 的用量块。
+
+3. **非流式**：`choices[0].message.tool_calls` + 顶层 `usage`。
+
+**口径说明（重要）**：llama.cpp 的 timings 里 `prompt_n` 是**本轮实际评估**的
+token，`cache_n` 是**复用前缀缓存**的 token，因此
+
+| 指标 | 公式 |
+|------|------|
+| `usage.prompt_tokens` | `prompt_n + cache_n`（完整 prompt 长度） |
+| `prompt_tokens_details.cached_tokens` | `cache_n` |
+| `cache_hit_rate` | `cache_n / (prompt_n + cache_n)` |
+| `prompt_read_rate` | `prompt_n / (prompt_n + cache_n)`（真正需要预填充的比例） |
+
+不要用 `cache_n / prompt_n` —— 实测会出现 `cache_n=79, prompt_n=4`，
+那样算出来是 1975%。
+
 ## 1. OpenAI Chat Completions 兼容
 
 | 方法 | 路径 | 说明 |

@@ -167,7 +167,7 @@ def coordinator(monkeypatch):
         "last_converged_topic": None,
     })()
     coord._post_turn = _Recorder()
-    coord.assemble_system_prompt = lambda execution_mode=False: "DSN 动态提示词"
+    coord.assemble_system_prompt = lambda execution_mode=False, client_tools=None: "DSN 动态提示词"
     coord._resolve_max_tokens = lambda max_tokens, ctx: 128
     coord._apply_context_strategy = lambda **kw: False
     coord.pv3 = None
