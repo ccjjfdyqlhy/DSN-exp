@@ -199,7 +199,7 @@ class _ToolCallScriptClient:
         self.seen_messages = []
 
     def invoke(self, messages, tools=None, **kwargs):
-        from harness.models import ToolCall
+        from infra.models import ToolCall
         self.seen_messages = list(messages)
         call, final = self.calls[min(self.round, len(self.calls) - 1)]
         self.round += 1

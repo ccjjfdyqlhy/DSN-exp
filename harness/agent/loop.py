@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable, Optional
 
-from ..models.base import ChatMessage, ChatResponse, IChatClient, ToolCall
+from infra.models.base import ChatMessage, ChatResponse, IChatClient, ToolCall
 from ..tools import ToolRegistry, ToolResult, from_wire_name
 from .adapters import ToolCallAdapter, NativeToolCallAdapter
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from ..models.base import IEmbeddingClient
+from infra.models.base import IEmbeddingClient
 from .base import MemoryEntry
 from .vector import VectorIndex
 

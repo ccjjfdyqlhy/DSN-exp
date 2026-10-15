@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from harness.orchestrator import LlamaServerConfig, ModelOrchestrator
-from harness.orchestrator.local_chat import OpenAICompatChat
+from infra.orchestrator import LlamaServerConfig, ModelOrchestrator
+from infra.orchestrator.local_chat import OpenAICompatChat
 
 
 class _FakeLauncher:

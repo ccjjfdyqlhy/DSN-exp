@@ -7,8 +7,8 @@ from apps.dsn.bundles import make_dsn_bundles
 from apps.dsn.settings import bind_dsn_settings
 from apps.text_agent import TextAgentApp
 from harness import AppBundleRegistry, Runtime, Settings
-from harness.models.base import ChatResponse, ToolCall
-from harness.models.stub import StubChatClient
+from infra.models.base import ChatResponse, ToolCall
+from infra.models.stub import StubChatClient
 
 
 def test_text_agent_runs_on_harness():

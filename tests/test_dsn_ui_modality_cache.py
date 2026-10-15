@@ -74,7 +74,7 @@ def test_unreachable_endpoint_costs_one_check_for_many_models(monkeypatch):
 
     with patch.object(
         server.socket, "create_connection", side_effect=OSError("refused")
-    ) as mock_conn, patch("harness.orchestrator.base.local_probe_session") as mock_session:
+    ) as mock_conn, patch("infra.orchestrator.base.local_probe_session") as mock_session:
         for i in range(5):
             assert server._input_modalities(str(i), _Multi()) == ["text"]
 
@@ -108,7 +108,7 @@ def test_lmstudio_probe_skipped_when_endpoint_down():
     spec = _Spec(base_url="http://127.0.0.1:4501")
 
     with patch.object(server, "_endpoint_reachable", return_value=False), patch(
-        "harness.orchestrator.base.local_probe_session"
+        "infra.orchestrator.base.local_probe_session"
     ) as mock_session:
         assert server._lmstudio_vision(spec) is None
 
@@ -120,7 +120,7 @@ def test_no_probe_when_engine_not_running():
     spec = _Spec(running=False)
     orch = _Orchestrator(spec)
 
-    with patch("harness.orchestrator.base.local_probe_session") as mock_session:
+    with patch("infra.orchestrator.base.local_probe_session") as mock_session:
         for _ in range(5):
             assert server._input_modalities("m", orch) == ["text"]
 
@@ -136,7 +136,7 @@ def test_probe_runs_once_for_running_engine():
     resp.status_code = 200
     resp.json.return_value = {"modalities": {"vision": True, "video": False, "audio": False}}
 
-    with patch("harness.orchestrator.base.local_probe_session") as mock_session:
+    with patch("infra.orchestrator.base.local_probe_session") as mock_session:
         mock_session.return_value.get.return_value = resp
         assert server._input_modalities("m", orch) == ["text", "vision"]
         assert server._input_modalities("m", orch) == ["text", "vision"]
@@ -174,7 +174,7 @@ def test_probe_failure_does_not_raise_and_is_cached():
     spec = _Spec(running=True)
     orch = _Orchestrator(spec)
 
-    with patch("harness.orchestrator.base.local_probe_session") as mock_session, patch.object(
+    with patch("infra.orchestrator.base.local_probe_session") as mock_session, patch.object(
         server, "_configured_vision", return_value=False
     ):
         mock_session.return_value.get.side_effect = OSError("connection refused")

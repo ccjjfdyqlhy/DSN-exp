@@ -46,11 +46,11 @@ from harness import (
     install_standard_tools,
 )
 from harness.agent import AgentLoop, ModeState, SubAgentRunner, SubTask
-from harness.auth import Identity, UserStore
+from infra.auth import Identity, UserStore
 from harness.codegraph import GraphBuilder
 from harness.groupchat import GroupChatManager, GroupChatRoom
-from harness.models.base import ChatMessage
-from harness.models.openai import OpenAICompatClient
+from infra.models.base import ChatMessage
+from infra.models.openai import OpenAICompatClient
 from harness.tools import RegistryIndexSource, ToolboxManager
 
 from .config import DenseChatConfig

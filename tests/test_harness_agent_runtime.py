@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from harness import AgentRuntime
-from harness.models.base import ChatResponse, ToolCall
-from harness.models.provider import ModelProviderRegistry
-from harness.models.stub import StubChatClient
+from infra.models.base import ChatResponse, ToolCall
+from infra.models.provider import ModelProviderRegistry
+from infra.models.stub import StubChatClient
 
 
 def _two_step_client(tool_name, tool_args, final_text):

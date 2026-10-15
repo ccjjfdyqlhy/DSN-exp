@@ -1,5 +1,5 @@
 # tests/test_harness_retry.py
-# RetryPolicy（harness/policy/retry.py）单元测试：重试/退避/熔断/限流。
+# RetryPolicy（infra/policy/retry.py）单元测试：重试/退避/熔断/限流。
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from harness.policy import RetryPolicy
+from infra.policy import RetryPolicy
 
 
 class FlakyError(Exception):

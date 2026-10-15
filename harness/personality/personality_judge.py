@@ -173,11 +173,11 @@ class PersonalityJudge:
             if hasattr(chat, 'send_message'):
                 return chat.send_message(prompt)
             if hasattr(chat, 'invoke'):
-                from harness.models.base import ChatMessage
+                from infra.models.base import ChatMessage
                 resp = chat.invoke([ChatMessage(role="user", content=prompt)], temperature=temperature, max_tokens=max_tokens)
                 return resp.content or ""
             if hasattr(chat, 'complete'):
-                from harness.models.base import ChatMessage
+                from infra.models.base import ChatMessage
                 resp = chat.complete([ChatMessage(role="user", content=prompt)])
                 return resp.content or ""
             return ""

@@ -235,9 +235,33 @@ class Config:
     # 服务端工作目录（api.py 所在目录）。
     TTS_SERVER_DIR = _env("TTS_SERVER_DIR", "/home/darkstar/TTS")
     # 启动 TTS 服务所用的 Python 解释器；留空则使用当前解释器。
+    # 仅在 TTS_LAUNCH_MODE=command 时生效（conda 模式由目标环境解释器接管）。
     TTS_PYTHON = _env("TTS_PYTHON", "") or None
+    # TTS 服务的启动策略：command | conda | docker。
+    # 默认 conda —— GPT-SoVITS 的依赖只装在 GPTSoVits 环境里，
+    # 用 base env 的 python 拉起会缺少 fast_langdetect / split_lang / peft / opencc 等。
+    TTS_LAUNCH_MODE = _env("TTS_LAUNCH_MODE", "conda")
+    TTS_CONDA_ENV = _env("TTS_CONDA_ENV", "GPTSoVits")
+    # conda 可执行文件；可给绝对路径（如 /home/darkstar/anaconda3/bin/conda）。
+    TTS_CONDA_EXE = _env("TTS_CONDA_EXE", "conda")
+    # 加上 --no-capture-output 让服务端日志实时可见。
+    TTS_CONDA_NO_CAPTURE = _env("TTS_CONDA_NO_CAPTURE", "true").lower() == "true"
+    # ── docker 模式专用（TTS_LAUNCH_MODE=docker 时生效）──
+    TTS_DOCKER_IMAGE = _env("TTS_DOCKER_IMAGE", "")
+    TTS_DOCKER_NAME = _env("TTS_DOCKER_NAME", "dsn-tts")
+    # 形如 "--gpus all -v /home/darkstar/TTS:/app"（shlex 解析）
+    TTS_DOCKER_ARGS = _env("TTS_DOCKER_ARGS", "")
+    # 形如 "9880:9880,9000:9000"；留空则自动映射 TTS_PORT。
+    TTS_DOCKER_PORTS = _env("TTS_DOCKER_PORTS", "")
+    TTS_DOCKER_PULL = _env("TTS_DOCKER_PULL", "false").lower() == "true"
+    TTS_DOCKER_RM_ON_STOP = _env("TTS_DOCKER_RM_ON_STOP", "false").lower() == "true"
     # 启动前预检：TTS_SERVER_DIR/api.py 是否存在。
     TTS_PREFLIGHT = _env("TTS_PREFLIGHT", "true").lower() == "true"
+    # 就绪判定放宽上限。< 500 的响应都算"服务已在监听"。
+    # 必要性：GPT-SoVITS 的 GET / 是推理入口，缺 text 参数时合法返回 400，
+    # 严格 200 会导致就绪等待一直超时（与 VocalExp.probe() 的 <500 语义一致）。
+    # 设为 0/空 则退回严格 200。
+    TTS_READY_ACCEPT_BELOW = int(_env("TTS_READY_ACCEPT_BELOW", "500") or "0")
     ASR_LOAD_TIMEOUT = max(1, int(_env("ASR_LOAD_TIMEOUT", "300")))
     # 外周任务专用任务槽数量：只约束 ASR/TTS 等外周算力资源，
     # 与 LLM 的显存并发插槽（MAX_CONCURRENT_LM_MODELS）完全隔离、互不驱逐。

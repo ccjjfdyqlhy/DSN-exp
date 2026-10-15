@@ -18,12 +18,12 @@ from typing import Any, AsyncGenerator, Callable, Iterator, List, Optional, Unio
 from .agent.assembler import AgentAssembler, AgentSpec, AssembledAgent
 from .agent.loop import AgentLoop, AgentRunResult, StreamEvent
 from .conversation import Conversation
-from .orchestrator.base import ChatMessage, IChatClient
-from .orchestrator.openai import OpenAICompatClient
-from .orchestrator.lmstudio import LMStudioChat
-from .orchestrator.dynamic_router import DynamicRouter
-from .orchestrator.failover import FailoverChat
-from .orchestrator.router import ModelOrchestrator
+from infra.orchestrator.base import ChatMessage, IChatClient
+from infra.orchestrator.openai import OpenAICompatClient
+from infra.orchestrator.lmstudio import LMStudioChat
+from infra.orchestrator.dynamic_router import DynamicRouter
+from infra.orchestrator.failover import FailoverChat
+from infra.orchestrator.router import ModelOrchestrator
 from .tools.base import Tool, ToolRegistry
 from .tools.function_tool import tool_from_function
 from .tools.standard import ToolDeps, install_standard_tools

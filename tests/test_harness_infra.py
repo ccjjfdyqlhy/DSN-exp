@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import time
 
-from harness.auth import APIKeyManager, SessionManager, TOTP
-from harness.cache import SemanticCache
+from infra.auth import APIKeyManager, SessionManager, TOTP
+from infra.cache import SemanticCache
 from harness.conversation import Conversation, ConversationManager
 from harness.memory import InMemoryStore, MemoryEntry
-from harness.models.stub import StubEmbeddingClient
-from harness.store import Migration, MigrationRunner, SqliteStore
-from harness.tasks import Task, TaskExecutorRegistry, TaskStatus
+from infra.models.stub import StubEmbeddingClient
+from infra.store import Migration, MigrationRunner, SqliteStore
+from infra.tasks import Task, TaskExecutorRegistry, TaskStatus
 
 
 # ── store ──
@@ -132,7 +132,7 @@ def test_semantic_cache_exact_and_vector():
 
 
 def test_metrics_collector():
-    from harness.observability import MetricsCollector
+    from infra.observability import MetricsCollector
     mc = MetricsCollector()
     mc.incr("requests")
     with mc.timer_start("llm"):

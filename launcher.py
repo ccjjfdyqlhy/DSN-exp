@@ -1,7 +1,8 @@
 # launcher.py
-# DSN-exp Harness 应用启动器。
+# AICF（Agent Infrastructure Cybernetics Framework）应用启动器。
 #
-# 项目根目录由 harness 框架代码占领；具体应用以 AppBundle / App 包形式
+# 项目根目录由 AICF 框架代码占领（infra/ = 基础设施与运行时管理，
+# harness/ = Agent 核心）；具体应用以 AppBundle / App 包形式
 # 存在于 apps/ 下。本启动器负责"选择并运行"某个应用。
 #
 # 入口选择优先级:

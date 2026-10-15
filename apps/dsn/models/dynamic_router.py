@@ -1,7 +1,7 @@
 # apps/dsn/models/dynamic_router.py
 # DSN 侧 DynamicRouter — harness 广义实现的薄封装。
 #
-# harness/models/dynamic_router.py 提供端点可用性学习路由（MonitorStore /
+# infra/models/dynamic_router.py 提供端点可用性学习路由（MonitorStore /
 # reliability 加权 / 时段写入）；本模块只负责接线：
 #   - 监控数据落在 apps/dsn/.dsn/api_monitor.json
 #   - 端点来源 = dsn 的 APIManager（api_accounts）
@@ -13,7 +13,7 @@ import os
 import threading
 from typing import Optional
 
-from harness.models.dynamic_router import (
+from infra.models.dynamic_router import (
     DynamicRouter as _HarnessDynamicRouter,
     MonitorStore as _HarnessMonitorStore,
 )

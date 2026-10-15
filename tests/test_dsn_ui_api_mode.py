@@ -67,7 +67,7 @@ def test_passthrough_keeps_caller_messages_verbatim():
 
 def test_passthrough_preserves_multimodal_parts():
     """多模态结构必须保留（不能拍平成字符串）。"""
-    from harness.orchestrator.base import count_image_parts
+    from infra.orchestrator.base import count_image_parts
 
     raw = [{
         "role": "user",

@@ -21,8 +21,8 @@ from harness.context_assembly import (
     SEG_VERBATIM,
     SegmentedContextAssembler,
 )
-from harness.models.base import ChatMessage
-from harness.store.sqlite import SqliteStore
+from infra.models.base import ChatMessage
+from infra.store.sqlite import SqliteStore
 
 
 

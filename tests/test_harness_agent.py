@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 
 from harness.agent import AgentLoop, NativeToolCallAdapter, TaggedToolCallAdapter
-from harness.models.base import ChatMessage, ChatResponse, ToolCall
-from harness.models.stub import StubChatClient
+from infra.models.base import ChatMessage, ChatResponse, ToolCall
+from infra.models.stub import StubChatClient
 from harness.tools import ToolRegistry
 
 

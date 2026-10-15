@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from harness.models.base import ChatMessage
+from infra.models.base import ChatMessage
 
 
 @dataclass

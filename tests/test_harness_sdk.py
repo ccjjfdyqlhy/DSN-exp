@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from harness import Agent, create_agent, tool, ToolResult
-from harness.models.stub import StubChatClient
-from harness.models.base import ChatMessage, ChatResponse, ToolCall
+from infra.models.stub import StubChatClient
+from infra.models.base import ChatMessage, ChatResponse, ToolCall
 
 
 def test_sdk_tool_decorator():

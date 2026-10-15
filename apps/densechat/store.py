@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from harness.models.base import ChatMessage
-from harness.store import Migration, MigrationRunner
-from harness.store.sqlite import SqliteStore
+from infra.models.base import ChatMessage
+from infra.store import Migration, MigrationRunner
+from infra.store.sqlite import SqliteStore
 
 from .profiles import DEFAULT_PROFILE
 

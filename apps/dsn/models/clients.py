@@ -12,14 +12,14 @@ from collections import deque
 from typing import List, Dict, Optional
 
 # 本地模型加载/HTTP 助手统一来自 harness（apps.dsn.models 保留名字再导出）
-from harness.models.lmstudio import (
+from infra.models.lmstudio import (
     LMStudioChat as _HarnessLMStudioChat,
     is_no_model_error as _is_no_model_error,
     post_json as _post_json,
     load_lmstudio_model as _load_lmstudio_model,
     unload_lmstudio_model as _unload_lmstudio_model,
 )
-from harness.models.llamacpp import (
+from infra.models.llamacpp import (
     LlamaServerConfig,
     LlamaServerLauncher,
     LlamaCppChat as _HarnessLlamaCppChat,
@@ -46,7 +46,7 @@ def toggle_detail_actions() -> bool:
     return DETAIL_ACTIONS
 
 
-# _is_no_model_error / _post_json / _load_lmstudio_model 由 harness.models.lmstudio 提供
+# _is_no_model_error / _post_json / _load_lmstudio_model 由 infra.models.lmstudio 提供
 # （见文件头部 import；以下为向后兼容占位，无自研实现）
 
 
@@ -54,7 +54,7 @@ def toggle_detail_actions() -> bool:
 
 
 
-# _unload_lmstudio_model 由 harness.models.lmstudio 提供（见文件头部 import）
+# _unload_lmstudio_model 由 infra.models.lmstudio 提供（见文件头部 import）
 
 class OpenAIChat:
     """
@@ -139,13 +139,13 @@ class OpenAIChat:
                                      extra_body=extra_body)
 
     # ── harness IChatClient 兼容桥 ──
-    # 对话路径的模型客户端以 harness 契约接入（单一生效源：harness.models.IChatClient）
+    # 对话路径的模型客户端以 harness 契约接入（单一生效源：infra.models.IChatClient）
 
     def invoke(self, messages, tools=None, *, temperature=None, max_tokens=None,
                timeout=None):
         """harness IChatClient 兼容入口 — 归一化消息并返回 ChatResponse。"""
-        from harness.models import ChatResponse, ToolCall
-        from harness.models.base import ChatClientAdapter
+        from infra.models import ChatResponse, ToolCall
+        from infra.models.base import ChatClientAdapter
         self.messages = ChatClientAdapter._to_message_dicts(messages)
         body = {}
         if temperature is not None:
@@ -348,7 +348,7 @@ class OpenAIChat:
 class LMStudioChat(_HarnessLMStudioChat):
     """
     本地 LMStudio 聊天客户端（DSN 扩展）。
-    通用 invoke/stream/原生 toolcall/自动加载重试由 harness.models.lmstudio 提供，
+    通用 invoke/stream/原生 toolcall/自动加载重试由 infra.models.lmstudio 提供，
     本类只保留 DSN 专属：多轮历史管理、视觉描述、ModelScheduler 注册。
     """
 
@@ -663,7 +663,7 @@ class LMStudioChat(_HarnessLMStudioChat):
 class LlamaCppChat(_HarnessLlamaCppChat):
     """
     本地自部署 llama.cpp 聊天客户端（DSN 扩展）。
-    通用 invoke/stream/原生 toolcall/思考提取由 harness.models.llamacpp 提供，
+    通用 invoke/stream/原生 toolcall/思考提取由 infra.models.llamacpp 提供，
     本类保留 DSN 专属对话历史管理与辅助功能。
     """
 

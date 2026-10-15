@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from harness.context_assembly import ContextBudget
-from harness.models.stub import StubChatClient
+from infra.models.stub import StubChatClient
 from apps.emotion_exp.emotion_engine import EmotionEngine, EmotionalState
 from apps.emotion_exp.topic_manager import HarnessTopicContextManager
 from apps.emotion_exp.app import EmotionExpAgent
@@ -52,7 +52,7 @@ class TestEmotionExp(unittest.TestCase):
         self.assertEqual(mgr.topics[cur_id].status, "closed")
 
     def test_emotion_agent_chat_loop(self):
-        from harness.models.base import ChatResponse
+        from infra.models.base import ChatResponse
         stub_client = StubChatClient(responses=[ChatResponse(content="收到，今天心情很好！")])
         agent = EmotionExpAgent(stub_client)
         agent.topic_mgr.add_memo("重要设定：Agent是一个温柔的助手。")
@@ -66,7 +66,7 @@ class TestEmotionExp(unittest.TestCase):
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
             db_path = tmp.name
-            from harness.models.base import ChatResponse
+            from infra.models.base import ChatResponse
             stub_client = StubChatClient(responses=[
                 ChatResponse(content="我记住了！"),
                 ChatResponse(content="恢复后依然记得。"),
@@ -97,7 +97,7 @@ class TestEmotionExp(unittest.TestCase):
 
     def test_stream_chat(self):
         import asyncio
-        from harness.models.base import ChatResponse
+        from infra.models.base import ChatResponse
         stub_client = StubChatClient(responses=[ChatResponse(content="流式回复测试文本")])
         agent = EmotionExpAgent(stub_client)
 
@@ -118,7 +118,7 @@ class TestEmotionExp(unittest.TestCase):
         """测试 PEV3 引擎在 EmotionExpAgent 中的无缝协同"""
         import tempfile
         from harness.personality import CharacterCard, NaturalLanguage
-        from harness.models.base import ChatResponse
+        from infra.models.base import ChatResponse
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cards_dir = os.path.join(tmpdir, "cards")
@@ -174,7 +174,7 @@ class TestEmotionExp(unittest.TestCase):
         """测试空白角色卡（随机性格参数）默认启动与自演化能力"""
         import tempfile
         from harness.personality import CharacterCard, random_indicator_vector
-        from harness.models.base import ChatResponse
+        from infra.models.base import ChatResponse
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cards_dir = os.path.join(tmpdir, "cards")

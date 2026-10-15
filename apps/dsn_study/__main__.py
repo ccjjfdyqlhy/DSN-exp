@@ -26,7 +26,7 @@ def main(web: bool = False) -> None:
     persist_path = os.environ.get("DSN_STUDY_DB")
     if persist_path and persist_path != ":memory:":
         try:
-            from harness.store import SessionStore
+            from infra.store import SessionStore
             SessionStore(db_path=persist_path).create_session()
         except Exception as e:  # 会话持久化失败不阻塞 REPL
             print(f"[警告] 会话持久化不可用: {e}")

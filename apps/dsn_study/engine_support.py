@@ -46,7 +46,7 @@ class LLMService:
         self._client = chat_client
 
     def send_message(self, prompt: str, **kwargs) -> str:
-        from harness.models import ChatMessage
+        from infra.models import ChatMessage
         resp = self._client.invoke([ChatMessage.user(prompt)])
         return resp.content or ""
 
@@ -65,7 +65,7 @@ class StudyPipeline:
         self._system_prompt = system_prompt
 
     async def process(self, ctx: PluginContext) -> PluginContext:
-        from harness.models import ChatMessage
+        from infra.models import ChatMessage
         messages = []
         if self._system_prompt:
             messages.append(ChatMessage.system(self._system_prompt))

@@ -26,8 +26,8 @@ from flask import Flask
 
 from harness import AppBundleRegistry, Runtime, Settings
 from harness import AgentRuntime
-from harness.gateway import FlaskGateway
-from harness.models import (
+from infra.gateway import FlaskGateway
+from infra.models import (
     LMStudioChat,
     LlamaCppChat,
     ModelProviderRegistry,

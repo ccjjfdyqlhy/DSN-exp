@@ -10,7 +10,7 @@ import math
 import struct
 from typing import Any, Optional
 
-from ..models.base import IEmbeddingClient
+from infra.models.base import IEmbeddingClient
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.settings import Namespace, Settings, as_bool, as_int, as_float
+from infra.settings import Namespace, Settings, as_bool, as_int, as_float
 
 
 def _env(**kv):

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from harness.models.failover import FailoverChat as _HarnessFailoverChat
+from infra.models.failover import FailoverChat as _HarnessFailoverChat
 
 logger = logging.getLogger("APIAccounts")
 
@@ -674,7 +674,7 @@ def reset_api_manager() -> None:
 
 
 # ── FailoverChat: 按优先级逐个账号尝试，出错自动回退下一个 ──
-# 通用故障转移逻辑在 harness.models.failover（IChatClient 契约 + 观察回调），
+# 通用故障转移逻辑在 infra.models.failover（IChatClient 契约 + 观察回调），
 # 本类只负责把 DSN 账号装配成端点，并保留 DSN 兼容 API。
 
 class FailoverChat(_HarnessFailoverChat):
@@ -686,7 +686,7 @@ class FailoverChat(_HarnessFailoverChat):
 
     def __init__(self, accounts: list[APIAccount], timeout: int = 300):
         from .clients import OpenAIChat
-        from harness.models.failover import FailoverEndpoint
+        from infra.models.failover import FailoverEndpoint
         self._accounts: list[OpenAIChat] = []
         self._account_names: list[str] = []
         endpoints: list[FailoverEndpoint] = []

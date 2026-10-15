@@ -23,9 +23,9 @@ from harness.context_assembly import (
     SegmentedContextAssembler,
 )
 from apps.dsn_ui.logging_setup import log_exception
-from harness.orchestrator import ChatMessage
-from harness.orchestrator.base import content_shape, count_image_parts
-from harness.store.sqlite import SqliteStore
+from infra.orchestrator import ChatMessage
+from infra.orchestrator.base import content_shape, count_image_parts
+from infra.store.sqlite import SqliteStore
 
 logger = logging.getLogger("DSNUITopicManager")
 

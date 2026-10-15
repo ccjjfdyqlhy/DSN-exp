@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from harness.orchestrator import LlamaServerConfig
+from infra.orchestrator import LlamaServerConfig
 
 logger = logging.getLogger("DSNUIBonsai")
 

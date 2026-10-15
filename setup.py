@@ -1,11 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="dsn-harness",
-    version="0.4.0",
-    description="General-purpose Agent Harness framework & embedded SDK",
+    name="aicf",
+    version="0.5.0",
+    description="AICF — Agent Infrastructure Cybernetics Framework",
     author="DSN Team",
-    packages=find_packages(include=["harness", "harness.*"]),
+    packages=find_packages(include=["harness", "harness.*", "infra", "infra.*"]),
     python_requires=">=3.10",
     install_requires=[
         "openai>=1.0.0",

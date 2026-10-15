@@ -3,7 +3,7 @@
 #
 # 背景：此前 ASR 模型是 boot.py 里一段裸的 AutoModel 构造（构建时即常驻显存，
 # 且没有任何释放路径）。本模块把它抽成可加载/可卸载的引擎对象，使其能够作为
-# 一种「进程内资源」接入 harness 资源池（harness/resources）。
+# 一种「进程内资源」接入 harness 资源池（infra/resources）。
 #
 # 关键约定（不可破坏）：
 #   load() 返回的必须是 **FunASR 原始模型对象本身**，绝不能是包装器/代理。
@@ -34,7 +34,7 @@ ASR_PUNC_MODEL_REVISION = "v2.0.4"
 class ASREngine:
     """FunASR 语音识别引擎（懒加载 + 幂等 + 可卸载）。
 
-    与 harness.orchestrator.local_engine.InProcessModelLauncher 配合使用：
+    与 infra.orchestrator.local_engine.InProcessModelLauncher 配合使用：
     launcher 负责线程与调度，本类只负责「如何构造 / 如何丢弃」模型对象。
     """
 

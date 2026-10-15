@@ -1,5 +1,5 @@
 # tests/test_harness_scheduler.py
-# 持久化任务调度器（harness/tasks/scheduler.py）单元测试。
+# 持久化任务调度器（infra/tasks/scheduler.py）单元测试。
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from harness.tasks import TaskScheduler
+from infra.tasks import TaskScheduler
 
 
 def test_schedule_one_shot_executes():

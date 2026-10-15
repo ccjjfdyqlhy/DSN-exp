@@ -41,7 +41,7 @@ def test_modes_unknown_raises():
 def test_subagent_split_and_run():
     import asyncio
 
-    from harness.models.base import ChatResponse
+    from infra.models.base import ChatResponse
 
     class FakeClient:
         model = "fake"
@@ -112,7 +112,7 @@ def test_file_watcher_detects_change(tmp_path):
 # ── AgentAssembler ──
 
 def test_assembler_smoke():
-    from harness.models.base import ChatResponse
+    from infra.models.base import ChatResponse
 
     class FakeClient:
         model = "fake"

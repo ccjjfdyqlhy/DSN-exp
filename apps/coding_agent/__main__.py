@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 
-from harness.models.openai import OpenAICompatClient
+from infra.models.openai import OpenAICompatClient
 
 
 def _build_client() -> OpenAICompatClient:

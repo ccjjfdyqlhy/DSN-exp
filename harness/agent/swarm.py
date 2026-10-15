@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ..models.base import ChatMessage, IChatClient
+from infra.models.base import ChatMessage, IChatClient
 from ..tools import Tool, ToolRegistry, ToolResult
 from .loop import AgentLoop
 

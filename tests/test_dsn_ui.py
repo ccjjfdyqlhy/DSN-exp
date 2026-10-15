@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from apps.dsn_ui.engine import DSNUIEngine
 from apps.dsn_ui.server import create_app
-from harness.orchestrator import ChatResponse, ModelOrchestrator
+from infra.orchestrator import ChatResponse, ModelOrchestrator
 
 
 @pytest.fixture

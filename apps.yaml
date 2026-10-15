@@ -1,10 +1,13 @@
-# apps.yaml — DSN-exp Harness 应用注册表（可选）
+# apps.yaml — AICF 应用注册表（可选）
 #
-# 启动器按此文件加载应用 → 入口映射；未出现于此处的内置应用也可用
-# （launcher.py 内置 dsn / coding_agent / text_agent）。
+# AICF（Agent Infrastructure Cybernetics Framework）启动器按此文件加载应用 → 入口映射；
+# 未出现于此处的内置应用也可用。
+# launcher.py 内置清单: dsn / coding_agent / text_agent / densechat / dsn_study
+# 本文件额外登记 dsn_ui / emotion_exp；合并语义为 setdefault（内置清单优先）。
 # 可用启动方式:
 #   python main.py --app <name>
 #   DSN_APP=<name> python main.py
+#   python main.py --list          # 列出可用应用
 #
 # 每个应用:
 #   entry:       可调用模块（提供 main()）

@@ -1,7 +1,7 @@
 # apps/dsn/models/scheduler.py
 # DSN 侧 ModelScheduler — harness 广义实现的薄封装。
 #
-# harness/models/scheduler.py 提供通用多模型编排（FIFO 队列 / 优先级驱逐 /
+# infra/models/scheduler.py 提供通用多模型编排（FIFO 队列 / 优先级驱逐 /
 # immediate 位移 / resident 常驻）；本模块只负责接线：
 #   - 从 DSN Config 读取插槽数 / 请求超时
 #   - 指向 DSN 的 model_profiles/ YAML 目录
@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from harness.models.scheduler import (
+from infra.models.scheduler import (
     ModelProfile,
     ModelScheduler as _HarnessModelScheduler,
     list_loaded_models as _get_loaded_models,
@@ -51,7 +51,7 @@ class ModelScheduler(_HarnessModelScheduler):
 
     def _auto_register_llama_profiles(self) -> None:
         """为 YAML profiles 中声明 engine: llama_cpp 的模型自动绑定 LlamaServerLauncher 进程钩子。"""
-        from harness.models.llamacpp import LlamaServerConfig, LlamaServerLauncher
+        from infra.models.llamacpp import LlamaServerConfig, LlamaServerLauncher
         for name, profile in self._profiles_by_name.items():
             if profile.engine in ("llama_cpp", "llamacpp") and profile.llama_config:
                 cfg = LlamaServerConfig.from_dict(profile.llama_config)

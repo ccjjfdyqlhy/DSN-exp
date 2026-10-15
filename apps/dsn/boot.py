@@ -429,7 +429,7 @@ def create_application():
 
     # ── 模型提供商注册表（harness 引擎） ──
     # dsn 对话/嵌入客户端以 harness 契约（IChatClient）接入，经 harness Runtime 解析。
-    from harness.models import ModelProviderRegistry
+    from infra.models import ModelProviderRegistry
     _model_provider = ModelProviderRegistry()
 
     def _make_dsn_chat(model_type: str):
@@ -596,7 +596,7 @@ def create_application():
             _root_logger.warning("Operation failed", exc_info=True)
     asr_model = None
     if app.config.get("ASR_ENABLED", True):
-        # ASR 现已作为「进程内资源」由资源池托管（harness/resources）。
+        # ASR 现已作为「进程内资源」由资源池托管（infra/resources）。
         # 注意：asr_model 必须绑定 **FunASR 原始模型对象**（下游直接调用
         # .generate()，见 apps/dsn/api/app.py、api/checkin.py），因此这里取的是
         # ASREngine.load() 的返回值本身，而不是任何包装器。
@@ -1011,7 +1011,7 @@ def create_application():
     # ── AppBundle 装配 ──
     # 把构建好的组件按"应用场景包"组织，并统一经网关挂载路由。
     from harness import AppBundleRegistry
-    from harness.gateway import FlaskGateway
+    from infra.gateway import FlaskGateway
     from apps.dsn.bundles import make_dsn_bundles
     from apps.dsn.settings import bind_dsn_settings
 

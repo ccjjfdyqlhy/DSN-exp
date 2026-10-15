@@ -16,12 +16,12 @@ from harness.agent import (
     ThreeZoneContext,
 )
 from harness.codegraph import GraphBuilder, find_callers, search_symbols
-from harness.models.base import ChatResponse
-from harness.models import ModelRouter  # 唯一实现在 harness.policy.router
-from harness.models.stub import StubChatClient
-from harness.observability import UsageTracker
+from infra.models.base import ChatResponse
+from infra.models import ModelRouter  # 唯一实现在 infra.policy.router
+from infra.models.stub import StubChatClient
+from infra.observability import UsageTracker
 from harness.pipeline.filters import OutputFilter
-from harness.store import SessionStore
+from infra.store import SessionStore
 from harness.tools import ToolRegistry, tool_from_function, tools_from_module
 
 
@@ -151,7 +151,7 @@ def test_prefetch_placeholders():
 def test_session_store_roundtrip():
     store = SessionStore(db_path=":memory:")
     sid = store.create_session()
-    from harness.models.base import ChatMessage
+    from infra.models.base import ChatMessage
     store.save_messages([ChatMessage.user("hi"), ChatMessage.assistant("yo")])
     msgs = store.load_messages(sid)
     assert len(msgs) == 2 and msgs[0].content == "hi"

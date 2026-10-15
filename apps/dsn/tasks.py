@@ -19,7 +19,7 @@ import schedule
 from apps.dsn.config import Config
 from apps.dsn.db.chat import ChatDBManager
 from apps.dsn.models import OpenAIChat
-from harness.tasks import TaskExecutor
+from infra.tasks import TaskExecutor
 
 
 class TaskType(Enum):
@@ -35,7 +35,7 @@ class TaskType(Enum):
 
 
 # 任务状态 / 优先级来自 harness 全局引擎（超集：状态含 MISSED/SKIPPED）
-from harness.tasks import TaskStatus, TaskPriority
+from infra.tasks import TaskStatus, TaskPriority
 
 
 class Task:
@@ -161,7 +161,7 @@ class TaskManager:
         self.scheduler_thread.start()
 
         # 任务类型 → 执行器分派经 harness TaskExecutorRegistry（DSN 引擎依赖 harness 任务引擎）
-        from harness.tasks import TaskExecutorRegistry
+        from infra.tasks import TaskExecutorRegistry
         self._exec_registry = TaskExecutorRegistry(max_workers=max_workers)
         for _ttype, _fn in (
             (TaskType.REASONER, self._execute_reasoner_task),

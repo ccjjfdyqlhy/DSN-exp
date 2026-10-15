@@ -128,7 +128,7 @@ def test_assemble_output_messages_and_tail():
 
 
 def test_assemble_accepts_chatmessage_tail():
-    from harness.models.base import ChatMessage
+    from infra.models.base import ChatMessage
 
     asm = SegmentedContextAssembler()
     msgs = asm.assemble([_memo("M")], tail=[ChatMessage.user("hi")])

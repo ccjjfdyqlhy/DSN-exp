@@ -1,11 +1,11 @@
 # tests/test_harness_policy.py
-# 策略层（harness/policy/*）单元测试：路由 / 计量 / 预算 / 预测 / 保活。
+# 策略层（infra/policy/*）单元测试：路由 / 计量 / 预算 / 预测 / 保活。
 
 from __future__ import annotations
 
 import pytest
 
-from harness.policy import (
+from infra.policy import (
     CacheWarmer,
     DurationPredictor,
     ModelConfig,

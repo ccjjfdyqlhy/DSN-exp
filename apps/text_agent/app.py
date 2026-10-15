@@ -13,7 +13,7 @@ from typing import Optional
 from harness import Runtime, Settings, Tool, ToolRegistry, Conversation
 from harness.agent import AgentLoop
 from harness.memory import InMemoryStore, MemoryEntry
-from harness.models.base import IChatClient, IEmbeddingClient
+from infra.models.base import IChatClient, IEmbeddingClient
 
 
 class TextAgentApp:

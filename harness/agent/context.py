@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from ..models.base import ChatMessage
+from infra.models.base import ChatMessage
 
 
 class ThreeZoneContext:

@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 from apps.coding_agent import CodingAgent
-from harness.models.base import ChatResponse, ToolCall
-from harness.models.stub import StubChatClient
+from infra.models.base import ChatResponse, ToolCall
+from infra.models.stub import StubChatClient
 
 
 def test_coding_agent_installs_tools():

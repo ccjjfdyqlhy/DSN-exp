@@ -24,9 +24,14 @@ logger = logging.getLogger("DSNUITools")
 class DSNUIToolCoordinator:
     """DSN-UI 工具注册与两阶段 toolbox 调度器（纯 harness 实现）。"""
 
-    def __init__(self, workspace_root: Path, max_output_chars: int = 6000):
+    def __init__(self, workspace_root: Path, max_output_chars: int = 6000,
+                 thought_cache: Optional[object] = None):
         self.workspace_root = workspace_root
         self.max_output_chars = max_output_chars
+        # 思考链缓存服务（ThoughtCacheService）：经 ToolDeps 注入给 cache.recall 工具。
+        # 由 server.py 在 create_app 里通过 set_thought_cache() 注入（agent.py 的
+        # 构造调用不变）。
+        self.thought_cache = thought_cache
         # 统一的构建入口：保证 tool_reg / index_source / toolbox 三者始终一致。
         self._rebuild()
         logger.info(
@@ -55,6 +60,7 @@ class DSNUIToolCoordinator:
             tool_deps = ToolDeps(
                 workspace=str(self.workspace_root),
                 max_output_chars=self.max_output_chars,
+                thought_cache=getattr(self, "thought_cache", None),
             )
             install_standard_tools(self.tool_reg, deps=tool_deps)
         except Exception as e:  # noqa: BLE001
@@ -87,6 +93,19 @@ class DSNUIToolCoordinator:
             )
             self.max_output_chars = new_val
             self._rebuild()
+
+    def set_thought_cache(self, thought_cache: object) -> None:
+        """注入/替换思考链缓存服务，并重建工具闭包使 cache.recall 拿到它。
+
+        必须在 create_app 装配完 ThoughtCacheService 后调用：agent.py 构造
+        DSNUIToolCoordinator 时服务尚不存在，因此这里用 setter 而不是构造参数。
+        """
+        self.thought_cache = thought_cache
+        self._rebuild()
+        logger.info(
+            "思考链缓存已注入工具系统: %s",
+            "已启用" if thought_cache is not None else "(未注入)",
+        )
 
     def tool_names(self) -> list[str]:
         return sorted(self.tool_reg.names())

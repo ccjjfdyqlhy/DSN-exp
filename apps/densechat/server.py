@@ -21,7 +21,7 @@ import uvicorn
 from dotenv import load_dotenv
 
 from apps.densechat.engine import DenseChatEngine, DenseChatSession
-from harness.models.base import ChatMessage
+from infra.models.base import ChatMessage
 
 COMMANDS = [
     {"cmd": "/mode", "desc": "Switch agent / oneshot mode"},
@@ -52,7 +52,7 @@ GROUP_CHAT_PROFILE = "random"
 
 def _resolve_identity(engine: DenseChatEngine, token: str) -> "Identity":
     """解析 WebSocket 连接身份：有效 token → 用户；否则匿名。"""
-    from harness.auth import Identity
+    from infra.auth import Identity
     if token:
         user = engine.users.resolve_token(token)
         if user is not None:

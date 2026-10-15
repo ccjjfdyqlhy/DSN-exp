@@ -120,11 +120,11 @@ class ExperienceImporter:
             if hasattr(chat, 'send_message'):
                 reply = chat.send_message(prompt)
             elif hasattr(chat, 'invoke'):
-                from harness.models.base import ChatMessage
+                from infra.models.base import ChatMessage
                 resp = chat.invoke([ChatMessage(role="user", content=prompt)], temperature=temperature, max_tokens=max_tokens)
                 reply = resp.content or ""
             elif hasattr(chat, 'complete'):
-                from harness.models.base import ChatMessage
+                from infra.models.base import ChatMessage
                 resp = chat.complete([ChatMessage(role="user", content=prompt)])
                 reply = resp.content or ""
             else:

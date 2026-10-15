@@ -120,7 +120,7 @@ class TextExtractTool:
             except Exception:
                 pass
         try:
-            from harness.models import OpenAICompatClient, ChatMessage
+            from infra.models import OpenAICompatClient, ChatMessage
             import os
             api_key = os.environ.get("OPENAI_API_KEY", "")
             api_base = os.environ.get("OPENAI_API_BASE", "https://api.deepseek.com/v1")

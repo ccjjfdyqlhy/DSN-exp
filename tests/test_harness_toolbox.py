@@ -101,7 +101,7 @@ def test_toolbox_legacy_converter():
 
 def test_toolbox_object_calls_supported():
     """兼容 harness ToolCall 对象形态（id/name/arguments 属性）。"""
-    from harness.models.base import ToolCall
+    from infra.models.base import ToolCall
 
     m = ToolboxManager(RegistryIndexSource(_registry(2)))
     calls = [ToolCall(id="t1", name="toolbox", arguments={"ids": ["skill.demo0"]})]
@@ -116,7 +116,7 @@ def test_toolbox_agentloop_integration_smoke():
     import asyncio
 
     from harness.agent import AgentLoop
-    from harness.models.base import ChatMessage, ChatResponse, ToolCall
+    from infra.models.base import ChatMessage, ChatResponse, ToolCall
 
     reg = _registry(2)
     seen_schemas: list[list[dict]] = []

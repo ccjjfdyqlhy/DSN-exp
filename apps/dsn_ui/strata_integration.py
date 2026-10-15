@@ -12,7 +12,7 @@
          --config strata-coder-iq1_m.json --port 8080 --open
 
 harness 侧把它当作与 llama.cpp 同构的**本地推理引擎**：由
-`harness.orchestrator.StrataServerLauncher` 托管子进程（就绪探针、
+`infra.orchestrator.StrataServerLauncher` 托管子进程（就绪探针、
 SIGTERM→SIGKILL、显存回收），并由 ModelScheduler 统一做插槽调度。
 
 ## 发现规则
@@ -35,7 +35,7 @@ import logging
 import socket
 from pathlib import Path
 
-from harness.orchestrator import (
+from infra.orchestrator import (
     ModelSourceType,
     StrataEngineConfig,
     build_engine_config,

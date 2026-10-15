@@ -15,8 +15,8 @@ from __future__ import annotations
 from apps.dsn_ui.agent import extract_last_user_turn
 from apps.dsn_ui.integration_api import openai_content_to_parts
 from apps.dsn_ui.topic_manager import DSNUITopicContextManager
-from harness.orchestrator.base import count_image_parts
-from harness.orchestrator.local_chat import OpenAICompatChat
+from infra.orchestrator.base import count_image_parts
+from infra.orchestrator.local_chat import OpenAICompatChat
 
 IMG = "data:image/png;base64," + "A" * 512
 

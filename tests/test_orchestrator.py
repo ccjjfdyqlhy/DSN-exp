@@ -7,7 +7,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from harness.orchestrator import (
+from infra.orchestrator import (
     ChatMessage,
     ChatResponse,
     IChatClient,

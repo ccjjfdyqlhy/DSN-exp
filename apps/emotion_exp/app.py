@@ -9,9 +9,9 @@ from typing import Any, Dict, Optional
 from harness import AgentRuntime, Runtime, Settings, Tool, ToolRegistry
 from harness.agent import AgentLoop
 from harness.context_assembly import ContextBudget
-from harness.models.base import ChatMessage, IChatClient, IEmbeddingClient
+from infra.models.base import ChatMessage, IChatClient, IEmbeddingClient
 from harness.personality import PersonalitySystemV3, CharacterCard
-from harness.store.sqlite import SqliteStore
+from infra.store.sqlite import SqliteStore
 
 from .emotion_engine import EmotionEngine, EmotionalState
 from .topic_manager import HarnessTopicContextManager, TopicStore

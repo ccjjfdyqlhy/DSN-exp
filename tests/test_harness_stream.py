@@ -9,7 +9,7 @@ import pytest
 
 from harness import ToolRegistry
 from harness.agent import AgentLoop, StreamEvent
-from harness.models.base import ChatMessage, ChatResponse
+from infra.models.base import ChatMessage, ChatResponse
 
 
 class StreamingClient:

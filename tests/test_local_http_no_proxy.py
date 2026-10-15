@@ -16,8 +16,8 @@ import threading
 import pytest
 import requests
 
-from harness.orchestrator.base import local_http_session
-from harness.orchestrator.local_engine import LocalServerLauncher
+from infra.orchestrator.base import local_http_session
+from infra.orchestrator.local_engine import LocalServerLauncher
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):

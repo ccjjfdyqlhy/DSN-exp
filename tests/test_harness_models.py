@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
-from harness.models import IChatClient, ChatMessage, ChatResponse, ModelProviderRegistry
+from infra.models import IChatClient, ChatMessage, ChatResponse, ModelProviderRegistry
 
 
 def test_dsn_openai_chat_conforms_ichatclient():

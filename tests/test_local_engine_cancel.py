@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from harness.orchestrator.local_engine import (
+from infra.orchestrator.local_engine import (
     LaunchCancelled,
     LocalServerLauncher,
 )

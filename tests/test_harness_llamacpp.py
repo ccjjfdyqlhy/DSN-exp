@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from harness.models import (
+from infra.models import (
     IChatClient,
     IEmbeddingClient,
     ChatMessage,
@@ -20,13 +20,13 @@ from harness.models import (
     ToolCall,
     ModelProviderRegistry,
 )
-from harness.models.llamacpp import (
+from infra.models.llamacpp import (
     LlamaServerConfig,
     LlamaServerLauncher,
     LlamaCppChat,
     LlamaCppEmbeddingClient,
 )
-from harness.models.scheduler import ModelScheduler
+from infra.models.scheduler import ModelScheduler
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -133,7 +133,7 @@ def test_launcher_start_and_ready(mock_popen, mock_exists, mock_access, mock_isf
     # 模拟 health 返回 200
     # 注意：就绪探针走 local_probe_session().get(...)，不是 requests.get ——
     # 本地引擎必须绕开 ALL_PROXY，否则探针会被代理接管而永远失败。
-    with patch("harness.orchestrator.local_engine.local_probe_session") as mock_session:
+    with patch("infra.orchestrator.local_engine.local_probe_session") as mock_session:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_session.return_value.get.return_value = mock_resp

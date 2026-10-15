@@ -1,5 +1,5 @@
 # apps/dsn_ui/engine.py
-"""DSN-UI 后端引擎：连接 harness.orchestrator、AgentCoordinator 与前端通信。"""
+"""DSN-UI 后端引擎：连接 infra.orchestrator、AgentCoordinator 与前端通信。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from apps.dsn_ui.agent import DSNUIAgentCoordinator
-from harness.orchestrator import (
+from infra.orchestrator import (
     ChatMessage,
     ChatResponse,
     LlamaServerConfig,

@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from harness.models.openai import OpenAICompatClient
-from harness.models.stub import StubChatClient
+from infra.models.openai import OpenAICompatClient
+from infra.models.stub import StubChatClient
 from .app import EmotionExpAgent
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,7 +24,7 @@ def _build_client():
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         print("[提示] 未检测到 OPENAI_API_KEY，使用本地 Stub 测试模型。")
-        from harness.models.base import ChatResponse
+        from infra.models.base import ChatResponse
         return StubChatClient(responses=[
             ChatResponse(content="你好！我感受到了你的问候，今天有什么想聊的吗？"),
             ChatResponse(content="听到这件事我为你感到高兴！"),

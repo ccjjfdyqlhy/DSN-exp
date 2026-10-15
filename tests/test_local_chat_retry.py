@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 import requests
 
-from harness.orchestrator.local_chat import (
+from infra.orchestrator.local_chat import (
     DEFAULT_STREAM_RETRIES,
     OpenAICompatChat,
     _is_retryable_connection_error,

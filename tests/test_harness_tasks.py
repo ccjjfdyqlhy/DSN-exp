@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from harness.tasks import (
+from infra.tasks import (
     Task, TaskStatus, TaskPriority, TaskExecutor, TaskExecutorRegistry,
     TaskManagerPort,
 )

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from harness.settings import Settings
+from infra.settings import Settings
 
 # attr -> (env_key, default, converter)
 _BOOL = "bool"

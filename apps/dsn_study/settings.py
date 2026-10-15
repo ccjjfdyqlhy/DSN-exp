@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from harness.settings import Settings
+from infra.settings import Settings
 
 _BOOL = "bool"
 _INT = "int"

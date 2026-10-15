@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
-from ..models.base import ChatMessage, ChatResponse, ToolCall
+from infra.models.base import ChatMessage, ChatResponse, ToolCall
 
 
 @dataclass

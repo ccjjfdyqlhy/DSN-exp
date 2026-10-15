@@ -24,14 +24,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ..models.base import IChatClient, IEmbeddingClient
-from ..runtime import Runtime
+from infra.models.base import IChatClient, IEmbeddingClient
+from infra.runtime import Runtime
 from ..tools import ToolRegistry
 from ..tools.toolbox import ToolboxManager
 from ..tools.standard import ToolDeps, install_standard_tools
 from ..memory import InMemoryStore, MemoryEntry
 from ..conversation import Conversation, ConversationManager
-from ..policy import ModelRouter, ModelConfig, TokenMeter, TokenBudget, DurationPredictor
+from infra.policy import ModelRouter, ModelConfig, TokenMeter, TokenBudget, DurationPredictor
 from ..prompts import PromptEngine
 from .loop import AgentLoop
 
@@ -77,7 +77,7 @@ class AssembledAgent:
         loop = self.loop
         if mode and hasattr(loop, "client"):
             pass  # 路由选择由调用方结合 client 工厂使用
-        result = loop.run([__import__("harness.models.base", fromlist=["ChatMessage"]).ChatMessage.user(message)])
+        result = loop.run([__import__("infra.models.base", fromlist=["ChatMessage"]).ChatMessage.user(message)])
         if self.meter is not None:
             self.meter.record({}, model=mode or "flash")  # 占位：真实 usage 由 client 回填
         return result.reply

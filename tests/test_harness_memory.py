@@ -9,7 +9,7 @@ from harness.memory import (
     MemoryEntry, IMemoryStore, MemoryStorePort, InMemoryStore, VectorIndex,
     cosine_similarity, pack_embedding, unpack_embedding,
 )
-from harness.models.stub import StubEmbeddingClient
+from infra.models.stub import StubEmbeddingClient
 
 
 def test_vector_primitives_roundtrip():

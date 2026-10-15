@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .base import Tool, ToolRegistry
+from .base import Tool, ToolRegistry, ToolResult
 
 NL = chr(10)
 
@@ -37,7 +37,7 @@ NL = chr(10)
 # ── 依赖容器 ──
 
 class ToolDeps:
-    """工具依赖注入：workspace / shell / codegraph / fetcher。
+    """工具依赖注入：workspace / shell / codegraph / fetcher / thought_cache。
 
     未注入的能力自动降级（工具返回带提示的错误或空结果）。
     """
@@ -48,6 +48,9 @@ class ToolDeps:
         self.fetcher: Any = kwargs.get("fetcher")       # web 抓取器
         self.tool_registry: Any = kwargs.get("tool_registry")  # ToolRegistry（batch.run 解析 fn 用）
         self.max_output_chars: int = kwargs.get("max_output_chars", 6000)
+        # 思路模板缓存服务（apps/dsn_ui/thought_cache.py 的 ThoughtCacheService）。
+        # 未注入时 cache.recall 优雅降级为 hits: 0，不抛异常。
+        self.thought_cache: Any = kwargs.get("thought_cache")
 
 
 # ── 文件工具 ──
@@ -583,6 +586,47 @@ def tool_code_diagnose(deps: ToolDeps):
     return run
 
 
+# ── 思考链缓存工具 ──
+
+def tool_cache_recall(deps: ToolDeps):
+    """检索「思路模板」缓存（cache.recall）。
+
+    服务不可用/检索异常时优雅降级为 hits: 0，绝不抛异常打崩 AgentLoop。
+    """
+    def run(query: str, limit: Optional[int] = None):
+        svc = getattr(deps, "thought_cache", None)
+        if svc is None:
+            return ToolResult.ok(
+                "思路模板缓存不可用（未注入 thought_cache）。",
+                hits=0, templates=[])
+        try:
+            templates = svc.recall(query, limit=limit)
+        except Exception as e:  # noqa: BLE001
+            return ToolResult.ok(f"检索思路模板失败：{e}", hits=0, templates=[])
+        if not templates:
+            return ToolResult.ok(
+                "未找到相似思路模板，可自行探索；本轮完成后系统会自动蒸馏新的模板。",
+                hits=0, templates=[])
+        lines = [f"命中 {len(templates)} 条思路模板（按相关度排序）："]
+        for t in templates:
+            steps = t.get("steps") or []
+            step_txt = " -> ".join(
+                (str(s.get("tool") or "?"))
+                + (f"（{s.get('why')}）" if s.get("why") else "")
+                for s in steps if isinstance(s, dict)
+            ) or "(无工具步骤)"
+            tools = ", ".join(t.get("tools") or []) or "-"
+            lines.append(
+                f"- [{str(t.get('id') or '')[:8]}] "
+                f"{t.get('intent') or t.get('task_signature') or '(未命名)'}\n"
+                f"    tools: {tools}\n"
+                f"    最短路径: {step_txt}\n"
+                f"    notes: {t.get('notes') or '-'}"
+            )
+        return ToolResult.ok("\n".join(lines), hits=len(templates), templates=templates)
+    return run
+
+
 # ── 安装器 ──
 
 def install_standard_tools(registry: ToolRegistry, *,
@@ -612,6 +656,7 @@ def install_standard_tools(registry: ToolRegistry, *,
         "project.snapshot": tool_project_snapshot(deps),
         "project.todo": tool_project_todo(deps),
         "batch.run": tool_batch_run(deps),
+        "cache.recall": tool_cache_recall(deps),
     }
     tool_meta: dict[str, tuple[str, dict]] = {
         "file.read": ("读取文本文件（截断时返回 total_lines/truncated/warning，编辑前请读完整或用 file.edit+match）",
@@ -691,6 +736,13 @@ def install_standard_tools(registry: ToolRegistry, *,
                       {"type": "object", "properties": {
                           "items": {"type": "array"}, "fn": {"type": "string"}},
                        "required": ["items"]}),
+        "cache.recall": ("检索「思路模板」缓存：针对相似任务返回此前蒸馏出的最短处理路径。",
+                         {"type": "object", "properties": {
+                             "query": {"type": "string",
+                                       "description": "任务文本/意图（必填）"},
+                             "limit": {"type": "integer",
+                                       "description": "最多返回条数（可选）"}},
+                          "required": ["query"]}),
     }
     registered: list[Tool] = []
     for name, handler in builders.items():

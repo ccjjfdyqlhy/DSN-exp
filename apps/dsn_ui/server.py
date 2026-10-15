@@ -40,7 +40,7 @@ import uvicorn
 
 from apps.dsn_ui.config import API_MODES, UIConfig
 from apps.dsn_ui.engine import DSNUIEngine
-from harness.orchestrator.base import content_shape, count_image_parts
+from infra.orchestrator.base import content_shape, count_image_parts
 from apps.dsn_ui.stream_sessions import registry as stream_registry
 from apps.dsn_ui.logging_setup import (
     get_request_id,
@@ -49,7 +49,7 @@ from apps.dsn_ui.logging_setup import (
     set_request_id,
     setup_logging,
 )
-from harness.orchestrator import ChatMessage, LlamaServerConfig
+from infra.orchestrator import ChatMessage, LlamaServerConfig
 
 logger = logging.getLogger("DSNUIServer")
 
@@ -258,7 +258,7 @@ def _probe_server_modalities(model_name: str, spec) -> Optional[dict]:
     if not base_url:
         return None
     try:
-        from harness.orchestrator.base import local_probe_session
+        from infra.orchestrator.base import local_probe_session
         headers = {}
         api_key = getattr(spec, "api_key", None)
         if api_key:
@@ -298,7 +298,7 @@ def _lmstudio_vision(spec) -> Optional[bool]:
     if not _endpoint_reachable(base_url):
         return None
     try:
-        from harness.orchestrator.base import local_probe_session
+        from infra.orchestrator.base import local_probe_session
         resp = local_probe_session().get(
             f"{base_url.rstrip('/')}/props",
             params={"model": target},
@@ -511,6 +511,21 @@ def _input_modalities(model_name: str, orchestrator) -> list[str]:
     return _modalities_from_flags(flags)
 
 
+def _extract_last_user_text(messages_raw: Optional[list]) -> str:
+    """取最后一条 user 消息的纯文本（多模态 content parts 时拼接 text 部分）。"""
+    for m in reversed(messages_raw or []):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list):
+            return " ".join(
+                str(p.get("text") or "") for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ).strip()
+        return str(content or "").strip()
+    return ""
+
+
 def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     def _on_topic_converged(topic_id: str, title: str):
         loop = None
@@ -587,6 +602,90 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
     engine.orchestrator.add_status_listener(_on_orchestrator_status_change)
 
+    # ── 思考链缓存（思路模板）──
+    # 单后台守护线程串行蒸馏；/v1/chat/completions 在轮次结束后只做入队，
+    # 不阻塞/不延迟 HTTP 响应。服务失败绝不能阻塞 UI 启动。
+    try:
+        from apps.dsn_ui.thought_cache import ThoughtCacheService
+
+        engine.thought_cache = ThoughtCacheService(
+            orchestrator=engine.orchestrator, settings=engine.agent,
+        )
+
+        def _emit_thought_cache(payload: dict) -> None:
+            """把 {state,message_id,conv_id,count,queue_depth} 作为 thought_cache 事件
+            投递到 /models/sse。可能来自工作线程，_schedule_broadcast 已做线程切换。"""
+            try:
+                _schedule_broadcast(
+                    "thought_cache", str(payload.get("message_id") or ""), dict(payload)
+                )
+            except Exception as e:  # noqa: BLE001
+                log_exception(logger, "广播 thought_cache 事件失败", e)
+
+        engine.thought_cache.set_emitter(_emit_thought_cache)
+        engine.thought_cache.start()
+        # 把服务注入工具系统，使 cache.recall 能检索本服务。
+        try:
+            engine.agent.tool_coordinator.set_thought_cache(engine.thought_cache)
+        except Exception as e:  # noqa: BLE001
+            log_exception(logger, "注入思考链缓存到工具系统失败", e)
+    except Exception as e:  # noqa: BLE001
+        engine.thought_cache = None
+        log_exception(logger, "初始化思考链缓存失败（功能不可用）", e)
+
+    def _enqueue_thought_cache(*, conv_id: str, message_id: str, user_text: str,
+                               tool_calls: list, tool_results: list, reply: str,
+                               model: str) -> None:
+        """轮次结束后把上下文 + 工具链交给思考链缓存蒸馏（仅入队，立即返回）。"""
+        try:
+            svc = getattr(engine, "thought_cache", None)
+            if svc is None or not tool_calls:
+                return
+            by_call = {
+                str(r.get("call_id")): r
+                for r in (tool_results or []) if isinstance(r, dict)
+            }
+            chain_lines: List[str] = []
+            for i, call in enumerate(tool_calls):
+                if not isinstance(call, dict):
+                    continue
+                name = call.get("name") or "?"
+                args = call.get("arguments")
+                if not isinstance(args, str):
+                    try:
+                        args = json.dumps(args, ensure_ascii=False)
+                    except Exception:  # noqa: BLE001
+                        args = str(args)
+                chain_lines.append(f"[tool] {name}({args})")
+                res = by_call.get(str(call.get("id"))) or (
+                    tool_results[i] if i < len(tool_results or []) else None
+                )
+                if isinstance(res, dict):
+                    out = res.get("output")
+                    if not isinstance(out, str):
+                        try:
+                            out = json.dumps(out, ensure_ascii=False)
+                        except Exception:  # noqa: BLE001
+                            out = str(out)
+                    chain_lines.append(
+                        f"[result] success={res.get('success')} {str(out)[:800]}"
+                    )
+            context = f"用户请求: {user_text or '(未知)'}\n\n最终回复: {reply or ''}"
+            job_id = svc.enqueue_distill(
+                conv_id=conv_id,
+                message_id=message_id,
+                context=context,
+                chain="\n".join(chain_lines),
+                model=model,
+            )
+            if job_id:
+                logger.info(
+                    "已入队思路蒸馏: conv=%s job=%s tools=%d",
+                    conv_id, job_id, len(tool_calls),
+                )
+        except Exception as e:  # noqa: BLE001 - 入队失败绝不能影响对话
+            logger.warning("入队思路蒸馏失败: %s", e)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # 周期性回收已结束的流会话（供重连回放的 TTL 缓冲）。
@@ -615,6 +714,11 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             except asyncio.CancelledError:
                 pass
             logger.info("DSN-UI 正在关闭，释放所有模型与子进程...")
+            try:
+                if getattr(engine, "thought_cache", None) is not None:
+                    engine.thought_cache.shutdown()
+            except Exception as e:  # noqa: BLE001 - 关闭失败不得阻塞退出
+                log_exception(logger, "关闭思考链缓存失败", e)
             engine.orchestrator.shutdown()
 
     app = FastAPI(title="DSN-exp UI & Model Orchestrator", version="1.0.0", lifespan=lifespan)
@@ -1127,10 +1231,22 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         }],
                     }, ensure_ascii=False) + "\n\n")
 
+                # 思考链缓存采集：本轮的最终文本 + 工具调用/结果，仅供轮次结束后
+                # 异步入队蒸馏（见下方 _enqueue_thought_cache）。
+                tc_reply_parts: List[str] = []
+                tc_tool_calls: List[dict] = []
+                tc_tool_results: List[dict] = []
+
                 async for chunk in agen:
                     chunk_count += 1
                     ctype = chunk.get("type")
                     ctype_counts[ctype] = ctype_counts.get(ctype, 0) + 1
+                    if ctype == "delta":
+                        tc_reply_parts.append(chunk.get("content") or "")
+                    elif ctype == "tool_call":
+                        tc_tool_calls.append(chunk.get("tool_call") or {})
+                    elif ctype == "tool_result":
+                        tc_tool_results.append(chunk.get("tool_result") or {})
                     # 逐事件调试日志：能用 DSN_UI_LOG_LEVEL=DEBUG 打开，
                     # 精确定位是「哪一类事件之后」开始出问题。
                     if logger.isEnabledFor(logging.DEBUG):
@@ -1367,6 +1483,23 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     "SSE 正常完成: chunks=%d elapsed=%.2fs",
                     chunk_count, time.time() - started,
                 )
+
+                # 轮次完成 → 异步入队思路蒸馏。execution_mode 下才有工具链；
+                # 只入队：不等待蒸馏、不延迟响应收尾。
+                if execution_mode and tc_tool_calls:
+                    _enqueue_thought_cache(
+                        conv_id=conv_id,
+                        message_id=str(
+                            body.get("message_id")
+                            or body.get("client_message_id")
+                            or f"turn-{uuid.uuid4().hex[:12]}"
+                        ),
+                        user_text=_extract_last_user_text(messages_raw),
+                        tool_calls=tc_tool_calls,
+                        tool_results=tc_tool_results,
+                        reply="".join(tc_reply_parts),
+                        model=model_name,
+                    )
             except asyncio.CancelledError:
                 # 客户端主动断开不应被当成推理失败，但要留下痕迹便于排查"假死"。
                 logger.warning(
@@ -1689,6 +1822,92 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             "context_trigger_ratio": engine.agent.get_context_trigger_ratio(),
             "summary_model": engine.agent.get_summary_model() or "",
         }
+
+    # ── 6.7 思考链缓存（思路模板）API ──
+    # 全部 handler 都薄：async + 委托 to_thread 调用服务，绝不阻塞事件循环。
+
+    def _thought_cache_service():
+        return getattr(engine, "thought_cache", None)
+
+    def _thought_cache_down():
+        return JSONResponse(status_code=503, content={"error": "思考链缓存不可用"})
+
+    async def _thought_cache_body(req: Request) -> dict:
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    @app.get("/api/thought-cache/status")
+    async def thought_cache_status():
+        svc = _thought_cache_service()
+        if svc is None:
+            return _thought_cache_down()
+        return await asyncio.to_thread(svc.status)
+
+    @app.get("/api/thought-cache/templates")
+    async def thought_cache_templates(limit: int = 50, offset: int = 0, q: Optional[str] = None):
+        svc = _thought_cache_service()
+        if svc is None:
+            return _thought_cache_down()
+        total, items = await asyncio.to_thread(svc.list_templates, limit, offset, q)
+        return {"total": total, "items": items}
+
+    @app.delete("/api/thought-cache/templates/{template_id}")
+    async def thought_cache_delete_template(template_id: str):
+        svc = _thought_cache_service()
+        if svc is None:
+            return _thought_cache_down()
+        ok = await asyncio.to_thread(svc.delete_template, template_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="思路模板不存在")
+        return {"status": "ok"}
+
+    @app.post("/api/thought-cache/config")
+    async def thought_cache_update_config(req: Request):
+        svc = _thought_cache_service()
+        if svc is None:
+            return _thought_cache_down()
+        body = await _thought_cache_body(req)
+        cfg = await asyncio.to_thread(svc.update_config, **body)
+        return {"status": "ok", "config": cfg}
+
+    @app.post("/api/thought-cache/distill")
+    async def thought_cache_manual_distill(req: Request):
+        """手动触发一次蒸馏（force=True 跳过 min_tool_calls 门槛）。"""
+        svc = _thought_cache_service()
+        if svc is None:
+            return _thought_cache_down()
+        body = await _thought_cache_body(req)
+        context = str(body.get("context") or "")
+        chain = str(body.get("chain") or "")
+        if not context.strip() and not chain.strip():
+            raise HTTPException(status_code=400, detail="context 与 chain 至少提供一个")
+        model = str(body.get("model") or "").strip() or None
+        job_id = await asyncio.to_thread(
+            svc.enqueue_distill,
+            str(body.get("conv_id") or ""),
+            str(body.get("message_id") or f"manual-{uuid.uuid4().hex[:12]}"),
+            context,
+            chain,
+            model,
+            True,
+        )
+        return {"status": "ok", "queued": bool(job_id), "job_id": job_id}
+
+    @app.post("/api/thought-cache/recall")
+    async def thought_cache_recall(req: Request):
+        svc = _thought_cache_service()
+        if svc is None:
+            return _thought_cache_down()
+        body = await _thought_cache_body(req)
+        query = str(body.get("query") or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="缺少 query")
+        limit = body.get("limit")
+        templates = await asyncio.to_thread(svc.recall, query, limit)
+        return {"hits": len(templates), "templates": templates}
 
     # ── 7. 本地系统资源与显存监控 API ──
 
@@ -2043,7 +2262,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         model = _require_local_model(model)
         spec = engine.orchestrator._specs[model]
         if spec.strata_config is not None:
-            from harness.orchestrator import StrataEngineConfig
+            from infra.orchestrator import StrataEngineConfig
             try:
                 fresh = StrataEngineConfig.load(spec.strata_config.resolved_config_path())
             except (OSError, ValueError) as e:
@@ -2399,6 +2618,25 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         logger.info("ASR API 已启用: POST /api/asr/recognize")
     except Exception as e:  # noqa: BLE001
         log_exception(logger, "挂载 ASR API 失败", e)
+
+    # ── 9.11 实例接入 API（配置新实例：模型 / API Provider / TTS 载荷与测试）──
+    # 同样必须在 SPA catch-all 之前注册。
+    try:
+        from apps.dsn_ui.onboarding_api import register_onboarding_routes
+
+        register_onboarding_routes(app, engine)
+        logger.info("实例接入 API 已启用: /api/onboarding/*, /api/tts/*")
+    except Exception as e:  # noqa: BLE001
+        log_exception(logger, "挂载实例接入 API 失败", e)
+
+    # ── 9.12 Agent 运行时面板 API ──
+    try:
+        from apps.dsn_ui.agent_runtime_api import register_agent_runtime_routes
+
+        register_agent_runtime_routes(app, engine)
+        logger.info("Agent 运行时 API 已启用: /api/agent-runtime/*")
+    except Exception as e:  # noqa: BLE001
+        log_exception(logger, "挂载 Agent 运行时 API 失败", e)
 
     # ── 10. 静态资源与 SPA 路由 ──
 

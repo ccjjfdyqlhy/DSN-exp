@@ -18,8 +18,8 @@ from apps.dsn_ui.tools import DSNUIToolCoordinator
 from apps.dsn_ui.topic_manager import DSNUITopicContextManager, DSNUITopicStore
 from harness.agent.loop import AgentLoop, StreamEvent
 from harness.agent.adapters import NativeToolCallAdapter
-from harness.orchestrator.base import content_shape, count_image_parts
-from harness.orchestrator import (
+from infra.orchestrator.base import content_shape, count_image_parts
+from infra.orchestrator import (
     ChatMessage,
     ChatResponse,
     IChatClient,
@@ -27,7 +27,7 @@ from harness.orchestrator import (
     ToolCall,
 )
 from harness.personality import PersonalitySystemV3
-from harness.store.sqlite import SqliteStore
+from infra.store.sqlite import SqliteStore
 
 from apps.dsn_ui.logging_setup import log_exception
 

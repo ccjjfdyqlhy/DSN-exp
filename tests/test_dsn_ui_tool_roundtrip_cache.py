@@ -66,7 +66,7 @@ def test_conversation_messages_replace_client_system():
 
 
 def test_conversation_messages_preserve_multimodal():
-    from harness.orchestrator.base import count_image_parts
+    from infra.orchestrator.base import count_image_parts
 
     raw = [{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},

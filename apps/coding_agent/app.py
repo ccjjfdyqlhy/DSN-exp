@@ -10,9 +10,9 @@ from typing import Optional
 
 from harness import AgentRuntime
 from harness.agent import ThreeZoneContext
-from harness.models.base import ChatMessage, IChatClient, IEmbeddingClient
-from harness.observability import UsageTracker
-from harness.store import SessionStore
+from infra.models.base import ChatMessage, IChatClient, IEmbeddingClient
+from infra.observability import UsageTracker
+from infra.store import SessionStore
 from .skills import install_coding_tools
 
 
