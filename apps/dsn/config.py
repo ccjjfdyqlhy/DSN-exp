@@ -219,6 +219,31 @@ class Config:
     TTS_PROBE_BACKOFF_BASE = max(0.0, float(_env("TTS_PROBE_BACKOFF_BASE", "2.0")))
     TTS_PROBE_BACKOFF_MAX = max(TTS_PROBE_BACKOFF_BASE, float(_env("TTS_PROBE_BACKOFF_MAX", "8.0")))
     TTS_FAST_FIRST_LINE = _env("TTS_FAST_FIRST_LINE", "true").lower() == "true"
+    # 是否允许资源池自行拉起 TTS 服务进程。默认 True = 托管模式：
+    # 资源池负责启动/停止 GPT-SoVITS 服务，实现"可托管"。
+    # 设为 false 则退化为 adopt 模式：只探测既有服务，绝不拉起也绝不杀死。
+    TTS_AUTOSTART = _env("TTS_AUTOSTART", "true").lower() == "true"
+    TTS_DEVICE = _env("TTS_DEVICE", "cuda")
+    # GPT-SoVITS 服务监听端口（须与 TTS_BASE_URL 中的端口一致）。
+    TTS_PORT = max(1, int(_env("TTS_PORT", "9880")))
+    # 可选的物理 GPU 编号（如 "0"）。仅用于给 TTS 子进程设置
+    # CUDA_VISIBLE_DEVICES；**不要**写 "cuda"，那不是合法的设备索引。
+    # 留空 = 不限制，由服务端自行选择（config.py 会挑显存最大的卡）。
+    TTS_GPU_ID = _env("TTS_GPU_ID", "")
+    # GPT-SoVITS 首次启动需加载 GPT + SoVITS 权重，耗时较长，超时给足。
+    TTS_LOAD_TIMEOUT = max(1, int(_env("TTS_LOAD_TIMEOUT", "300")))
+    # 服务端工作目录（api.py 所在目录）。
+    TTS_SERVER_DIR = _env("TTS_SERVER_DIR", "/home/darkstar/TTS")
+    # 启动 TTS 服务所用的 Python 解释器；留空则使用当前解释器。
+    TTS_PYTHON = _env("TTS_PYTHON", "") or None
+    # 启动前预检：TTS_SERVER_DIR/api.py 是否存在。
+    TTS_PREFLIGHT = _env("TTS_PREFLIGHT", "true").lower() == "true"
+    ASR_LOAD_TIMEOUT = max(1, int(_env("ASR_LOAD_TIMEOUT", "300")))
+    # 外周任务专用任务槽数量：只约束 ASR/TTS 等外周算力资源，
+    # 与 LLM 的显存并发插槽（MAX_CONCURRENT_LM_MODELS）完全隔离、互不驱逐。
+    PERIPHERAL_TASK_SLOTS = max(1, int(_env("PERIPHERAL_TASK_SLOTS", "2")))
+    # 兼容旧键名（等价于 PERIPHERAL_TASK_SLOTS）。
+    RESOURCE_POOL_SLOTS = max(1, int(_env("RESOURCE_POOL_SLOTS", str(PERIPHERAL_TASK_SLOTS))))
 
     # ── TTS 文本预处理 ──
     TTS_PROCESS_ENABLED = _env("TTS_PROCESS_ENABLED", "true").lower() == "true"

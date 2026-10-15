@@ -29,6 +29,18 @@ class DSNUIEngine:
     ):
         self.orchestrator = ModelOrchestrator.get_instance(max_concurrent_slots=max_concurrent_slots)
         self.workspace_root = Path(__file__).resolve().parent.parent.parent
+        # 第三方 API Provider 的持久化存储。此前 provider_store 被 9 处读取，
+        # 却从未赋值 / 实例化，导致 /api/providers* 全部 AttributeError → 500，
+        # 用户无法配置任何第三方 API 模型。数据目录与 _launch_overrides_file()
+        # 使用同一约定（apps/dsn_ui/data/）。
+        from apps.dsn_ui.api_providers import APIProviderStore
+
+        self.provider_store = APIProviderStore(
+            self.workspace_root / "apps" / "dsn_ui" / "data"
+        )
+        # 外周资源池（ASR / TTS）：由 create_app() 在启动时装配。这里先声明，
+        # 保证即使装配失败属性也始终存在（None = 外周功能不可用）。
+        self.resource_pool: Optional[Any] = None
         self.agent = DSNUIAgentCoordinator(
             orchestrator=self.orchestrator,
             workspace_root=self.workspace_root,
@@ -38,6 +50,12 @@ class DSNUIEngine:
         # 在 profile 注册完成后，重新套用用户保存过的启动参数覆盖，
         # 使「保存为预设」的设置跨重启持续生效。
         self._apply_saved_launch_overrides()
+        # 重新注册持久化的第三方 API Provider：main() 从不调用 reload，
+        # 因此重启后已保存的 provider 会从模型列表中消失。
+        try:
+            self.reload_api_providers()
+        except Exception as e:  # noqa: BLE001 - 恢复失败不应阻塞引擎启动
+            logger.warning("恢复 API Provider 注册失败（忽略，不影响启动）: %s", e)
 
     # ── 远程 API Provider 管理 ──
 

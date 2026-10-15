@@ -420,6 +420,13 @@ def create_application():
     app.config["HARNESS_RUNTIME"] = harness_runtime
     harness_runtime.set_default()
 
+    # ── 语音资源池（ASR / TTS）──
+    # 两类语音资源统一注册进 harness 资源池，获得可加载/可卸载/可调度的一等生命周期。
+    from apps.dsn.models import resource_setup
+    _asr_pool = resource_setup.setup_dsn_resources()
+    app.config["RESOURCE_POOL"] = _asr_pool
+    harness_runtime.register("resource_pool", _asr_pool)
+
     # ── 模型提供商注册表（harness 引擎） ──
     # dsn 对话/嵌入客户端以 harness 契约（IChatClient）接入，经 harness Runtime 解析。
     from harness.models import ModelProviderRegistry
@@ -544,10 +551,15 @@ def create_application():
         tts_client = VocalExp(app.config["TTS_BASE_URL"])
         tts_profile_mgr = TTSProfileManager()
 
-        # TTS 启动探测：等待服务就绪，按配置进行指数退避。
+        # TTS 启动探测：改由资源池统一就绪判定（adopt 模式 = 探测既有服务），
+        # 保留原有的指数退避重试与日志文案。TTS 不可用**不得**中断启动。
         tts_probe_ok = False
         for _tts_attempt in range(Config.TTS_PROBE_ATTEMPTS):
-            if tts_client.probe(timeout=Config.TTS_PROBE_TIMEOUT):
+            try:
+                _tts_ready = _asr_pool.ensure_running("tts", timeout=Config.TTS_PROBE_TIMEOUT)
+            except Exception:
+                _tts_ready = False
+            if _tts_ready and tts_client.probe(timeout=Config.TTS_PROBE_TIMEOUT):
                 tts_probe_ok = True
                 app.logger.info("TTS 服务探测成功 (第 %d 次)", _tts_attempt + 1)
                 break
@@ -584,18 +596,17 @@ def create_application():
             _root_logger.warning("Operation failed", exc_info=True)
     asr_model = None
     if app.config.get("ASR_ENABLED", True):
-        from funasr import AutoModel
-        _asr_device = app.config.get("ASR_DEVICE", "cuda")
-        _asr_gpu_id = app.config.get("ASR_GPU_ID", "")
-        if _asr_gpu_id:
-            _asr_device = f"cuda:{_asr_gpu_id}"
-        asr_model = AutoModel(
-            model="paraformer-zh", model_revision="v2.0.4",
-            vad_model="fsmn-vad", vad_model_revision="v2.0.4",
-            punc_model="ct-punc-c", punc_model_revision="v2.0.4",
-            device=_asr_device,
-            disable_update=True, disable_pbar=True,
-        )
+        # ASR 现已作为「进程内资源」由资源池托管（harness/resources）。
+        # 注意：asr_model 必须绑定 **FunASR 原始模型对象**（下游直接调用
+        # .generate()，见 apps/dsn/api/app.py、api/checkin.py），因此这里取的是
+        # ASREngine.load() 的返回值本身，而不是任何包装器。
+        try:
+            _asr_pool.ensure_running("asr", timeout=Config.ASR_LOAD_TIMEOUT)
+            _asr_engine = resource_setup.get_asr_engine()
+            if _asr_engine is not None:
+                asr_model = _asr_engine.get_model()
+        except Exception:
+            _root_logger.warning("ASR 资源加载失败", exc_info=True)
     _t("ASR")
 
     # ── Prompt ──

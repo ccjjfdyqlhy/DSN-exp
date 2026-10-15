@@ -526,6 +526,24 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     else:
         engine.agent.topic_mgr.on_topic_converged = _on_topic_converged
 
+    # ── 外周资源池（ASR / TTS）──
+    # 资源池此前只在 apps/dsn/boot.py（Flask 进程）里创建，而本页面由另一个
+    # FastAPI 进程服务 —— 该进程从不导入 apps.dsn.models.resource_setup，
+    # 于是「外周任务槽」永远是空的。这里幂等地装配一次（setup_dsn_resources
+    # 可安全重复调用），并把池挂到 engine 上供各 /api/resources/* 接口使用。
+    # try/except 兜底：装配失败（缺依赖 / TTS 预检不过）绝不能阻塞 UI 启动。
+    try:
+        from apps.dsn.models import resource_setup
+
+        engine.resource_pool = resource_setup.setup_dsn_resources()
+        logger.info(
+            "外周资源池已装配: %s",
+            [r.get("name") for r in engine.resource_pool.list_resources()],
+        )
+    except Exception as e:  # noqa: BLE001
+        engine.resource_pool = None
+        log_exception(logger, "装配外周资源池失败（外周功能不可用）", e)
+
     # 注册 Orchestrator 状态变化回调，打通 SSE 广播
     def _schedule_broadcast(event: str, model: str, payload: dict) -> None:
         """把一次 SSE 广播投递到事件循环（可在任意线程调用）。
@@ -600,6 +618,8 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             engine.orchestrator.shutdown()
 
     app = FastAPI(title="DSN-exp UI & Model Orchestrator", version="1.0.0", lifespan=lifespan)
+    # 与 engine.resource_pool 指向同一实例，供 asr_api 等独立模块取用。
+    app.state.resource_pool = getattr(engine, "resource_pool", None)
 
     app.add_middleware(
         CORSMiddleware,
@@ -667,10 +687,17 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             is_loaded = m["loaded"]
             is_loading = m.get("is_loading", False)
             status_val = "loading" if is_loading else ("loaded" if is_loaded else "unloaded")
+            # source_type 已由 orchestrator.status() 导出；provider_label 只在
+            # ModelSpec 上（status() 未导出它，router.py 不在本任务写范围内），
+            # 因此这里从 spec 防御性读取：本地模型得到 None，第三方 API 模型
+            # 得到其 provider 展示名，供前端加来源徽标。
+            _model_spec = engine.orchestrator.get_model_spec(m["name"])
             entries.append({
                 "id": m["name"],
                 "name": m["name"],
                 "object": "model",
+                "source_type": m.get("source_type"),
+                "provider_label": getattr(_model_spec, "provider_label", None),
                 # owned_by 直接取引擎名：llama.cpp 与 Strata 都是本地托管引擎，
                 # 前端/客户端靠它区分是哪一套引擎在跑这个模型。
                 "owned_by": (m.get("engine") or m["source_type"]) if m["is_local"] else m["source_type"],
@@ -1675,14 +1702,132 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         （打开会话）、/models（模型列表）与正在进行的 SSE 推理推送全部被拖住。
         因此这里统一丢到线程池执行。
         """
+        def _peripheral_status() -> dict:
+            """外周资源池（ASR / TTS）状态 —— 契约字段固定，池不可用时给空结构。"""
+            pool = getattr(engine, "resource_pool", None)
+            if pool is None:
+                return {
+                    "max_concurrent_slots": 0,
+                    "used_slots": 0,
+                    "registered": 0,
+                    "loaded": 0,
+                    "resources": [],
+                }
+            try:
+                slots = pool.slot_status()
+                resources = pool.status().get("resources", [])
+                return {
+                    "max_concurrent_slots": int(slots.get("max_concurrent_slots", 0)),
+                    "used_slots": int(slots.get("used_slots", 0)),
+                    "registered": int(slots.get("registered", len(resources))),
+                    "loaded": int(slots.get("loaded", 0)),
+                    "resources": resources,
+                }
+            except Exception as e:  # noqa: BLE001 - 状态接口不能因资源池失败而 500
+                log_exception(logger, "读取外周资源池状态失败", e)
+                return {
+                    "max_concurrent_slots": 0,
+                    "used_slots": 0,
+                    "registered": 0,
+                    "loaded": 0,
+                    "resources": [],
+                }
+
         def _collect() -> dict:
             data = get_system_resources()
             data["orchestrator"] = engine.orchestrator.status()
             # 显存管理开关状态，供硬件页渲染
             data["kv_offload_disabled"] = engine.orchestrator.get_kv_offload_disabled()
+            # 外周资源池（ASR / TTS）与任务槽状态，供「外周任务槽」卡片。
+            data["peripherals"] = _peripheral_status()
             return data
 
         return await asyncio.to_thread(_collect)
+
+    # ── 7.5 外周资源（ASR / TTS）生命周期 API ──
+
+    def _resource_pool():
+        """已装配的外周资源池；未装配时为 None。"""
+        return getattr(engine, "resource_pool", None)
+
+    async def _json_body(req: Request) -> dict:
+        """尽力解析 JSON body；非 JSON / 非法 body 返回空 dict。"""
+        try:
+            body = await req.json()
+        except Exception:  # noqa: BLE001
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    @app.post("/api/resources/start")
+    async def start_peripheral_resource(req: Request):
+        """加载（启动）一个外周资源，如 asr / tts。"""
+        pool = _resource_pool()
+        name = str((await _json_body(req)).get("name") or "").strip()
+        if pool is None:
+            return JSONResponse(status_code=500, content={"error": "资源池不可用"})
+        if not name or pool.get_spec(name) is None:
+            return JSONResponse(
+                status_code=400, content={"error": f"未知或未注册的资源: {name or '(empty)'}"}
+            )
+        from apps.dsn.config import Config
+
+        timeout = int(
+            Config.ASR_LOAD_TIMEOUT
+            if name == "asr"
+            else getattr(Config, "TTS_LOAD_TIMEOUT", 300)
+        )
+        try:
+            loaded = await asyncio.to_thread(pool.ensure_running, name, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            log_exception(logger, f"启动外周资源失败: {name}", e)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        if not loaded:
+            return JSONResponse(
+                status_code=500, content={"error": f"资源启动失败或超时: {name}"}
+            )
+        return {"status": "ok", "name": name, "loaded": True}
+
+    @app.post("/api/resources/stop")
+    async def stop_peripheral_resource(req: Request):
+        """卸载（停止）一个外周资源，如 asr / tts。"""
+        pool = _resource_pool()
+        name = str((await _json_body(req)).get("name") or "").strip()
+        if pool is None:
+            return JSONResponse(status_code=500, content={"error": "资源池不可用"})
+        if not name or pool.get_spec(name) is None:
+            return JSONResponse(
+                status_code=400, content={"error": f"未知或未注册的资源: {name or '(empty)'}"}
+            )
+        try:
+            ok = await asyncio.to_thread(pool.stop_resource, name)
+        except Exception as e:  # noqa: BLE001
+            log_exception(logger, f"停止外周资源失败: {name}", e)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        if not ok:
+            return JSONResponse(status_code=500, content={"error": f"资源停止失败: {name}"})
+        return {"status": "ok", "name": name, "loaded": False}
+
+    @app.post("/api/resources/slots")
+    async def set_peripheral_slots(req: Request):
+        """调整外周任务槽数量（与 LLM 显存插槽配额相互独立）。"""
+        body = await _json_body(req)
+        try:
+            slots = int(body.get("slots"))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400, content={"error": "slots 必须是 >= 1 的整数"}
+            )
+        if slots < 1:
+            return JSONResponse(status_code=400, content={"error": "slots must be >= 1"})
+        pool = _resource_pool()
+        if pool is None:
+            return JSONResponse(status_code=500, content={"error": "资源池不可用"})
+        try:
+            applied = await asyncio.to_thread(pool.set_max_concurrent, slots)
+        except Exception as e:  # noqa: BLE001
+            log_exception(logger, "调整外周任务槽失败", e)
+            return JSONResponse(status_code=500, content={"error": str(e)})
+        return {"status": "ok", "max_concurrent_slots": int(applied)}
 
     @app.get("/api/system/kv-offload")
     async def get_kv_offload():
@@ -2244,6 +2389,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         )
     except Exception as e:  # noqa: BLE001
         log_exception(logger, "挂载 DSN 集成 API 失败", e)
+
+    # ── 9.10 ASR 语音识别 API ──
+    # 与上一条同理：必须注册在 SPA catch-all 之前，否则请求会落到 index.html。
+    try:
+        from apps.dsn_ui.asr_api import register_asr_routes
+
+        register_asr_routes(app)
+        logger.info("ASR API 已启用: POST /api/asr/recognize")
+    except Exception as e:  # noqa: BLE001
+        log_exception(logger, "挂载 ASR API 失败", e)
 
     # ── 10. 静态资源与 SPA 路由 ──
 
