@@ -281,10 +281,18 @@ class StrataEngineConfig:
         return cfg
 
     def save_config(self, path: str | os.PathLike[str] | None = None, backup: bool = True) -> Path:
-        """把当前配置写回 run config JSON（原子替换，默认留一份 .bak）。"""
-        target = Path(path or self.resolved_config_path())
-        if not str(target):
+        """把当前配置写回 run config JSON（原子替换，默认留一份 .bak）。
+
+        修复说明：原写法先 `target = Path(path or self.resolved_config_path())`
+        再用 `if not str(target)` 判空 —— 但 str(Path("")) == "." 恒为真，
+        判空永远不生效。路径为空时会在当前目录生成 .tmp 并 os.replace，
+        抛 IsADirectoryError 之类，用户已改的配置静默丢失，前端只看到 500。
+        这里改为先取原始字符串并 strip 判空。
+        """
+        raw = str(path or self.resolved_config_path() or "").strip()
+        if not raw or raw == ".":
             raise ValueError("未指定 run config 路径，无法保存")
+        target = Path(raw).expanduser()
         data = self.effective_config_dict()
         if backup and target.exists():
             try:

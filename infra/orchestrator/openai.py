@@ -8,9 +8,46 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncGenerator, Optional
 
 from .base import ChatClientAdapter, ChatResponse, ToolCall
+
+logger = logging.getLogger("OpenAICompatClient")
+
+
+def _plain(value: Any) -> Any:
+    """把 SDK 返回的 pydantic 对象递归降级成纯 Python 容器。
+
+    为什么必须递归：`dict(usage)` 只转换**顶层**，嵌套的
+    `completion_tokens_details` / `prompt_tokens_details` 仍是 pydantic
+    模型实例。这些值随后被塞进 SSE 的 json.dumps，于是整条流在终态帧处抛
+    "Object of type CompletionTokensDetails is not JSON serializable" ——
+    前端表现为回复区空白、思考 tokens 不滚动。
+
+    本地 llama-server 不返回这些嵌套结构，所以只有接第三方 API 时才会踩到。
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_plain(v) for v in value]
+    # pydantic v2 / v1 模型
+    for attr in ("model_dump", "dict", "to_dict"):
+        fn = getattr(value, attr, None)
+        if callable(fn):
+            try:
+                return _plain(fn())
+            except Exception:  # noqa: BLE001 - 降级失败则走下面的兜底
+                break
+    # 最后兜底：按公开属性展开（跳过 _ 开头的私有字段）
+    if hasattr(value, "__dict__"):
+        return {
+            k: _plain(v) for k, v in vars(value).items()
+            if not str(k).startswith("_")
+        }
+    return str(value)
 
 
 class OpenAICompatClient(ChatClientAdapter):
@@ -27,9 +64,19 @@ class OpenAICompatClient(ChatClientAdapter):
         timeout: Optional[float] = None,
         extra_headers: Optional[dict] = None,
         protocol: str = "chat",
+        tool_choice: Any = "auto",
+        send_tool_choice: bool = True,
+        send_usage_in_stream: bool = True,
     ):
         self.model = model
         self.protocol = protocol
+        #: 携带 tools 时一并发送的 tool_choice（对齐 apps/dsn：默认 "auto"）。
+        #: 个别 provider 不认 tool_choice，可用 send_tool_choice=False 关闭。
+        self._tool_choice = tool_choice
+        self._send_tool_choice = send_tool_choice
+        #: 流式时是否请求远端回传 usage（stream_options.include_usage）。
+        #: 少数老网关不认 stream_options，可用 False 关闭以兼容。
+        self._send_usage_in_stream = send_usage_in_stream
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
@@ -49,6 +96,34 @@ class OpenAICompatClient(ChatClientAdapter):
             default_headers=self._extra_headers or None,
         )
 
+    def _apply_tools(self, params: dict[str, Any], tools: Optional[list[dict]]) -> None:
+        """把工具 schema 与 tool_choice 写进请求体（invoke / stream 共用）。
+
+        请求体形状刻意与 apps/dsn 的 OpenAIChat._call_and_append 对齐：
+            params["tools"] = [{"type": "function", "function": {...}}, ...]
+            params["tool_choice"] = "auto"       # 仅在有工具时携带
+        工具名此时已是 wire 名（file__read），由 harness/tools.to_openai_schema 转换，
+        模型回传后由 AgentLoop._resolve_tool_name 还原为内部名。
+        """
+        if not tools:
+            return
+        params["tools"] = [{"type": "function", "function": t} for t in tools]
+        if self._send_tool_choice and self._tool_choice is not None:
+            params["tool_choice"] = self._tool_choice
+
+    def _apply_sampling(self, params: dict[str, Any], *,
+                        temperature: Optional[float] = None,
+                        max_tokens: Optional[int] = None) -> None:
+        """采样参数：显式入参优先，其次实例默认。"""
+        if temperature is not None:
+            params["temperature"] = temperature
+        elif self._temperature is not None:
+            params["temperature"] = self._temperature
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+        elif self._max_tokens is not None:
+            params["max_tokens"] = self._max_tokens
+
     def invoke(
         self,
         messages: list[Any],
@@ -63,16 +138,8 @@ class OpenAICompatClient(ChatClientAdapter):
                                           max_tokens=max_tokens, timeout=timeout)
         msgs = self._to_message_dicts(messages)
         kwargs: dict[str, Any] = {"model": self.model, "messages": msgs}
-        if tools:
-            kwargs["tools"] = [{"type": "function", "function": t} for t in tools]
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-        elif self._temperature is not None:
-            kwargs["temperature"] = self._temperature
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-        elif self._max_tokens is not None:
-            kwargs["max_tokens"] = self._max_tokens
+        self._apply_tools(kwargs, tools)
+        self._apply_sampling(kwargs, temperature=temperature, max_tokens=max_tokens)
 
         resp = self._client.chat.completions.create(**kwargs)
         return self._to_response(resp)
@@ -144,7 +211,7 @@ class OpenAICompatClient(ChatClientAdapter):
         return ChatResponse(
             content="".join(content_parts),
             tool_calls=tool_calls,
-            usage=dict(usage) if usage else {},
+            usage=_plain(usage) if usage else {},
             model=getattr(resp, "model", None),
             finish_reason=None,
             reasoning_content="\n".join([p for p in reasoning_parts if p]) or None,
@@ -212,15 +279,33 @@ class OpenAICompatClient(ChatClientAdapter):
 
         msgs = self._to_message_dicts(messages)
         params: dict[str, Any] = {"model": self.model, "messages": msgs, "stream": True}
-        if tools:
-            params["tools"] = [{"type": "function", "function": t} for t in tools]
-        params.update({k: v for k, v in kwargs.items() if v is not None})
+        self._apply_tools(params, tools)
+
+        # 只透传 OpenAI 认识的标准参数。前端请求体里带着一堆 llama.cpp /
+        # DSN 专有字段（samplers / dry_* / xtc_* / thinking_budget_tokens /
+        # sse_ping_interval / return_progress ...），直接塞给远端网关通常
+        # 会被判为非法参数而 400 —— 这也是「本地模型正常、换远端 API 就报错」
+        # 的常见诱因之一。
+        _STANDARD_STREAM_PARAMS = {
+            "temperature", "top_p", "stop", "seed", "presence_penalty",
+            "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
+            "n", "response_format", "tool_choice", "parallel_tool_calls",
+            "user", "max_tokens", "max_completion_tokens", "stream_options",
+        }
+        for key, value in kwargs.items():
+            if value is not None and key in _STANDARD_STREAM_PARAMS:
+                params[key] = value
+
+        # 显式要求远端回传用量：多数 OpenAI 兼容网关在 stream=True 时默认
+        # 不下发 usage，不请求的话终态用量恒为 0，前端用量环/计费显示全空。
+        if self._send_usage_in_stream:
+            params.setdefault("stream_options", {"include_usage": True})
 
         stream = await self._async_client.chat.completions.create(**params)
         async for chunk in stream:
             usage = getattr(chunk, "usage", None)
             if usage is not None:
-                yield {"usage": dict(usage)}
+                yield {"usage": _plain(usage)}
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -234,10 +319,20 @@ class OpenAICompatClient(ChatClientAdapter):
             tc_delta = getattr(delta, "tool_calls", None)
             if tc_delta:
                 emitted = []
-                for tc in tc_delta:
+                for pos, tc in enumerate(tc_delta):
                     fn = getattr(tc, "function", None)
+                    raw_index = getattr(tc, "index", None)
+                    # 部分网关省略 index（或恒为 None/0）却一次返回多个工具调用，
+                    # 全部按 0 累积会把多个调用合并成一个。index 缺失时用位置兜底。
+                    if raw_index is None:
+                        index = pos
+                    else:
+                        try:
+                            index = int(raw_index)
+                        except (TypeError, ValueError):
+                            index = pos
                     emitted.append({
-                        "index": getattr(tc, "index", 0) or 0,
+                        "index": index,
                         "id": getattr(tc, "id", None) or "",
                         "name": (getattr(fn, "name", None) or "") if fn is not None else "",
                         # 只带本 chunk 的片段，由 AgentLoop 负责按 index 拼接
@@ -298,13 +393,13 @@ class OpenAICompatClient(ChatClientAdapter):
                 elif et == "response.completed":
                     usage = getattr(getattr(event, "response", None), "usage", None)
                     if usage:
-                        yield {"usage": dict(usage)}
+                        yield {"usage": _plain(usage)}
 
     @staticmethod
     def _to_response(resp: Any) -> ChatResponse:
         choice = resp.choices[0] if resp.choices else None
         if choice is None:
-            return ChatResponse(content="", usage=dict(getattr(resp, "usage", {}) or {}),
+            return ChatResponse(content="", usage=_plain(getattr(resp, "usage", {})) or {},
                                 model=getattr(resp, "model", None))
 
         content = getattr(choice.message, "content", None) or ""
@@ -321,7 +416,7 @@ class OpenAICompatClient(ChatClientAdapter):
         return ChatResponse(
             content=content,
             tool_calls=tool_calls,
-            usage=dict(getattr(resp, "usage", {}) or {}),
+            usage=_plain(getattr(resp, "usage", {})) or {},
             model=getattr(resp, "model", None),
             finish_reason=choice.finish_reason,
             reasoning_content=reasoning or None,

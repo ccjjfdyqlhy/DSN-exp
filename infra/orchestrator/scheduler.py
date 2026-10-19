@@ -75,6 +75,9 @@ class ModelInfo:
     last_used: float = 0.0
     queue: deque[ModelTask] = field(default_factory=deque)
     displaced_by_immediate: bool = False
+    #: 是否有线程正在执行 load_fn（加载中）。
+    #: 用于保证"同一模型同一时刻只被拉起一次"，见 _do_load。
+    loading: bool = False
 
 
 class ModelScheduler:
@@ -113,6 +116,9 @@ class ModelScheduler:
         self._condition = threading.Condition(self._lock)
         self._models: dict[str, ModelInfo] = {}
         self._slot_order: list[str] = []
+        #: 每个模型最近一次"因无驱逐权而等待"的日志时间戳（限流用，避免刷屏）。
+        #: ModelInfo 是 slots=True 的 dataclass，不能挂动态属性，故放在调度器里。
+        self._last_block_log: dict[str, float] = {}
         self._profiles_by_name = self._load_profiles()
         logger.info("ModelScheduler initialized (slots=%d, profiles=%d)",
                     self.max_concurrent, len(self._profiles_by_name))
@@ -309,9 +315,28 @@ class ModelScheduler:
         if not info.profile.orchestrated or info.profile.resident:
             self._do_load(info.name)
             return
+        # 说明：max_concurrent 在构造函数里已保证 >= 1，这里的 max(0, ...) 是冗余
+        # 防御，保留以表明"槽位数为 0 时不加载任何模型"的意图。
         while self._loaded_slot_count() >= max(0, self.max_concurrent):
             victim = self._select_victim(info, task.immediate)
             if not victim:
+                # 无驱逐权（槽位被更高优先级/正在使用的模型占满）。
+                # 这是**有意的**调度语义：不抢占比自己高优先级的模型，
+                # 由调用方排队等待（_enqueue 会一直重试到 request_timeout）。
+                # 但原先完全静默，排查时只看到"模型一直未加载"，因此补一条
+                # 限流诊断日志，明确告知等待的是谁、阻塞原因是什么。
+                now = time.time()
+                if now - self._last_block_log.get(info.name, 0.0) >= 5.0:
+                    holders = [
+                        f"{n}(prio={m.profile.priority},refs={m.refcount})"
+                        for n, m in self._models.items()
+                        if m.loaded and m.profile.orchestrated and not m.profile.resident
+                    ]
+                    logger.warning(
+                        "模型 %s(prio=%d) 等待槽位：当前占用 %s，无法驱逐（优先级不足或均在使用中）",
+                        info.name, info.profile.priority, holders or "无",
+                    )
+                    self._last_block_log[info.name] = now
                 self._condition.wait(0.2)
                 return
             self._do_unload(victim, reason=f"evicted by {info.name}")
@@ -372,18 +397,57 @@ class ModelScheduler:
             logger.exception("Failed to restore waiting model: %s", best.name)
 
     def _do_load(self, model_name: str) -> None:
+        """加载模型，保证**同一模型并发请求只拉起一次**。
+
+        修复说明（严重）：原实现在持有 _condition（RLock）时直接调用
+        info.load_fn()。而 load_fn 是分钟级的阻塞操作，Condition.wait() 又会
+        释放锁 —— 于是 N 个并发请求会依次进入 load 分支，而 info.loaded 直到
+        load_fn 返回后才置 True。实测 4 个并发 use() 会触发 4 次 load_fn，
+        对 llama.cpp 意味着同一端口被拉起 4 个子进程：显存直接翻 N 倍导致
+        OOM，且 self._process 被后写覆盖，旧进程变成孤儿无法回收。
+
+        现在用 info.loading 做单飞（single-flight）：只有一个线程真正执行加载，
+        其余线程等待它完成；且阻塞的 load_fn 在锁外执行，不阻塞其它模型调度。
+        """
         info = self._models[model_name]
         if info.loaded:
             return
+
+        # 已有线程在加载同一模型：等它结束，不重复拉起。
+        if info.loading:
+            logger.info("模型 %s 正在加载中，等待既有加载完成", model_name)
+            while info.loading and not info.loaded:
+                self._condition.wait(0.2)
+            # 若加载失败（未 loaded），由本次调用负责重试一次，
+            # 避免所有等待方都直接返回 False 导致请求集体失败。
+            if info.loaded:
+                return
+
+        info.loading = True
         logger.info("Loading model: %s", model_name)
-        if not info.load_fn():
+        ok = False
+        try:
+            # 必须释放锁再执行阻塞加载：否则整个调度器会被一次模型加载卡死，
+            # 其它模型的请求（甚至 status()）都无法推进。
+            self._condition.release()
+            try:
+                ok = bool(info.load_fn())
+            finally:
+                self._condition.acquire()
+        finally:
+            info.loading = False
+            # 无论成功失败都唤醒所有等待方，让它们重新判断状态。
+            self._condition.notify_all()
+
+        if not ok:
             raise RuntimeError(f"模型 {model_name} 加载失败")
+
         info.loaded = True
         info.last_used = time.time()
         info.displaced_by_immediate = False
         if info.profile.orchestrated and not info.profile.resident:
             self._bump_slot(model_name)
-        logger.info("Model loaded: %s", model_name)
+        logger.info("Model loaded: %s", model_name);
 
     def _do_unload(self, model_name: str, reason: str = "eviction") -> None:
         info = self._models[model_name]

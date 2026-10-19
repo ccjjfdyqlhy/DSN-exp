@@ -16,6 +16,23 @@ from typing import Optional
 
 from infra.models.base import ChatMessage, ChatResponse, ToolCall
 
+#: 工具名在"发给模型"的边界上必须转成 provider 安全的 wire 名
+#: （点号 -> 双下划线，见 harness/tools/base.py to_wire_name）。
+#: 这里按仓库既有约定延迟导入，避免 harness/agent 与 harness/tools 的导入环。
+_TO_WIRE_NAME = None
+
+
+def _to_wire(name: str) -> str:
+    """把内部工具名转成 wire 名（不可用时原样返回，保证不因导入问题崩溃）。"""
+    global _TO_WIRE_NAME
+    if _TO_WIRE_NAME is None:
+        try:
+            from harness.tools.base import to_wire_name as _impl
+        except Exception:  # noqa: BLE001
+            _impl = None
+        _TO_WIRE_NAME = _impl if _impl is not None else (lambda n: n)
+    return _TO_WIRE_NAME(name)
+
 
 @dataclass
 class ParsedOutput:
@@ -62,8 +79,13 @@ class NativeToolCallAdapter(ToolCallAdapter):
         msgs = [ChatMessage.assistant(
             response.content,
             tool_calls=[
+                # 关键：assistant 回传的 tool_calls.name 必须是**发给模型时的 wire 名**
+                # （math__note），而不是内部名（math.note）。
+                # AgentLoop 会把 ToolCall.name 归一成内部名以便派发，若这里原样回填，
+                # 下一轮请求里就会出现带点号的函数名 —— 强校验 ^[a-zA-Z0-9_-]+$ 的
+                # provider 会直接 400，工具循环在第二轮断掉。
                 {"id": tc.id, "type": "function",
-                 "function": {"name": tc.name, "arguments": tc.arguments_json}}
+                 "function": {"name": _to_wire(tc.name), "arguments": tc.arguments_json}}
                 for tc in response.tool_calls
             ],
             # DeepSeek reasoner 要求 reasoning_content 随 assistant 消息回传
@@ -93,58 +115,60 @@ class TaggedToolCallAdapter(ToolCallAdapter):
     def __init__(self, tag: str = "toolcall"):
         self.tag = tag
 
+    def _pattern(self) -> re.Pattern:
+        return re.compile(
+            rf"<{re.escape(self.tag)}>(.*?)</{re.escape(self.tag)}>",
+            re.DOTALL | re.IGNORECASE,
+        )
+
     def parse(self, response: ChatResponse) -> ParsedOutput:
         text = response.content or ""
-        tool_calls: list[ToolCall] = []
-        pattern = re.compile(
-            rf"<{self.tag}>\s*(.*?)\s*</{self.tag}>", re.DOTALL)
-        cleaned = pattern.sub("", text).strip()
-        for m in pattern.finditer(text):
-            inner = m.group(1).strip()
+        calls: list[ToolCall] = []
+        for i, m in enumerate(self._pattern().finditer(text)):
+            raw = (m.group(1) or "").strip()
+            name = ""
+            args: dict = {}
             try:
-                obj = json.loads(inner)
+                data = json.loads(raw)
             except (TypeError, ValueError):
-                # 尝试 name: json 形式
-                obj = self._parse_loose(inner)
-            if not obj:
-                continue
-            name = obj.get("name") or obj.get("tool") or obj.get("function")
-            args = obj.get("arguments") or obj.get("args") or obj.get("params") or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except (TypeError, ValueError):
-                    args = {}
+                data = None
+            if isinstance(data, dict):
+                name = str(data.get("name") or data.get("tool") or "")
+                a = data.get("arguments") or data.get("args") or {}
+                args = a if isinstance(a, dict) else {}
+            else:
+                # 形如 "tool.name {json}" 或只有名字
+                head, _, rest = raw.partition(" ")
+                name = head.strip()
+                rest = rest.strip()
+                if rest:
+                    try:
+                        parsed = json.loads(rest)
+                        args = parsed if isinstance(parsed, dict) else {}
+                    except (TypeError, ValueError):
+                        args = {}
             if name:
-                tool_calls.append(ToolCall(
-                    id=f"tagged-{len(tool_calls)}", name=name, arguments=args))
-        return ParsedOutput(text=cleaned, tool_calls=tool_calls)
-
-    @staticmethod
-    def _parse_loose(inner: str) -> Optional[dict]:
-        """容忍 'name\n<json>' 之类的松散格式。"""
-        head, _, tail = inner.partition("\n")
-        head = head.strip()
-        try:
-            if head and tail.strip():
-                obj = json.loads(tail.strip())
-                obj.setdefault("name", head)
-                return obj
-        except (TypeError, ValueError):
-            return None
-        return None
+                calls.append(ToolCall(id=f"tagged-{i}", name=name, arguments=args))
+        cleaned = self._pattern().sub("", text).strip()
+        return ParsedOutput(text=cleaned, tool_calls=calls)
 
     def build_round(self, response: ChatResponse, results: list[dict]) -> list[ChatMessage]:
-        lines = []
-        for r in results:
-            data = r.get("output") if r.get("success") else r.get("error")
-            hint = r.get("hint")
-            line = f"- {r.get('name', 'tool')} [{r.get('status', 'ok' if r.get('success', True) else 'error')}]: {json.dumps(data, ensure_ascii=False, default=str)}"
-            if hint:
-                line += f" (提示: {hint})"
-            lines.append(line)
-        summary = "\n".join(lines)
-        return [
-            ChatMessage.assistant(response.content, reasoning_content=response.reasoning_content),
-            ChatMessage.user(f"[工具执行结果]\n{summary}"),
-        ]
+        """标签协议没有原生 tool_calls：用 assistant 文本 + user 结果回喂。"""
+        msgs: list[ChatMessage] = []
+        if response.content:
+            msgs.append(ChatMessage.assistant(response.content))
+        for i, r in enumerate(results):
+            payload = {
+                "tool": r.get("name", ""),
+                "success": r.get("success", True),
+                "status": r.get("status", "ok" if r.get("success", True) else "error"),
+                "output": r.get("output"),
+                "error": r.get("error"),
+                "hint": r.get("hint"),
+            }
+            msgs.append(ChatMessage.user(
+                "<toolresult>" + json.dumps(payload, ensure_ascii=False, default=str)
+                + "</toolresult>"
+            ))
+        return msgs
+

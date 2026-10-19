@@ -38,6 +38,7 @@ token 重叠度（Jaccard）排序，不会因为一个功能词差异就完全�
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import queue
@@ -61,6 +62,10 @@ DEFAULT_CONFIG: dict = {
     "top_k": 3,
     "min_tool_calls": 1,    # 至少有这么多次工具调用的轮次才值得蒸馏
     "max_context_chars": 6000,
+    #: 每轮自动把 top-N 模板推进模型上下文（用户要求：「直接推荐前3个缓存结果给AI」）。
+    "auto_recommend": True,
+    #: 字面相似度下限：低于它的历史模板不注入（避免无关历史污染上下文）。
+    "recommend_floor": 0.15,
 }
 
 #: 在 agent_settings.json 里占用的键（复用 Agent 设置文件的持久化模式）。
@@ -93,6 +98,14 @@ def _validate_config(raw: dict) -> dict:
             cfg["min_tool_calls"] = _clamp_int(raw.get("min_tool_calls"), 0, 50, DEFAULT_CONFIG["min_tool_calls"])
         if "max_context_chars" in raw:
             cfg["max_context_chars"] = _clamp_int(raw.get("max_context_chars"), 500, 200000, DEFAULT_CONFIG["max_context_chars"])
+        if "auto_recommend" in raw:
+            cfg["auto_recommend"] = bool(raw.get("auto_recommend"))
+        if "recommend_floor" in raw:
+            try:
+                floor = float(raw.get("recommend_floor"))
+            except (TypeError, ValueError):
+                floor = DEFAULT_CONFIG["recommend_floor"]
+            cfg["recommend_floor"] = max(0.0, min(1.0, floor))
     return cfg
 
 
@@ -125,6 +138,99 @@ _TOOL_MARKER_RE = re.compile(r"^\s*\[tool\]", re.MULTILINE)
 #: 兜底（非精确签名）匹配的最低 token 重叠度（Jaccard）。
 #: 低于它视为不相关 —— 否则两个任务只要共享一个常用字（如「天」）就会互相命中。
 _MIN_OVERLAP = 0.2
+
+# ── 逐字（字面）相似度 ──
+#
+# 用户要求：「按逐字匹配用户消息的百分比相似度排序，直接推荐前3个缓存结果给AI」。
+# 中文没有空格，因此这里一律**剥离空白与标点、按字符**比较，公式固定为：
+#
+#     literal_similarity(query, template)
+#       = max(
+#           difflib.SequenceMatcher(None, a, b).ratio(),   # 字符级 LCS 相似度
+#           dice_coefficient(bigrams(a), bigrams(b)),      # 字符二元组 Dice 系数
+#           0.98 if a in b or b in a else 0.0,             # 包含（一方完全覆盖另一方）
+#           1.0 if query_signature == template_signature   # 归一化签名一致 → 保证 1.0
+#         )
+#
+# 其中 a/b 为 literal_key() 归一化后的字符串（小写、只留 [0-9a-z] 与 CJK）。
+# Dice 系数 = 2*|A∩B| / (|A|+|B|)，A/B 为字符二元组多重集。
+# 该公式确定性、零模型、零 embedding；对「查一下今天北京的天气」与
+# 「北京今天天气怎么样」这类同义改写能给出高分（见单元测试打印的百分比）。
+_PUNCT_ONLY_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+
+
+def literal_key(text: str) -> str:
+    """字面比较用的归一化：小写、去空白与标点，只保留字母/数字/汉字。"""
+    return _PUNCT_ONLY_RE.sub("", (text or "").lower())
+
+
+def _bigrams(s: str) -> list:
+    if len(s) < 2:
+        return [s] if s else []
+    return [s[i:i + 2] for i in range(len(s) - 1)]
+
+
+def _dice(a: str, b: str) -> float:
+    """字符二元组 Dice 系数（多重集）。"""
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    ba, bb = _bigrams(a), _bigrams(b)
+    if not ba or not bb:
+        return 0.0
+    from collections import Counter
+    ca, cb = Counter(ba), Counter(bb)
+    inter = sum((ca & cb).values())
+    return 2.0 * inter / (len(ba) + len(bb))
+
+
+def literal_similarity(
+    query: str,
+    template: Any,
+    *,
+    query_signature: Optional[str] = None,
+) -> float:
+    """用户消息与一条模板的**逐字**相似度（0..1），公式见上方注释块。
+
+    template 可以是模板 dict（用 intent / task_signature / 原 query），
+    也可以是裸字符串（按同一规则比较）。
+    """
+    if isinstance(template, dict):
+        raw_candidates = [
+            template.get("intent") or "",
+            template.get("task_signature") or "",
+            template.get("query") or template.get("source_query") or "",
+        ]
+        template_signature = template.get("task_signature") or ""
+    else:
+        raw_candidates = [str(template or "")]
+        template_signature = str(template or "")
+
+    a = literal_key(query)
+    if not a:
+        return 0.0
+    if query_signature and template_signature and query_signature == template_signature:
+        # 归一化签名一致 ⇒ 同一类任务，保证 1.0（保留原精确签名命中的语义）。
+        return 1.0
+
+    best = 0.0
+    for raw in raw_candidates:
+        b = literal_key(raw)
+        if not b:
+            continue
+        score = difflib.SequenceMatcher(None, a, b).ratio()
+        score = max(score, _dice(a, b))
+        if a in b or b in a:
+            score = max(score, 0.98)
+        if score > best:
+            best = score
+    return max(0.0, min(1.0, best))
+
+
+def similarity_percent(similarity: float) -> int:
+    """把 0..1 的相似度转成可直接展示的整数百分比。"""
+    return int(round(max(0.0, min(1.0, float(similarity or 0.0))) * 100))
 
 
 def normalize_signature(text: str) -> str:
@@ -707,44 +813,66 @@ class ThoughtCacheService:
 
     # ── 检索 ──
 
-    def recall(self, query: str, limit: Optional[int] = None) -> list[dict]:
-        """检索最匹配的思路模板并累加 hits。
+    def _rank(self, query: str) -> list[dict]:
+        """按逐字相似度给全部模板打分并降序排序（不写库、不改 hits）。
 
-        先精确匹配 task_signature，再按 token 重叠度（Jaccard）排序兜底。
+        每条结果都带上：
+          similarity  —— 0..1 字面相似度
+          percent     —— 可直接展示的整数百分比
+          exact       —— 是否命中归一化签名（此时 similarity 恒为 1.0）
         """
         query = (query or "").strip()
         if not query:
             return []
         qsig = normalize_signature(query)
-        q_tokens = signature_tokens(qsig)
         rows = self.store.all()
         if not rows:
             return []
-
         scored: list[tuple[float, float, float, dict]] = []
         for row in rows:
-            sig = row.get("task_signature") or ""
-            if qsig and sig == qsig:
-                score = 2.0
-            else:
-                t_tokens = signature_tokens(sig)
-                if q_tokens and t_tokens:
-                    inter = len(q_tokens & t_tokens)
-                    score = inter / len(q_tokens | t_tokens) if inter else 0.0
-                else:
-                    score = 0.0
-                if score < _MIN_OVERLAP:
-                    score = 0.0
-            if score <= 0:
+            sim = literal_similarity(query, row, query_signature=qsig)
+            if sim <= 0:
                 continue
-            scored.append((score, float(row.get("hits") or 0), float(row.get("updated_at") or 0), row))
-
+            exact = bool(qsig and (row.get("task_signature") or "") == qsig)
+            enriched = dict(row)
+            enriched["similarity"] = round(float(sim), 4)
+            enriched["percent"] = similarity_percent(sim)
+            enriched["exact"] = exact
+            scored.append((float(sim), float(row.get("hits") or 0),
+                           float(row.get("updated_at") or 0), enriched))
         if not scored:
             return []
         scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        return [row for _, _, _, row in scored]
+
+    def recommend(self, query: str, limit: int = 3, floor: Optional[float] = None) -> list[dict]:
+        """按逐字相似度百分比返回 top-N 模板（用于自动注入模型上下文）。
+
+        与 recall() 的区别：这里**不**累加 hits（上下文注入不是用户/模型
+        的一次显式检索），并按 config.recommend_floor 过滤掉不相关的历史。
+        """
+        cfg = self.get_config()
+        if floor is None:
+            try:
+                floor = float(cfg.get("recommend_floor", 0.15))
+            except (TypeError, ValueError):
+                floor = 0.15
+        take = max(1, int(limit or 3))
+        return [row for row in self._rank(query) if float(row.get("similarity") or 0) >= floor][:take]
+
+    def recall(self, query: str, limit: Optional[int] = None) -> list[dict]:
+        """检索最匹配的思路模板（按**逐字相似度百分比**排序）并累加 hits。
+
+        排序 = 字面相似度（见 literal_similarity 的公式）；
+        签名完全一致的模板恒为 1.0（保证排在最前）；低于 floor 的不返回。
+        """
+        floor = float(self.get_config().get("recommend_floor", 0.15) or 0.0)
         top_k = max(1, int(self.get_config().get("top_k", 3)))
         take = max(1, int(limit)) if limit else top_k
-        matched = [row for _, _, _, row in scored[:take]]
+        matched = [row for row in self._rank(query)
+                   if float(row.get("similarity") or 0) >= floor][:take]
+        if not matched:
+            return []
         try:
             self.store.bump_hits([r.get("id") for r in matched])
             for r in matched:
@@ -752,6 +880,48 @@ class ThoughtCacheService:
         except Exception as e:  # noqa: BLE001 - 计数失败不影响检索结果
             logger.warning("更新思路模板 hits 失败: %s", e)
         return matched
+
+    # ── 自动推荐（注入模型上下文）──
+
+    def build_recommendation_block(self, query: str, limit: Optional[int] = None) -> str:
+        """构造注入用的「思路模板推荐」文本块；无命中/未启用时返回空串。
+
+        用户要求：每轮**直接**把 top-N（默认 3）按字面相似度排序的缓存结果
+        推给 AI，不依赖模型自己调用工具。块做了长度约束（每条截断），
+        不会撑爆上下文预算。
+        """
+        cfg = self.get_config()
+        if not cfg.get("enabled", True) or not cfg.get("auto_recommend", True):
+            return ""
+        take = max(1, int(limit or cfg.get("top_k", 3) or 3))
+        try:
+            rows = self.recommend(query, limit=take)
+        except Exception as e:  # noqa: BLE001 - 推荐失败绝不能影响对话
+            logger.warning("生成思路模板推荐失败: %s", e)
+            return ""
+        if not rows:
+            return ""
+
+        def _clip(text: Any, n: int = 200) -> str:
+            s = str(text or "").replace("\n", " ").strip()
+            return s if len(s) <= n else s[:n] + "…"
+
+        lines = [
+            "【思路模板推荐】以下是从历史成功任务中蒸馏出的最短处理路径，"
+            "按与本次请求的字面相似度排序："
+        ]
+        for i, row in enumerate(rows, 1):
+            steps = row.get("steps") or []
+            path = " → ".join(
+                str(s.get("tool") or "?") for s in steps if isinstance(s, dict)
+            ) or "(无工具步骤)"
+            lines.append(f"{i}. (相似度 {row.get('percent', 0)}%) {_clip(row.get('intent') or row.get('task_signature'), 160)}")
+            lines.append(f"   最短路径: {_clip(path, 240)}")
+            notes = _clip(row.get("notes"), 200)
+            if notes:
+                lines.append(f"   notes: {notes}")
+        lines.append("若这些模板适用，请直接按最短路径执行，不要重新摸索；不适用则忽略并自行探索。")
+        return "\n".join(lines)
 
     # ── 管理 ──
 

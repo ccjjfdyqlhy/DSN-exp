@@ -199,10 +199,36 @@ class DSNUIEngine:
         if applied:
             logger.info("已套用 %d 个模型的启动参数覆盖", applied)
 
+    @staticmethod
+    def _lmstudio_base_url() -> str:
+        """LM Studio 服务地址（配置优先，其次环境变量，最后默认值）。"""
+        from apps.dsn_ui.config import UIConfig as _UIC
+        return (
+            os.getenv("DSN_UI_LMSTUDIO_BASE_URL")
+            or getattr(_UIC, "LMSTUDIO_BASE_URL", None)
+            or "http://localhost:4501"
+        )
+
     def _init_default_profiles(self) -> None:
-        """从 model_profiles 目录预加载模型定义至 Orchestrator。"""
-        profiles_dir = self.workspace_root / "apps" / "dsn" / "model_profiles"
+        """从 model_profiles 目录预加载模型定义至 Orchestrator。
+
+        修复说明（M12）：原实现把目录写死为
+        `self.workspace_root / "apps" / "dsn" / "model_profiles"`，而
+        UIConfig.MODEL_PROFILES_DIR 已经定义过同一个路径。两处硬编码意味着
+        只要有人改了配置，onboarding 写入的位置和启动读取的位置就会分叉，
+        表现为"界面上配置了模型，重启后又消失了"。统一以配置为准。
+        """
+        from apps.dsn_ui.config import UIConfig as _UIC
+
+        profiles_dir = Path(os.path.expanduser(str(_UIC.MODEL_PROFILES_DIR)))
+        if not profiles_dir.is_absolute():
+            profiles_dir = self.workspace_root / profiles_dir
         if not profiles_dir.exists():
+            # 之前静默 return，新手排查时完全看不到线索；至少留一条告警。
+            logger.warning(
+                "模型 profile 目录不存在，跳过预加载: %s"
+                "（可用 DSN_UI_MODEL_PROFILES_DIR 指定）", profiles_dir,
+            )
             return
 
         import yaml
@@ -233,9 +259,12 @@ class DSNUIEngine:
                     # profile 可声明 vision: true 表示该模型支持图像输入
                     if data.get("vision"):
                         logger.info("profile %s 声明支持视觉输入", yml_file.name)
+                    # 修复说明（M13）：原为写死的 "http://localhost:4501"，
+                    # 而 /api/... 已把 Config 里的地址报给前端，两处不一致时
+                    # 界面显示的地址与实际连接的不是同一个。
                     self.orchestrator.register_api_lmstudio(
                         name=str(name),
-                        base_url="http://localhost:4501",
+                        base_url=self._lmstudio_base_url(),
                         remote_model_name=str(name),
                         priority=priority,
                         resident=resident,

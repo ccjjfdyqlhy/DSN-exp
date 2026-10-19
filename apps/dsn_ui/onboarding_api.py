@@ -603,6 +603,74 @@ def _run_tts_test(payload: dict, ensure_tts: bool) -> dict:
         "payload_used": payload,
     }
 
+# ────────────────────────── 测试聊天 ──────────────────────────
+
+#: 测试聊天默认提示词（尽量短，省 token、快返回）。
+_TEST_CHAT_MESSAGE = "请只回复两个字：你好"
+
+
+def _run_test_chat(
+    base_url: str,
+    api_key: str,
+    model: str,
+    message: str,
+    extra_headers: dict,
+) -> dict:
+    """发一次最小非流式 chat completion，返回结构化结果（阻塞，放线程池）。
+
+    成功与失败都以 status=ok|error 表达，不向上抛异常 —— 前端只需读 status。
+    """
+    from apps.dsn_ui.api_providers import chat_completion_url, resolve_chat_headers
+
+    url = chat_completion_url(base_url)
+    headers = resolve_chat_headers(api_key, extra_headers)
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": message}],
+        "stream": False,
+        "max_tokens": 64,
+    }
+
+    started = time.perf_counter()
+    try:
+        # 用 requests 直接发：这样能拿到真实 HTTP 状态与原始响应体，
+        # 便于把"到底哪里不对"回给用户（openai SDK 会把细节包成异常）。
+        resp = _session().post(url, json=payload, headers=headers, timeout=60.0)
+    except Exception as e:  # noqa: BLE001
+        elapsed = round((time.perf_counter() - started) * 1000, 1)
+        logger.warning("测试聊天请求失败 (%s): %s", url, e)
+        return {
+            "ok": False, "status": "error", "url": url, "model": model,
+            "elapsed_ms": elapsed, "http_status": None,
+            "error": f"无法连接 {url}: {e}",
+        }
+
+    elapsed = round((time.perf_counter() - started) * 1000, 1)
+    if resp.status_code >= 400:
+        detail = (resp.text or "")[:500]
+        return {
+            "ok": False, "status": "error", "url": url, "model": model,
+            "elapsed_ms": elapsed, "http_status": resp.status_code,
+            "error": f"HTTP {resp.status_code}: {detail}",
+        }
+
+    try:
+        data = resp.json()
+        reply = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False, "status": "error", "url": url, "model": model,
+            "elapsed_ms": elapsed, "http_status": resp.status_code,
+            "error": f"响应不是预期的 chat completion 结构: {e}",
+        }
+
+    return {
+        "ok": True, "status": "ok", "url": url, "model": model,
+        "elapsed_ms": elapsed, "http_status": resp.status_code,
+        "reply": reply,
+    }
+
+
 # ────────────────────────── 路由注册 ──────────────────────────
 
 def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
@@ -701,7 +769,11 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             logger.exception("解析 engine 失败")
             return _bad(f"引擎不可用: {e}", 500)
 
-        # 可选：留空 models 且 discover=true 时，主动向远端询问模型列表
+        # 可选：留空 models 且 discover=true 时，主动向远端询问模型列表。
+        # 发现失败**不再阻断保存**：很多兼容网关根本没有 /v1/models 端点，
+        # 但 /v1/chat/completions 完全可用（这正是"未发现模型"的根因）。
+        # 此时把原因回给前端，让用户改用手工填写模型 ID。
+        discovery_error = None
         if _as_bool(body.get("discover"), False) and not models:
             try:
                 models = await asyncio.to_thread(
@@ -712,8 +784,12 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
                     extra_headers=dict(body.get("extra_headers") or {}),
                 )
             except Exception as e:  # noqa: BLE001
-                logger.warning("模型发现失败: %s", e)
-                return _bad(f"模型发现失败: {e}", 502)
+                discovery_error = str(e)
+                logger.warning("模型发现失败（不阻断保存）: %s", e)
+                if not _as_bool(body.get("allow_empty_models"), False):
+                    # 除非调用方明确接受空模型列表，否则把可读原因回给前端，
+                    # 由用户决定"手工填写模型 ID"还是放弃。
+                    return _bad(discovery_error, 502)
 
         payload = {
             "label": label,
@@ -755,11 +831,80 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
         registered = [
             n for n in names if eng_obj.orchestrator.get_model_spec(n) is not None
         ]
-        return {
+        out = {
             "status": "ok",
             "provider": public_view(record),
             "registered": registered,
         }
+        if discovery_error:
+            out["discovery_error"] = discovery_error
+        return out
+
+    # ── 4b. 测试聊天：证明"没有 /models 也能用" ──
+
+    @app.post("/api/onboarding/api-provider/test-chat")
+    async def onboarding_api_provider_test_chat(request: Request):
+        """向配置的端点发一次最小 chat completion，验证它真的可用。
+
+        这就是 /v1/models 缺失时的"兜底验证手段"：只要这一步通过，
+        用户就可以放心手工填写模型 ID 并保存。
+        """
+        from apps.dsn_ui.api_providers import (
+            DEFAULT_BASE_URLS,
+            VALID_PROTOCOLS,
+            chat_completion_url,
+            resolve_chat_headers,
+        )
+
+        body = await _json_body(request)
+        if body is None:
+            return _bad("请求体必须是 JSON 对象")
+
+        protocol = str(body.get("protocol") or "chat").strip()
+        if protocol not in VALID_PROTOCOLS:
+            return _bad(f"不支持的协议: {protocol}（可选 {list(VALID_PROTOCOLS)}）")
+        if protocol != "chat":
+            return _bad(
+                f"测试聊天目前仅支持 chat 协议（当前: {protocol}）"
+            )
+
+        base_url = str(body.get("base_url") or "").strip() or DEFAULT_BASE_URLS.get(protocol, "")
+        if not base_url:
+            return _bad("缺少 base_url")
+        api_key = str(body.get("api_key") or "")
+
+        model = body.get("model")
+        if not model:
+            # 没给模型就用该 provider 已保存的第一个模型
+            pid = body.get("id")
+            if pid:
+                try:
+                    eng_obj = _resolve_engine(app, engine)
+                    saved = eng_obj.provider_store.get(str(pid)) or {}
+                    saved_models = saved.get("models") or []
+                    if saved_models:
+                        model = saved_models[0]
+                except Exception:  # noqa: BLE001
+                    pass
+        model = str(model or "").strip()
+        if not model:
+            return _bad("缺少 model：请填写要测试的模型 ID")
+
+        message = str(body.get("message") or _TEST_CHAT_MESSAGE)
+
+        try:
+            result = await asyncio.to_thread(
+                _run_test_chat,
+                base_url,
+                api_key,
+                model,
+                message,
+                dict(body.get("extra_headers") or {}) if isinstance(body.get("extra_headers"), dict) else {},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("测试聊天异常")
+            return _bad(f"测试聊天异常: {e}", 500)
+        return result
 
     # ── 5. TTS payload 读取 / 保存 ──
 

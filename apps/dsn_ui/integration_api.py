@@ -488,6 +488,9 @@ def register_integration_routes(app, engine) -> None:
                 "dsn_models_load": "/v1/models/load",
                 "dsn_models_unload": "/v1/models/unload",
                 "dsn_models_reload": "/api/integration/models/reload",
+                # 双系统：System 2 = 常规生成；System 1 = 决策头（一次前向给概率）
+                "dsn_system1_decide": "/v1/decide",
+                "dsn_system1_capabilities": "/v1/decide/capabilities",
             },
             "features": {
                 "streaming": True,
@@ -499,6 +502,22 @@ def register_integration_routes(app, engine) -> None:
                 "explicit_model_management": True,
                 "agent_execution_mode": True,
                 "memory_and_emotion": True,
+            },
+            # JEV 这类双系统混合模型的对话模式：
+            #   system2 — 常规逐 token 生成，适合聊天/写作/代码
+            #   system1 — 封闭选项的决策与打分，输出校准概率，不生成文本
+            "conversation_modes": {
+                "system2": {
+                    "available": True,
+                    "endpoint": "/v1/chat/completions",
+                    "description": "常规生成：逐 token 输出答案，支持流式与工具调用",
+                },
+                "system1": {
+                    "available": True,
+                    "endpoint": "/v1/decide",
+                    "types": ["yes_no", "choice", "score"],
+                    "description": "决策模式：一次前向传播直接给出带校准概率的答案",
+                },
             },
             "slots": {
                 "max": status.get("max_concurrent_slots"),

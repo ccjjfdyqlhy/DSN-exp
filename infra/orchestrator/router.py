@@ -591,6 +591,8 @@ class ModelOrchestrator:
         extra_headers: Optional[dict] = None,
         protocol: str = "chat",
         provider_label: Optional[str] = None,
+        tool_choice: Any = "auto",
+        send_tool_choice: bool = True,
     ) -> None:
         """注册通用远程 API 模型（不负责本地调度，可全并发访问）。
 
@@ -598,6 +600,10 @@ class ModelOrchestrator:
           * "chat"      OpenAI Chat Completions（/v1/chat/completions）
           * "responses" OpenAI Responses API（/v1/responses）
           * "anthropic" Anthropic Messages（/v1/messages）
+
+        tool_choice / send_tool_choice:
+          有工具时随请求体发送 path["tool_choice"]（默认 "auto"，对齐 apps/dsn）。
+          个别网关不认该字段，可用 send_tool_choice=False 关闭。
         """
         target_name = remote_model_name or name
 
@@ -622,6 +628,8 @@ class ModelOrchestrator:
                 timeout=timeout,
                 extra_headers=extra_headers or {},
                 protocol=protocol,
+                tool_choice=tool_choice,
+                send_tool_choice=send_tool_choice,
             )
             engine_name = f"openai:{protocol}"
 

@@ -593,7 +593,7 @@ def tool_cache_recall(deps: ToolDeps):
 
     服务不可用/检索异常时优雅降级为 hits: 0，绝不抛异常打崩 AgentLoop。
     """
-    def run(query: str, limit: Optional[int] = None):
+    def run(query: str, limit: int = 3):
         svc = getattr(deps, "thought_cache", None)
         if svc is None:
             return ToolResult.ok(
@@ -607,7 +607,7 @@ def tool_cache_recall(deps: ToolDeps):
             return ToolResult.ok(
                 "未找到相似思路模板，可自行探索；本轮完成后系统会自动蒸馏新的模板。",
                 hits=0, templates=[])
-        lines = [f"命中 {len(templates)} 条思路模板（按相关度排序）："]
+        lines = [f"命中 {len(templates)} 条思路模板（按逐字相似度百分比排序）："]
         for t in templates:
             steps = t.get("steps") or []
             step_txt = " -> ".join(
@@ -616,8 +616,14 @@ def tool_cache_recall(deps: ToolDeps):
                 for s in steps if isinstance(s, dict)
             ) or "(无工具步骤)"
             tools = ", ".join(t.get("tools") or []) or "-"
+            pct = t.get("percent")
+            if pct is None:
+                try:
+                    pct = int(round(float(t.get("similarity")) * 100))
+                except (TypeError, ValueError):
+                    pct = 0
             lines.append(
-                f"- [{str(t.get('id') or '')[:8]}] "
+                f"- (相似度 {pct}%) [{str(t.get('id') or '')[:8]}] "
                 f"{t.get('intent') or t.get('task_signature') or '(未命名)'}\n"
                 f"    tools: {tools}\n"
                 f"    最短路径: {step_txt}\n"
@@ -740,8 +746,8 @@ def install_standard_tools(registry: ToolRegistry, *,
                          {"type": "object", "properties": {
                              "query": {"type": "string",
                                        "description": "任务文本/意图（必填）"},
-                             "limit": {"type": "integer",
-                                       "description": "最多返回条数（可选）"}},
+                             "limit": {"type": "integer", "default": 3,
+                                       "description": "最多返回条数（可选，默认 3）"}},
                           "required": ["query"]}),
     }
     registered: list[Tool] = []

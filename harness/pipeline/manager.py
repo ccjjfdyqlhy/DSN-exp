@@ -32,6 +32,9 @@ class PluginManager:
         if plugin.name in self._plugins:
             logger.warning("插件 %s 已注册，将被覆盖", plugin.name)
             self._unindex(plugin.name)
+        # 同名清理之外，再按**对象身份**清理一遍：同一插件对象可能先以旧名
+        # 注册、改名后再注册，旧索引项会残留并导致 on_hook 被调用两次。
+        self._unindex_obj(plugin)
         self._plugins[plugin.name] = plugin
         self._enabled[plugin.name] = True
         self._index(plugin)
@@ -133,5 +136,17 @@ class PluginManager:
             bisect.insort(self._hook_index[hook], plugin, key=lambda p: p.priority)
 
     def _unindex(self, name: str) -> None:
+        """按插件名移除索引项。
+
+        修复说明：本方法只用于"按名字清理"，但同一 plugin 对象若在注册后
+        改了 name 再注册，旧索引项（旧名）清不掉，于是同一插件的 on_hook
+        会被调用两次 —— 对发消息/扣费/写库类插件就是重复副作用。
+        因此 register() 同时按**对象身份**做一次全表清理（见 _unindex_obj）。
+        """
         for hook in HookPoint:
             self._hook_index[hook] = [p for p in self._hook_index[hook] if p.name != name]
+
+    def _unindex_obj(self, plugin: _PluginT) -> None:
+        """按对象身份移除索引项，避免改名后残留重复项。"""
+        for hook in HookPoint:
+            self._hook_index[hook] = [p for p in self._hook_index[hook] if p is not plugin]

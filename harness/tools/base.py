@@ -138,6 +138,13 @@ class Tool:
                 # 会卡住整个 asyncio 循环——前端无响应、turn_timeout 无法取消、
                 # 服务端连 SIGINT 都可能失效。
                 result = await asyncio.to_thread(self.handler, **params)
+                # 修复说明（双保险）：同步 lambda 里如果**返回**了一个 coroutine
+                # （典型写法 `lambda *a: some_async_fn(*a)`），上面的是非协程分支，
+                # to_thread 只会把 coroutine 对象原样带回来，永远不会被 await。
+                # 结果是工具"成功返回"但副作用从未发生（swarm 黑板就是这样丢的）。
+                # 这里显式补一次 await，把这类隐式异步调用兜住。
+                if inspect.isawaitable(result):
+                    result = await result
         except Exception as e:  # noqa: BLE001
             return ToolResult.fail(str(e))
         return result if isinstance(result, ToolResult) else ToolResult.ok(result)

@@ -1,0 +1,62 @@
+# apps/dsn/model_profiles/jev_27b_vl.yaml
+# JEV-27B-VL Q4_K_M —— Qwen3.8-27B 主体 + 视觉塔 + System-1 决策头（三层混合）
+#
+# 启动命令等价于：
+#   ~/llama.cpp/build/bin/llama-server \
+#     --model  /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.Q4_K_M.gguf \
+#     --mmproj /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.mmproj-bf16.gguf \
+#     --n-gpu-layers 99 --tensor-split 11,11 --ctx-size 32768 \
+#     --flash-attn on --jinja
+#
+# 显存与层数（实测结论，别改回小数值）：
+#   27B Q4_K_M 权重 ≈ 15.4G，两张 2080 Ti 各 11G。
+#
+#   **必须用 --n-gpu-layers 99（=全部层上卡）**，不能按"层数刚好够"去设 47/64。
+#   本模型是 qwen35 混合架构（Gated Delta Net 线性注意力 + 标准注意力），
+#   llama.cpp 的 fused GDN(chunked) 算子**只在 CUDA 实现**。只要 layer 0 留在
+#   CPU，就会打印：
+#     W resolve_fused_ops: layer 0 is assigned to device CPU but fused Gated
+#       Delta Net (chunked) is assigned to device CUDA0
+#     W resolve_fused_ops: fused Gated Delta Net (chunked) not supported, set to disabled
+#   融合算子被禁用后每层都要跨 CPU↔GPU 同步状态，GPU 利用率掉到 5%。
+#
+#   实测（同提示词 200 tokens）：
+#     -ngl 47 →  4.14 tok/s（GPU 利用率 5%）
+#     -ngl 64 → 20.49 tok/s（仍报 layer0 在 CPU）
+#     -ngl 99 → 29.14 tok/s（GPU 利用率 47~51%，32K ctx 下仍 29 tok/s）
+#   显存：-ngl 99 时 9.2G + 9.6G，余量充足，不 OOM。
+#
+# 视觉：mmproj_path 非空 → integration_api 自动上报 capabilities.vision = true，
+#       调用方可以直接传 image_url / data:base64 内容块。
+model: jev-27b-vl
+engine: llama_cpp
+priority: 88
+resident: false
+immediate: false
+orchestrated: true
+load_timeout: 300
+request_timeout: 900
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.Q4_K_M.gguf
+  mmproj_path: /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.mmproj-bf16.gguf
+  # 必须 99（全部层上卡）：见文件头说明，小层数会禁用 fused GDN 算子并慢 7 倍。
+  n_gpu_layers: 99
+  tensor_split: "11,11"
+  # 上下文 32768：实测上限。
+  #   -ngl 99 + ctx 50000 时，加载阶段的视觉缓冲分配会 cudaMalloc 失败
+  #   （E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 248.10 MiB
+  #    on device 0: out of memory），进程随后在**第一次图片请求**时段错误退出
+  #   （exit 139）——纯文本看不出问题，一传图就崩。
+  #   实测 32768 是安全上限：无 OOM、视觉可用、生成仍是 29.34 tok/s。
+  ctx_size: 32768
+  flash_attn: "on"
+  jinja: true
+  reasoning_format: deepseek
+  # Qwen-VL 定位类任务需要至少 1024 图像 token 才保证精度
+  # （llama.cpp 启动时就这一点给出警告，见 ggml-org/llama.cpp#16842）。
+  # 注意：LlamaServerConfig 没有独立的 image_min_tokens 字段，走 extra_args 传递；
+  # 不要设 image_max_tokens —— 那会把动态分辨率压小，反而损害视觉精度。
+  extra_args: ["--image-min-tokens", "1024"]
+  agent: true

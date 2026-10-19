@@ -61,15 +61,28 @@ def test_models_list_apis(client):
         assert "architecture" in model_entry
 
 
-def test_models_load_and_unload_apis(client):
-    """验证 /models/load 与 /models/unload 端点。"""
-    res_load = client.post("/models/load", json={"model": "test-gpt"})
-    assert res_load.status_code == 200
-    assert res_load.json()["success"] is True
+def test_api_model_rejects_load_and_unload(client):
+    """第三方 API 模型必须拒绝对它做本地装载/释放。
 
-    res_unload = client.post("/models/unload", json={"model": "test-gpt"})
-    assert res_unload.status_code == 200
-    assert res_unload.json()["success"] is True
+    test-gpt 是通过 register_api_openai 注册的**云端**模型：它没有本地子进程，
+    也不占显存。历史行为是 load 走兜底分支返回 success、unload 返回 unloaded
+    却什么都不做 —— 前端收到 unloaded 后会把模型判为不可用（模型名与发送键
+    变红显示 not available），而请求其实完全能用。因此这里断言 409。
+    """
+    for endpoint, action in (("/models/load", "载入"), ("/models/unload", "释放")):
+        res = client.post(endpoint, json={"model": "test-gpt"})
+        assert res.status_code == 409, endpoint
+        body = res.json()
+        # 关键：状态必须仍然是 loaded，不能因为一次误操作就把模型标成不可用
+        assert body["status"] == "loaded", endpoint
+        assert body["always_ready"] is True, endpoint
+        assert action in body["error"], endpoint
+
+
+def test_unknown_model_load_returns_error(client):
+    """未知模型的装载请求不能被静默当成成功。"""
+    res = client.post("/models/load", json={"model": "no-such-model"})
+    assert res.status_code in (404, 500)
 
 
 def test_slots_api(client):

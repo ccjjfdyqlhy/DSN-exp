@@ -24,6 +24,7 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -49,7 +50,7 @@ from apps.dsn_ui.logging_setup import (
     set_request_id,
     setup_logging,
 )
-from infra.orchestrator import ChatMessage, LlamaServerConfig
+from infra.orchestrator import ChatMessage, LlamaServerConfig, ModelSourceType
 
 logger = logging.getLogger("DSNUIServer")
 
@@ -141,6 +142,25 @@ def _query_gpus() -> list:
 
     _gpu_cache = (now, gpus)
     return gpus
+
+
+def _cfg(*names: str, default: Any = None) -> Any:
+    """安全读取配置项。
+
+    修复说明：server.py 曾大面积引用一个**未定义的** Config 名字
+    （只导入了 UIConfig），导致 /api/settings、/api/resources/start 等端点
+    一被调用就 NameError → 500。这里统一走安全读取：
+    依次尝试 UIConfig 属性、同名环境变量，最后回退到默认值。
+    """
+    for name in names:
+        val = getattr(UIConfig, name, None)
+        if val is not None:
+            return val
+    for name in names:
+        val = os.getenv(name)
+        if val not in (None, ""):
+            return val
+    return default
 
 
 def get_system_resources() -> dict:
@@ -526,6 +546,25 @@ def _extract_last_user_text(messages_raw: Optional[list]) -> str:
     return ""
 
 
+def _apply_thought_cache_recommendation(engine, messages_raw: list) -> Optional[str]:
+    """生成「思路模板推荐」块（按逐字匹配百分比排序的 top-N 缓存结果）。
+
+    用户要求：不要依赖模型主动调用 cache.recall —— 每轮直接把缓存结果推给 AI。
+    服务不可用 / 关闭 / 无命中时返回 None，请求路径与今天完全一致。
+    """
+    try:
+        svc = getattr(engine, "thought_cache", None)
+        if svc is None:
+            return None
+        query = _extract_last_user_text(messages_raw)
+        if not query:
+            return None
+        return svc.build_recommendation_block(query) or None
+    except Exception as e:  # noqa: BLE001 - 推荐失败绝不能影响对话
+        logger.warning("生成思路模板推荐失败（忽略）: %s", e)
+        return None
+
+
 def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     def _on_topic_converged(topic_id: str, title: str):
         loop = None
@@ -612,16 +651,45 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             orchestrator=engine.orchestrator, settings=engine.agent,
         )
 
+        #: 正在进行中的聊天流（conv_id -> 同步 emit 回调）。
+        #: 缓存蒸馏在工作线程里跑，因此这里必须是线程安全 + 非阻塞的。
+        _chat_stream_sinks: Dict[str, Any] = {}
+        _chat_stream_sinks_lock = threading.Lock()
+
+    except Exception as e:  # noqa: BLE001
+        engine.thought_cache = None
+        log_exception(logger, "初始化思考链缓存失败（功能不可用）", e)
+        _chat_stream_sinks = {}                      # noqa: F841 - 兜底占位
+        _chat_stream_sinks_lock = threading.Lock()   # noqa: F841
+
+    if getattr(engine, "thought_cache", None) is not None:
         def _emit_thought_cache(payload: dict) -> None:
-            """把 {state,message_id,conv_id,count,queue_depth} 作为 thought_cache 事件
-            投递到 /models/sse。可能来自工作线程，_schedule_broadcast 已做线程切换。"""
+            """把 {state,message_id,conv_id,count,queue_depth} 同时投递到：
+
+              1) **本轮聊天 SSE 流**（/v1/chat/completions）—— UI 在对话期间正
+                 在消费这条流，因此「缓存思路中」能立刻可见（BUG 3 的修复）；
+              2) /models/sse 状态流 —— 作为兜底（对话流已关闭时仍然可见）。
+
+            可能来自工作线程，因此两路都必须线程安全且绝不阻塞。
+            """
+            data = dict(payload)
+            try:
+                conv_id = str(data.get("conv_id") or "")
+                with _chat_stream_sinks_lock:
+                    sink = _chat_stream_sinks.get(conv_id)
+                if sink is not None:
+                    sink(data)
+            except Exception as e:  # noqa: BLE001 - 聊天流投递失败不应影响其它订阅者
+                logger.debug("投递 thought_cache 到聊天流失败: %s", e)
             try:
                 _schedule_broadcast(
-                    "thought_cache", str(payload.get("message_id") or ""), dict(payload)
+                    "thought_cache", str(data.get("message_id") or ""), data
                 )
             except Exception as e:  # noqa: BLE001
                 log_exception(logger, "广播 thought_cache 事件失败", e)
 
+        # emitter 必须**在 start() 之前**装好：否则 worker 可能在第一件任务上
+        # 抢跑，导致首个 queued/running 事件丢失。
         engine.thought_cache.set_emitter(_emit_thought_cache)
         engine.thought_cache.start()
         # 把服务注入工具系统，使 cache.recall 能检索本服务。
@@ -629,9 +697,6 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             engine.agent.tool_coordinator.set_thought_cache(engine.thought_cache)
         except Exception as e:  # noqa: BLE001
             log_exception(logger, "注入思考链缓存到工具系统失败", e)
-    except Exception as e:  # noqa: BLE001
-        engine.thought_cache = None
-        log_exception(logger, "初始化思考链缓存失败（功能不可用）", e)
 
     def _enqueue_thought_cache(*, conv_id: str, message_id: str, user_text: str,
                                tool_calls: list, tool_results: list, reply: str,
@@ -725,10 +790,27 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     # 与 engine.resource_pool 指向同一实例，供 asr_api 等独立模块取用。
     app.state.resource_pool = getattr(engine, "resource_pool", None)
 
+    # CORS 策略。
+    #
+    # 修复说明：原先是 allow_origins=["*"] 且 allow_credentials=True。
+    # 这是浏览器安全模型下的危险组合——服务默认监听 0.0.0.0，同网段任意
+    # 网页都能跨域调用本机接口（含 /tools 的工具执行）。而且带凭据的 "*"
+    # 在 CORSMiddleware 里会被回显成请求方 Origin，等同于完全放开。
+    #
+    # 现在默认只允许本机来源；确需远程访问时用
+    # DSN_UI_CORS_ORIGINS 显式列出（逗号分隔），并保持凭据关闭。
+    _cors_env = (os.getenv("DSN_UI_CORS_ORIGINS") or "").strip()
+    if _cors_env:
+        _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    else:
+        _cors_origins = [
+            "http://127.0.0.1", "http://localhost",
+            "http://127.0.0.1:8888", "http://localhost:8888",
+        ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=_cors_origins,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -783,6 +865,22 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
     # ── 2. llama-ui /models 及 /v1/models 端点 ──
 
+    def _provider_id_for(label: Optional[str]) -> Optional[str]:
+        """按 provider 展示名反查其 id（供前端从模型行跳转到「管理」面板）。
+
+        provider 的明文名单里 label 是唯一的展示名；重名时取第一个。
+        查不到（provider 已被删除但注册残留）返回 None。
+        """
+        if not label:
+            return None
+        try:
+            for p in engine.provider_store.list():
+                if (p.get("label") or "") == label:
+                    return p.get("id")
+        except Exception as e:  # noqa: BLE001 - 反查失败不应影响模型列表
+            logger.debug("反查 provider id 失败 label=%s: %s", label, e)
+        return None
+
     def _build_model_entries() -> list[dict]:
         status = engine.orchestrator.status()
         entries = []
@@ -796,12 +894,22 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             # 因此这里从 spec 防御性读取：本地模型得到 None，第三方 API 模型
             # 得到其 provider 展示名，供前端加来源徽标。
             _model_spec = engine.orchestrator.get_model_spec(m["name"])
+            # 第三方 API 模型：前端需要 provider_id 才能从资源页跳到「管理」
+            # 面板去编辑（载入显存/释放显存对它毫无意义）。
+            _provider_label = getattr(_model_spec, "provider_label", None)
+            _is_api_model = m.get("source_type") == "api_openai"
+            _provider_id = _provider_id_for(_provider_label) if _is_api_model else None
             entries.append({
                 "id": m["name"],
                 "name": m["name"],
                 "object": "model",
                 "source_type": m.get("source_type"),
-                "provider_label": getattr(_model_spec, "provider_label", None),
+                "provider_label": _provider_label,
+                # API 模型没有「本地加载」的概念：显式告诉前端，避免资源页
+                # 渲染出「载入显存 / 释放显存」这种对云端模型没有意义的按钮。
+                "is_api_model": _is_api_model,
+                "always_ready": _is_api_model,
+                "provider_id": _provider_id,
                 # owned_by 直接取引擎名：llama.cpp 与 Strata 都是本地托管引擎，
                 # 前端/客户端靠它区分是哪一套引擎在跑这个模型。
                 "owned_by": (m.get("engine") or m["source_type"]) if m["is_local"] else m["source_type"],
@@ -839,12 +947,40 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
     # ── 3. 模型动态加载 /models/load 与 /models/unload ──
 
+    def _reject_if_api_model(model_id: str, action: str) -> Optional[JSONResponse]:
+        """第三方 API 模型不接受本地装载/卸载。
+
+        它们运行在远端，永远可用：既没有本地子进程，也不占显存。
+        历史实现会一路走到 orchestrator.load_model 的兜底分支，返回
+        "loaded" —— 而卸载则返回 "unloaded" 却什么都没做。前端据此把模型
+        标记成未加载，于是模型名与发送键变红显示 not available，
+        但请求其实完全能用。这里直接回 409 + 明确原因，让前端知道这是
+        无意义操作而不是失败。
+        """
+        spec = engine.orchestrator.get_model_spec(model_id)
+        if spec is None:
+            return None
+        if getattr(spec, "source_type", None) == ModelSourceType.API_OPENAI:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"第三方 API 模型不支持{action}：它运行在远端，始终可用",
+                    "model": model_id,
+                    "status": "loaded",
+                    "always_ready": True,
+                },
+            )
+        return None
+
     @app.post("/models/load")
     async def load_model(req: Request):
         body = await req.json()
         model_id = body.get("model")
         if not model_id:
             raise HTTPException(status_code=400, detail="Missing 'model' field")
+        _rejected = _reject_if_api_model(model_id, "载入显存")
+        if _rejected is not None:
+            return _rejected
         logger.info("UI 请求加载模型: %s", model_id)
         try:
             ok = await asyncio.to_thread(engine.orchestrator.load_model, model_id)
@@ -890,6 +1026,11 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         model_id = body.get("model")
         if not model_id:
             raise HTTPException(status_code=400, detail="Missing 'model' field")
+        # 对 API 模型「释放显存」会广播 status_unloaded，前端随即把它判为
+        # 不可用（模型名与发送键变红）。云端模型没有显存可释放，直接拒绝。
+        _rejected = _reject_if_api_model(model_id, "释放显存")
+        if _rejected is not None:
+            return _rejected
         logger.info("UI 请求卸载/终止模型: %s", model_id)
         try:
             ok = await asyncio.to_thread(engine.orchestrator.unload_model, model_id)
@@ -982,6 +1123,18 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="未选择任何模型，无法发送对话。请先在顶部或资源管理页选择模型。")
 
         messages_raw = body.get("messages", [])
+
+        # ── 思路模板自动推荐（用户要求：直接推 top-3 给 AI，不等模型调用工具）──
+        # 作为**最高层 system 消息**注入：话题记忆装配、超驰、passthrough 与
+        # 客户端工具模式都会把它放在上下文最前。只读缓存一次，绝不阻塞。
+        _tc_block = _apply_thought_cache_recommendation(engine, messages_raw)
+        if _tc_block:
+            messages_raw = [{"role": "system", "content": _tc_block}] + list(messages_raw)
+            logger.info(
+                "已注入思路模板推荐: %d chars, 模板数=%d",
+                len(_tc_block), _tc_block.count("(相似度"),
+            )
+
         stream = bool(body.get("stream", False))
         temperature = body.get("temperature")
 
@@ -1068,22 +1221,40 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
         # 每次回复的最大输出 tokens 规定为当前加载模型支持的上下文长度
         model_ctx = engine.orchestrator.get_model_ctx_size(model_name)
-        req_tokens = body.get("max_tokens") or body.get("n_predict")
-        if req_tokens is None or int(req_tokens) <= 0 or int(req_tokens) == 4096:
+        # 修复说明：以下三处参数原先直接 int()，字符串/布尔值（如
+        # {"max_tokens": "abc"} 或 {"max_tokens": true}）会抛 ValueError/TypeError
+        # 一路冒泡成 500。统一改为宽容解析：非法值退回默认行为，不再打挂服务。
+        def _coerce_int(value: Any) -> Optional[int]:
+            """把请求里的数值参数宽容地转成 int；无法解析返回 None。"""
+            if value is None or isinstance(value, bool):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        req_tokens = _coerce_int(body.get("max_tokens") or body.get("n_predict"))
+        # 不再把 4096 当"未指定"的哨兵：那是魔法值，调用方显式要求 4096 会被
+        # 静默改成 None。现在只有 None/非正数才走按比例预留。
+        if req_tokens is None or req_tokens <= 0:
             # 不直接取满上下文：输入本身要占 token，若 max_tokens == ctx_size
             # 则 input+output > ctx，llama-server 直接 500。
             # 交给 agent 统一按比例预留（见 _resolve_max_tokens），这里传 None。
             effective_max_tokens = None
         else:
-            effective_max_tokens = int(req_tokens)
+            effective_max_tokens = req_tokens
 
         # 支持请求中透传的 Agent 最大迭代步数与工具截断字符数
-        raw_max_steps = body.get("max_steps") or body.get("agent_max_steps") or body.get("agentic_max_turns")
-        effective_max_steps = int(raw_max_steps) if raw_max_steps is not None and int(raw_max_steps) >= 0 else None
+        raw_max_steps = _coerce_int(
+            body.get("max_steps") or body.get("agent_max_steps") or body.get("agentic_max_turns")
+        )
+        effective_max_steps = raw_max_steps if raw_max_steps is not None and raw_max_steps >= 0 else None
 
-        raw_tool_chars = body.get("tool_max_output_chars") or body.get("dsn_tool_max_output_chars")
-        if raw_tool_chars is not None and int(raw_tool_chars) > 0:
-            engine.agent.set_tool_max_output_chars(int(raw_tool_chars))
+        raw_tool_chars = _coerce_int(
+            body.get("tool_max_output_chars") or body.get("dsn_tool_max_output_chars")
+        )
+        if raw_tool_chars is not None and raw_tool_chars > 0:
+            engine.agent.set_tool_max_output_chars(raw_tool_chars)
 
         # SSE 保活心跳间隔：前端按 llama-server 协议传 sse_ping_interval（秒）。
         # 这个参数以前被后端忽略，导致长时间无输出的工具执行（如 90s 的 nmap）
@@ -1174,8 +1345,62 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             """
 
             def emit(raw: str) -> None:
-                """把一段 SSE 文本追加进会话缓冲（同步，无 await 依赖）。"""
-                session.append(raw.encode("utf-8"))
+                """把一段 SSE 文本追加进会话缓冲（同步，无 await 依赖）。
+
+                蒸馏/缓存事件来自其它线程（工作线程），因此这里加锁：session
+                的缓冲是共享对象，必须避免与事件循环线程并发写坏。
+                """
+                with _emit_lock:
+                    session.append(raw.encode("utf-8"))
+
+            #: 缓存事件推送用的锁（工作线程也会调用 emit）。
+            _emit_lock = threading.Lock()
+            #: 本流的缓存事件接收器状态：
+            #:   active —— 是否仍属于当前正在运行的流（旧的接收器必须失效，
+            #:             否则后续轮次的事件会写进已关闭的会话，UI 永远看不到）；
+            #:   seal_requested —— 推理已结束，等待把 done/error 一起封口；
+            #:   sealed —— 会话已 finish()，之后一律不再尝试写入。
+            _sink_state = {"active": True, "seal_requested": False, "sealed": False}
+            #: 封口前暂存的缓存帧（工作线程可能随时写入）。
+            _cache_pending: list = []
+            _cache_pending_lock = threading.Lock()
+
+            def _cache_frame(payload: dict) -> str:
+                """把缓存事件编码成显式 type 的 SSE 帧（字段冻结）。"""
+                frame = {
+                    "type": "thought_cache",
+                    "state": payload.get("state"),
+                    "message_id": payload.get("message_id", ""),
+                    "conv_id": payload.get("conv_id", ""),
+                    "count": payload.get("count", 0),
+                    "queue_depth": payload.get("queue_depth", 0),
+                }
+                return "data: " + json.dumps(frame, ensure_ascii=False) + "\n\n"
+
+            def _emit_thought_cache_frame(payload: dict) -> None:
+                """把缓存生命周期作为显式 type 的帧写进本轮聊天流（非阻塞）。"""
+                if not _sink_state["active"]:
+                    return
+                try:
+                    line = _cache_frame(payload)
+                except Exception as e:  # noqa: BLE001 - 事件失败不得影响推理
+                    logger.debug("构造 thought_cache 帧失败: %s", e)
+                    return
+                with _cache_pending_lock:
+                    if _sink_state["sealed"]:
+                        logger.debug(
+                            "会话已封口，跳过聊天流缓存帧 state=%s（改由 /models/sse 送达）",
+                            payload.get("state"),
+                        )
+                        return
+                    if _sink_state["seal_requested"]:
+                        _cache_pending.append(line)
+                        logger.debug("缓存帧暂存待补发: state=%s", payload.get("state"))
+                        return
+                    emit(line)
+
+            with _chat_stream_sinks_lock:
+                _chat_stream_sinks[conv_id] = _emit_thought_cache_frame
 
             # 请求关联 id：本次 SSE 流的每条日志都会带上它，
             # 便于在并发请求中还原「哪一次流在哪一步失败了」。
@@ -1501,11 +1726,19 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         model=model_name,
                     )
             except asyncio.CancelledError:
-                # 客户端主动断开不应被当成推理失败，但要留下痕迹便于排查"假死"。
+                # 用户点「停止」、新流顶替、或客户端断开都会走到这里。
+                #
+                # 修复说明：本分支必须排在 except Exception 之前。Python 按顺序
+                # 匹配 handler，原先这里之后还有一个 except asyncio.CancelledError
+                # （在 except Exception 之后）——它永远不可达，导致取消事件被
+                # 宽泛的 Exception 分支吞掉，会话以 error="推理失败" 结束，
+                # 前端弹出错误框、日志里也没有取消痕迹。
                 logger.warning(
                     "SSE 被取消(客户端断开?): chunks=%d elapsed=%.2fs types=%s",
                     chunk_count, time.time() - started, ctype_counts,
                 )
+                emit("data: [DONE]\n\n")
+                session.finish(error="cancelled")
                 raise
             except Exception as e:
                 # 关键修复：原实现只打 str(e)，栈信息全部丢失。
@@ -1531,14 +1764,70 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     pass
                 err_payload = {"error": {"message": str(e), "type": "server_error"}}
                 emit(f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n")
+                _sink_state["seal_requested"] = True
+                with _cache_pending_lock:
+                    for _line in _cache_pending:
+                        emit(_line)
+                    _cache_pending.clear()
+                    _sink_state["sealed"] = True
                 emit("data: [DONE]\n\n")
                 session.finish(error=str(e))
-            except asyncio.CancelledError:
-                # 用户点停止 / 新流顶替：结束会话并向下游广播终止。
-                emit("data: [DONE]\n\n")
-                session.finish(error="cancelled")
-                raise
             finally:
+                # 封口缓存帧：蒸馏在 [DONE] 之后仍会推 running/done，而
+                # StreamSession.append() 在 is_done 之后拒收写入。这里给工作线程
+                # 一个短窗口（仅毫秒级等待，且只在有在途任务时）收集 done/error，
+                # 然后一次性补发，UI 才能看到 queued -> running -> done 全链路。
+                _sink_state["seal_requested"] = True
+                try:
+                    _cache_svc = getattr(engine, "thought_cache", None)
+                    _tc_active = False
+                    if _cache_svc is not None:
+                        _st = _cache_svc.status() or {}
+                        _tc_active = bool(_st.get("running")) or int(_st.get("queue_depth") or 0) > 0
+                    # 修复说明：本函数是 asyncio.create_task 起的协程，运行在事件循环
+                    # 线程上。原实现用 time.sleep() 轮询，会把**整个事件循环**阻塞最多
+                    # 30 秒 —— 期间所有 SSE 推送、其他对话、/models、心跳全部停摆。
+                    # 必须用 await asyncio.sleep() 让出控制权。
+                    #
+                    # 同时把等待上限从 30s 大幅收紧：这里只是为了给后台蒸馏线程一个
+                    # 补发 done 帧的机会，不该让它拖住当前对话的收尾。没等到就由
+                    # UI 侧轮询兜底，不会丢数据。
+                    _deadline = time.monotonic() + (5.0 if _tc_active else 0.6)
+                    while time.monotonic() < _deadline:
+                        with _cache_pending_lock:
+                            _done_seen = any(
+                                "\"state\": \"done\"" in _l or "\"state\": \"error\"" in _l
+                                for _l in _cache_pending
+                            )
+                        if _done_seen:
+                            break
+                        await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as _e:  # noqa: BLE001
+                    logger.debug("等待缓存封口失败: %s", _e)
+                with _cache_pending_lock:
+                    _pending_to_flush = list(_cache_pending)
+                    _cache_pending.clear()
+                    _sink_state["sealed"] = True
+                for _line in _pending_to_flush:
+                    try:
+                        emit(_line)
+                    except Exception as _e:  # noqa: BLE001
+                        logger.debug("补发缓存帧失败: %s", _e)
+                if _pending_to_flush:
+                    logger.info(
+                        "已补发 %d 条缓存帧到聊天流: conv=%s states=%s",
+                        len(_pending_to_flush), conv_id,
+                        [json.loads(_l[6:]).get("state") for _l in _pending_to_flush if _l.startswith("data: ")],
+                    )
+                # 注销本轮接收器：此后缓存状态只由 /models/sse 兜底。
+                _sink_state["active"] = False
+                try:
+                    with _chat_stream_sinks_lock:
+                        _chat_stream_sinks.pop(conv_id, None)
+                except Exception:  # noqa: BLE001
+                    pass
                 # 无论正常还是异常都必须 finish，否则重连方会一直等待。
                 session.finish()
                 logger.debug(
@@ -1561,7 +1850,10 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         # 后台生产者 + 直通转发：先建会话并启动生产任务，
         # 再由本响应从缓冲区实时读发给当前连接。
         session = await stream_registry.create(conv_id, model=model_name)
-        session.task = asyncio.create_task(_produce_sse(session, conv_id))
+        # 会话可能被规范化（::model 后缀 / 去重）：缓存事件必须挂在**真实**会话 id 上，
+        # 否则接收器永远匹配不到 emitter 投递的 conv_id。
+        session_conv_id = getattr(session, "conversation_id", None) or conv_id
+        session.task = asyncio.create_task(_produce_sse(session, session_conv_id))
 
         # 心跳参数：前端传了 sse_ping_interval 就用它，否则用会话默认值。
         hb_kwargs: Dict[str, Any] = {}
@@ -1697,6 +1989,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         注意：正常对话链路中工具由后端 AgentLoop 统一执行，前端不再自行调用。
         此处仅为兼容 llama-ui 协议保留入口（如调试或外部集成）。
         """
+        # 安全护栏：该端点能执行全部 harness 工具（含 file.write / proc.run 等
+        # 有副作用的工具），而正常对话链路里工具由后端 AgentLoop 统一执行，
+        # 前端根本不需要它。默认关闭，仅调试/外部集成时用
+        # DSN_UI_ENABLE_TOOL_ENDPOINT=1 显式打开。
+        if not (os.getenv("DSN_UI_ENABLE_TOOL_ENDPOINT") or "").strip().lower() in ("1", "true", "yes", "on"):
+            raise HTTPException(
+                status_code=403,
+                detail="工具执行端点已关闭（设置 DSN_UI_ENABLE_TOOL_ENDPOINT=1 可开启）",
+            )
+
         body = await req.json()
         tool_name = body.get("tool") or body.get("name")
         params = body.get("params") or body.get("arguments") or {}
@@ -1707,6 +2009,10 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 params = json.loads(params)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="params 必须是 JSON 对象")
+        # 修复说明：params 若是 list / 数字 / null，**params 会直接 TypeError → 500。
+        # 合法输入只应是 JSON 对象（工具参数按关键字展开）。
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail="params 必须是 JSON 对象")
 
         tool = engine.agent.tool_coordinator.tool_reg.get(tool_name)
         if tool is None:
@@ -1954,7 +2260,22 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
         def _collect() -> dict:
             data = get_system_resources()
-            data["orchestrator"] = engine.orchestrator.status()
+            orch = engine.orchestrator.status()
+            # 硬件页需要对第三方 API 模型区别对待：它们运行在远端，既没有本地
+            # 进程也不占显存，因此不该出现「载入显存 / 释放显存」按钮。
+            # orchestrator.status() 只导出 source_type，这里补上派生标志 ——
+            # 否则前端拿到 is_api_model=undefined，会一路落到本地模型的分支，
+            # 表现为资源页对云端模型只剩一个「释放显存」。
+            for _m in orch.get("models", []):
+                _is_api = _m.get("source_type") == "api_openai"
+                _m["is_api_model"] = _is_api
+                _m["always_ready"] = _is_api
+                if _is_api:
+                    _spec = engine.orchestrator.get_model_spec(_m.get("name"))
+                    _label = getattr(_spec, "provider_label", None)
+                    _m["provider_label"] = _label
+                    _m["provider_id"] = _provider_id_for(_label)
+            data["orchestrator"] = orch
             # 显存管理开关状态，供硬件页渲染
             data["kv_offload_disabled"] = engine.orchestrator.get_kv_offload_disabled()
             # 外周资源池（ASR / TTS）与任务槽状态，供「外周任务槽」卡片。
@@ -2100,41 +2421,49 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     "请求方 messages 原样送进模型"
                 ),
             },
+            # 修复说明（致命）：本函数原先整段引用 `Config.*`，但 server.py 只
+            # 导入了 `UIConfig`，模块里**根本没有 Config 这个名字** —— 调用
+            # GET /api/settings 必然抛 NameError → 500。同一问题也出现在
+            # POST /api/resources/start（Config.ASR_LOAD_TIMEOUT）。
+            #
+            # 这里改用 _cfg() 安全读取：优先 UIConfig 属性，其次同名环境变量，
+            # 最后返回默认值。缺项不再打挂接口，也让配置来源可追溯。
             "orchestrator": {
                 "max_concurrent_slots": engine.orchestrator.max_concurrent_slots,
-                "llamacpp_bin": Config.LLAMACPP_BIN,
-                "llamacpp_base_url": Config.LLAMACPP_BASE_URL,
-                "lmstudio_base_url": Config.LMSTUDIO_BASE_URL,
-                "openai_api_base": Config.OPENAI_API_BASE,
-                "openai_api_key_set": bool(Config.OPENAI_API_KEY),
+                "llamacpp_bin": _cfg("LLAMA_SERVER_BINARY", "LLAMACPP_BIN",
+                                     default=UIConfig.LLAMA_SERVER_BINARY),
+                "llamacpp_base_url": _cfg("LLAMACPP_BASE_URL", default="http://127.0.0.1:8080"),
+                "lmstudio_base_url": _cfg("LMSTUDIO_BASE_URL", default="http://localhost:4501"),
+                "openai_api_base": _cfg("OPENAI_API_BASE", default="https://api.openai.com/v1"),
+                "openai_api_key_set": bool(_cfg("OPENAI_API_KEY", default="")),
             },
             "memory": {
-                "enabled": Config.MEMORY_ENABLED,
-                "embedding_enabled": Config.MEMORY_EMBEDDING_ENABLED,
-                "embedding_model": Config.MEMORY_EMBEDDING_MODEL,
-                "summary_backend": Config.MEMORY_SUMMARY_BACKEND,
-                "context_window_size": Config.MEMORY_CONTEXT_WINDOW_SIZE,
-                "search_threshold": Config.MEMORY_SEARCH_THRESHOLD,
+                "enabled": _cfg("MEMORY_ENABLED", default=True),
+                "embedding_enabled": _cfg("MEMORY_EMBEDDING_ENABLED", default=False),
+                "embedding_model": _cfg("MEMORY_EMBEDDING_MODEL", default=""),
+                "summary_backend": _cfg("MEMORY_SUMMARY_BACKEND", default="llm"),
+                "context_window_size": _cfg("MEMORY_CONTEXT_WINDOW_SIZE", default=128000),
+                "search_threshold": _cfg("MEMORY_SEARCH_THRESHOLD", default=0.5),
             },
             "voice": {
-                "asr_enabled": Config.ASR_ENABLED,
-                "asr_device": Config.ASR_DEVICE,
-                "tts_enabled": Config.TTS_ENABLED,
-                "tts_base_url": Config.TTS_BASE_URL,
-                "tts_process_enabled": Config.TTS_PROCESS_ENABLED,
+                "asr_enabled": _cfg("ASR_ENABLED", default=False),
+                "asr_device": _cfg("ASR_DEVICE", default="cpu"),
+                "tts_enabled": _cfg("TTS_ENABLED", default=False),
+                "tts_base_url": _cfg("TTS_BASE_URL", default=""),
+                "tts_process_enabled": _cfg("TTS_PROCESS_ENABLED", default=False),
             },
             "companion": {
-                "personality_v3_enabled": Config.PERSONALITY_V3_ENABLED,
-                "world_enabled": Config.WORLD_ENABLED,
-                "narrative_enabled": Config.NARRATIVE_ENABLED,
+                "personality_v3_enabled": _cfg("PERSONALITY_V3_ENABLED", default=False),
+                "world_enabled": _cfg("WORLD_ENABLED", default=False),
+                "narrative_enabled": _cfg("NARRATIVE_ENABLED", default=False),
             },
             "personal": {
-                "task_manager_enabled": Config.TASK_MANAGER_ENABLED,
+                "task_manager_enabled": _cfg("TASK_MANAGER_ENABLED", default=False),
             },
             "server": {
-                "host": Config.SERVER_HOST,
-                "port": Config.SERVER_PORT,
-                "log_level": Config.LOG_LEVEL,
+                "host": UIConfig.HOST,
+                "port": UIConfig.PORT,
+                "log_level": _cfg("LOG_LEVEL", default="INFO"),
             }
         }
 
@@ -2401,7 +2730,12 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         if not base_url:
             raise HTTPException(status_code=400, detail="缺少 base_url")
         if not api_key:
-            raise HTTPException(status_code=400, detail="缺少 api_key")
+            # 给出可操作的提示，而不是一句干巴巴的「缺少 api_key」：
+            # 新建 provider 时用户往往以为探测不需要 key。
+            raise HTTPException(
+                status_code=400,
+                detail="缺少 api_key：请输入 API Token，或先保存该 provider 再点探测（可复用已保存的 Token）",
+            )
 
         try:
             models = await asyncio.to_thread(
@@ -2425,11 +2759,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                     content={"status": "error", "error": str(e)},
                 )
 
-        if provider is not None:
-            provider["models"] = models
-            engine.provider_store.upsert(provider)
-            engine.unregister_provider_models(provider["id"])
-            engine.reload_api_providers()
+        # 探测是**只读**操作：只把远端可用模型列表回给前端，由用户在界面上
+        # 勾选后再保存。
+        #
+        # 历史行为：探测成功就直接 provider["models"] = models 写回存储并重注册。
+        # 这有两个后果：
+        #   1. 用户只是在面板里点了「探测」，尚未保存，已启用的模型集合就被
+        #      悄悄替换成远端的全量列表；
+        #   2. 探测走的是**已保存**的 key 与地址，与用户正在表单里改的内容无关，
+        #      写回的是旧配置，进一步造成「改了没生效」的困惑。
+        # 前端 save() 才是唯一负责落盘的地方。
 
         logger.info("Provider 测试成功: %s -> %d 个模型", base_url, len(models))
         return {
@@ -2608,6 +2947,16 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
         )
     except Exception as e:  # noqa: BLE001
         log_exception(logger, "挂载 DSN 集成 API 失败", e)
+
+    # ── 9.9b System-1 决策 API（JEV 双系统混合模型的「一次前向给概率」）──
+    # System 2 = 常规生成（/v1/chat/completions，已在上面挂载）
+    # System 1 = 决策头（logprobs 读概率分布），见 system1_api.py 的模块注释。
+    # 同样必须在 SPA catch-all 之前注册。
+    try:
+        from apps.dsn_ui.system1_api import register_system1_routes
+        register_system1_routes(app, engine)
+    except Exception as e:  # noqa: BLE001
+        log_exception(logger, "挂载 System-1 决策 API 失败", e)
 
     # ── 9.10 ASR 语音识别 API ──
     # 与上一条同理：必须注册在 SPA catch-all 之前，否则请求会落到 index.html。

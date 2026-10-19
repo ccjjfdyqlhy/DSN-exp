@@ -139,7 +139,14 @@ class SwarmMember:
             name="blackboard.post",
             description="向黑板发布一条消息。kind 为 thought(想法) / claim(主张) / "
                         "consensus(共识结论) / objection(反对意见)。",
-            handler=lambda kind, content: self._post(kind, content),
+            # 修复说明：原为 `lambda kind, content: self._post(kind, content)`。
+            # Tool.run_async 用 inspect.iscoroutinefunction(handler) 判断是否 await，
+            # 而普通 lambda 不是协程函数 → 走 to_thread 执行，返回的 coroutine 对象
+            # 从未被 await（RuntimeWarning: coroutine was never awaited）。结果
+            # blackboard.post 永远"成功"但黑板一直是空的：consensus 恒 False、
+            # final_answer() 恒 None，整个 swarm 退化到只能返回"（无输出）"。
+            # 直接传绑定方法，iscoroutinefunction 才会为 True。
+            handler=self._post,
             parameters={"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["thought", "claim", "consensus", "objection"]},
                 "content": {"type": "string"},
@@ -167,8 +174,15 @@ class SwarmMember:
 
         loop = AgentLoop(self.client, self.tools, max_steps=self.max_turns)
         try:
-            async with asyncio.timeout(self.timeout):
-                result = await loop.run_async(messages, system_prompt=system)
+            # 修复说明：原实现用 `async with asyncio.timeout(...)`，这是 Python 3.11+
+            # 才有的 API，而本项目声明 requires-python >=3.10（当前运行环境 3.10.12）。
+            # 运行时会抛 "module 'asyncio' has no attribute 'timeout'"，且该异常被
+            # gather(return_exceptions=True) 静默吞掉，整个 swarm 看起来"跑完但无输出"。
+            # asyncio.wait_for 在 3.7+ 均可用，语义等价。
+            result = await asyncio.wait_for(
+                loop.run_async(messages, system_prompt=system),
+                timeout=self.timeout,
+            )
         except asyncio.TimeoutError:
             logger.warning("成员 %s 第 %d 轮超时", self.name, round_idx)
             return ""

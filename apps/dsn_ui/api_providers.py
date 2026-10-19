@@ -65,7 +65,12 @@ from apps.dsn_ui.credentials import CredentialCipher, is_encrypted
 logger = logging.getLogger("DSNUIProviders")
 
 #: 明文留在 api_providers.json 的「名单」字段 —— 不含任何请求配置或凭据。
-_ROSTER_FIELDS = ("id", "label", "enabled", "models", "created_at", "updated_at")
+_ROSTER_FIELDS = (
+    "id", "label", "enabled", "models", "created_at", "updated_at",
+    # 视觉能力声明属于「非敏感的路由元数据」：它是布尔开关，不是凭据，
+    # 放进明文名单可以保证列表/排查不依赖主密钥。
+    "vision",
+)
 
 #: 需要加密的字段（请求方式 + 认证信息）。仅用于**识别并迁移**旧版内联数据；
 #: 新格式下这些字段一律只存在于加密数据库里，json 名单中不会出现。
@@ -318,18 +323,39 @@ class APIProviderStore:
             raise ValueError(f"不支持的协议: {protocol}（可选 {VALID_PROTOCOLS}）")
 
         existing = next((p for p in providers if p.get("id") == pid), None)
+        prev = existing or {}
+
+        # 更新时**缺省字段沿用旧值**而不是打回默认值。
+        #
+        # 历史行为：timeout/max_tokens/extra_headers 一律 data.get(...) or 默认，
+        # 于是只带 {id,label,protocol,base_url,models,enabled} 的部分更新
+        # （前端「启用/停用」正是这么发的）会把用户配置的超时、输出上限和
+        # 自定义请求头全部静默重置成 300 / 4096 / {}；x-dsn-vision 被清掉后
+        # 多模态能力随之消失，而界面上没有任何提示。
+        def _pick(key: str, default: Any) -> Any:
+            if key in data and data[key] is not None:
+                return data[key]
+            return prev.get(key, default)
+
         record = {
             "id": pid,
-            "label": str(data.get("label") or existing and existing.get("label") or "Provider"),
+            "label": str(data.get("label") or prev.get("label") or "Provider"),
             "protocol": protocol,
-            "base_url": str(data.get("base_url") or DEFAULT_BASE_URLS[protocol]),
-            "api_key": str(data.get("api_key") or ""),
-            "models": list(data.get("models") or (existing or {}).get("models") or []),
-            "enabled": bool(data.get("enabled", True)),
-            "extra_headers": dict(data.get("extra_headers") or {}),
-            "timeout": int(data.get("timeout") or 300),
-            "max_tokens": int(data.get("max_tokens") or 4096),
-            "created_at": (existing or {}).get("created_at") or time.time(),
+            "base_url": str(data.get("base_url") or prev.get("base_url") or DEFAULT_BASE_URLS[protocol]),
+            # 空 api_key 表示「沿用已保存的 key」（前端不回显明文）
+            "api_key": str(data.get("api_key") or prev.get("api_key") or ""),
+            "models": list(
+                data["models"] if isinstance(data.get("models"), list)
+                else prev.get("models") or []
+            ),
+            "enabled": bool(data.get("enabled", prev.get("enabled", True))),
+            "extra_headers": dict(_pick("extra_headers", {}) or {}),
+            "timeout": int(_pick("timeout", 300) or 300),
+            "max_tokens": int(_pick("max_tokens", 4096) or 4096),
+            # 远端模型能否收图无法自动探测，由用户显式声明；engine 会把它
+            # 转成 x-dsn-vision 请求头供 _configured_vision() 读取。
+            "vision": bool(_pick("vision", False)),
+            "created_at": prev.get("created_at") or time.time(),
             "updated_at": time.time(),
         }
         if existing:
@@ -373,6 +399,10 @@ def public_view(provider: dict) -> dict:
         "timeout": provider.get("timeout", 300),
         "max_tokens": provider.get("max_tokens", 4096),
         "extra_headers": dict(provider.get("extra_headers") or {}),
+        # 用户声明的视觉能力。此前 upsert 根本不保存该字段，导致 engine 里
+        # provider.get("vision") 恒为 None、x-dsn-vision 永不注入 →
+        # 远端多模态模型在 UI 上永远被判为纯文本。
+        "vision": bool(provider.get("vision", False)),
         "created_at": provider.get("created_at"),
     }
 
@@ -384,6 +414,155 @@ def discovered_model_name(provider_label: str, model: str) -> str:
 
 # ────────────────────────── 远端模型发现 ──────────────────────────
 
+#: 用户可能把整个端点粘进 base_url；发现前缀时必须先剥掉这些后缀。
+_ENDPOINT_SUFFIXES = (
+    "/chat/completions",
+    "/chatcompletions",
+    "/completions",
+    "/responses",
+    "/messages",
+    "/models",
+)
+
+
+def normalize_base_url(base_url: str) -> str:
+    """把用户填的 base_url 归一成「服务根」，供拼接发现/请求路径。
+
+    处理三类常见输入：
+      * "https://host/v1/chat/completions" -> "https://host/v1"（粘了完整端点）
+      * "https://host/v1/"                 -> "https://host/v1"（尾斜杠）
+      * "https://host"                     -> "https://host"（裸 host）
+    不做"是否带 /v1"的判断 —— 由 candidates 逐条尝试，避免猜错。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    lowered = base.lower()
+    for suffix in _ENDPOINT_SUFFIXES:
+        if lowered.endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+            break
+    return base
+
+
+def _listing_candidates(base_url: str, protocol: str = "chat") -> list[str]:
+    """按顺序返回候选的模型列表 URL（去重、保序）。
+
+    OpenAI 标准是 /v1/models，但大量兼容网关只实现 /models、或不实现列表端点，
+    因此这里多试几条，而不是假设只有一个正确形状。
+    """
+    base = normalize_base_url(base_url)
+    if not base:
+        return []
+
+    urls: list[str] = []
+
+    def _add(url: str) -> None:
+        if url and url not in urls:
+            urls.append(url)
+
+    lowered = base.lower()
+    if protocol == "anthropic":
+        # Anthropic 官方：GET {base}/v1/models（base 通常已含 /v1 或不含）
+        _add(base + "/models" if lowered.endswith("/v1") else base + "/v1/models")
+        _add(base + "/models")
+        return urls
+
+    if lowered.endswith("/v1"):
+        # 用户已带 /v1：优先 {base}/models，再退回其上一级的 {host}/models
+        _add(base + "/models")
+        _add(base[: -len("/v1")].rstrip("/") + "/models")
+    else:
+        _add(base + "/v1/models")
+        _add(base + "/models")
+    return urls
+
+
+def _auth_schemes(api_key: str, extra_headers: Optional[dict] = None) -> list[dict]:
+    """按顺序返回候选认证头组合。
+
+    不同网关认不同的头：OpenAI 系用 Authorization: Bearer，Anthropic 系用
+    x-api-key，Azure/部分自建网关用 api-key。先试用户显式提供的头，再逐个兜底。
+    """
+    base = dict(extra_headers or {})
+    base.setdefault("Content-Type", "application/json")
+
+    # 用户显式给了认证头 -> 只试它（尊重用户意图，不做猜测）
+    if any(h.lower() in ("authorization", "x-api-key", "api-key") for h in base):
+        return [base]
+
+    schemes: list[dict] = []
+    if api_key:
+        schemes.append({**base, "Authorization": f"Bearer {api_key}"})
+        schemes.append({**base, "x-api-key": api_key})
+        schemes.append({**base, "api-key": api_key})
+    else:
+        schemes.append(base)
+    return schemes
+
+
+def _extract_model_ids(data: Any) -> list[str]:
+    """从各种可能的响应形状里提取模型 id。
+
+    覆盖：{"data":[...]} / {"models":[...]} / 裸 [...] / {"data":{"models":[...]}}
+    / {"result":[...]} / {"data":{"data":[...]}}，元素可为 str 或 dict
+    （id / name / model / display_name / model_name）。
+    """
+    items: Any = None
+
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        for key in ("data", "models", "result", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+            if isinstance(value, dict):
+                # 形如 {"data": {"models": [...]}} 的嵌套
+                for nested_key in ("models", "data", "items", "result"):
+                    nested = value.get(nested_key)
+                    if isinstance(nested, list):
+                        items = nested
+                        break
+            if items is not None:
+                break
+
+    if not isinstance(items, list):
+        return []
+
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            mid = (item.get("id") or item.get("name") or item.get("model")
+                   or item.get("display_name") or item.get("model_name"))
+            if mid:
+                out.append(str(mid))
+    return sorted({m.strip() for m in out if str(m).strip()})
+
+
+def _discovery_ignores_proxy() -> bool:
+    """探测是否应绕过代理环境变量。
+
+    默认**遵守**用户的代理设置（企业网关常需走代理），但允许显式关闭：
+        DSN_UI_DISCOVERY_NO_PROXY=1
+
+    设为 1 后忽略 HTTP_PROXY / ALL_PROXY 等变量 —— 适用于「代理没起导致本地
+    请求全失败」这种环境（与 infra/orchestrator/base.py 里本地引擎的处理同理）。
+    """
+    import os
+
+    return str(os.getenv("DSN_UI_DISCOVERY_NO_PROXY") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+class ModelDiscoveryError(RuntimeError):
+    """模型发现失败；message 已是可读的中文说明（含试过的 URL 与各自状态）。"""
+
+
 def discover_models(
     *,
     protocol: str,
@@ -392,57 +571,94 @@ def discover_models(
     timeout: float = 30.0,
     extra_headers: Optional[dict] = None,
 ) -> list[str]:
-    """向远端询问可用模型列表。
+    """向远端询问可用模型列表（尽力而为，失败必须说明原因）。
 
-    三种协议的发现方式不同：
-      * chat / responses → GET {base_url}/models（OpenAI 标准）
-      * anthropic        → GET {base_url}/v1/models
-                           （Anthropic 官方 2024 年后提供；失败则回退到一个
-                            内置的常用模型名列表，保证 UI 可用）
+    策略：对每条候选 URL × 每种认证头组合依次尝试，任一返回 2xx 且能解析出
+    模型即成功。全部失败时抛 ModelDiscoveryError，消息里列出**试过的每条 URL
+    及其 HTTP 状态/异常**，让 UI 能给出可操作提示，而不是一句"未发现模型"。
+
+    anthropic 协议在全部失败时回退到内置常用模型名列表（保持原行为）。
     """
-    headers = dict(extra_headers or {})
-    headers.setdefault("Content-Type", "application/json")
+    import requests
+
+    # 复用一条会话：探测会打多个 URL，每条都新建连接既慢又容易触发对端限流。
+    # trust_env 按需关闭 —— 若用户环境里配了 ALL_PROXY 而代理没起，requests
+    # 会把所有请求都塞给代理直接 ConnectionError，表现为「明明能访问却探测失败」。
+    session = requests.Session()
+    if _discovery_ignores_proxy():
+        session.trust_env = False
+
+    urls = _listing_candidates(base_url, protocol)
+    schemes = _auth_schemes(api_key, extra_headers)
+    attempts: list[str] = []
+
+    for url in urls:
+        for headers in schemes:
+            try:
+                resp = session.get(url, headers=headers, timeout=timeout)
+            except Exception as e:  # noqa: BLE001 - 网络错误同样要记录下来
+                attempts.append(f"{url} -> {type(e).__name__}: {e}")
+                continue
+
+            if resp.status_code >= 400:
+                attempts.append(f"{url} -> HTTP {resp.status_code}")
+                # 认证失败/无权限时换下一种认证头再试；其它错误换下一条 URL
+                if resp.status_code in (401, 403):
+                    continue
+                break
+
+            try:
+                data = resp.json()
+            except Exception as e:  # noqa: BLE001
+                attempts.append(f"{url} -> HTTP {resp.status_code} 但响应不是 JSON: {e}")
+                break
+
+            models = _extract_model_ids(data)
+            if models:
+                logger.info("模型发现成功 (%s %s): %d 个", protocol, url, len(models))
+                return models
+            attempts.append(
+                f"{url} -> HTTP {resp.status_code} 但无法从响应中解析出模型列表"
+            )
+            break
+
+    detail = "；".join(attempts) if attempts else "没有可用的候选地址"
+    logger.warning("模型发现失败 (%s, base_url=%s): %s", protocol, base_url, detail)
 
     if protocol == "anthropic":
-        headers.setdefault("x-api-key", api_key)
-        headers.setdefault("anthropic-version", "2023-06-01")
-        url = base_url.rstrip("/") + "/v1/models"
-    else:
-        headers.setdefault("Authorization", f"Bearer {api_key}")
-        base = base_url.rstrip("/")
-        url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
+        logger.warning("Anthropic 模型发现不可用，回退到内置常用模型列表")
+        return list(ANTHROPIC_FALLBACK_MODELS)
 
-    import requests
-    try:
-        resp = requests.get(url, headers=headers, timeout=timeout)
-        if resp.status_code >= 400:
-            detail = (resp.text or "")[:500]
-            raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
-        data = resp.json()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("模型发现失败 (%s %s): %s", protocol, url, e)
-        raise
+    raise ModelDiscoveryError(
+        "未发现模型：已尝试以下地址但均未成功 —— " + detail +
+        "。若该服务确实没有模型列表端点（常见于部分兼容网关），"
+        "请直接手工填写模型 ID（如 gpt-4o-mini），保存后即可使用。"
+    )
 
-    # OpenAI 形态：{"data": [{"id": ...}]}
-    # Anthropic 形态：{"data": [{"id": ..., "display_name": ...}]}
-    items = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        items = data.get("models") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        raise RuntimeError("远端返回的模型列表格式无法识别")
 
-    out: list[str] = []
-    for it in items:
-        if isinstance(it, str):
-            out.append(it)
-        elif isinstance(it, dict):
-            mid = it.get("id") or it.get("name") or it.get("model")
-            if mid:
-                out.append(str(mid))
-    out = sorted(set(out))
-    logger.info("模型发现成功 (%s): %d 个", protocol, len(out))
-    return out
+def chat_completion_url(base_url: str) -> str:
+    """合成 chat completions 的完整 URL（base_url 可含或不含 /v1，也可已含端点）。"""
+    base = normalize_base_url(base_url)
+    if not base:
+        return ""
+    return base + "/chat/completions" if base.lower().endswith("/v1") \
+        else base + "/v1/chat/completions"
 
+
+def resolve_chat_headers(
+    api_key: str, extra_headers: Optional[dict] = None
+) -> dict:
+    """chat 请求的认证头（用户显式给的优先）。"""
+    headers = dict(extra_headers or {})
+    headers.setdefault("Content-Type", "application/json")
+    if api_key and not any(
+        h.lower() in ("authorization", "x-api-key", "api-key") for h in headers
+    ):
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+TEST_CHAT_MESSAGE = "请只回复两个字：你好"
 
 # Anthropic 官方 /v1/models 不可用时的兜底列表
 ANTHROPIC_FALLBACK_MODELS = [

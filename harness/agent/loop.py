@@ -254,7 +254,23 @@ class AgentLoop:
 
             if self.max_steps > 0 and step >= self.max_steps - 1:
                 hit_max = True
+                # 修复说明（P1-2）：原实现是 final_reply = parsed.text or "" 后
+                # 直接 break —— 丢掉了本轮已执行的全部工具结果，也无法保证
+                # 一定有答复（模型该轮若只发工具调用，reply 就是空串）。
+                # run_stream 早已有 _finalize_after_max_steps 收束轮兜底，
+                # 但 run_async 完全没有，两条路径行为不一致。这里对齐：
+                # 先保留本轮文本，再追加一次"禁止调用工具"的收束轮。
                 final_reply = parsed.text or ""
+                finalize_parts: list[str] = [final_reply] if final_reply else []
+                async for _piece in self._finalize_after_max_steps(msgs):
+                    if _piece:
+                        finalize_parts.append(_piece)
+                final_reply = "".join(finalize_parts).strip()
+                if not final_reply:
+                    final_reply = (
+                        "…[已达到步数上限，且未能生成收束答复。"
+                        "可发送「继续」以恢复执行。]"
+                    )
                 break
             step += 1
 
@@ -491,17 +507,22 @@ class AgentLoop:
         收束失败（异常/空回复）时静默降级，不破坏已有进展。
         """
         # 收束提示：作为最后一条 user 消息追加，明确禁止继续调用工具。
-        msgs.append(ChatMessage.user(
+        #
+        # 修复说明：原实现直接 msgs.append(...) **就地改写调用方列表**，
+        # 导致这条"收束指令"永久留在对话历史里；多次收束会累积成
+        # user/user/user 连续消息，破坏"单条收束指令"的语义。
+        # 这里构造临时副本，不污染原列表。
+        finalize_msgs = list(msgs) + [ChatMessage.user(
             "已达到本次自主执行的步数上限，请立即停止调用任何工具，"
             "基于以上已获得的全部工具执行结果，直接给出最终的完整答复："
             "总结已完成的进展与关键结论，并说明还有哪些未完成的部分。"
-        ))
+        )]
 
         try:
             # 收束轮不下发任何 tools schema，从根上杜绝再次产生工具调用。
             stream_fn = getattr(self.client, "stream", None)
             if stream_fn is not None:
-                async for chunk in self._stream_or_invoke(msgs, [], stream_fn):
+                async for chunk in self._stream_or_invoke(finalize_msgs, [], stream_fn):
                     if isinstance(chunk, str):
                         if chunk:
                             yield chunk
@@ -510,7 +531,7 @@ class AgentLoop:
                         if text:
                             yield text
             else:
-                response = await self._invoke(msgs, [])
+                response = await self._invoke(finalize_msgs, [])
                 if response.content:
                     yield response.content
         except Exception as e:  # noqa: BLE001

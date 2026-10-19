@@ -18,6 +18,8 @@ class EventBus:
 
     def __init__(self):
         self._subs: dict[str, list[Callable[..., Any]]] = {}
+        # 持有 fire-and-forget 任务的强引用，防止被 GC 提前回收（见 publish）。
+        _bus_tasks: set[asyncio.Task] = set()
 
     def subscribe(self, event: str, handler: Callable[..., Any]) -> Callable[[], None]:
         """订阅事件，返回取消订阅函数。handler 可为 sync 或 async。"""
@@ -44,9 +46,31 @@ class EventBus:
                 if asyncio.iscoroutinefunction(handler):
                     try:
                         asyncio.get_running_loop()
-                        asyncio.ensure_future(handler(payload))
                     except RuntimeError:
-                        asyncio.run(handler(payload))
+                        # 修复说明：原实现在无运行 loop 时降级为 asyncio.run()，
+                        # 会**同步阻塞**调用方，且在嵌套 loop 场景直接抛错。
+                        # 同步上下文里发布事件却订阅了 async 处理器属于调用方
+                        # 用法错误，显式告警比静默丢弃/阻塞更容易定位。
+                        logger.warning(
+                            "事件 %s 的 async 处理器 %s 在无事件循环的同步上下文中发布，已跳过；"
+                            "请改用 await bus.publish_async(...)",
+                            event, getattr(handler, "__qualname__", handler),
+                        )
+                        continue
+                    # 修复说明：原实现 ensure_future 后既不保存引用也不挂回调，
+                    # 任务可能被 GC 提前回收，且处理器抛出的异常只会在解释器
+                    # 退出时以 "Task exception was never retrieved" 的形式出现，
+                    # 既不进 logger 也不反馈给调用方 —— 订阅者静默丢事件。
+                    task = asyncio.ensure_future(handler(payload))
+                    _bus_tasks.add(task)
+                    task.add_done_callback(_bus_tasks.discard)
+                    task.add_done_callback(
+                        lambda t, _e=event: t.cancelled() or (
+                            t.exception() and logger.exception(
+                                "事件 %s 异步处理器异常", _e, exc_info=t.exception()
+                            )
+                        )
+                    )
                 else:
                     handler(payload)
             except Exception:

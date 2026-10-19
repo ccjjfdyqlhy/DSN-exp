@@ -86,8 +86,8 @@ def _read_env_key() -> Optional[bytes]:
         raise CredentialError(
             f"环境变量 {ENV_KEY_NAME} 不是合法的 Fernet 密钥"
             "（应为 base64 编码的 32 字节）。可用以下命令生成：\n"
-            '  python -c "from cryptography.fernet import Fernet; ',
-            'print(Fernet.generate_key().decode())"',
+            '  python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"'
         ) from e
     return key
 
