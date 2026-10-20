@@ -84,23 +84,86 @@ def _set_parent_death_signal() -> None:
             os.setsid()
 
 
+def _resolve_kill_pgid(pid: int) -> int | None:
+    """解析「可以安全整体终止」的进程组 ID；不可信时返回 None。
+
+    修复说明（2026-10）：原实现直接 `os.killpg(os.getpgid(pid), ...)`，
+    而 `os.getpgid()` 对**内核线程**返回 0（本机 PID 99 = kworker/R-blkcg
+    的 pgid 就是 0）。按 POSIX，`killpg(0, sig)` 等价于 `kill(-0, sig)`
+    ——  给**调用者自己所在的进程组**发信号，而不是给目标进程组发。
+
+    实测后果：`tests/test_harness_strata.py` 曾 mock `proc.pid = 99`，
+    于是 pytest 进程被自己的 SIGTERM 打死（exit 143），日志尾部只剩
+    「已终止」，连外层 shell 进程组一起带走；全量 pytest 更是在打印完
+    统计之后**挂死**，直到被 timeout 杀掉。生产侧同理——若引擎子进程的
+    pgid 解析出 0 或与本进程同组，`stop()` 会把整个应用进程组一起带走。
+
+    护栏（三条任一命中即判定不可信，返回 None，由调用方退回 terminate()
+    只终止目标进程本身）：
+
+    - `pgid <= 0`：0 意味着「调用者自己的组」，负数无意义；
+    - `pgid == 本进程所在组`：同样会误伤自己；
+    - `getpgid()` 抛错（子进程已退出 / pid 非法）：无法定位目标。
+    """
+    if not hasattr(os, "getpgid"):
+        return None
+    try:
+        pgid = os.getpgid(pid)
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(pgid, int) or pgid <= 0:
+        return None
+    try:
+        own_pgid = os.getpgid(0)
+    except OSError:
+        own_pgid = None
+    if own_pgid is not None and pgid == own_pgid:
+        return None
+    return pgid
+
+
+def _kill_descendants(pid: int) -> None:
+    """无法安全 killpg 时，尽力逐个终止 pid 的后代进程。
+
+    用于「子进程与本进程同组」的退化场景：此时既不能 killpg（会误伤自己），
+    又要保住「整棵树一起收干净」的语义（Strata 的 C++ 引擎是孙进程）。
+
+    psutil 是可选依赖（`pip install -e .` 不装它），缺失时静默跳过。
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    with contextlib.suppress(Exception):
+        # 先收集后代再终止——否则父进程一死，子进程会被 reparent 给 init 而失联
+        for child in psutil.Process(pid).children(recursive=True):
+            with contextlib.suppress(Exception):
+                child.terminate()
+
+
 def kill_process_tree(process: subprocess.Popen, timeout: float = 15.0) -> None:
     """优雅终止一个子进程（整进程组）：SIGTERM → 等待 → SIGKILL。
 
     单独抽出来是因为 Strata 的场景多一层：我们的直接子进程是
     `python serve/server.py`，而真正占显存的是它拉起的 C++ 引擎孙进程。
     两者都被放进同一个进程组，所以 killpg 能一次收干净。
+
+    安全护栏见 `_resolve_kill_pgid`：**绝不**向「调用者自己所在的进程组」
+    发信号——`killpg(0, ...)` 会误杀本进程（已修）。
     """
     if process is None or process.poll() is not None:
         return
     pid = process.pid
+    pgid = _resolve_kill_pgid(pid)
     try:
-        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        if pgid is not None:
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                os.killpg(pgid, signal.SIGTERM)
             except Exception:
                 process.terminate()
         else:
+            # 进程组不可信：只杀目标进程本身，并尽力回收它的后代
+            _kill_descendants(pid)
             process.terminate()
 
         start = time.time()
@@ -111,9 +174,9 @@ def kill_process_tree(process: subprocess.Popen, timeout: float = 15.0) -> None:
 
         if process.poll() is None:
             logger.warning("进程 %d 未在 %ds 内响应 SIGTERM，发送 SIGKILL...", pid, timeout)
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            if pgid is not None:
                 try:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)
                 except Exception:
                     process.kill()
             else:

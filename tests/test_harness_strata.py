@@ -285,8 +285,19 @@ def test_strata_launcher_start_and_stop(mock_popen, strata_tree: Path):
 def test_llama_launcher_still_works(mock_popen, mock_exists, mock_access, mock_isfile):
     """抽基类后 llama.cpp 的行为不变（回归保护）。"""
     mock_proc = MagicMock()
-    mock_proc.poll.return_value = None
-    mock_proc.pid = 99
+    # 注意：这里曾用 pid=99，而 PID 99 在 Linux 上通常存在且 pgid=0，
+    # 会让 kill_process_tree 解析出 pgid=0 → os.killpg(0, SIGTERM) 打到
+    # 调用者自己的进程组，把 pytest 进程自己打死（exit 143）。
+    # 现在改为一个超出 Linux PID 上限（2^22）的高位 PID，
+    # 让测试不依赖宿主机的 PID 表。
+    mock_proc.pid = 4294967
+    # 假进程被 terminate() 后即视为已退出——否则 atexit 的
+    # _cleanup_active_launchers() 会对着一个「永不退出」的 mock
+    # 空等满 15s 超时才升级 SIGKILL，白白拖慢整套测试的收尾。
+    _alive = {"v": True}
+    mock_proc.poll.side_effect = lambda: None if _alive["v"] else 0
+    mock_proc.terminate.side_effect = lambda: _alive.__setitem__("v", False)
+    mock_proc.kill.side_effect = lambda: _alive.__setitem__("v", False)
     mock_popen.return_value = mock_proc
 
     cfg = LlamaServerConfig(binary_path="/mock/llama-server", model_path="/mock/m.gguf", port=8090)

@@ -32,8 +32,12 @@ AGENTS.md
 /prototypes/*
 *.distilled.json
 
-# ── 文档目录（含内部规划/审计文档，不再跟踪）──
-/docs/
+# ── 文档目录 ──
+# 2026-10-20 起恢复跟踪：docs/ 下 17 篇架构/维护文档是本仓库最重要的知识资产，
+# 不入库意味着 clone 的人看不到任何架构信息。
+# 已核查：docs/ 内无密钥、无个人邮箱、无绝对家目录路径、无二进制文件。
+# docs/archive/ 为「已被取代的旧版文档 + 一次性完成记录」，随目录一并入库，
+# 其自带 README.md 明确标注了「架构已过时，不要作为现状依据」。
 
 # ── DSN 语音陪伴应用 (apps/dsn/) 运行时目录 ──
 /apps/dsn/website/*
@@ -88,3 +92,8 @@ debug-storybook.log
 *character_cards*
 apps/dsn_ui/logs
 apps/dsn_ui/data
+# ── 测试副作用产物（2026-10）──
+# tests/ 里把 MagicMock 当 settings.data_dir 用时会生成这种目录；
+# 源头已在 apps/dsn_ui/thought_cache.py 加了类型守卫，这里再兜一层。
+MagicMock/
+.harness_todo.json
