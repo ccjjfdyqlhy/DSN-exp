@@ -127,6 +127,14 @@ class ContextGatherer:
         p = self._safe(path)
         if not p.is_file():
             return f"[@req 文件不存在: {p}]"
+        # 修复说明（2026-10）：MAX_FILE_SIZE 此前只定义不生效。
+        # 超大文件直接读出会对内存与上下文预算造成冲击，这里先按字节数挡掉。
+        try:
+            if p.stat().st_size > self.MAX_FILE_SIZE:
+                return (f"[@req 文件过大: {p.name} "
+                        f"({p.stat().st_size} 字节 > 上限 {self.MAX_FILE_SIZE})]")
+        except OSError:
+            pass
         try:
             text = p.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
@@ -150,8 +158,20 @@ class ContextGatherer:
         return "\n\n".join(parts)
 
     def _exec_grep(self, pattern: str, glob: str = "") -> str:
+        """执行 @grep。
+
+        修复说明（2026-10）：glob 参数此前被正则解析出来却完全没用（死参数）。
+        现在映射为 grep 的 --include，让 `@grep "foo" "*.py"` 真正只搜 Python 文件。
+        另外补上默认排除目录，避免 .git / node_modules / __pycache__ 的结果淹没命中。
+        """
         import subprocess
-        cmd = ["grep", "-rn", "--exclude-dir=.git", pattern, str(self.workspace)]
+        cmd = ["grep", "-rn", "--exclude-dir=.git", "--exclude-dir=node_modules",
+               "--exclude-dir=__pycache__"]
+        if glob:
+            # 允许逗号或空格分隔多个 glob，统一换算成多个 --include
+            for pat in [g.strip() for g in glob.replace(",", " ").split() if g.strip()]:
+                cmd.append(f"--include={pat}")
+        cmd.extend([pattern, str(self.workspace)])
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=15, cwd=str(self.workspace))

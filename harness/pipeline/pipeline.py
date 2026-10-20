@@ -42,10 +42,15 @@ class Pipeline:
         plugin_manager: PluginManager,
         event_bus: Optional[EventBus] = None,
         hook_order: Optional[list[HookPoint]] = None,
+        *,
+        collect_plugin_timings: bool = True,
     ):
         self.pm = plugin_manager
         self.events = event_bus or EventBus()
         self.hook_order = list(hook_order) if hook_order else list(self._HOOK_ORDER)
+        #: 是否记录每个插件的耗时（写入 ctx.extra["_plugin_timings"]）。
+        #: 钩子很多时可关掉以省去 per-plugin 的 perf_counter 开销。
+        self.collect_plugin_timings = collect_plugin_timings
 
     def _drain_events(self, ctx: Context) -> None:
         pending = ctx.extra.pop("_events", [])
@@ -55,6 +60,13 @@ class Pipeline:
     async def process(self, ctx: Context) -> Context:
         timing: dict[str, float] = {}
         t_total = time.perf_counter()
+
+        # 修复说明（2026-10 计时断裂）：PluginManager 只在 ctx.extra["_plugin_timings"]
+        # 已存在时才记录每个插件的耗时（"管线按需开启计时"），但此前**没有任何地方
+        # 创建这个键** —— 于是 per-plugin 计时永远是空的。
+        # 现在在调度前初始化该键；不需要逐插件计时时可传 collect_plugin_timings=False。
+        if self.collect_plugin_timings:
+            ctx.extra.setdefault("_plugin_timings", {})
 
         for hook in self.hook_order:
             t0 = time.perf_counter()

@@ -101,6 +101,13 @@ class NativeToolCallAdapter(ToolCallAdapter):
                 "error": r.get("error"),
                 "hint": r.get("hint"),
             }
+            # 修复说明（2026-10）：AgentLoop 现在会把 ToolResult.data 展开进结果 dict，
+            # 但这里只挑了 5 个固定字段，展开出来的附加键仍会被丢掉 ——
+            # 工具的结构化附加信息依旧到不了模型。这里把「固定字段以外」的键也带上，
+            # 同时不覆盖上面 5 个语义明确的字段。
+            for _k, _v in r.items():
+                if _k not in payload and _k not in ("call_id", "name"):
+                    payload[_k] = _v
             content = json.dumps(payload, ensure_ascii=False, default=str)
             msgs.append(ChatMessage.tool_result(
                 tool_call_id=r.get("call_id", "unknown"), content=content))

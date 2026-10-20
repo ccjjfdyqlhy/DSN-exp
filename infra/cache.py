@@ -7,8 +7,12 @@ from __future__ import annotations
 
 from typing import Any, Hashable, Optional
 
-from harness.memory.vector import VectorIndex
-from .models.base import IEmbeddingClient
+# 修复说明（2026-10 分层）：
+# 原先这里是 `from harness.memory.vector import VectorIndex`，会使 infra 反向依赖
+# harness，并与 harness/memory/vector.py 中对 infra.models.base 的引用构成循环。
+# 向量原语已下沉到 infra/vector.py，此处不再依赖 harness。
+from .vector import VectorIndex
+from .orchestrator.base import IEmbeddingClient
 
 
 class SemanticCache:

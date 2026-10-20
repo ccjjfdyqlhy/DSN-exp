@@ -210,6 +210,38 @@ class SegmentedContextAssembler:
         #   ② 但预算不足时，必须优先保住高优先级段。
         # 做法：先按输入顺序放能放下的段；若有段因预算不足被挤出，则在"已放入的
         # 低优先级段"里挑出比它更低优先级的，腾出空间让给高优先级段。
+        # 3a) 激活话题数量上限
+        #
+        # 修复说明（2026-10）：max_open_topics 此前只在 dataclass 里声明、
+        # 全仓库无人读取 ——「激活原文段上限」形同虚设，注入的关联话题可以无限多，
+        # 直到撑爆 verbatim 预算为止（最终表现是「当前话题被挤掉」）。
+        # 现在按契约执行：除「当前话题」段（PRIORITY_CURRENT 及以上）外，
+        # 最多再保留 max_open_topics 个激活原文段，超出的按优先级从低到高丢弃。
+        if self.budget.max_open_topics and self.budget.max_open_topics > 0:
+            _current_segs = [
+                s for s in segments
+                if s.kind == SEG_VERBATIM and s.content.strip()
+                and s.priority >= PRIORITY_CURRENT
+            ]
+            _active_segs = [
+                s for s in segments
+                if s.kind == SEG_VERBATIM and s.content.strip()
+                and s.priority < PRIORITY_CURRENT
+            ]
+            # 契约：上限只约束「激活原文段」，**不含当前话题**（见 dataclass 注释）
+            _allowed = self.budget.max_open_topics
+            if len(_active_segs) > _allowed:
+                # 优先级数值越小越先被丢弃；同优先级时保持输入顺序（调用方已按
+                # 相关度排好序，靠前的更相关，因此靠后的先被丢）
+                _active_segs.sort(key=lambda s: s.priority)
+                _excess = _active_segs[:len(_active_segs) - _allowed]
+                _drop_ids = {id(s) for s in _excess}
+                segments = [
+                    s for s in segments
+                    if not (s.kind == SEG_VERBATIM and id(s) in _drop_ids)
+                ]
+                plan.dropped.extend(_excess)
+
         used_vb = 0
         _vb_segs = [s for s in segments if s.kind == SEG_VERBATIM and s.content.strip()]
         # 预计算：本组段的最低优先级，用于判断是否值得为后来的高优先级段腾位置。

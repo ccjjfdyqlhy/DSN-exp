@@ -306,7 +306,7 @@ def register_system1_routes(app, engine) -> None:
                 question, state, "",
                 "Answer with a single letter: Y for yes, N for no.",
             )
-            labels = ["Y", "Y"], ["N", "N"]  # 占位，下面单独处理
+            # 注：yes_no 分支的 Y/N 概率在下面按 logprobs 单独计算，此处不设 labels。
         elif dtype == "choice":
             options = body.get("options")
             if isinstance(options, list):

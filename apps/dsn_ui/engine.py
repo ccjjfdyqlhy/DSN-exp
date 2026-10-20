@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from apps.dsn_ui.agent import DSNUIAgentCoordinator
+from apps.dsn_ui.config import UIConfig
 from infra.orchestrator import (
     ChatMessage,
     ChatResponse,
@@ -35,15 +36,19 @@ class DSNUIEngine:
         # 使用同一约定（apps/dsn_ui/data/）。
         from apps.dsn_ui.api_providers import APIProviderStore
 
-        self.provider_store = APIProviderStore(
-            self.workspace_root / "apps" / "dsn_ui" / "data"
-        )
+        # 数据目录统一走 UIConfig.DATA_DIR（可用 DSN_UI_DATA_DIR 覆盖，测试即靠此隔离）。
+        # 修复说明（2026-10 测试卫生）：此前这里硬编码 workspace_root/apps/dsn_ui/data，
+        # 导致跑一次测试就把夹具数据写进真实仓库目录。
+        self.data_dir = UIConfig.DATA_DIR
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.provider_store = APIProviderStore(self.data_dir)
         # 外周资源池（ASR / TTS）：由 create_app() 在启动时装配。这里先声明，
         # 保证即使装配失败属性也始终存在（None = 外周功能不可用）。
         self.resource_pool: Optional[Any] = None
         self.agent = DSNUIAgentCoordinator(
             orchestrator=self.orchestrator,
             workspace_root=self.workspace_root,
+            data_dir=self.data_dir,
             on_topic_converged=on_topic_converged,
         )
         self._init_default_profiles()
@@ -142,7 +147,7 @@ class DSNUIEngine:
 
     def _launch_overrides_file(self) -> Path:
         """启动参数覆盖的持久化文件（按模型名索引）。"""
-        d = self.workspace_root / "apps" / "dsn_ui" / "data"
+        d = self.data_dir
         d.mkdir(parents=True, exist_ok=True)
         return d / "model_launch_overrides.json"
 

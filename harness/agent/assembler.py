@@ -26,7 +26,8 @@ from typing import Any, Optional
 
 from infra.models.base import IChatClient, IEmbeddingClient
 from infra.runtime import Runtime
-from ..tools import ToolRegistry
+from ..tools import Tool, ToolRegistry
+from ..tools.function_tool import tool_from_function
 from ..tools.toolbox import ToolboxManager
 from ..tools.standard import ToolDeps, install_standard_tools
 from ..memory import InMemoryStore, MemoryEntry
@@ -72,15 +73,46 @@ class AssembledAgent:
         self.spec: Optional[AgentSpec] = None
 
     def run(self, message: str, *, task_type: str = "") -> str:
-        """单轮执行：路由 → 预算压力 → AgentLoop。"""
+        """单轮执行：路由选档 → 预算压力 → AgentLoop（用量自动回填）。
+
+        修复说明（2026-10 policy 接线）：原实现里 `router.select` 的结果被丢弃、
+        `meter.record({})` 记录的是空 usage、`budget.check()` 从未被调用，
+        所以「Token 经济闭环」只是摆设。现在：
+          * 用 router 选出的档位决定记账价格档（`model` 字段）；
+          * usage 由 AgentLoop 通过 on_usage 回调**真实回填**；
+          * 每轮之后检查预算，超限会触发 TokenBudget 的 on_exceed 回调。
+        """
         mode = self.router.select(task_type, self.budget.pressure()) if self.router else ""
         loop = self.loop
         if mode and hasattr(loop, "client"):
             pass  # 路由选择由调用方结合 client 工厂使用
         result = loop.run([__import__("infra.models.base", fromlist=["ChatMessage"]).ChatMessage.user(message)])
-        if self.meter is not None:
-            self.meter.record({}, model=mode or "flash")  # 占位：真实 usage 由 client 回填
+        # usage 已由 on_usage 回调在每轮实时记账，这里只需做超限检查
+        if self.budget is not None:
+            self.budget.check()
         return result.reply
+
+    def _record_usage(self, usage: dict) -> None:
+        """AgentLoop 每轮回调：把真实 usage 记入 meter，并即时检查预算。
+
+        容错：任何异常都不得打断 Agent 循环。
+        """
+        if self.meter is None:
+            return
+        mode = ""
+        try:
+            mode = getattr(self.router, "current_model", "") if self.router else ""
+        except Exception:  # noqa: BLE001
+            mode = ""
+        try:
+            self.meter.record(usage, model=mode or "")
+        except Exception:  # noqa: BLE001
+            return
+        if self.budget is not None:
+            try:
+                self.budget.check()
+            except Exception:  # noqa: BLE001
+                pass
 
     def system_prompt(self) -> str:
         if self.prompts is not None:
@@ -116,9 +148,23 @@ class AgentAssembler:
                 install_standard_tools(tools, deps=deps,
                                        include=cfg.get("include"))
             elif isinstance(spec.tools, list):
-                for t in spec.tools:
-                    if t == "standard":
+                # 修复说明（2026-10）：列表形式此前**只识别字面量 "standard"**，
+                # 列表里其它内容（Tool 对象、函数、"file" 这类命名空间前缀）
+                # 会被静默忽略 —— 写错了也毫无提示。现补齐：
+                #   * "standard"          → 装全套标准工具
+                #   * "standard:file"     → 只装指定命名空间
+                #   * Tool 对象            → 直接注册
+                #   * 可调用对象（函数）    → 用 tool_from_function 转换后注册
+                for item in spec.tools:
+                    if item == "standard":
                         install_standard_tools(tools, deps=deps)
+                    elif isinstance(item, str) and item.startswith("standard:"):
+                        ns = item.split(":", 1)[1].strip()
+                        install_standard_tools(tools, deps=deps, include=[ns])
+                    elif isinstance(item, Tool):
+                        tools.register(item)
+                    elif callable(item) and not isinstance(item, type):
+                        tools.register(tool_from_function(item))
 
         # 3) 提示词引擎
         prompts = None
@@ -169,5 +215,7 @@ class AgentAssembler:
 
         agent = AssembledAgent(runtime, loop, meter=meter, budget=budget,
                                predictor=predictor, router=router, prompts=prompts)
+        # 把真实 usage 回填到 meter/budget（policy 闭环的接线点，见 AssembledAgent._record_usage）
+        loop.on_usage = agent._record_usage
         agent.spec = spec
         return agent

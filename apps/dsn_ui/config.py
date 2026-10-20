@@ -6,6 +6,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# 关键：必须在读取下面任何 os.getenv 之前加载 .env。
+# UIConfig 的字段是**导入时求值**的类属性，一旦本模块被导入，
+# 之后再 load_dotenv 就不会影响它们（见 dotenv_boot 模块注释）。
+# 修复说明（2026-10）：此前 dsn_ui 从不加载 .env，导致 .env 里的
+# DSN_UI_HOST / DSN_UI_PORT 等变量静默失效，控制台永远起在默认端口。
+from apps.dsn_ui import dotenv_boot as _dotenv_boot  # noqa: F401  (导入即加载)
+
 
 #: 对外 API 的运行模式。
 #:
@@ -52,12 +59,24 @@ class UIConfig:
     API_MODE_LOCKED: bool = _env_bool("DSN_UI_API_MODE_LOCKED", "false")
 
     # ── dsn_ui 自有数据目录（凭据密文 / provider / TTS payload 等都放这里）──
-    DATA_DIR: Path = PROJECT_ROOT / "apps" / "dsn_ui" / "data"
+    # DSN_UI_DATA_DIR 可覆盖（测试用 conftest 会指向 tmp_path，避免污染仓库）。
+    DATA_DIR: Path = Path(
+        os.getenv("DSN_UI_DATA_DIR") or (PROJECT_ROOT / "apps" / "dsn_ui" / "data")
+    )
 
     # ── 本地模型接入（onboarding）──
     #: 本地模型 profile 目录。engine._init_default_profiles() 在启动时读取这里的
     #: *.yaml 并注册到 orchestrator，因此「配置新实例」写入这里即可跨重启存活。
-    MODEL_PROFILES_DIR: Path = PROJECT_ROOT / "apps" / "dsn" / "model_profiles"
+    # 模型 profile 目录。可用 DSN_UI_MODEL_PROFILES_DIR 覆盖（支持 ~ 展开）。
+    # 修复说明（2026-10）：此前该变量只出现在 engine.py 的告警文案里，
+    # 配置类本身**并不读取**它 —— 改了环境变量不会有任何效果，
+    # 而文档与告警都声称可以用它指定目录。现真正实现。
+    MODEL_PROFILES_DIR: Path = Path(
+        os.path.expanduser(
+            os.getenv("DSN_UI_MODEL_PROFILES_DIR")
+            or (PROJECT_ROOT / "apps" / "dsn" / "model_profiles")
+        )
+    )
     #: GGUF 扫描根目录（os.pathsep 分隔，支持 ~）。默认只扫 LM Studio 的模型库，
     #: 绝不遍历整个文件系统。DSN_UI_MODEL_ROOTS=/a:/b 可覆盖。
     MODEL_SCAN_ROOTS: tuple = tuple(

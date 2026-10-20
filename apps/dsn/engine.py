@@ -627,10 +627,23 @@ class DSNEngine:
 
     def _init_plugins_via_loader(self):
         """通过 PluginLoader 自动发现并注册插件（替代手动 _register_*_plugins）。"""
-        from apps.dsn.plugins.container import PluginDIContainer
-        from apps.dsn.plugins.loader import PluginLoader
-
         ec = self._engine_cfg
+        self._bootstrap_container(ec=ec)
+        self._load_plugins(
+            enable_set=set(self._cfg.plugins_enable) if self._cfg else set(),
+            disable_set=set(self._cfg.plugins_disable) if self._cfg else set(),
+        )
+
+    def _bootstrap_container(self, *, ec=None, personality_v2=None) -> None:
+        """把引擎持有的组件注册进插件 DI 容器，并构造容器依赖的派生对象。
+
+        修复说明（2026-10 装配收敛）：这段「register_all + action_narrator +
+        distillation_engine + v3_system/card_id」逻辑此前在 _init_plugins_via_loader
+        与 create_engine_with_defaults 里**各写了一遍**，且已经分叉（后者缺
+        complexity_analyzer / enable_set / disable_set / failover 蒸馏客户端）。
+        现统一到本方法，两条路径调用同一份实现，行为不再有差异。
+        """
+        from apps.dsn.plugins.container import PluginDIContainer
 
         PluginDIContainer.register_all(
             db=self.db, memory_system=self.memory_system,
@@ -646,18 +659,19 @@ class DSNEngine:
                    and self.prompt_engine.personality_v3.enabled
                 else None
             ),
-            personality_v2=self.prompt_engine.personality_v2 if self.prompt_engine else None,
+            personality_v2=(personality_v2 if personality_v2 is not None
+                           else (self.prompt_engine.personality_v2 if self.prompt_engine else None)),
             prompt_engine=self.prompt_engine,
             cache_engine=getattr(self, '_cache_engine', None),
-            model_type=ec.model_type if ec else None,
-            openai_api_key=ec.openai_api_key if ec else None,
+            model_type=(ec.model_type if ec else Config.MAIN_MODEL_TYPE),
+            openai_api_key=(ec.openai_api_key if ec else Config.OPENAI_API_KEY),
             openai_api_base=Config.OPENAI_API_BASE,
-            openai_model_name=ec.model_name if ec else None,
-            lmstudio_base_url=ec.lmstudio_base_url if ec else None,
-            lmstudio_model_name=ec.model_name if ec else None,
-            lmstudio_temperature=ec.lmstudio_temperature if ec else None,
-            lmstudio_max_tokens=ec.lmstudio_max_tokens if ec else None,
-            lmstudio_timeout=ec.lmstudio_timeout if ec else None,
+            openai_model_name=(ec.model_name if ec else Config.MAIN_MODEL_NAME),
+            lmstudio_base_url=(ec.lmstudio_base_url if ec else Config.LMSTUDIO_BASE_URL),
+            lmstudio_model_name=(ec.model_name if ec else Config.MAIN_MODEL_NAME),
+            lmstudio_temperature=(ec.lmstudio_temperature if ec else Config.LMSTUDIO_TEMPERATURE),
+            lmstudio_max_tokens=(ec.lmstudio_max_tokens if ec else Config.LMSTUDIO_MAX_TOKENS),
+            lmstudio_timeout=(ec.lmstudio_timeout if ec else Config.LMSTUDIO_TIMEOUT),
             complexity_analyzer=self.complexity_analyzer,
         )
         action_narrator = None
@@ -686,25 +700,37 @@ class DSNEngine:
                 logger.warning("Operation failed", exc_info=True)
         PluginDIContainer.register("v3_system",
             self.prompt_engine.personality_v3 if self.prompt_engine else None)
-        PluginDIContainer.register("card_id", self._cfg.card_id if self._cfg else "exa")
+        PluginDIContainer.register(
+            "card_id", (self._cfg.card_id if (self._cfg and getattr(self._cfg, "card_id", None)) else "exa"))
 
-        loader = PluginLoader(["apps/dsn/plugins/builtin", "world"])
+    def _load_plugins(self, *, enable_set=None, disable_set=None) -> None:
+        """扫描并多遍加载插件（多遍用于处理插件之间的互相依赖）。
+
+        enable_set / disable_set 来自 SubApp 配置，可对单个插件做开关。
+        """
+        from apps.dsn.plugins.container import PluginDIContainer
+        from apps.dsn.plugins.loader import PluginLoader
+
+        loader = PluginLoader(["apps/dsn/plugins/builtin", "apps/dsn/world"])
         all_manifests = loader.scan()
         loaded: set[str] = set()
-        enable_set = set(self._cfg.plugins_enable) if self._cfg else set()
-        disable_set = set(self._cfg.plugins_disable) if self._cfg else set()
+        enable_set = set(enable_set or ())
+        disable_set = set(disable_set or ())
 
+        # 反复多遍：某些插件在 on_load 时才注册依赖，被更早扫到的插件需要下一遍才满足条件
         for _attempt in range(4):
             for manifest in all_manifests:
                 if manifest.name in loaded:
-                    continue
-                if not manifest.meets_condition():
-                    loaded.add(manifest.name)
                     continue
                 if enable_set and manifest.name not in enable_set:
                     loaded.add(manifest.name)
                     continue
                 if disable_set and manifest.name in disable_set:
+                    loaded.add(manifest.name)
+                    continue
+                if not manifest.meets_condition():
+                    # 条件不满足即视为已处理（不再加载）。保留原有语义：
+                    # 本次只做去重复合，不改变插件激活集合。
                     loaded.add(manifest.name)
                     continue
                 plugin = loader.instantiate(manifest)
@@ -722,6 +748,7 @@ class DSNEngine:
         failed = set(m.name for m in all_manifests) - loaded
         if failed:
             self._logger.warning("以下插件未能加载: %s", sorted(failed))
+
     def _init_pipeline(self):
         # initialize the pipeline
         self.pipeline = ChatPipeline(
@@ -1158,6 +1185,7 @@ def create_engine_with_defaults(
     无需重新初始化。
     """
     import os as _os
+    from apps.dsn.config import Config
     from apps.dsn.prompt import init_prompt_engine, PromptLibrary, PersonalitySystemV2
 
     engine = DSNEngine()
@@ -1207,7 +1235,6 @@ def create_engine_with_defaults(
     pers_v2 = None
     if not _v3_override:
         try:
-            from apps.dsn.config import Config
             pers_v2 = PersonalitySystemV2(db=db)
             pers_v2.scan_presets(_os.path.join(_prompt_dir, "personality_v2", "presets"))
             pers_v2.load_rules_from_files()
@@ -1223,55 +1250,12 @@ def create_engine_with_defaults(
         engine.prompt_engine.set_skill_registry(skill_registry)
 
     # ── 自动发现并注册插件 ──
+    # 修复说明（2026-10 装配收敛）：原来这里手抄了一整份 DI 注册 + 派生对象 + 多遍
+    # 插件加载，与 _init_plugins_via_loader 重复且已分叉。现改为复用 DSNEngine 的
+    # 同一份实现（_bootstrap_container / _load_plugins），两条路径行为一致。
     from apps.dsn.plugins.container import PluginDIContainer
-    from apps.dsn.plugins.loader import PluginLoader
-    from apps.dsn.config import Config
 
-    # 收集全局组件到 DI 容器
-    PluginDIContainer.register_all(
-        db=db,
-        memory_system=memory_system,
-        skill_registry=skill_registry,
-        skill_manager=skill_manager,
-        impression_manager=engine.impression_manager,
-        tts_client=engine._tts_client,
-        tts_profile_mgr=engine._tts_profile_mgr,
-        tts_process_model=engine._tts_process_model,
-        filter_model=engine._filter_model,
-        world_engine=engine.world_engine,
-        world_state_manager=engine.world_state_manager,
-        narrative_model=engine.narrative_model,
-        task_manager=engine.task_manager,
-        personality_v3=(
-            engine.prompt_engine.personality_v3
-            if engine.prompt_engine and engine.prompt_engine.personality_v3
-               and engine.prompt_engine.personality_v3.enabled
-            else None
-        ),
-        personality_v2=pers_v2,
-        prompt_engine=engine.prompt_engine,
-        # Config 参数（供 ModelsPlugin 等使用）
-        model_type=Config.MAIN_MODEL_TYPE,
-        openai_api_key=Config.OPENAI_API_KEY,
-        openai_api_base=Config.OPENAI_API_BASE,
-        openai_model_name=Config.MAIN_MODEL_NAME,
-        lmstudio_base_url=Config.LMSTUDIO_BASE_URL,
-        lmstudio_model_name=Config.MAIN_MODEL_NAME,
-        lmstudio_temperature=Config.LMSTUDIO_TEMPERATURE,
-        lmstudio_max_tokens=Config.LMSTUDIO_MAX_TOKENS,
-        lmstudio_timeout=Config.LMSTUDIO_TIMEOUT,
-    )
-
-
-    # 构造 action_narrator（WorldPlugin 依赖）
-    action_narrator = None
-    if engine.world_engine:
-        from apps.dsn.world.action_narrator import ActionNarrator
-        action_narrator = ActionNarrator(
-            narrative_model=engine.narrative_model,
-            world_engine=engine.world_engine,
-        )
-    PluginDIContainer.register("action_narrator", action_narrator)
+    engine._bootstrap_container(ec=None, personality_v2=pers_v2)
 
     # TTS 文本预处理
     if Config.TTS_PROCESS_ENABLED and engine._tts_client:
@@ -1283,59 +1267,7 @@ def create_engine_with_defaults(
         except Exception as e:
             engine._logger.warning("TTSProcessModel 初始化失败: %s", e)
 
-    # DistillationEngine（DistillPlugin 依赖）
-    if engine.skill_manager:
-        try:
-            from apps.dsn.skills.distill import DistillationEngine
-            from apps.dsn.models import OpenAIChat
-            _skill_distill_llm = OpenAIChat(
-                api_key=Config.OPENAI_API_KEY,
-                model=Config.MAIN_MODEL_NAME,
-                api_url=f"{Config.OPENAI_API_BASE}/chat/completions"
-            )
-            _distill_engine = DistillationEngine(
-                db=db,
-                skill_manager=engine.skill_manager,
-                llm_client=_skill_distill_llm,
-            )
-            PluginDIContainer.register("distillation_engine", _distill_engine)
-        except Exception as e:
-            engine._logger.warning("DistillationEngine 初始化失败: %s", e)
-
-    _v3_sys = engine.prompt_engine.personality_v3 if engine.prompt_engine else None
-    PluginDIContainer.register("v3_system", _v3_sys)
-    PluginDIContainer.register("card_id", "exa")
-
-    # 多遍加载插件（处理插件间依赖）
-    loader = PluginLoader([
-        "apps/dsn/plugins/builtin",
-        "apps/dsn/world",
-    ])
-    all_manifests = loader.scan()
-    loaded_plugins: set[str] = set()
-
-    for _attempt in range(4):
-        for manifest in all_manifests:
-            if manifest.name in loaded_plugins:
-                continue
-            if not manifest.meets_condition():
-                loaded_plugins.add(manifest.name)
-                continue
-            plugin = loader.instantiate(manifest)
-            if plugin is not None:
-                engine.plugin_manager.register(plugin)
-                PluginDIContainer.register(manifest.name, plugin)
-                # 后置注入：skill_registry
-                if skill_registry and hasattr(plugin, 'set_skill_registry'):
-                    try:
-                        plugin.set_skill_registry(skill_registry)
-                    except Exception:
-                        logger.warning("Set operation failed", exc_info=True)
-                loaded_plugins.add(manifest.name)
-
-    failed = set(m.name for m in all_manifests) - loaded_plugins
-    if failed:
-        engine._logger.warning("以下插件未能加载（可能缺少依赖）: %s", sorted(failed))
+    engine._load_plugins()
 
     engine._init_pipeline()
     engine._logger.info("DSNEngine 已从默认配置创建（复用 app.py 组件）")

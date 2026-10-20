@@ -38,6 +38,8 @@ token 重叠度（Jaccard）排序，不会因为一个功能词差异就完全�
 
 from __future__ import annotations
 
+import os
+
 import difflib
 import json
 import logging
@@ -527,6 +529,13 @@ class ThoughtCacheService:
                 data_dir = Path(settings.data_dir)
             else:
                 data_dir = Path(__file__).resolve().parent / "data"
+        # 修复说明（2026-10 测试卫生）：测试里常把 MagicMock 当 settings 传进来，
+        # 此时 getattr(settings, "data_dir") 返回的是 MagicMock 对象，Path(...) 会把它
+        # 变成形如 "MagicMock/mock.agent.data_dir/125513672822992" 的真实目录并在仓库根
+        # 创建出一堆垃圾（tests/test_harness_strata.py 就是这样每日产物的）。
+        # 这里只接受 str / os.PathLike，其余一律回退到默认目录。
+        if not isinstance(data_dir, (str, os.PathLike)):
+            data_dir = Path(__file__).resolve().parent / "data"
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = store or ThoughtCacheStore(self.data_dir / "thought_cache.db")

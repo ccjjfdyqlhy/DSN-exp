@@ -21,6 +21,8 @@ setup(
             "numpy>=1.24.0",
             "cryptography>=40.0.0",
             "rich>=13.0.0",
+            "psutil>=5.9",
+            "opencv-python>=4.8",
         ]
     },
     classifiers=[

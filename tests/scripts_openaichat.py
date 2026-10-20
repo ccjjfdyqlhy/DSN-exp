@@ -1,7 +1,13 @@
+"""手动脚本：用 OpenAI 兼容端点做一次真实对话（**不是 pytest 测试**）。
 
+2026-10 重命名说明：原名 test_openaichat.py 会被 pytest 收集，但它在模块级调用
+input()，非交互环境下直接抛 OSError: reading from stdin，导致整轮收集被
+污染。重命名为 scripts_*.py。跑法：python tests/scripts_openaichat.py
 # tests/test_openaichat.py
 # PASSED v1_260214
+"""
 
+# 简单示例
 import os
 import sys
 import logging

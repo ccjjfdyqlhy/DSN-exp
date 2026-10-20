@@ -396,22 +396,32 @@ def _t(name: str, disabled: bool = False):
 
 # ── 启动函数 ──
 
-def create_application():
-    """初始化所有组件并设置模块级全局变量"""
+# 跨阶段共享的模块级状态（2026-10 拆分时提升为全局）。
+# 拆分前它们是 create_application() 的局部变量，拆分后需要跨阶段传递。
+_world_engine = None
+_world_state_manager = None
+_narrative_model = None
+_cache_engine = None
+_script_engine = None
+_prompt_cache = None
+_v3_chat = None
+
+
+def _stage_core():
+    """Flask / Runtime / 资源池 / 模型提供商 / 认证 / 数据库 / 工作区 / 任务
+
+    拆分说明（2026-10）：create_application() 此前是一个 659 行、约 106 个分支的
+    单体函数，装配顺序与各子系统初始化全挤在一起，无法单独定位与测试。
+    现按子系统拆成若干阶段函数，本函数只负责**按固定顺序调用**它们 ——
+    **代码逐字来自原实现，执行顺序与行为均未改变**。
+    """
     global app, db, engine, task_manager, memory_system, summary_model
     global tts_client, tts_profile_mgr, personality_v3, maint_system
     global _tts_process_model, filter_model, asr_model, prompt_engine
     global _impression_manager, skill_registry, skill_manager
     global completion_queue, _auth_manager
-
-    _t_log.clear()
-    _t("start")
-
-    app = Flask(__name__)
-    app.config.from_object(Config)
-    setup_logging(app)
-    completion_queue = queue.Queue()
-
+    global world_engine, world_state_manager, narrative_model
+    global _cache_engine, _script_engine, _tts_process_model
     # ── Harness Runtime ──
     # 场景无关的 DI 容器。新代码经 Runtime 解析服务，旧代码走模块级全局（兼容层）。
     from harness import Runtime, Settings
@@ -521,6 +531,21 @@ def create_application():
             task_manager = None
     _t("任务管理器", disabled=not _task_mgr_enabled)
 
+def _stage_models_and_memory():
+    """模型预加载 / 记忆与摘要 / TTS / ASR
+
+    拆分说明（2026-10）：create_application() 此前是一个 659 行、约 106 个分支的
+    单体函数，装配顺序与各子系统初始化全挤在一起，无法单独定位与测试。
+    现按子系统拆成若干阶段函数，本函数只负责**按固定顺序调用**它们 ——
+    **代码逐字来自原实现，执行顺序与行为均未改变**。
+    """
+    global app, db, engine, task_manager, memory_system, summary_model
+    global tts_client, tts_profile_mgr, personality_v3, maint_system
+    global _tts_process_model, filter_model, asr_model, prompt_engine
+    global _impression_manager, skill_registry, skill_manager
+    global completion_queue, _auth_manager
+    global world_engine, world_state_manager, narrative_model
+    global _cache_engine, _script_engine, _tts_process_model
     # ── 模型预加载（在记忆系统之前，避免 EmbeddingClient 加载时挤掉主模型）──
     _lmstudio_enabled = Config.LMSTUDIO_ENABLED
     if _lmstudio_enabled:
@@ -609,6 +634,22 @@ def create_application():
             _root_logger.warning("ASR 资源加载失败", exc_info=True)
     _t("ASR")
 
+def _stage_prompt_and_skills():
+    """Prompt / 印象 / 世界 / 技能 / 人格 V3
+
+    拆分说明（2026-10）：create_application() 此前是一个 659 行、约 106 个分支的
+    单体函数，装配顺序与各子系统初始化全挤在一起，无法单独定位与测试。
+    现按子系统拆成若干阶段函数，本函数只负责**按固定顺序调用**它们 ——
+    **代码逐字来自原实现，执行顺序与行为均未改变**。
+    """
+    global app, db, engine, task_manager, memory_system, summary_model
+    global tts_client, tts_profile_mgr, personality_v3, maint_system
+    global _tts_process_model, filter_model, asr_model, prompt_engine
+    global _impression_manager, skill_registry, skill_manager
+    global completion_queue, _auth_manager
+    global world_engine, world_state_manager, narrative_model
+    global _cache_engine, _script_engine, _tts_process_model
+    global _world_engine, _world_state_manager, _narrative_model
     # ── Prompt ──
     _prompt_dir = os.path.join(os.path.dirname(__file__), "prompt", "prompts")
     _v2_dir = os.path.join(os.path.dirname(__file__), "prompt", "personality_v2", "presets") \
@@ -703,6 +744,21 @@ def create_application():
             _root_logger.warning("Operation failed", exc_info=True)
     _t("人格系统 V3", disabled=not Config.PERSONALITY_V3_ENABLED)
 
+def _stage_engine_and_services():
+    """DSNEngine / 跟踪 / 视觉 / 缓存 / 剧本 / 提示词索引
+
+    拆分说明（2026-10）：create_application() 此前是一个 659 行、约 106 个分支的
+    单体函数，装配顺序与各子系统初始化全挤在一起，无法单独定位与测试。
+    现按子系统拆成若干阶段函数，本函数只负责**按固定顺序调用**它们 ——
+    **代码逐字来自原实现，执行顺序与行为均未改变**。
+    """
+    global app, db, engine, task_manager, memory_system, summary_model
+    global tts_client, tts_profile_mgr, personality_v3, maint_system
+    global _tts_process_model, filter_model, asr_model, prompt_engine
+    global _impression_manager, skill_registry, skill_manager
+    global completion_queue, _auth_manager
+    global world_engine, world_state_manager, narrative_model
+    global _cache_engine, _script_engine, _tts_process_model
     # ── DSNEngine ──
     from apps.dsn.engine import create_engine_with_defaults
     engine = create_engine_with_defaults(
@@ -907,6 +963,21 @@ def create_application():
     except Exception:
         _root_logger.warning("Operation failed", exc_info=True)
 
+def _stage_maintenance_and_dual():
+    """维护系统 / 双模协同
+
+    拆分说明（2026-10）：create_application() 此前是一个 659 行、约 106 个分支的
+    单体函数，装配顺序与各子系统初始化全挤在一起，无法单独定位与测试。
+    现按子系统拆成若干阶段函数，本函数只负责**按固定顺序调用**它们 ——
+    **代码逐字来自原实现，执行顺序与行为均未改变**。
+    """
+    global app, db, engine, task_manager, memory_system, summary_model
+    global tts_client, tts_profile_mgr, personality_v3, maint_system
+    global _tts_process_model, filter_model, asr_model, prompt_engine
+    global _impression_manager, skill_registry, skill_manager
+    global completion_queue, _auth_manager
+    global world_engine, world_state_manager, narrative_model
+    global _cache_engine, _script_engine, _tts_process_model
     # ── 维护模块 ──
     _maint_disabled = True
     try:
@@ -992,6 +1063,34 @@ def create_application():
         app.logger.warning("双模协同初始化失败", exc_info=True)
     _t("双模协同", disabled=_dual_disabled)
 
+
+def create_application():
+    """初始化所有组件并设置模块级全局变量。
+
+    拆分说明（2026-10）：本函数此前是 659 行、约 106 个分支的单体函数。
+    现按子系统拆成 _stage_* 系列阶段函数，本函数只负责**按固定顺序调用**它们，
+    执行顺序与拆分前完全一致。
+    """
+    global app, db, engine, task_manager, memory_system, summary_model
+    global tts_client, tts_profile_mgr, personality_v3, maint_system
+    global _tts_process_model, filter_model, asr_model, prompt_engine
+    global _impression_manager, skill_registry, skill_manager
+    global completion_queue, _auth_manager
+
+    _t_log.clear()
+    _t("start")
+
+    app = Flask(__name__)
+    app.config.from_object(Config)
+    setup_logging(app)
+    completion_queue = queue.Queue()
+
+    _stage_core()
+    _stage_models_and_memory()
+    _stage_prompt_and_skills()
+    _stage_engine_and_services()
+    _stage_maintenance_and_dual()
+
     # ── 打印启动耗时 ──
     app.logger.info("=" * 45)
     app.logger.info("  启动耗时汇总")
@@ -1007,6 +1106,7 @@ def create_application():
     app.logger.info("  " + "-" * 31)
     app.logger.info("  %-24s %7.2fs", "总计", total)
     app.logger.info("=" * 45)
+
 
     # ── AppBundle 装配 ──
     # 把构建好的组件按"应用场景包"组织，并统一经网关挂载路由。
@@ -1052,5 +1152,8 @@ def create_application():
     app.config["BUNDLE_REGISTRY"] = registry
     app.config["GATEWAY"] = gateway
     _t("AppBundle 装配")
+
+    return app
+
 
     return app

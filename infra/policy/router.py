@@ -75,6 +75,8 @@ class ModelRouter:
         self.config = config or ModelConfig()
         self.current_model: str = "flash"
         self.manual_override: Optional[str] = None
+        #: 是否由 switch() 显式选择过档位（显式选择优先于自动降级规则）
+        self._explicitly_selected: bool = False
         self.decisions: list[RouterDecision] = []
 
     # ── 档位管理 ──
@@ -93,18 +95,32 @@ class ModelRouter:
     # ── 决策 ──
 
     def select(self, task_type: str = "", budget_pressure: float = 0.0) -> str:
+        # 优先级 1：手动覆盖（switch 到未注册档位的自定义模型 id）
         if self.manual_override:
             self._log("manual", self.manual_override, f"手动覆盖: {self.manual_override}")
             return self.manual_override
 
+        # 修复说明（2026-10）：switch() 到**已注册档位**时只改 current_model、
+        # 不设 manual_override，于是原先会被下面的「廉价任务 / 高峰降级」规则
+        # 直接盖掉 —— 用户显式切到 pro，select("") 却仍返回 flash。
+        # 语义应当与 manual_override 一致：**显式切换后即锁定**，直到 reset()/reset_auto()。
+        # 这里通过 explicitly_selected 标记体现，自动降级规则只对「未显式切换」生效。
+        if self._explicitly_selected:
+            self._log("explicit", self.current_model,
+                      f"显式选择档位: {self.current_model}")
+            return self.current_model
+
+        # 优先级 2：预算压力降级
         if budget_pressure >= 0.8 and self.config.flash_model:
             self._log("budget", "flash", f"预算压力 {budget_pressure:.0%}, 降级 flash")
             return "flash"
 
-        if task_type in self.config.cheap_tasks:
+        # 优先级 3：廉价任务类型
+        if task_type and task_type in self.config.cheap_tasks:
             self._log("task", "flash", f"廉价任务类型: {task_type}")
             return "flash"
 
+        # 优先级 4：高峰时段自动降级
         if self.config.auto_downgrade_on_peak and in_peak_hours(ranges=self.config.peak_ranges):
             self._log("peak", "flash", "高峰时段自动降级")
             return "flash"
@@ -119,21 +135,26 @@ class ModelRouter:
         if mode == "auto":
             self.manual_override = None
             self.current_model = "flash"
+            self._explicitly_selected = False
         elif mode in self.config.tiers:
             self.manual_override = None
             self.current_model = mode
+            self._explicitly_selected = True
         else:
             self.manual_override = mode
             self.current_model = mode
+            self._explicitly_selected = True
         return self.current_model
 
     def reset(self) -> None:
         self.manual_override = None
         self.current_model = "flash"
+        self._explicitly_selected = False
 
     def reset_auto(self) -> str:
-        """别名：清除手动覆盖，恢复自动路由。"""
+        """清除手动覆盖与显式选择，恢复自动路由。"""
         self.manual_override = None
+        self._explicitly_selected = False
         return self.current_model
 
     # ── 查询 ──

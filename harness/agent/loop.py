@@ -150,6 +150,7 @@ class AgentLoop:
         on_progress: Optional[Callable[[int, int, list[str]], None]] = None,
         on_tool_error: Optional[Callable[[str, str], None]] = None,
         toolbox: Optional[Any] = None,
+        on_usage: Optional[Callable[[dict], None]] = None,
     ):
         # client/tools 在原生路径（run_async）必需；run_rounds 轮次策略模式可缺省
         self.client = client
@@ -161,6 +162,12 @@ class AgentLoop:
         self.on_tool_error = on_tool_error
         # 两阶段工具激活策略（ToolboxManager 或同构对象；None = 不启用）
         self.toolbox = toolbox
+        # 用量回调：每轮模型调用后收到 ChatResponse.usage（可能为空 dict）。
+        # 修复说明（2026-10 policy 接线）：Token 经济闭环此前只装配不生效——
+        # AgentAssembler 建好了 TokenMeter / TokenBudget，但 AgentLoop 从不回填 usage，
+        # 导致 meter 永远是 0、budget.check() 永远不触发。这里提供回调口，
+        # 由装配层把真实用量灌进 meter 并检查预算，闭环才算真正打通。
+        self.on_usage = on_usage
 
     def run(
         self,
@@ -209,6 +216,7 @@ class AgentLoop:
                 schema = self.toolbox.build_schema(self.toolbox.activated)
 
             response = await self._invoke(msgs, schema)
+            self._emit_usage(response)
             parsed = self.adapter.parse(response)
             # provider 侧使用 wire 名（file__read），这里统一还原为内部名
             for tc in parsed.tool_calls:
@@ -239,7 +247,11 @@ class AgentLoop:
                 executions.append(ToolExecution(
                     call_id=tc.id, name=tc.name, arguments=tc.arguments, result=result))
                 safe_output = self._truncate_output(result.output)
-                results.append({
+                # 修复说明（2026-10）：原先手工拼这个 dict 时漏掉了 ToolResult.data，
+                # 而 ToolResult.to_dict() 明确会把 data 展开一并回喂给模型。
+                # 两者不一致 → 工具返回的结构化附加字段在对话里凭空消失。
+                # 现与 to_dict() 对齐：data 展开到结果顶层。
+                payload: dict = {
                     "call_id": tc.id,
                     "name": tc.name,
                     "success": result.success,
@@ -247,7 +259,10 @@ class AgentLoop:
                     "output": safe_output,
                     "error": result.error,
                     "hint": result.hint,
-                })
+                }
+                if result.data:
+                    payload.update(result.data)
+                results.append(payload)
 
             # 合并 toolbox 确认结果（assistant 消息含 toolbox tool_calls，配对正确）
             msgs.extend(self.adapter.build_round(response, toolbox_results + results))
@@ -258,14 +273,19 @@ class AgentLoop:
                 # 直接 break —— 丢掉了本轮已执行的全部工具结果，也无法保证
                 # 一定有答复（模型该轮若只发工具调用，reply 就是空串）。
                 # run_stream 早已有 _finalize_after_max_steps 收束轮兜底，
-                # 但 run_async 完全没有，两条路径行为不一致。这里对齐：
-                # 先保留本轮文本，再追加一次"禁止调用工具"的收束轮。
-                final_reply = parsed.text or ""
-                finalize_parts: list[str] = [final_reply] if final_reply else []
+                # 但 run_async 完全没有，两条路径行为不一致。这里对齐。
+                #
+                # 修复说明（重复拼接）：收束轮产出的是**完整答复**，不是增量。
+                # 原实现把本轮文本与收束文本无条件拼接，当模型在最后一轮既说了
+                # 一句又调了工具时，会出现 "完成完成" 这样的重复。这里以收束轮
+                # 为准；只有收束轮**什么都没产出**时才回退到本轮文本，
+                # 保证「有收束就只用收束、没收束才用本轮」的不二义语义。
+                round_text = parsed.text or ""
+                finalize_parts: list[str] = []
                 async for _piece in self._finalize_after_max_steps(msgs):
                     if _piece:
                         finalize_parts.append(_piece)
-                final_reply = "".join(finalize_parts).strip()
+                final_reply = ("".join(finalize_parts).strip() or round_text).strip()
                 if not final_reply:
                     final_reply = (
                         "…[已达到步数上限，且未能生成收束答复。"
@@ -395,6 +415,7 @@ class AgentLoop:
                             acc["arguments"] = _merge_tool_arguments(prev, frag)
             else:
                 response = await self._invoke(msgs, schema)
+                self._emit_usage(response)
                 if response.content:
                     content_parts.append(response.content)
                     yield StreamEvent(kind="delta", content=response.content,
@@ -491,6 +512,57 @@ class AgentLoop:
         yield StreamEvent(kind="done", reply=final_reply, hit_max=hit_max,
                           round=step + 1)
 
+    @staticmethod
+    def _fold_trailing_tools(msgs: list[ChatMessage]) -> list[ChatMessage]:
+        """把对话尾部「连续的工具调用区」折叠成一条 user 消息。
+
+        目的：避免向模型发出非法的角色序列（见 _finalize_after_max_steps 的修复说明 2）。
+
+        背景：一轮工具调用的消息形态是
+            assistant(tool_calls) → tool → tool → ... → assistant(tool_calls) → tool ...
+        整段结束后才轮到收束指令。所以不能只看「尾部 tool」——若只折叠最后一条，
+        前面那些 assistant/tool 对依然成对存在，但它们夹在中间是可以的；真正非法的
+        只有「tool 之后紧跟 user」。因此这里把从第一处工具调用开始到末尾的**整段**
+        折叠掉，只留一条 user 消息承载所有工具结果。
+
+        规则：
+          * 从尾部向前，找到最后一条「未参与工具调用」的消息位置；
+            工具调用区 = 其后的全部消息；
+          * 若尾部本就不是工具调用区（普通对话），原样返回拷贝（no-op）；
+          * 折叠为单条 user 消息，含工具名与结果文本（单条结果超过 2000 字符会截断）。
+        """
+        if not msgs:
+            return list(msgs)
+
+        # 从后往前扫，跳过 tool 与「带 tool_calls 的 assistant」，定位工具调用区起点。
+        start = len(msgs)
+        while start > 0:
+            prev = msgs[start - 1]
+            role = getattr(prev, "role", "")
+            if role == "tool":
+                start -= 1
+            elif role == "assistant" and getattr(prev, "tool_calls", None):
+                start -= 1
+            else:
+                break
+
+        if start == len(msgs):
+            # 尾部不是工具调用区，无需折叠
+            return list(msgs)
+
+        lines: list[str] = ["以下是本轮已执行工具的返回结果："]
+        for msg in msgs[start:]:
+            if getattr(msg, "role", "") != "tool":
+                continue
+            name = getattr(msg, "name", "") or "tool"
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            if len(content) > 2000:
+                content = content[:2000] + "…[已截断]"
+            lines.append(f"[{name}] {content}")
+        lines.append("（以上为本轮全部已执行工具的结果）")
+
+        return list(msgs[:start]) + [ChatMessage.user("\n".join(lines))]
+
     async def _finalize_after_max_steps(
         self,
         msgs: list[ChatMessage],
@@ -508,15 +580,27 @@ class AgentLoop:
         """
         # 收束提示：作为最后一条 user 消息追加，明确禁止继续调用工具。
         #
-        # 修复说明：原实现直接 msgs.append(...) **就地改写调用方列表**，
+        # 修复说明 1（历史）：原实现直接 msgs.append(...) **就地改写调用方列表**，
         # 导致这条"收束指令"永久留在对话历史里；多次收束会累积成
         # user/user/user 连续消息，破坏"单条收束指令"的语义。
         # 这里构造临时副本，不污染原列表。
-        finalize_msgs = list(msgs) + [ChatMessage.user(
+        #
+        # 修复说明 2（角色序列）：调用本方法时 msgs 末尾通常是本轮刚回喂的
+        # tool 消息。绝大多数 chat_template（Qwen / Llama-3 / DeepSeek 等）要求
+        # role=tool 必须紧跟在带 tool_calls 的 assistant 之后，直接再追加一条
+        # role=user 属于非法序列，模板层会直接抛错 —— 而下面的 except 会把异常
+        # 吞成一条 warning，用户最终只看到"未能生成收束答复"的占位文本。
+        #
+        # 处理方式：把尾部的 tool 消息**折叠成一条 user 消息**（保留工具名与结果，
+        # 截断超长输出），使序列回到 ……assistant(tool_calls) → user(工具结果为文本)
+        # → user(收束指令)。这里刻意不保留原 assistant(tool_calls)，因为它的
+        # 配对 tool 消息已经被折叠，留着反而会形成"有 tool_calls 却无 tool"的悬空调用。
+        finalize_msgs = self._fold_trailing_tools(list(msgs))
+        finalize_msgs.append(ChatMessage.user(
             "已达到本次自主执行的步数上限，请立即停止调用任何工具，"
             "基于以上已获得的全部工具执行结果，直接给出最终的完整答复："
             "总结已完成的进展与关键结论，并说明还有哪些未完成的部分。"
-        )]
+        ))
 
         try:
             # 收束轮不下发任何 tools schema，从根上杜绝再次产生工具调用。
@@ -537,6 +621,27 @@ class AgentLoop:
         except Exception as e:  # noqa: BLE001
             # 收束轮失败不能反过来毁掉已有进展：保留本轮文本并记录原因。
             logger.warning("步数耗尽后的收束轮失败: %s", e)
+
+    def _emit_usage(self, response: Any) -> None:
+        """把一次模型调用的 usage 交给上层（meter/budget 接线点）。
+
+        容错：usage 缺失、非 dict、或回调抛异常都不得影响主流程——
+        记账失败绝不能反过来打断 Agent 执行。
+        """
+        if self.on_usage is None:
+            return
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        if not isinstance(usage, dict):
+            try:
+                usage = dict(usage)
+            except (TypeError, ValueError):
+                return
+        try:
+            self.on_usage(usage)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("用量回调失败（已忽略）: %s", e)
 
     def _truncate_output(self, output: Any) -> Any:
         """弹性截断工具输出，防止过大结果击穿模型上下文。"""

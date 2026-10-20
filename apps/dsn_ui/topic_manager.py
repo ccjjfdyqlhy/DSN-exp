@@ -17,8 +17,10 @@ from harness.context_assembly import (
     PRIORITY_CURRENT,
     PRIORITY_MEMO,
     PRIORITY_SUMMARY,
+    PRIORITY_TAIL,
     SEG_MEMO,
     SEG_SUMMARY,
+    SEG_TAIL,
     SEG_VERBATIM,
     SegmentedContextAssembler,
 )
@@ -591,18 +593,68 @@ class DSNUITopicContextManager:
 
         # 4. 当前话题原文
         cur_topic = self.get_or_create_current_topic(new_user_message)
-        if cur_topic.messages:
-            cur_text = "\n".join(f"{m.role}: {m.content}" for m in cur_topic.messages)
-            segments.append(
-                ContextSegment(
-                    kind=SEG_VERBATIM,
-                    content=cur_text,
-                    priority=PRIORITY_CURRENT,
-                    label=f"[当前话题·{cur_topic.title}]",
-                    truncatable=True,
-                    meta={"topic_id": cur_topic.topic_id},
-                )
+        cur_msgs = [m for m in cur_topic.messages if getattr(m, "content", "")]
+        if cur_msgs:
+            cur_text = "\n".join(
+                f"{m.role}: {m.content}" for m in cur_msgs
+                if isinstance(m.content, str)  # 多模态 parts 不参与历史文本投影
             )
+            if cur_text:
+                segments.append(
+                    ContextSegment(
+                        kind=SEG_VERBATIM,
+                        content=cur_text,
+                        priority=PRIORITY_CURRENT,
+                        label=f"[当前话题·{cur_topic.title}]",
+                        truncatable=True,
+                        meta={"topic_id": cur_topic.topic_id},
+                    )
+                )
+
+        # 4b. 尾部保底原文（SEG_TAIL）
+        #
+        # 修复说明（2026-10 "最后一条消息丢失"）：
+        # 上面第 4 段把「当前话题全部原文」当成**单个** SEG_VERBATIM 段提交给预算
+        # 剪裁。一旦当前话题积累得足够长（或同时注入了激活话题），verbatim 预算
+        # 被占满，plan() 就会把这一段截断甚至整体丢弃 —— 而这段里**包含了刚聊过的
+        # 上一条消息**。用户看到的现象就是"弹性上下文偶尔丢最近一轮"。
+        #
+        # SEG_TAIL 的语义正是"最近 N 轮原文，保底注入、不参与共享预算"
+        # （见 harness/context_assembly.py 第 4 段），但此前 DSN-UI 从未生产过
+        # SEG_TAIL 段，这条保底通道形同虚设。
+        # 这里补上：取最近 budget.tail_rounds 轮的 user/assistant 原文作为独立尾部段，
+        # 保证无论前面怎么裁，最近对话一定在上下文里。
+        tail_rounds = max(1, int(getattr(self.budget, "tail_rounds", 3) or 3))
+        if cur_msgs:
+            tail_msgs = cur_msgs[-tail_rounds * 2:]  # 一轮 ≈ user + assistant
+            tail_text = "\n".join(
+                f"{m.role}: {m.content}" for m in tail_msgs
+                if isinstance(m.content, str) and m.content
+            )
+            # 去重：当前话题的完整原文已经作为 SEG_VERBATIM 参与预算剪裁，
+            # 若它的内容**完全包含**尾部文本，说明这段最近对话本来就在上下文里，
+            # 再注入一遍会让模型看到重复内容。只在尾部确实可能被裁掉时才补。
+            cur_text_for_dedup = "\n".join(
+                f"{m.role}: {m.content}" for m in cur_msgs
+                if isinstance(m.content, str)
+            )
+            already_covered = bool(
+                cur_text_for_dedup
+                and cur_text_for_dedup.endswith(tail_text)
+                and len(cur_text_for_dedup) <= self.budget.verbatim_chars
+            )
+            if tail_text and not already_covered:
+                segments.append(
+                    ContextSegment(
+                        kind=SEG_TAIL,
+                        content=tail_text,
+                        priority=PRIORITY_TAIL,
+                        label="[最近对话]",
+                        truncatable=False,
+                        unbounded=True,
+                        meta={"rounds": tail_rounds},
+                    )
+                )
 
         # 只做一次剪裁：plan() 在截断时会就地改写 seg.content，重复调用会
         # 让第二次看到的已是截断后的文本，导致审计统计失真。因此这里由 plan

@@ -9,7 +9,19 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from harness.pipeline.events import EventBus
+from typing import Protocol
+
+
+class EventPublisher(Protocol):
+    """事件发布者契约（结构化类型，无需继承）。
+
+    修复说明（2026-10 分层）：本模块原先 `from harness.pipeline.events import EventBus`，
+    是 infra → harness 的逆向依赖。EventLogger 只需要事件总线具备
+    「publish(event, payload)」这一个能力，用 Protocol 表达即可切断对 harness 的导入。
+    harness 的 EventBus 天然满足本协议，无需任何改动。
+    """
+
+    def publish(self, event: str, payload: Any = None) -> None: ...
 
 logger = logging.getLogger("infra.observability")
 
@@ -74,7 +86,7 @@ class _Timer:
 class EventLogger:
     """通过 EventBus 发布结构化日志事件，供外部监听。"""
 
-    def __init__(self, event_bus: EventBus, source: str = "harness"):
+    def __init__(self, event_bus: EventPublisher, source: str = "infra"):
         self._bus = event_bus
         self._source = source
 

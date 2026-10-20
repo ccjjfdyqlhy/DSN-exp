@@ -26,6 +26,9 @@ from infra.models.llamacpp import (
     LlamaCppEmbeddingClient,
 )
 
+# 视觉模型实现已下沉到 infra（与 dsn_study 共用同一份，见 infra/orchestrator/vision.py）
+from infra.orchestrator.vision import VisionModel as _BaseVisionModel
+
 
 # 全局详细模式标志，由 /detail 命令切换
 DETAIL_CHATS = False
@@ -1248,186 +1251,21 @@ class OCRModel:
         return f"<OCRModel base_url={self.base_url} model={self.model_name}>"
 
 
-class VisionModel:
-    """
-    通用视觉多模态模型客户端。兼容 OpenAI 格式的视觉 API（如 GLM-4.6V、GPT-4V 等）。
+class VisionModel(_BaseVisionModel):
+    """DSN 的视觉模型客户端：配置取自 apps.dsn.config.Config。
 
-    用法:
-        vm = VisionModel()
-        desc = vm.ask(image_data_url, prompt="描述这张图片")
-        desc = vm.ask(image_data_url, prompt="判一下这题", extra_body={"thinking": {"type": "enabled"}})
-
-    配置:
-        VISION_API_KEY: API 密钥
-        VISION_API_BASE: API 地址 (默认 "https://open.bigmodel.cn/api/paas/v4")
-        VISION_MODEL_NAME: 模型名 (默认 "glm-4.6v")
+    去重说明（2026-10）：实现已下沉到 infra/orchestrator/vision.py，
+    与 apps/dsn_study 共用同一份；本类只负责注入本应用的配置。
     """
 
     def __init__(self, api_key: str = None, base_url: str = None,
                  model_name: str = None, timeout: int = 120):
         from apps.dsn.config import Config
 
-        self.api_key = api_key or Config.VISION_API_KEY
-        self.base_url = (base_url or Config.VISION_API_BASE).rstrip("/")
-        self.model_name = model_name or Config.VISION_MODEL_NAME
-        self.timeout = timeout
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self._http_session = requests.Session()
-
-        if not self.api_key:
-            self.logger.warning("VISION_API_KEY 未配置，视觉模型请求将无法通过需要认证的 API")
-
-    @staticmethod
-    def encode_image(image_path: str, mime_type: str = "image/png") -> str:
-        """读取本地图片并转为 Base64 data URL"""
-        from apps.dsn.utils.media import image_file_data_url
-        return image_file_data_url(image_path, mime_type)
-
-    def ask(self, data_url: str, prompt: str = "请详细描述这张图片的内容",
-            max_tokens: int = 2048, temperature: float = 0.1,
-            extra_body: dict = None) -> str:
-        """
-        发送图片 + 文本提示到视觉模型。
-
-        :param data_url: 图片的 Base64 data URL
-        :param prompt: 文本提示
-        :param max_tokens: 最大输出 token
-        :param temperature: 生成温度
-        :param extra_body: 额外请求体参数（如 GLM 的 thinking）
-        :return: 模型回复文本
-        """
-        if not data_url:
-            raise ValueError("data_url 不能为空")
-
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": data_url}},
-                {"type": "text", "text": prompt},
-            ],
-        }]
-
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": False,
-        }
-        if extra_body:
-            payload.update(extra_body)
-
-        url = f"{self.base_url}/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        self.logger.info("VisionModel 请求: model=%s, prompt=%s",
-                         self.model_name, prompt[:60] + ("..." if len(prompt) > 60 else ""))
-
-        try:
-            result = _post_json(
-                self._http_session, url, headers, payload, self.timeout,
-            )
-        except requests.exceptions.Timeout:
-            self.logger.error("VisionModel 请求超时 (%ds)", self.timeout)
-            raise
-        except requests.exceptions.HTTPError as e:
-            self.logger.error("VisionModel HTTP %d: %s",
-                              e.response.status_code if e.response else 0,
-                              e.response.text[:500] if e.response else str(e))
-            raise
-        except Exception as e:
-            self.logger.error("VisionModel 请求失败: %s", e)
-            raise
-
-        if "choices" in result and result["choices"]:
-            text = result["choices"][0]["message"]["content"].strip()
-            self.logger.info("VisionModel 回复: %s", text[:80] + ("..." if len(text) > 80 else ""))
-            return text
-        else:
-            self.logger.error("VisionModel 响应格式异常: %s", str(result)[:300])
-            raise ValueError("视觉模型响应格式异常")
-
-    def ask_raw(self, messages: list, max_tokens: int = 2048,
-                temperature: float = 0.1, extra_body: dict = None) -> dict:
-        """
-        低级接口：直接发送自定义消息列表，返回完整 API 响应。
-
-        :param messages: OpenAI 格式的消息列表
-        :return: API 原始响应 dict
-        """
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": False,
-        }
-        if extra_body:
-            payload.update(extra_body)
-
-        url = f"{self.base_url}/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        self.logger.debug("VisionModel ask_raw: %s", str(payload)[:200])
-        return _post_json(self._http_session, url, headers, payload, self.timeout)
-
-    # ----- OCR / 文档分类（用于 VISION_OVERRIDE 模式） -----
-
-    def classify_image(self, data_url: str, max_tokens: int = 100) -> str:
-        """
-        判断图片类型：document / photo / mixed。
-        """
-        if not data_url:
-            return "document"
-        prompt = (
-            "这张图片是文档（试卷、合同、书本、笔记等）还是照片（风景、人物、物品实拍等）？"
-            "只回答一个词：document / photo / mixed"
+        super().__init__(
+            api_key=api_key or Config.VISION_API_KEY,
+            base_url=base_url or Config.VISION_API_BASE,
+            model_name=model_name or Config.VISION_MODEL_NAME,
+            timeout=timeout,
         )
-        try:
-            text = self.ask(data_url, prompt=prompt, max_tokens=max_tokens, temperature=0)
-            text = text.strip().lower()
-            if "mixed" in text:
-                return "mixed"
-            if "photo" in text or "照片" in text:
-                return "photo"
-            return "document"
-        except Exception:
-            return "document"
 
-    def ocr_md(self, data_url: str, max_tokens: int = 4096) -> str:
-        """
-        将图片转为 Markdown 文本（替代 deepseek-ocr + 2md API）。
-        """
-        if not data_url:
-            return ""
-        prompt = (
-            "请完整提取这张文档图片中的所有文字内容，输出为 Markdown 格式。"
-            "保留原始排版结构（标题、列表、表格等），不要遗漏任何文字。"
-        )
-        try:
-            return self.ask(data_url, prompt=prompt, max_tokens=max_tokens, temperature=0)
-        except Exception as e:
-            self.logger.error("ocr_md 失败: %s", e)
-            return ""
-
-    def ocr_md_batch(self, images: list[dict], max_tokens: int = 4096) -> list[dict]:
-        """
-        批量将图片转为 Markdown。
-
-        :param images: [{filename, data_url}, ...]
-        :return: [{filename, markdown}, ...]
-        """
-        results = []
-        for img in images:
-            filename = img.get("filename", "unknown")
-            md = self.ocr_md(img.get("data_url", ""), max_tokens)
-            results.append({"filename": filename, "markdown": md})
-            self.logger.info("ocr_md_batch: %s → %d chars", filename, len(md))
-        return results
-
-    def __repr__(self):
-        return f"<VisionModel base_url={self.base_url} model={self.model_name}>"

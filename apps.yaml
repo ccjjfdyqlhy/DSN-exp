@@ -3,7 +3,11 @@
 # AICF（Agent Infrastructure Cybernetics Framework）启动器按此文件加载应用 → 入口映射；
 # 未出现于此处的内置应用也可用。
 # launcher.py 内置清单: dsn / coding_agent / text_agent / densechat / dsn_study
-# 本文件额外登记 dsn_ui / emotion_exp；合并语义为 setdefault（内置清单优先）。
+# 本文件额外登记 dsn_ui / emotion_exp。
+#
+# 合并语义（2026-10）：本文件可新增应用，也可覆盖内置应用的 description，
+# 但**不能改写内置应用的 entry**（框架保证内置入口可用）。
+# 末尾重复登记内置项只为统一可见性，改描述同样生效。
 # 可用启动方式:
 #   python main.py --app <name>
 #   DSN_APP=<name> python main.py
@@ -40,3 +44,11 @@ dsn_study:
   description: DSN 学习特化应用（题库、模拟考试、知识图谱、学习计划）
 
 
+
+# ── 内置项（在此重复登记仅为统一可见性；只影响 description）──
+text_agent:
+  description: harness 参考应用（纯文本 agent，最小模板）
+coding_agent:
+  description: 基于 harness 的 coding agent 示例
+densechat:
+  description: 基于 harness 复刻的 DenseChat WebUI（代码助手）

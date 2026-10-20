@@ -1,7 +1,13 @@
+"""手动脚本：reasoner 模型行为验证（**不是 pytest 测试**）。
 
+2026-10 重命名说明：原名 test_openai_reasoner.py 在收集期就用真实 API Key
+发起请求，离线/无网环境直接报 InternalServerError。重命名为 scripts_*.py。
+跑法：python tests/scripts_openai_reasoner.py
 # tests/test_openai_reasoner.py
 # v1_260329
+"""
 
+# Turn 1
 from openai import OpenAI
 
 import os,sys

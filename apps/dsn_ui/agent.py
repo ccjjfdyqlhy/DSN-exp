@@ -789,110 +789,17 @@ class DSNUIAgentCoordinator:
           * "passthrough" —— 完全交给请求方：不注入任何提示词，不跑情绪
             系统，不读写记忆与人格。请求里的 messages 原样送进模型。
         """
-        passthrough = api_mode == API_MODE_PASSTHROUGH
-        # 提取用户最新输入（streaming 入口）
-        #
-        # 同时保留原始 content parts：多模态（image_url 等）必须原样传给
-        # 最终那条 user 消息。此前只取 text 字段，图像在进入上下文装配前
-        # 就被丢掉，表现为"上传了图片但模型说没有图片"。
-        user_msg, user_parts = extract_last_user_turn(messages_raw)
-
-        if user_parts is not None or count_image_parts(messages_raw):
-            logger.info(
-                "多模态入口: 入站消息=%d 入站图片=%d 提取到parts=%s 提取到图片=%d text_chars=%d",
-                len(messages_raw),
-                count_image_parts(messages_raw),
-                "有" if user_parts else "无",
-                count_image_parts([{"content": user_parts}]) if user_parts else 0,
-                len(user_msg),
-            )
-
-        # 1. 情绪启发式刺激（passthrough 模式下完全不跑情绪系统）
-        if user_msg and not passthrough:
-            self.emotion_engine.evaluate_text_stimulus(user_msg)
-
-        # 2. 系统提示词合成：passthrough 不注入；超驰用请求方文本；否则动态组装
-        if passthrough:
-            system_prompt = ""
-            context_msgs = self._build_passthrough_messages(messages_raw)
-            logger.info(
-                "passthrough 模式: 不注入提示词/不跑情绪与记忆，messages=%d",
-                len(context_msgs),
-            )
-        elif system_prompt_override is not None:
-            system_prompt = system_prompt_override
-            # 超驰模式下不走话题记忆装配，客户端消息即完整上下文
-            context_msgs = self._build_override_messages(messages_raw, system_prompt)
-        else:
-            system_prompt = self.assemble_system_prompt(
-                execution_mode=execution_mode, client_tools=client_tools,
-            )
-
-        # 请求方声明了工具时，必须保留完整的对话结构。
-        #
-        # 话题记忆装配只产出「一条 system + 一条 user」，工具往返
-        # （assistant.tool_calls → role=tool 的结果）会被整段丢弃，
-        # 模型因此永远看不到工具执行结果 —— 表现为反复调用同一个工具，
-        # 或者回答"我没有收到工具返回"。
-        # 这种情况下直接用请求方的消息 + DSN 合成的 system 提示词。
-        preserve_conversation = bool(client_tools) and not passthrough
-        if preserve_conversation:
-            context_msgs = self._build_conversation_messages(messages_raw, system_prompt)
-            logger.info(
-                "工具会话模式: 保留完整对话结构，messages=%d（其中 tool=%d）",
-                len(context_msgs),
-                sum(1 for m in context_msgs if m.role == "tool"),
-            )
-
-        if system_prompt_override is None and not passthrough and not preserve_conversation:
-            # 3. 话题记忆弹性剪裁组装
-            # 这一段会遍历 topic_mgr.topics（dict）。若其它协程在遍历过程中
-            # 增删话题，就会抛 "dictionary changed size during iteration"。
-            # 因此记录进入/退出与话题规模，便于把异常定位到这一层。
-            logger.debug(
-                "上下文装配开始: topics=%d memos=%d current=%s",
-                len(self.topic_mgr.topics), len(self.topic_mgr.memos),
-                self.topic_mgr.current_topic_id,
-            )
-            try:
-                context_msgs = self.topic_mgr.assemble_context_messages(
-                    new_user_message=user_msg or "你好",
-                    system_prefix=system_prompt,
-                    new_user_parts=user_parts,
-                )
-            except Exception as e:  # noqa: BLE001
-                log_exception(
-                    logger,
-                    "上下文装配失败(topic_mgr.assemble_context_messages)",
-                    e,
-                )
-                raise
-            logger.debug("上下文装配完成: messages=%d", len(context_msgs))
-            if user_parts is not None or count_image_parts(context_msgs):
-                logger.info(
-                    "多模态上下文: 消息=%d 图片=%d 形状=%s",
-                    len(context_msgs),
-                    count_image_parts(context_msgs),
-                    [f"{m.role}:{content_shape(m.content)}" for m in context_msgs],
-                )
-
-        model_ctx = self.orchestrator.get_model_ctx_size(model_name)
-        eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
-
-        # 上下文溢出智能自愈：按用户选择的策略处理（见 _apply_context_strategy）
-        # passthrough 下上下文由请求方负责，dsn_ui 不做任何改写。
-        if system_prompt_override is None and not passthrough:
-            if self._apply_context_strategy(
-                model_name=model_name,
-                model_ctx=model_ctx,
-                user_msg=user_msg,
-            ):
-                # 策略生效后重新组装上下文，释放空间（同样保留多模态 parts）
-                context_msgs = self.topic_mgr.assemble_context_messages(
-                    new_user_message=user_msg or "你好",
-                    system_prefix=system_prompt,
-                    new_user_parts=user_parts,
-                )
+        # 上下文与提示词准备：与 chat_invoke 共用同一份逻辑
+        # （去重说明见 _prepare_turn_context 的注释）
+        user_msg, context_msgs, eff_max_tokens, system_prompt, passthrough = self._prepare_turn_context(
+            messages_raw,
+            model_name=model_name,
+            execution_mode=execution_mode,
+            system_prompt_override=system_prompt_override,
+            max_tokens=max_tokens,
+            api_mode=api_mode,
+            client_tools=client_tools,
+        )
 
         client = OrchestratorChatClientWrapper(
             self.orchestrator,
@@ -1025,6 +932,109 @@ class DSNUIAgentCoordinator:
                 turn_posted, sum(len(p) for p in full_reply_parts),
             )
 
+    def _prepare_turn_context(
+        self,
+        messages_raw: List[Dict[str, Any]],
+        *,
+        model_name: str,
+        execution_mode: bool,
+        system_prompt_override: Optional[str],
+        max_tokens: Optional[int],
+        api_mode: str,
+        client_tools: Optional[List[Dict[str, Any]]],
+    ):
+        """本轮对话的公共前置：情绪刺激 → 提示词合成 → 上下文装配 → 溢出自愈。
+
+        去重说明（2026-10）：这段逻辑此前在 chat_stream 与 chat_invoke 里各写一份，
+        且已经分叉 —— chat_invoke 缺少多模态 parts 处理、上下文溢出自愈
+        （_apply_context_strategy）与装配异常日志，导致「流式能保住上下文、
+        非流式不能」这类难查的差异。现统一到本方法，两条路径行为一致。
+
+        返回 (user_msg, context_msgs, eff_max_tokens, system_prompt, passthrough)。
+        """
+        passthrough = api_mode == API_MODE_PASSTHROUGH
+        user_msg, user_parts = extract_last_user_turn(messages_raw)
+
+        # 1) 情绪启发式刺激（passthrough 模式下完全不跑情绪系统）
+        if user_msg and not passthrough:
+            self.emotion_engine.evaluate_text_stimulus(user_msg)
+
+        # 2) 系统提示词合成：passthrough 不注入；超驰用请求方文本；否则动态组装
+        if passthrough:
+            system_prompt = ""
+            context_msgs = self._build_passthrough_messages(messages_raw)
+            logger.info(
+                "passthrough 模式: 不注入提示词/不跑情绪与记忆，messages=%d",
+                len(context_msgs),
+            )
+        elif system_prompt_override is not None:
+            system_prompt = system_prompt_override
+            context_msgs = self._build_override_messages(messages_raw, system_prompt)
+        else:
+            system_prompt = self.assemble_system_prompt(
+                execution_mode=execution_mode, client_tools=client_tools,
+            )
+
+        # 请求方声明了工具时必须保留完整对话结构：
+        # 话题记忆装配只产出「一条 system + 一条 user」，工具往返
+        # （assistant.tool_calls → role=tool）会被整段丢弃。
+        preserve_conversation = bool(client_tools) and not passthrough
+        if preserve_conversation:
+            context_msgs = self._build_conversation_messages(messages_raw, system_prompt)
+            logger.info(
+                "工具会话模式: 保留完整对话结构，messages=%d（其中 tool=%d）",
+                len(context_msgs),
+                sum(1 for m in context_msgs if m.role == "tool"),
+            )
+
+        if system_prompt_override is None and not passthrough and not preserve_conversation:
+            # 3) 话题记忆弹性剪裁组装
+            logger.debug(
+                "上下文装配开始: topics=%d memos=%d current=%s",
+                len(self.topic_mgr.topics), len(self.topic_mgr.memos),
+                self.topic_mgr.current_topic_id,
+            )
+            try:
+                context_msgs = self.topic_mgr.assemble_context_messages(
+                    new_user_message=user_msg or "你好",
+                    system_prefix=system_prompt,
+                    new_user_parts=user_parts,
+                )
+            except Exception as e:  # noqa: BLE001
+                log_exception(
+                    logger,
+                    "上下文装配失败(topic_mgr.assemble_context_messages)",
+                    e,
+                )
+                raise
+            logger.debug("上下文装配完成: messages=%d", len(context_msgs))
+            if user_parts is not None or count_image_parts(context_msgs):
+                logger.info(
+                    "多模态上下文: 消息=%d 图片=%d 形状=%s",
+                    len(context_msgs),
+                    count_image_parts(context_msgs),
+                    [f"{m.role}:{content_shape(m.content)}" for m in context_msgs],
+                )
+
+        model_ctx = self.orchestrator.get_model_ctx_size(model_name)
+        eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
+
+        # 4) 上下文溢出智能自愈；策略生效后需重新装配才会真正生效
+        if system_prompt_override is None and not passthrough and not preserve_conversation:
+            if self._apply_context_strategy(
+                model_name=model_name, model_ctx=model_ctx, user_msg=user_msg,
+            ):
+                try:
+                    context_msgs = self.topic_mgr.assemble_context_messages(
+                        new_user_message=user_msg or "你好",
+                        system_prefix=system_prompt,
+                        new_user_parts=user_parts,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log_exception(logger, "上下文策略生效后重新装配失败", e)
+
+        return user_msg, context_msgs, eff_max_tokens, system_prompt, passthrough
+
     def chat_invoke(
         self,
         messages_raw: List[Dict[str, Any]],
@@ -1046,32 +1056,16 @@ class DSNUIAgentCoordinator:
         声明的工具下发（标准 OpenAI 函数调用，服务端不执行）。
         """
         passthrough = api_mode == API_MODE_PASSTHROUGH
-        user_msg, _user_parts = extract_last_user_turn(messages_raw)
-
-        if user_msg and not passthrough:
-            self.emotion_engine.evaluate_text_stimulus(user_msg)
-
-        if passthrough:
-            context_msgs = self._build_passthrough_messages(messages_raw)
-        elif system_prompt_override is not None:
-            context_msgs = self._build_override_messages(messages_raw, system_prompt_override)
-        else:
-            system_prompt = self.assemble_system_prompt(
-                execution_mode=execution_mode, client_tools=client_tools,
-            )
-            # 同 chat_stream：带了工具就必须保留完整对话结构，
-            # 否则 assistant.tool_calls → role=tool 的往返会被丢掉。
-            if client_tools:
-                context_msgs = self._build_conversation_messages(messages_raw, system_prompt)
-            else:
-                context_msgs = self.topic_mgr.assemble_context_messages(
-                    new_user_message=user_msg or "你好",
-                    system_prefix=system_prompt,
-                    new_user_parts=_user_parts,
-                )
-
-        model_ctx = self.orchestrator.get_model_ctx_size(model_name)
-        eff_max_tokens = self._resolve_max_tokens(max_tokens, model_ctx)
+        # 与 chat_stream 共用同一份前置逻辑（去重说明见 _prepare_turn_context）
+        user_msg, context_msgs, eff_max_tokens, _system_prompt, passthrough = self._prepare_turn_context(
+            messages_raw,
+            model_name=model_name,
+            execution_mode=execution_mode,
+            system_prompt_override=system_prompt_override,
+            max_tokens=max_tokens,
+            api_mode=api_mode,
+            client_tools=client_tools,
+        )
         client = OrchestratorChatClientWrapper(
             self.orchestrator,
             model_name=model_name,

@@ -1,4 +1,9 @@
-"""Test skillmgr functionality."""
+"""手动脚本：skillmgr 功能自检（**不是 pytest 测试**）。
+
+2026-10 重命名说明：原名 test_skillmgr.py 会被 pytest 收集，但它在**模块级**
+直接执行（还有 os.chdir），导致收集期报错并污染工作目录。重命名为
+scripts_*.py 以退出收集。跑法：python tests/scripts_skillmgr.py
+"""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

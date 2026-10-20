@@ -19,7 +19,10 @@ class EventBus:
     def __init__(self):
         self._subs: dict[str, list[Callable[..., Any]]] = {}
         # 持有 fire-and-forget 任务的强引用，防止被 GC 提前回收（见 publish）。
-        _bus_tasks: set[asyncio.Task] = set()
+        # 修复说明：原实现写成局部变量 \`_bus_tasks\`，而 publish() 里当作全局名引用，
+        # 导致任何 async 订阅者在同步 publish 时都会抛 NameError 并被外层 except 吞掉 ——
+        # 表现为「订阅了异步处理器但永远收不到事件」。必须是实例属性 self._bus_tasks。
+        self._bus_tasks: set[asyncio.Task] = set()
 
     def subscribe(self, event: str, handler: Callable[..., Any]) -> Callable[[], None]:
         """订阅事件，返回取消订阅函数。handler 可为 sync 或 async。"""
@@ -62,8 +65,8 @@ class EventBus:
                     # 退出时以 "Task exception was never retrieved" 的形式出现，
                     # 既不进 logger 也不反馈给调用方 —— 订阅者静默丢事件。
                     task = asyncio.ensure_future(handler(payload))
-                    _bus_tasks.add(task)
-                    task.add_done_callback(_bus_tasks.discard)
+                    self._bus_tasks.add(task)
+                    task.add_done_callback(self._bus_tasks.discard)
                     task.add_done_callback(
                         lambda t, _e=event: t.cancelled() or (
                             t.exception() and logger.exception(
@@ -89,6 +92,7 @@ class EventBus:
 
     def clear(self) -> None:
         self._subs.clear()
+        self._bus_tasks.clear()
 
     def events(self) -> list[str]:
         return list(self._subs.keys())

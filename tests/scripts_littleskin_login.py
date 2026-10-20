@@ -1,7 +1,13 @@
+"""手动脚本：littleskin 第三方登录流程验证（**不是 pytest 测试**）。
+
+2026-10 重命名说明：原名 test_littleskin_login.py 会被 pytest 收集，但它在模块级
+调用 input() 并会打开浏览器做 OAuth 回调，非交互环境直接抛 OSError。
+重命名为 scripts_*.py 以退出收集。
+跑法：python tests/scripts_littleskin_login.py
+"""
 
 # tests/test_littleskin_login.py
 # PASSED v1_260214
-
 import json
 import urllib.parse
 import urllib.request

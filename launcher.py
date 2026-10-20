@@ -54,16 +54,39 @@ APPS: dict[str, dict[str, Any]] = {
 
 
 def load_apps_config() -> None:
-    if APPS_CONFIG.exists():
-        try:
-            import yaml
-            data = yaml.safe_load(APPS_CONFIG.read_text(encoding="utf-8")) or {}
-            for name, cfg in data.items():
-                if isinstance(cfg, dict):
-                    cfg.setdefault("entry", f"apps.{name}.entry")
-                    APPS.setdefault(name, cfg)
-        except Exception:  # noqa: BLE001
-            pass
+    """读取 apps.yaml 并合并进 APPS。
+
+    合并语义（2026-10 调整）：
+      * 新应用直接加入 APPS；
+      * 已内置的应用，**只允许覆盖展示性字段**（description），但 entry 保持内置值。
+
+    为什么不允许改 entry：内置清单里的 entry 是框架保证可用的路径；允许 yaml 改写它
+    会让「改了配置就跑不起来」成为可能，而这种失败在 --list 阶段看不出来，
+    要等到真正启动才暴露。此前用 setdefault 导致连 description 都改不了。
+    """
+    if not APPS_CONFIG.exists():
+        return
+    try:
+        import yaml
+    except ImportError:  # 无 PyYAML 时静默使用内置清单
+        return
+
+    try:
+        data = yaml.safe_load(APPS_CONFIG.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 - yaml 损坏不应阻断启动
+        return
+
+    for name, cfg in data.items():
+        if not isinstance(cfg, dict):
+            continue
+        cfg.setdefault("entry", f"apps.{name}.entry")
+        existing = APPS.get(name)
+        if existing is None:
+            APPS[name] = cfg
+        else:
+            # 内置应用：仅覆盖描述，保留内置 entry 与 default 标记
+            if cfg.get("description"):
+                existing["description"] = cfg["description"]
 
 
 def resolve_entry(name: str) -> Callable[[], Any]:

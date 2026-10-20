@@ -895,32 +895,6 @@ def _launch_command(spec) -> Optional[str]:
     return None
 
 
-def _launch_params_snapshot(spec) -> dict:
-    """已注册模型的原始启动参数（用于「一次性启动」后恢复原状）。"""
-    if spec.strata_config is not None:
-        return dict(spec.strata_config.to_dict())
-    if spec.llama_config is not None:
-        return {
-            "binary_path": spec.llama_config.binary_path,
-            "model_path": spec.llama_config.model_path,
-            "host": spec.llama_config.host,
-            "port": spec.llama_config.port,
-            "n_gpu_layers": spec.llama_config.n_gpu_layers,
-            "tensor_split": spec.llama_config.tensor_split,
-            "ctx_size": spec.llama_config.ctx_size,
-            "threads": spec.llama_config.threads,
-            "flash_attn": spec.llama_config.flash_attn,
-            "jinja": spec.llama_config.jinja,
-            "reasoning_format": spec.llama_config.reasoning_format,
-            "no_kv_offload": spec.llama_config.no_kv_offload,
-            "mmproj_path": spec.llama_config.mmproj_path,
-            "mmproj_no_offload": spec.llama_config.mmproj_no_offload,
-            "image_max_tokens": spec.llama_config.image_max_tokens,
-            "extra_args": list(spec.llama_config.extra_args),
-        }
-    return {}
-
-
 def _as_list(value) -> Optional[list]:
     """把列表/换行/逗号分隔的字符串归一化为字符串列表。"""
     if isinstance(value, list):

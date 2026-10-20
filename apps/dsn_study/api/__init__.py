@@ -1,1 +1,5 @@
-../../dsn/api/__init__.py
+# apps/dsn_study/api/__init__.py
+# API 蓝图包。
+#
+# 去重说明（2026-10 消除符号链接）：原先是指向 apps/dsn/api/__init__.py 的符号链接，
+# 而那其实是个**空文件** —— 没有任何共享内容，链接纯属误导。

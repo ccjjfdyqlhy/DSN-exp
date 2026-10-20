@@ -1,41 +1,17 @@
-# utils/media.py
-# Shared image data URL helpers for vision and document ingestion.
+# apps/dsn/utils/media.py
+# 图片 data URL 辅助函数 —— 兼容再导出层。
+#
+# 去重说明（2026-10）：本模块此前自己实现了一份 image_mime_type / image_data_url /
+# image_file_data_url，与 infra/orchestrator/vision.py 的同名实现重复（仅 MIME 映射表
+# 来源不同：这里用固定表，那里用 mimetypes 推断）。现统一到 infra，本模块只做再导出，
+# 保持 `from apps.dsn.utils.media import image_file_data_url` 的旧写法可用。
 
 from __future__ import annotations
 
-import base64
-from pathlib import Path
+from infra.orchestrator.vision import (
+    image_data_url,
+    image_file_data_url,
+    image_mime_type,
+)
 
-
-_IMAGE_MIME_TYPES = {
-    ".bmp": "image/bmp",
-    ".gif": "image/gif",
-    ".jpeg": "image/jpeg",
-    ".jpg": "image/jpeg",
-    ".png": "image/png",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
-    ".webp": "image/webp",
-}
-
-
-def image_mime_type(filename: str | Path, default: str = "image/png") -> str:
-    """Return the data URL MIME type inferred from an image filename."""
-    return _IMAGE_MIME_TYPES.get(Path(filename).suffix.lower(), default)
-
-
-def image_data_url(data: bytes, mime_type: str = "image/png") -> str:
-    """Encode image bytes as a base64 data URL."""
-    encoded = base64.b64encode(data).decode("utf-8")
-    return f"data:{mime_type};base64,{encoded}"
-
-
-def image_file_data_url(path: str | Path, mime_type: str | None = None) -> str:
-    """Read an image file and encode it as a base64 data URL."""
-    image_path = Path(path)
-    if not image_path.is_file():
-        raise FileNotFoundError(f"图片文件不存在: {image_path}")
-    return image_data_url(
-        image_path.read_bytes(),
-        mime_type or image_mime_type(image_path),
-    )
+__all__ = ["image_mime_type", "image_data_url", "image_file_data_url"]

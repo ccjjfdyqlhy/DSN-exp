@@ -1,4 +1,9 @@
-"""Test WorldEngine functionality."""
+"""手动脚本：WorldEngine 功能自检（**不是 pytest 测试**）。
+
+2026-10 重命名说明：原名 test_world_engine.py 会被 pytest 收集，但它在模块级
+直接执行且断言依赖本地 worlds/*.yaml 的具体房间名，在别的机器上必然失败。
+重命名为 scripts_*.py 以退出收集。跑法：python tests/scripts_world_engine.py
+"""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
