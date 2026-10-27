@@ -5,6 +5,8 @@ from .base import Tool, ToolResult, ToolRegistry, from_wire_name, to_wire_name
 from .function_tool import tool_from_function, tools_from_module
 from .toolbox import ToolboxManager, RegistryIndexSource, ToolIndexSource
 from .standard import ToolDeps, install_standard_tools
+# MCP 桥接模块自身延迟导入官方 SDK（缺包不影响 harness 其余功能），这里只导类
+from .mcp import MCPManager, MCPServerConfig
 
 __all__ = [
     "Tool", "ToolResult", "ToolRegistry",
@@ -12,4 +14,5 @@ __all__ = [
     "tool_from_function", "tools_from_module",
     "ToolboxManager", "RegistryIndexSource", "ToolIndexSource",
     "ToolDeps", "install_standard_tools",
+    "MCPManager", "MCPServerConfig",
 ]

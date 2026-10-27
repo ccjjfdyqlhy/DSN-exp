@@ -326,10 +326,14 @@ class ResourcePool(ModelScheduler):
         with self._condition:
             self.max_concurrent = new_val
             self._condition.notify_all()
-        try:
-            self._restore_best_waiting_model()
-        except Exception:  # noqa: BLE001 - 恢复失败不影响配额变更本身
-            logger.exception("调整外周任务槽后恢复等待资源失败")
+            # 修复：恢复调用必须在持有 _condition 时进行——_restore_best_waiting_model
+            # → _do_load 会在未持锁状态下执行 self._condition.release()，
+            # 锁外调用直接抛 "cannot release un-acquired lock"，恢复功能
+            # 每次都静默失败（异常被下面的 except 吞掉）。
+            try:
+                self._restore_best_waiting_model()
+            except Exception:  # noqa: BLE001 - 恢复失败不影响配额变更本身
+                logger.exception("调整外周任务槽后恢复等待资源失败")
         logger.info("外周任务槽数量已更新为 %d", new_val)
         return new_val
 

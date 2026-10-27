@@ -43,16 +43,16 @@ class CoreBundle(DsnStudyBundle):
 
 class StudyBundle(DsnStudyBundle):
     name = "study"
-    description = "扫题/扫印、学习时间表、异步任务状态"
+    description = "扫题/扫印、学习时间表、异步任务状态、打卡与学习日志"
     settings_namespaces = ["study", "vision"]
-    blueprint_names = ["scan", "study_timetable", "async_tasks"]
+    blueprint_names = ["scan", "study_timetable", "async_tasks", "checkin", "studylog"]
 
 
 class PlanBundle(DsnStudyBundle):
     name = "plan"
-    description = "计划系统 REST（Goal/Phase/DailyTask）"
+    description = "计划系统 REST（Goal/Phase/DailyTask）+ 提醒/闹钟/心跳（任务管理器）"
     settings_namespaces = []
-    blueprint_names = ["plan"]
+    blueprint_names = ["plan", "reminder", "alarm", "heartbeat"]
 
 
 class AgentChatBundle(DsnStudyBundle):

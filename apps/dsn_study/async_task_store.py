@@ -13,10 +13,15 @@ logger = logging.getLogger("AsyncTaskStore")
 
 
 class AsyncTaskStore:
+    # 惰性清理间隔（秒）：cleanup_stale 此前无任何调用方，内存 dict 与
+    # async_tasks 表随每次扫题/推理无限增长（长跑进程内存泄漏 + 表膨胀）。
+    _CLEANUP_INTERVAL_SECONDS = 3600.0
+
     def __init__(self, db=None):
         self._lock = threading.Lock()
         self._tasks: dict[str, dict] = {}
         self._db = db
+        self._last_cleanup = 0.0
         self._init_db()
 
     def _init_db(self):
@@ -38,7 +43,20 @@ class AsyncTaskStore:
         """)
         conn.commit()
 
+    def _maybe_cleanup(self):
+        """高频入口（create）顺带做节流清理，避免 dedicated 线程。"""
+        import time
+        now = time.time()
+        if now - self._last_cleanup < self._CLEANUP_INTERVAL_SECONDS:
+            return
+        self._last_cleanup = now
+        try:
+            self.cleanup_stale()
+        except Exception:  # noqa: BLE001
+            logger.warning("异步任务过期清理失败（已跳过）", exc_info=True)
+
     def create(self, task_id: str, user_id: int, chat_id: int = 0) -> dict:
+        self._maybe_cleanup()
         record = {
             "task_id": task_id,
             "user_id": user_id,

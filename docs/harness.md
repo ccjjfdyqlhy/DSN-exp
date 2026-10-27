@@ -195,6 +195,56 @@ result = agent.run("帮我看看这个仓库");
 `file.edit` 有两种定位方式：行号 `target='path:10-20'`，或内容锚点
 `target='path' + match='<old text>'`（**推荐**，抗 read 截断，且要求 match 唯一）。
 
+### 4.5 外部 MCP 工具源（`harness/tools/mcp.py`）
+
+把外部 MCP（Model Context Protocol）服务器的工具接入 `ToolRegistry`：
+远端工具以 `mcp.<服务器名>.<工具名>` 注册，inputSchema 原样透传，
+AgentLoop / ToolboxManager / wire 名编码对它们完全无感。
+
+```
+MCPManager ──┬─ stdio 子进程（uvx/npx 拉起的社区服务器）
+             ├─ Streamable HTTP（transport: http）
+             └─ 旧版 HTTP+SSE（transport: sse）
+```
+
+**三种入口**（效果等价）：
+
+```python
+# 1. SDK 参数
+agent = create_agent(..., mcp_config="mcp_servers.yaml")
+agent = create_agent(..., mcp_servers=[{"name": "fetch", "transport": "stdio",
+                                        "command": "uvx", "args": ["mcp-server-fetch"]}])
+# 2. AgentSpec 声明
+spec = AgentSpec(..., mcp={"config": "mcp_servers.yaml", "servers": [...]})
+# 3. 直接用管理器
+manager = MCPManager.from_yaml("mcp_servers.yaml")
+await manager.load_tools(registry)
+```
+
+**惰性连接是刻意的设计**（理解不了这里就会踩坑）：
+
+- `assemble()` 是同步的，而 MCP 会话绑定事件循环（stdio 子进程随循环销毁），
+  所以装配期**只创建管理器、零连接**；
+- SDK 的 `Agent` 在首个异步入口（`chat_async` / `run_async` / `chat_stream`）
+  自动完成「连接 + list_tools + 注册」；服务端可用 `await agent._assembled.setup_mcp()`
+  在 lifespan 里显式预热；
+- 同步 `chat()` 每次对话是独立的事件循环，stdio 子进程在对话结束即被回收，
+  下次调用靠 handler 里的**重连一次机制**自动恢复 —— 功能正确但每次重启子进程，
+  长驻服务请用异步入口。
+
+**失败隔离与超时**：单台服务器连不上只影响它自己的工具（`manager.status()`
+可查各服务器状态）；单次调用超时返回 `ToolResult.retry`；非超时异常自动重连
+一次再试。`tool_allowlist` / `tool_blocklist` 控制注册范围。
+
+**已知限制**：工具结果里的 Image / EmbeddedResource 内容目前只回传计数
+（`images_omitted` / `resources_omitted`），不直接喂图——等前端支持多模态
+工具结果后再放开。服务器端工具变更（`tools/list_changed`）不自动感知，
+调 `await manager.refresh()` 手动刷新。
+
+依赖：官方 SDK `mcp>=1.2`（延迟导入，未安装时其余 harness 功能不受影响，
+仅外部 MCP 不可用并报清晰指引）。配置文件格式见仓库根 `mcp_servers.yaml`
+与 [configuration.md](configuration.md)。
+
 ---
 
 ## 五、上下文装配

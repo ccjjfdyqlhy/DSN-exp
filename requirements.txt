@@ -16,6 +16,9 @@ Requests==2.34.2
 PyYAML==6.0.3
 python-dotenv==1.2.2
 numpy==1.26.4
+# 外部 MCP 工具源桥接（harness/tools/mcp.py；延迟导入，不装不影响其余功能，
+# 仅外部 MCP 连接不可用。本机 anaconda 环境实测 1.28.0）
+mcp>=1.2.0
 
 # ── Web 服务 ──
 Flask==3.1.3

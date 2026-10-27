@@ -97,3 +97,7 @@ apps/dsn_ui/data
 # 源头已在 apps/dsn_ui/thought_cache.py 加了类型守卫，这里再兜一层。
 MagicMock/
 .harness_todo.json
+
+# ── 打印用 PDF 产物（tools/export_pdf.py 的输出）──
+# 单文件 PDF + 合并册都在这里，属于可再生成的派生产物，不入库。
+/pdf_export/

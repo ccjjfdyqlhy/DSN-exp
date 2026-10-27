@@ -159,6 +159,17 @@ def heartbeat():
         logger.error("拉取待通知失败 uid=%d: %s", uid, e, exc_info=True)
         return jsonify({"has_notification": False, "error": "Internal error"}), 200
 
+    # 原子领取（delivered 0→2）：fetch 与"生成 AI 回复"之间可达数十秒，
+    # 多线程心跳此前会取到同一条通知，同一提醒被重复生成/展示。
+    notification_id = notifications[0]["notification_id"] if notifications else None
+    if notification_id is not None:
+        try:
+            if not _task_manager.claim_notification(notification_id):
+                return jsonify({"has_notification": False})
+        except Exception as e:
+            logger.error("领取通知失败 notif=%d: %s", notification_id, e, exc_info=True)
+            return jsonify({"has_notification": False, "error": "Internal error"}), 200
+
     if not notifications:
         # 2. 检查闹钟触发
         try:

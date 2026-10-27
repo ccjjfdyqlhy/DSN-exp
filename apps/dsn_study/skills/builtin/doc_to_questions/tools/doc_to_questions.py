@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger("skill.doc_to_questions")
 
@@ -84,6 +85,35 @@ class DocToQuestionsTool:
                      len(text), user_id, subject_code)
 
         return self._process(text, subject_code, user_id)
+
+    def process_images(self, image_paths: list, subject_code: str = "math",
+                       user_id: int = 1) -> dict:
+        """
+        图片直录（VISION_OVERRIDE 通道）：视觉模型逐页出 Markdown → 提取题目入库。
+        不依赖 2md API。image_paths 为扫描/拍照得到的图片路径列表。
+
+        :param image_paths: 图片路径列表
+        :param subject_code: 学科代码
+        :param user_id: 用户 ID
+        :return: {success, hmd_path?, questions_found, questions_added, error?}
+        """
+        if not self._pipeline:
+            return {"success": False, "error": "题库管线未就绪，无法处理"}
+        if not image_paths:
+            return {"success": False, "error": "缺少 image_paths"}
+
+        try:
+            from apps.dsn_study.document.hmd import HmdClient
+            out = HmdClient.convert_via_vision([os.path.expanduser(str(p))
+                                                for p in image_paths])
+        except Exception as e:
+            logger.error("视觉转换失败: %s", e)
+            return {"success": False, "error": f"视觉转换失败: {e}"}
+
+        result = self._process(out["markdown"], subject_code, user_id)
+        result["hmd_path"] = out["hmd_path"]
+        result["pages"] = out["pages"]
+        return result
 
     def _process(self, text: str, subject_code: str, user_id: int) -> dict:
         try:

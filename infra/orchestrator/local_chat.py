@@ -347,13 +347,17 @@ class OpenAICompatChat(ChatClientAdapter):
             logger.debug("%s 上行 payload(纯文本): messages=%d", self.label, len(msgs))
         return payload
 
-    def _do_http_request(self, payload: dict) -> dict:
+    def _do_http_request(self, payload: dict, timeout: float | None = None) -> dict:
         """单次非流式请求，带连接级故障重发。
 
         非流式请求只有在完整拿到响应体后才算成功，因此连接阶段失败时
         重发不会产生重复结果（没有半个响应可言）。
+        timeout 只作用于本次请求——作为参数逐层传递而不是改写 self.timeout：
+        客户端实例被多线程共享，先改后恢复的写法在并发下会互相串值，
+        甚至把临时值永久留在实例上。
         """
         url = f"{self.base_url}/v1/chat/completions"
+        effective_timeout = self.timeout if timeout is None else timeout
         attempts = max(1, DEFAULT_STREAM_RETRIES + 1)
         last_exc: BaseException | None = None
 
@@ -364,7 +368,7 @@ class OpenAICompatChat(ChatClientAdapter):
                     url,
                     headers=self._headers(),
                     json=payload,
-                    timeout=self.timeout,
+                    timeout=effective_timeout,
                 )
             except Exception as exc:  # noqa: BLE001 - 判定后决定是否重发
                 if attempt + 1 >= attempts or not _is_retryable_connection_error(exc):
@@ -406,18 +410,13 @@ class OpenAICompatChat(ChatClientAdapter):
             temperature=temperature, max_tokens=max_tokens, stream=False,
         )
 
-        old_to = self.timeout
-        if timeout is not None:
-            self.timeout = timeout
-
-        try:
-            if self._scheduler is not None and self.model_name:
-                with self._scheduler.use(self.model_name, timeout=self.timeout):
-                    result = self._do_http_request(payload)
-            else:
-                result = self._do_http_request(payload)
-        finally:
-            self.timeout = old_to
+        # timeout 经参数传入 _do_http_request，不再临时改写共享实例的
+        # self.timeout（多线程共享客户端时，"先改后恢复"会互相串值）。
+        if self._scheduler is not None and self.model_name:
+            with self._scheduler.use(self.model_name, timeout=self.timeout):
+                result = self._do_http_request(payload, timeout=timeout)
+        else:
+            result = self._do_http_request(payload, timeout=timeout)
 
         choice = (result.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -477,39 +476,56 @@ class OpenAICompatChat(ChatClientAdapter):
             stream=True,
         )
 
-        retries = int(kwargs.get("retries", DEFAULT_STREAM_RETRIES) or 0)
-        attempts = max(1, retries + 1)
-        last_exc: BaseException | None = None
+        # 修复（严重）：流式请求此前完全不经过 ModelScheduler——没有排队、
+        # 没有租约。后果 1：模型正在生成长流时 refcount==0，会被其它模型的
+        # 加载当作空闲目标驱逐，SSE 流中途被杀；后果 2：_stream_once 的自动
+        # 拉起路径绕过槽位上限检查，多路流式并发可超 max_concurrent 导致
+        # 显存 OOM。现在整个流式会话期间持有租约（与 invoke 对齐）；
+        # 阻塞的排队/加载动作放线程池执行，不冻结事件循环。
+        lease = None
+        if self._scheduler is not None and self.model_name:
+            lease = self._scheduler.use(self.model_name, timeout=self.timeout)
+            await asyncio.to_thread(lease.__enter__)
+        try:
+            retries = int(kwargs.get("retries", DEFAULT_STREAM_RETRIES) or 0)
+            attempts = max(1, retries + 1)
+            last_exc: BaseException | None = None
 
-        for attempt in range(attempts):
-            produced = False
-            try:
-                async for item in self._stream_once(payload):
-                    produced = True
-                    yield item
-                return
-            except Exception as exc:  # noqa: BLE001 - 判定后决定是否重发
-                if (
-                    produced
-                    or attempt + 1 >= attempts
-                    or not _is_retryable_connection_error(exc)
-                ):
-                    raise
-                last_exc = exc
-                self._discard_pooled_connections()
-                backoff = _RETRY_BACKOFF_BASE * (attempt + 1)
-                logger.warning(
-                    "%s 连接在握手阶段中断（%s: %s），%.2fs 后重发 %d/%d",
-                    self.label, type(exc).__name__, exc, backoff,
-                    attempt + 1, retries,
-                )
-                await asyncio.sleep(backoff)
-                # 上游可能刚好在这段时间里退出，重发前再确认一次引擎在线。
-                # 放线程里：拉起模型是阻塞操作，不能冻住事件循环。
-                await asyncio.to_thread(self._ensure_launcher_running)
+            for attempt in range(attempts):
+                produced = False
+                try:
+                    async for item in self._stream_once(payload):
+                        produced = True
+                        yield item
+                    return
+                except Exception as exc:  # noqa: BLE001 - 判定后决定是否重发
+                    if (
+                        produced
+                        or attempt + 1 >= attempts
+                        or not _is_retryable_connection_error(exc)
+                    ):
+                        raise
+                    last_exc = exc
+                    self._discard_pooled_connections()
+                    backoff = _RETRY_BACKOFF_BASE * (attempt + 1)
+                    logger.warning(
+                        "%s 连接在握手阶段中断（%s: %s），%.2fs 后重发 %d/%d",
+                        self.label, type(exc).__name__, exc, backoff,
+                        attempt + 1, retries,
+                    )
+                    await asyncio.sleep(backoff)
+                    # 上游可能刚好在这段时间里退出，重发前再确认一次引擎在线。
+                    # 放线程里：拉起模型是阻塞操作，不能冻住事件循环。
+                    await asyncio.to_thread(self._ensure_launcher_running)
 
-        if last_exc is not None:  # pragma: no cover - 循环内必然 return 或 raise
-            raise last_exc
+            if last_exc is not None:  # pragma: no cover - 循环内必然 return 或 raise
+                raise last_exc
+        finally:
+            if lease is not None:
+                try:
+                    lease.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001
+                    logger.exception("%s 释放流式租约失败", self.label)
 
     async def _stream_once(self, payload: dict) -> AsyncGenerator[Any, None]:
         """单次 SSE 请求：建连、读流、解析增量。不做重试。"""

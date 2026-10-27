@@ -107,6 +107,14 @@ class ToolboxManager:
         """清空激活状态（如新会话/新用户时）。"""
         self._activated = []
 
+    def invalidate(self) -> None:
+        """清空索引缓存。
+
+        注册表内容在运行期发生变化（典型：MCP 工具在惰性连接后补注册）时
+        必须调用，否则 toolbox 索引工具仍向模型展示旧的工具列表。
+        """
+        self._cached_index = None
+
     def _index(self) -> list[dict]:
         if self._cached_index is None:
             self._cached_index = self.source.index() or []

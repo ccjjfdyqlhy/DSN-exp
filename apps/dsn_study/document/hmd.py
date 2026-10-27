@@ -98,6 +98,48 @@ class HmdClient:
                     hmd_path, len(mdA_text), len(mdB_text), len(pages_for_json), len(images_b64))
         return hmd_path
 
+    @classmethod
+    def convert_via_vision(cls, image_paths: list, output_dir: str = "",
+                           prompt: str = "", max_tokens: int = 4096) -> dict:
+        """VISION_OVERRIDE 等价物：视觉模型直出 Markdown，不经 2md API。
+
+        对每张图片调用 VisionModel.ocr_md，产出与 2md 管线同构的 .hmd 包
+        （mdA=各页视觉识别文本，mdB=合并 Markdown），下游 process_hmd 无感。
+
+        :param image_paths: 图片路径列表（PNG/JPG；PDF 请先自行渲染为图片）
+        :param output_dir: .hmd 输出目录（缺省与首图同目录）
+        :param prompt: 覆盖默认识别指令（可选）
+        :return: {basename, hmd_path, pages, markdown}
+        """
+        import datetime as _dt
+        from apps.dsn_study.models.clients import VisionModel
+
+        if not image_paths:
+            raise ValueError("image_paths 不能为空")
+        vm = VisionModel()
+        mdA_list = []
+        for p in image_paths:
+            data_url = VisionModel.encode_image(p)
+            if prompt:
+                md = vm.ask(data_url, prompt, max_tokens=max_tokens)
+            else:
+                md = vm.ocr_md(data_url, max_tokens=max_tokens)
+            mdA_list.append({"filename": os.path.basename(str(p)), "markdown": md or ""})
+
+        basename = _dt.datetime.now().strftime("vision_%Y%m%d_%H%M%S")
+        markdown = "\n\n".join(m["markdown"] for m in mdA_list if m["markdown"])
+        api_result = {
+            "basename": basename,
+            "markdown": markdown,
+            "pages": [],      # 视觉直出无 layout_dets
+            "images": {},
+        }
+        out_dir = output_dir or os.path.dirname(os.path.abspath(str(image_paths[0])))
+        hmd_path = cls.save_hmd(api_result, mdA_list, out_dir)
+        logger.info("VISION_OVERRIDE 转换完成: %d 页 → %s", len(mdA_list), hmd_path)
+        return {"basename": basename, "hmd_path": hmd_path,
+                "pages": len(mdA_list), "markdown": markdown}
+
     @staticmethod
     def read_hmd(hmd_path: str) -> dict:
         """

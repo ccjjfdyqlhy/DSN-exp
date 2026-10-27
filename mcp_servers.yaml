@@ -1,0 +1,47 @@
+# mcp_servers.yaml — 外部 MCP（Model Context Protocol）工具源声明
+#
+# 用途：把外部 MCP 服务器的工具接入 harness 的 ToolRegistry，
+#       工具以 mcp.<服务器名>.<工具名> 命名空间注册，Agent 可直接调用。
+#
+# 使用方式（三选一）：
+#   1. SDK：      create_agent(..., mcp_config="mcp_servers.yaml")
+#   2. AgentSpec：{"mcp": {"config": "mcp_servers.yaml"}}
+#   3. 直接用：    MCPManager.from_yaml("mcp_servers.yaml")
+#
+# 字段说明：
+#   name             服务器短名（命名空间用，wire 安全字符）
+#   transport        stdio（本地子进程）| http（Streamable HTTP）| sse（旧版 HTTP+SSE）
+#   command/args/env/cwd   stdio 传输的子进程声明（env 合并进子进程环境）
+#   url/headers      http / sse 传输的目标地址与请求头
+#   enabled          默认 true；示例条目保持 false，确认可用后自行打开
+#   call_timeout     单次工具调用超时秒数（默认 120）
+#   connect_timeout  连接 + initialize 超时秒数（默认 30）
+#   tool_allowlist   只注册这些远端工具（缺省 = 全部）
+#   tool_blocklist   排除这些远端工具
+#
+# 密钥不写进本文件：字符串里的 ${VAR} 会在加载时从环境变量展开
+# （headers / env / args / url / command 均支持）。
+#
+# 依赖：pip install "mcp>=1.2"（本仓库 anaconda 环境已带 1.28.0）
+
+servers: []
+#  ── 示例条目（抄去改，enabled 打开后生效）──
+#  - name: fetch                       # 官方网页抓取服务器（需要 uvx）
+#    transport: stdio
+#    command: uvx
+#    args: ["mcp-server-fetch"]
+#    enabled: false
+#
+#  - name: filesystem                  # 官方文件系统服务器（只读演示）
+#    transport: stdio
+#    command: npx
+#    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+#    tool_blocklist: ["write_file", "edit_file"]   # 只留读能力
+#    enabled: false
+#
+#  - name: my-remote                   # 远程服务器（Streamable HTTP）
+#    transport: http
+#    url: http://127.0.0.1:9000/mcp
+#    headers:
+#      Authorization: "Bearer ${MY_MCP_TOKEN}"
+#    enabled: false

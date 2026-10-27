@@ -158,9 +158,16 @@ def cancel_reminder():
     if task.user_id != uid:
         return jsonify({"success": False, "error": "无权操作"}), 403
 
-    task.status = TaskStatus.CANCELLED
-    task.completed_at = datetime.now()
-    _task_manager._save_task(task)
+    if task.status in (TaskStatus.CANCELLED, TaskStatus.COMPLETED):
+        return jsonify({
+            "success": True, "action": "cancelled",
+            "already": True, "text": task.params.get("text", ""),
+        })
+
+    # 走 TaskManager.cancel_task：状态置 CANCELLED 的同时移除 schedule 里
+    # 已注册的待触发 job——只改状态不移除 job 的话，到点任务照样触发
+    # （HABIT 更会被重排无限复活）。
+    _task_manager.cancel_task(task_id)
 
     return jsonify({"success": True, "action": "cancelled", "text": task.params.get("text", "")})
 
@@ -184,6 +191,17 @@ def skip_reminder():
     task = _task_manager.tasks[task_id]
     if task.user_id != uid:
         return jsonify({"success": False, "error": "无权操作"}), 403
+
+    # 防重守卫：重复 skip（UI 双击/工具重试）不应再递增 skip_count，
+    # 更不应为 HABIT 再创建一条新任务（否则重复打卡提醒成倍出现）。
+    if task.status == TaskStatus.SKIPPED:
+        return jsonify({
+            "success": True, "action": "skipped", "already": True,
+            "text": task.params.get("text", ""),
+            "task_type": task.task_type.value,
+            "skip_count": task.skip_count,
+            "next_scheduled": None, "next_task_id": None,
+        })
 
     task.status = TaskStatus.SKIPPED
     task.skip_count += 1

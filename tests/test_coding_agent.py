@@ -38,4 +38,13 @@ def test_coding_agent_persistence(tmp_path):
     reply = agent.chat("你好")
     assert reply == "ok"
     assert agent.session_store is not None
-    assert agent.session_store.list_sessions()[0]["message_count"] == 0  # 消息在 next round 保存
+    # 修复后的语义：每轮对话结束即持久化本轮 user/assistant 消息。
+    # （旧行为是 message_count 恒为 0——chat() 从不写库，持久化是空操作。）
+    assert agent.session_store.list_sessions()[0]["message_count"] == 2
+
+    # 第二轮继续累积
+    stub._responses.append(ChatResponse(content="ok2", model="stub"))
+    agent.chat("再来一句")
+    assert agent.session_store.list_sessions()[0]["message_count"] == 4
+    history = agent.session_store.load_messages()
+    assert [m.content for m in history] == ["你好", "ok", "再来一句", "ok2"]

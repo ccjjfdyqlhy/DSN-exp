@@ -1,0 +1,308 @@
+name: study_tasks
+display_name: 任务与提醒
+description: 定时提醒、习惯打卡、倒计时、每日计划触发、正计时（Stopwatch）、异步推理与动作执行。用户说「提醒我」「定时」「倒计时」「计个时」等均使用本技能。
+version: '1.0'
+author: system
+source: builtin
+enabled: true
+status: active
+prompt_category: skills
+prompt_priority: 70
+tags:
+- tasks
+- reminder
+- alarm
+- stopwatch
+activation:
+  keywords:
+  - 提醒
+  - 定时
+  - 闹钟
+  - 倒计时
+  - 正计时
+  - 计时
+  - 习惯
+  auto_activate: false
+dependencies: []
+tools:
+- name: create_reminder
+  display_name: 创建提醒
+  description: 创建定时提醒/通知/闹钟。用户说「提醒我」「X分钟后/小时后」「设个提醒」「定时」等均使用此工具。time 参数为 ISO8601 格式的触发时间。后台异步执行，到时间自动通知。
+  async: true
+  estimated_duration: future
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: create_reminder
+    description: 创建提醒任务
+    parameters:
+      text:
+        type: string
+        description: 提醒内容
+        required: true
+      time:
+        type: string
+        description: 提醒时间 (ISO8601)
+        required: true
+- name: create_habit
+  display_name: 创建习惯
+  description: 创建周期性习惯任务
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: create_habit
+    description: 创建习惯任务
+    parameters:
+      text:
+        type: string
+        description: 习惯内容
+        required: true
+      time:
+        type: string
+        description: 首次触发时间 (ISO8601)
+        required: true
+      interval:
+        type: string
+        description: 重复间隔 (如 30m, 1h, 1d)
+        required: true
+- name: create_countdown
+  display_name: 创建倒计时
+  description: 创建倒计时任务
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: create_countdown
+    description: 创建倒计时
+    parameters:
+      text:
+        type: string
+        description: 倒计时结束提示
+        required: true
+      target:
+        type: string
+        description: 目标时间 (ISO8601)
+        required: true
+- name: start_stopwatch
+  display_name: 开始正计时
+  description: 开始（或重置）正计时/秒表。用户说「开始计时」「开始正计时」「记个时」「开始秒表」等均使用此工具。每用户只能有一个正计时，若已有则重置覆盖后重新计时。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: start_stopwatch
+    description: 开始或重置正计时
+    parameters:
+      label:
+        type: string
+        description: 计时名称/备注（可选）
+        required: false
+- name: get_stopwatch
+  display_name: 查询正计时
+  description: 查看当前正计时的读数与状态（运行中/已暂停）。用户说「正计时多久了」「计时到多少」「看看计时」「过去多长时间了」等均使用此工具。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: get_stopwatch
+    description: 查询正计时读数
+    parameters: {}
+- name: pause_stopwatch
+  display_name: 暂停正计时
+  description: 暂停当前正计时。用户说「暂停计时」「停一下」「暂停秒表」等均使用此工具。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: pause_stopwatch
+    description: 暂停正计时
+    parameters: {}
+- name: resume_stopwatch
+  display_name: 继续正计时
+  description: 继续已暂停的正计时。用户说「继续计时」「接着计」「恢复计时」等均使用此工具。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: resume_stopwatch
+    description: 继续正计时
+    parameters: {}
+- name: delete_stopwatch
+  display_name: 删除正计时
+  description: 删除当前正计时。用户说「删掉计时」「清除计时」「不要这个计时了」等均使用此工具。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: delete_stopwatch
+    description: 删除正计时
+    parameters: {}
+- name: create_daily_plan
+  display_name: 每日计划
+  description: 创建每日计划触发器
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: create_daily_plan
+    description: 创建每日计划
+    parameters:
+      trigger_time:
+        type: string
+        description: 每日触发时间 (HH:MM)
+        required: true
+- name: create_periodic
+  display_name: 周期任务
+  description: 创建 cron 周期任务
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: create_periodic
+    description: 创建周期任务
+    parameters:
+      cron:
+        type: string
+        description: cron 表达式
+        required: true
+      text:
+        type: string
+        description: 任务内容
+        required: true
+- name: list_reminders
+  display_name: 查询提醒
+  description: 查询当前用户的所有待办提醒/习惯/倒计时任务。当用户问「我有什么提醒」「查看提醒」「还有多少提醒」「我的习惯」等时使用此工具。返回 pending/completed/skipped
+    状态的提醒列表。要删除/跳过/完成某条提醒时，用 cancel_reminder / skip_reminder / done_reminder。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: list_reminders
+    description: 查询提醒列表
+    parameters:
+      status:
+        type: string
+        description: '任务状态筛选: pending (待办), completed (已完成), skipped (已跳过), missed (已错过)'
+        required: false
+        default: pending
+- name: cancel_reminder
+  display_name: 取消提醒
+  description: 取消（删除）一条提醒/闹钟/习惯/倒计时任务，使其不再触发。用户说「删掉提醒」「取消闹钟」「去掉这个提醒」「不要这个闹钟了」等均使用此工具。task_id 从 list_reminders
+    的返回中获取。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: cancel_reminder
+    description: 取消一条提醒任务
+    parameters:
+      task_id:
+        type: string
+        description: 提醒任务 ID（来自 list_reminders）
+        required: true
+- name: skip_reminder
+  display_name: 跳过提醒
+  description: 跳过一条提醒的本次触发；若是周期性习惯，会顺延到下一次。用户说「跳过这次提醒」「今天别响」「推迟一次」等均使用此工具。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: skip_reminder
+    description: 跳过提醒本次触发
+    parameters:
+      task_id:
+        type: string
+        description: 提醒任务 ID（来自 list_reminders）
+        required: true
+- name: done_reminder
+  display_name: 完成提醒
+  description: 标记一条提醒为已完成；若是周期性习惯，会顺延到下一次。用户说「这条提醒完成了」「搞定这个提醒」等可使用此工具。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: done_reminder
+    description: 标记提醒已完成
+    parameters:
+      task_id:
+        type: string
+        description: 提醒任务 ID（来自 list_reminders）
+        required: true
+- name: create_reasoner
+  display_name: 推理任务
+  description: 创建后台推理/分析/计算任务，自动调用 LLM 处理。用户说「分析一下」「推理」「算一下」「总结」等可用此工具提交后台运算。后台执行，完成后自动通知用户。
+  async: true
+  estimated_duration: 10-60s
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: create_reasoner
+    description: 创建并执行推理任务
+    parameters:
+      question:
+        type: string
+        description: 需要推理的问题
+        required: true
+      context:
+        type: string
+        description: 上下文信息
+        required: false
+- name: execute_action
+  display_name: 执行操作
+  description: 在用户电脑终端同步执行 shell 命令或 Python 脚本，也可读写编辑文件。阻塞等待结果。用户说「跑一下」「执行」「终端」「命令行」「nvidia-smi」「ls」「cd」等均使用此工具。shell
+    时 content 放命令，python 时 content 放代码，write_file/edit_file 时配合 file_path 使用。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: execute_action
+    description: 同步执行代码或文件操作
+    parameters:
+      action_type:
+        type: string
+        description: '操作类型: shell/python/write_file/edit_file'
+        required: true
+      content:
+        type: string
+        description: 代码/命令内容
+        required: true
+      file_path:
+        type: string
+        description: 文件路径
+        required: false
+      overwrite:
+        type: boolean
+        description: 是否覆盖
+        default: false
+      pattern:
+        type: string
+        description: 匹配模式
+        required: false
+      replacement:
+        type: string
+        description: 替换内容
+        required: false
+- name: execute_action_async
+  display_name: 异步执行操作
+  description: 异步执行 shell/python/文件操作，提交到后台线程池后立即返回 task_id，不阻塞对话。适合耗时操作（编译、下载、批量处理等）。结果通过心跳通知或后续查询获取。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: execute_action_async
+    description: 异步执行操作，立即返回 task_id
+    parameters:
+      action_type:
+        type: string
+        description: '操作类型: shell/python/write_file/edit_file'
+        required: true
+      content:
+        type: string
+        description: 代码/命令内容
+        required: true
+      file_path:
+        type: string
+        description: 文件路径
+        required: false
+      overwrite:
+        type: boolean
+        description: 是否覆盖
+        default: false
+      pattern:
+        type: string
+        description: 匹配模式
+        required: false
+      replacement:
+        type: string
+        description: 替换内容
+        required: false
+      label:
+        type: string
+        description: 任务标签/描述（便于识别）
+        required: false

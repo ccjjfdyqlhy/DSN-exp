@@ -34,6 +34,30 @@ tools:
             required: false
             default: 1
 
+  - name: process_images
+    display_name: "图片直录题目（视觉通道）"
+    description: "把扫描/拍照的试卷图片直接录入题库：视觉模型逐页识别出 Markdown 后提取题目，不依赖 2md API。传入图片路径列表。"
+    module: "tools.doc_to_questions"
+    class: "DocToQuestionsTool"
+    methods:
+      - name: process_images
+        description: "从图片列表提取题目并入库（VISION_OVERRIDE 视觉通道）"
+        parameters:
+          image_paths:
+            type: array
+            description: "图片路径列表（PNG/JPG，按页顺序）"
+            required: true
+          subject_code:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese/biology)"
+            required: false
+            default: "math"
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+            default: 1
+
   - name: process_text
     display_name: "从文本提取题目"
     description: "从原始文本（OCR 结果、粘贴的题目文本等）中提取所有题目，自动识别题型并批量录入题库。"

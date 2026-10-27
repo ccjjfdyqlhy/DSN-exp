@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from logging.handlers import RotatingFileHandler
 from typing import Optional
@@ -55,7 +56,8 @@ class StudyEngine:
                  db_mgr, question_store, template_manager, composer, scorer,
                  exam_engine, graph_store, graph_engine, kg_builder, kg_matcher,
                  scanner_pipeline, timetable_store, async_task_store, plan_engine,
-                 skill_registry, skill_manager, workspace=None):
+                 skill_registry, skill_manager, workspace=None,
+                 task_manager=None, memory_system=None, cache_engine=None):
         self.agent = agent
         self.chat_client = chat_client
         self.llm = llm
@@ -76,8 +78,24 @@ class StudyEngine:
         self.skill_registry = skill_registry
         self.skill_manager = skill_manager
         self.workspace = workspace
+        # 任务管理器（提醒/习惯/倒计时/日计划/正计时；TASK_MANAGER_ENABLED=false 时为 None）
+        self.task_manager = task_manager
+        # 记忆系统（跨会话记忆；MEMORY_ENABLED=false 时为 None）
+        self.memory_system = memory_system
+        # 语义缓存引擎（SEMANTIC_CACHE_ENABLED=false 时为 None）
+        self.cache_engine = cache_engine
+        # 缓存负反馈观察：上次命中若被用户否定（"不对"），衰减该条目
+        self._cache_observer_key: str = ""
+        self._cache_observer_end: float = 0.0
         # 复用同一会话，使 REPL/HTTP 多轮对话共享历史
         self.session_id = f"study-{uuid.uuid4().hex[:12]}"
+        # 会话 → 整数 chat_id（记忆表用），round 计数按会话独立
+        self._session_ids: dict[str, int] = {}
+        self._round_counters: dict[int, int] = {}
+        # 每会话串行锁：Flask 多线程下同一会话的并发 chat 会交错写
+        # conversation 历史、重复分配记忆轮次号。不同会话互不阻塞。
+        self._chat_locks: dict[str, threading.Lock] = {}
+        self._chat_locks_guard = threading.Lock()
         # 旧管线代码兼容别名（api/scan.py 期望 engine.pipeline）
         self.pipeline = StudyPipeline(chat_client, system_prompt=DEFAULT_SYSTEM_PROMPT)
 
@@ -116,14 +134,131 @@ class StudyEngine:
             return ""
         return "\n".join(f"(系统上下文·仅供你参考，不要复述) {b}" for b in blocks)
 
+    def _memory_preamble(self, user_id: int) -> str:
+        """长期备忘注入（memo 全量 + 最近经验记忆摘要）。"""
+        if self.memory_system is None:
+            return ""
+        try:
+            memos = self.memory_system._get_memos(user_id)
+            exps = self.memory_system._get_exp_memories(user_id)
+        except Exception:
+            return ""
+        lines = [f"[备忘] {m['content']}" for m in memos[-10:]]
+        lines += [f"[过往记忆] {e['content']}" for e in exps[-5:]]
+        if not lines:
+            return ""
+        return "\n".join(f"(系统上下文·仅供你参考，不要复述) {b}" for b in lines)
+
+    # ── 会话标识（记忆表用整数 chat_id） ──
+
+    def _chat_id_for(self, session_key: str) -> int:
+        cid = self._session_ids.get(session_key)
+        if cid is None:
+            cid = len(self._session_ids) + 1
+            self._session_ids[session_key] = cid
+        return cid
+
+    def _next_round(self, chat_id: int) -> int:
+        nxt = self._round_counters.get(chat_id, 0) + 1
+        self._round_counters[chat_id] = nxt
+        return nxt
+
+    def _chat_lock_for(self, session_key: str) -> threading.Lock:
+        """取（或建）指定会话的串行锁。"""
+        lock = self._chat_locks.get(session_key)
+        if lock is None:
+            with self._chat_locks_guard:
+                lock = self._chat_locks.get(session_key)
+                if lock is None:
+                    lock = threading.Lock()
+                    self._chat_locks[session_key] = lock
+        return lock
+
+    # ── 语义缓存（对齐 apps.dsn CacheInterceptorPlugin 的三级服务/写入逻辑） ──
+
+    def _cache_serve(self, message: str) -> str:
+        """尝试从缓存取回复（L1 → L2 → 语义搜索）。命中返回文本，未命中返回空串。"""
+        import time as _time
+        engine = self.cache_engine
+        if engine is None:
+            return ""
+
+        # 负反馈观察：上一轮命中若被用户否定，衰减该条目
+        if self._cache_observer_key and _time.time() <= self._cache_observer_end:
+            if engine.is_negative_signal(message):
+                engine.decay_score(self._cache_observer_key)
+                self._cache_observer_key = ""
+
+        message = message.strip()
+        if not message:
+            return ""
+
+        intent = engine.classify_intent(message)
+
+        # 1) L1 实用语用短语（语音交互场景；study 下通常不命中）
+        l1_entry = engine.serve_l1(intent)
+        if l1_entry:
+            return l1_entry["text"]
+
+        # 2) L2 动作图重放
+        l2_result = engine.serve_l2(message, intent)
+        if l2_result and l2_result.get("reply_text"):
+            return l2_result["reply_text"]
+
+        # 3) 语义搜索（向量相似度回放历史回复）
+        for r in engine.search(message, intent_class=intent, top_k=3):
+            if r.score < 0.35:
+                continue
+            self._cache_observer_key = r.cache_key
+            self._cache_observer_end = _time.time() + 30
+            engine.record_hit(r.cache_key)
+            return r.reply_text
+        return ""
+
+    def _cache_write(self, user_id: int, message: str, reply: str) -> None:
+        """把本轮问答写入语义缓存（失败静默——缓存绝不能反过来打断对话）。"""
+        try:
+            if self.cache_engine is not None:
+                self.cache_engine.cache_response(user_id, message.strip(), reply)
+        except Exception:
+            import logging
+            logging.getLogger("StudyEngine").warning("缓存写入失败（已忽略）", exc_info=True)
+
     # ── 对话 ──
 
     def chat(self, message: str, user_id: int = 1,
              session_id: Optional[str] = None) -> str:
-        preamble = self._build_preamble(user_id)
-        full = f"{preamble}\n\n{message}" if preamble else message
-        result = self.agent.run_with_tools(full, session_id=session_id or self.session_id)
-        return result.reply
+        session_key = session_id or self.session_id
+        # 同一会话串行：防止并发请求把 run_with_tools 的"读历史→执行→写回"
+        # 交错执行（轮次错乱），以及记忆轮次号重复分配。
+        with self._chat_lock_for(session_key):
+            # 语义缓存读路径：命中直接返回，不进模型（组卷等贵请求收益最大）
+            served = self._cache_serve(message)
+            if served:
+                return served
+
+            preamble = self._build_preamble(user_id)
+            memory_preamble = self._memory_preamble(user_id)
+            full_prefix = "\n\n".join(b for b in (memory_preamble, preamble) if b)
+            full = f"{full_prefix}\n\n{message}" if full_prefix else message
+            result = self.agent.run_with_tools(full, session_id=session_key)
+            reply = result.reply
+
+            # 记忆闭环：原始轮次落库 → 异步摘要 → 回复中的 <memo>/<recall> 标签处理
+            if self.memory_system is not None:
+                try:
+                    cid = self._chat_id_for(session_key)
+                    ridx = self._next_round(cid)
+                    self.memory_system.record_round(user_id, cid, ridx, message, reply)
+                    self.memory_system.summarize_turn(user_id, cid, ridx, message, reply)
+                    reply = self.memory_system.handle_tags(user_id, cid, reply)
+                except Exception:
+                    import logging
+                    logging.getLogger("StudyEngine").warning("记忆闭环失败（已跳过）", exc_info=True)
+
+            # 语义缓存写路径（失败静默）
+            self._cache_write(user_id, message, reply)
+            return reply
 
     def __repr__(self):
         return (f"<StudyEngine tools={len(self.skill_registry.list_active_tools())} "
@@ -202,6 +337,10 @@ def _build_skill_dep_map(c) -> dict[str, dict]:
         "question_print": dict(_store=c["question_store"], _tm=c["template_manager"]),
         "plan": {},  # PlanTools 经 get_plan_db() 全局取库
         "study_timetable": {},  # StudyTimetableTool 经 get_study_db() 全局取库
+        # TaskTools 实例属性注入（_mgr/_uid 优先读实例属性，_ctx 为兼容兜底）
+        "study_tasks": dict(task_manager=c.get("task_manager"), db=c["db_mgr"]),
+        # MemoryTools 实例属性注入
+        "study_memory": dict(memory_system=c.get("memory_system")),
     }
 
 
@@ -275,6 +414,18 @@ def create_application() -> Flask:
     set_study_db(db_mgr)
     runtime.register("db", db_mgr)
 
+    # ── 打卡 + 学习跟踪 lite（阶段 4：纯软件版，无媒体/ASR/摄像头） ──
+    from apps.dsn_study.db.checkin_store import CheckinStore
+    checkin_store = CheckinStore(db_mgr)
+    runtime.register("checkin", checkin_store)
+
+    from apps.dsn_study.tracking_lite import TrackingStore
+    tracking_db_dir = os.path.join(os.path.dirname(db_path), "tracking")
+    os.makedirs(tracking_db_dir, exist_ok=True)
+    tracking_store = TrackingStore(
+        db_path=os.path.join(tracking_db_dir, "tracking.db"))
+    runtime.register("tracking_store", tracking_store)
+
     # ── 学习子系统栈 ──
     from apps.dsn_study.question_bank.store import QuestionStore
     from apps.dsn_study.question_bank.composer import ExamComposer
@@ -305,6 +456,65 @@ def create_application() -> Flask:
     timetable_store = StudyTimetableStore(db_mgr)
     async_task_store = AsyncTaskStore(db=db_mgr)
     plan_engine = PlanEngine(PlanStore(db_mgr))
+
+    # ── 学习日志门面（聚合 tracking 事件 + 打卡 + 计划完成度） ──
+    from apps.dsn_study.tracking_lite import StudyLog
+    studylog = StudyLog(tracking_store, checkin_store=checkin_store,
+                        plan_engine=plan_engine)
+    runtime.register("studylog", studylog)
+
+    # ── 任务管理器（提醒/习惯/倒计时/日计划/正计时；自 apps.dsn 移植） ──
+    task_manager = None
+    if Config.TASK_MANAGER_ENABLED:
+        from apps.dsn_study.tasks import TaskManager
+        task_manager = TaskManager(db_mgr, llm=llm,
+                                   max_workers=int(Config.TASK_MAX_WORKERS))
+        runtime.register("task_manager", task_manager)
+        runtime.on_stop(task_manager.shutdown)
+        flask_app.config["TASK_MANAGER"] = task_manager
+
+    # ── 记忆系统（跨会话记忆 + <recall>/<memo> 标签；自 apps.dsn 移植） ──
+    memory_system = None
+    if Config.MEMORY_ENABLED:
+        from apps.dsn_study.memory import (
+            MemorySystem, LLMSummaryModel, OpenAIEmbeddingClient,
+        )
+        summary_model = LLMSummaryModel(llm)
+        embedding_client = None
+        if Config.MEMORY_EMBEDDING_ENABLED:
+            embedding_client = OpenAIEmbeddingClient(
+                base_url=Config.MEMORY_EMBEDDING_BASE_URL or Config.OPENAI_API_BASE,
+                api_key=Config.OPENAI_API_KEY,
+                model=Config.MEMORY_EMBEDDING_MODEL,
+            )
+        memory_system = MemorySystem(db_mgr, summary_model=summary_model,
+                                     embedding_client=embedding_client)
+        runtime.register("memory", memory_system)
+        flask_app.config["MEMORY_SYSTEM"] = memory_system
+
+    # ── 语义缓存（L1/L2/L3；拦截重复贵请求，组卷场景收益最大） ──
+    cache_engine = None
+    if Config.SEMANTIC_CACHE_ENABLED:
+        try:
+            from apps.dsn_study.semantic_cache import (
+                CacheStore, L1PragmaticCache, CacheEngine,
+            )
+            cache_dir = os.path.abspath(Config.SEMANTIC_CACHE_DIR)
+            cache_store = CacheStore(db=db_mgr, cache_dir=cache_dir)
+            l1_cache = L1PragmaticCache(store=cache_store)
+            l1_cache.init_builtin_phrases()
+            emb = memory_system.embedding_client if (
+                Config.MEMORY_EMBEDDING_ENABLED and memory_system) else None
+            cache_engine = CacheEngine(
+                store=cache_store, l1_cache=l1_cache, embedding_client=emb,
+                similarity_threshold=Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD,
+            )
+            runtime.register("cache_engine", cache_engine)
+            logger.info("语义缓存系统: 已启用 (阈值=%.2f, 嵌入=%s)",
+                        Config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD, bool(emb))
+        except Exception:
+            logger.warning("语义缓存系统初始化失败（已跳过）", exc_info=True)
+            cache_engine = None
 
     try:
         template_manager.init_builtin_templates()
@@ -344,6 +554,8 @@ def create_application() -> Flask:
         "graph_engine": graph_engine, "kg_builder": kg_builder, "kg_matcher": kg_matcher,
         "scanner_pipeline": scanner_pipeline, "timetable_store": timetable_store,
         "async_task_store": async_task_store, "plan_engine": plan_engine,
+        "task_manager": task_manager, "memory_system": memory_system,
+        "cache_engine": cache_engine,
     }
     dep_map = _build_skill_dep_map(c)
     for skill_name in list(skill_registry._active_skills):
@@ -378,12 +590,22 @@ def create_application() -> Flask:
     from apps.dsn_study.api.plan import plan_bp, init_plan_api
     from apps.dsn_study.api.async_tasks import async_task_bp, init_async_tasks_api
     from apps.dsn_study.api.chat import chat_bp, init_chat_api
+    from apps.dsn_study.api.reminder import reminder_bp, init_reminder_api
+    from apps.dsn_study.api.alarm import alarm_bp, init_alarm_api
+    from apps.dsn_study.api.heartbeat import heartbeat_bp, init_heartbeat_api
+    from apps.dsn_study.api.checkin import checkin_bp, init_checkin_api
+    from apps.dsn_study.api.studylog import studylog_bp, init_studylog_api
 
     init_scan_api(auth_manager=auth)
     init_study_timetable_api(db_mgr, auth)
     init_plan_api(db_mgr, auth)
     init_async_tasks_api(auth)
     init_chat_api(auth)
+    init_reminder_api(db_mgr, task_manager, auth)
+    init_alarm_api(db_mgr, auth)
+    init_heartbeat_api(db_mgr, task_manager, auth, engine)
+    init_checkin_api(checkin_store, auth)
+    init_studylog_api(studylog, auth)
 
     blueprints = {
         "scan": scan_bp,
@@ -391,6 +613,11 @@ def create_application() -> Flask:
         "plan": plan_bp,
         "async_tasks": async_task_bp,
         "chat": chat_bp,
+        "reminder": reminder_bp,
+        "alarm": alarm_bp,
+        "heartbeat": heartbeat_bp,
+        "checkin": checkin_bp,
+        "studylog": studylog_bp,
     }
 
     from apps.dsn_study.bundles import make_dsn_study_bundles

@@ -413,6 +413,22 @@ class LocalServerLauncher:
             # 1) 已被显式取消（stop()/unload 抢在前面）
             if self._cancel_event.is_set() or self._process is not proc:
                 logger.info("%s 启动被取消（进程已停止）: %s", self.engine_label, self.base_url)
+                # 修复（严重）：stop() 可能在 self._process 赋值之前执行
+                # （当时 process 还是 None，stop 直接返回 True）。若这里只抛
+                # LaunchCancelled 而不清理，刚拉起的子进程会变成孤儿——调度器
+                # 侧 mark_unloaded 认为模型未加载、永不回收，进程一直占着
+                # 显存/端口直到自然退出。必须就地杀掉并清理句柄。
+                if proc is not None and proc.poll() is None:
+                    try:
+                        kill_process_tree(proc, timeout=15.0)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("%s 取消启动时清理子进程失败", self.engine_label)
+                _ACTIVE_LAUNCHERS.discard(self)
+                self._process = None
+                if self._log_fp:
+                    with contextlib.suppress(Exception):
+                        self._log_fp.close()
+                    self._log_fp = None
                 raise LaunchCancelled(
                     f"{self.engine_label} 启动已取消：进程在就绪前被停止"
                 )
@@ -482,15 +498,34 @@ class LocalServerLauncher:
 
     def create_scheduler_hooks(
         self, load_timeout: int = 180,
+        on_status: "Callable[..., None] | None" = None,
     ) -> tuple[Callable[[], bool], Callable[[], bool]]:
-        """生成与 ModelScheduler 对接的 (load_fn, unload_fn) 钩子回调。"""
+        """生成与 ModelScheduler 对接的 (load_fn, unload_fn) 钩子回调。
+
+        on_status: 可选状态回调（loading/loaded/failed）。加载现在可能由
+        调度器租约路径触发（invoke 的 use() / 流式租约），此时尚未走到
+        客户端 _ensure_launcher_running 的上报点——不在这里上报的话，
+        经调度器加载时前端模型列表/显存页收不到 loading→loaded 状态。
+        """
         label = self.engine_label
+
+        def _notify(status: str, **extra: Any) -> None:
+            if on_status is None:
+                return
+            try:
+                on_status(status, **extra)
+            except Exception:  # noqa: BLE001 - 状态上报失败不能影响加载
+                logger.debug("%s 状态回调失败: %s", label, status, exc_info=True)
 
         def _load() -> bool:
             try:
-                return self.start(wait_ready=True, timeout=float(load_timeout))
+                _notify("loading")
+                ok = self.start(wait_ready=True, timeout=float(load_timeout))
+                _notify("loaded" if ok else "failed", error=None if ok else "启动返回失败")
+                return ok
             except Exception as e:  # noqa: BLE001 - 钩子不能抛，返回 False 让调度器收尾
                 logger.error("ModelScheduler 调用 %s load_fn 失败: %s", label, e)
+                _notify("failed", error=str(e))
                 return False
 
         def _unload() -> bool:

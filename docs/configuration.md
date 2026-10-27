@@ -127,6 +127,23 @@
 | `MAINTENANCE_SCHEDULE_STRATEGY` | 调度策略 |
 | `MAINTENANCE_IDLE_TIMEOUT_MINUTES` | 空闲多久进入维护 |
 
+### 2.9 外部 MCP 工具源（`mcp_servers.yaml`）
+
+外部 MCP 服务器**不走 `.env`**，声明在仓库根 `mcp_servers.yaml`
+（格式示例齐全，抄注释里的样例改即可）。要点：
+
+| 字段 | 说明 |
+|---|---|
+| `name` / `transport` | 服务器短名与传输：`stdio` / `http` / `sse` |
+| `command` / `args` / `env` / `cwd` | stdio 子进程声明 |
+| `url` / `headers` | http / sse 目标地址与请求头 |
+| `call_timeout` / `connect_timeout` | 单次调用 / 建连超时（秒，默认 120 / 30） |
+| `tool_allowlist` / `tool_blocklist` | 注册范围过滤 |
+
+- 密钥不写进文件：字符串里的 `${VAR}` 加载时从环境变量展开；
+- 依赖官方 SDK：`pip install "mcp>=1.2"`（未装时仅外部 MCP 不可用）；
+- 接入语义与惰性连接的设计见 [harness.md §4.5](harness.md)。
+
 ---
 
 ## 三、配置生效路径速查

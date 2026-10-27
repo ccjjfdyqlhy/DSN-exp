@@ -33,9 +33,15 @@ class TOTP:
         ts = int(timestamp or time.time())
         counter = ts // self.period
         code = str(code).strip()
-        for offset in range(-self.window, self.window + 1):
-            if hmac.compare_digest(self._code_at(secret, counter + offset), code):
-                return True
+        try:
+            for offset in range(-self.window, self.window + 1):
+                if hmac.compare_digest(self._code_at(secret, counter + offset), code):
+                    return True
+        except Exception:  # noqa: BLE001
+            # 修复：非法 secret（非 Base32、小写字母、空串等）会让 b32decode
+            # 抛 binascii.Error——鉴权路径应返回 False，而不是让异常冒出
+            # 变成 500。
+            return False
         return False
 
     def provisioning_uri(self, secret: str, account: str, issuer: str = "") -> str:

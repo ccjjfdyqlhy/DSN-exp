@@ -92,11 +92,15 @@ class ModelScheduler:
     """
 
     _instance: Optional["ModelScheduler"] = None
+    _instance_lock = threading.Lock()
 
     @classmethod
     def get_instance(cls) -> "ModelScheduler":
-        if cls._instance is None:
-            cls._instance = cls()
+        # 修复：单例创建此前无锁，两线程同时首次调用会各自 new 一个调度器，
+        # 互相不知情地注册/加载/驱逐模型。与 ModelOrchestrator.get_instance 对齐。
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = cls()
         return cls._instance
 
     @classmethod
@@ -343,9 +347,14 @@ class ModelScheduler:
         self._do_load(info.name)
 
     def _loaded_slot_count(self) -> int:
+        # 修复：`or info.loading` —— _do_load 在锁外执行分钟级加载，期间
+        # loaded 仍为 False。不把加载中的模型计入槽位时，两个不同模型的
+        # 并发加载会各自通过槽位检查，最终同时驻留的模型数超过 max_concurrent
+        # （显存 OOM）。加载中占坑后，后来者会排队等待加载完成。
         return sum(
             1 for info in self._models.values()
-            if info.loaded and info.profile.orchestrated and not info.profile.resident
+            if (info.loaded or info.loading)
+            and info.profile.orchestrated and not info.profile.resident
         )
 
     def _select_victim(self, requester: ModelInfo, immediate: bool) -> str | None:

@@ -227,6 +227,26 @@ class LMStudioChat(ChatClientAdapter):
                 [f"{m.get('role')}:{content_shape(m.get('content'))}" for m in msgs],
             )
 
+        # 修复：流式请求此前不经过 ModelScheduler（invoke 走 _call_chat_api
+        # 有租约，stream 没有）——正在生成的流会被其它模型的加载当作空闲
+        # 目标驱逐（SSE 中途断流），自动加载路径也绕过槽位上限检查。
+        # 整个流式会话期间持有租约，与 invoke 对齐；阻塞的排队/加载放线程池。
+        lease = None
+        if self._scheduler is not None and self.model_name:
+            lease = self._scheduler.use(self.model_name, timeout=self.timeout)
+            await asyncio.to_thread(lease.__enter__)
+        try:
+            async for item in self._stream_response(payload):
+                yield item
+        finally:
+            if lease is not None:
+                try:
+                    lease.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001
+                    logger.exception("LMStudio 释放流式租约失败")
+
+    async def _stream_response(self, payload: dict) -> AsyncGenerator[Any, None]:
+        """单次 SSE 流式请求：建连、读流、解析增量（不做租约/重试）。"""
         def _request():
             url = f"{self.base_url}/v1/chat/completions"
             headers = {

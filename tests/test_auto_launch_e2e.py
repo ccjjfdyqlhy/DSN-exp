@@ -101,6 +101,13 @@ def orchestrator_with_scripted_engine():
     spec.client_instance._launcher = launcher
     spec.client_instance.base_url = launcher.base_url
     spec.client_instance.timeout = 30.0
+    # 修复：调度器的 load/unload 钩子绑定的是注册时创建的 launcher
+    # （二进制路径为 /mock/bin/llama-server）。测试替换 launcher 后必须
+    # 重绑钩子（含状态回调），否则任何经调度器的加载（invoke 的 use() 租约、
+    # 流式租约）都会去拉起不存在的 mock 二进制并失败，且前端收不到状态。
+    load_fn, unload_fn = launcher.create_scheduler_hooks(
+        load_timeout=60, on_status=orch._make_engine_status_cb("m1"))
+    orch._scheduler.register("m1", launcher.base_url, load_fn, unload_fn)
 
     yield orch, launcher
     launcher.stop()

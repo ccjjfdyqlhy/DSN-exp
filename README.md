@@ -103,7 +103,7 @@ python -m apps.dsn_ui.server --host 0.0.0.0 --port 8888 --slots 2
 ### Agent 核心（`harness`）
 
 - **Agent 循环** — 多步推理、工具调用、步数预算与收束轮（`harness/agent/loop.py`）
-- **工具系统** — 注册表、wire 名编码、两阶段 toolbox 激活、18 个标准工具
+- **工具系统** — 注册表、wire 名编码、两阶段 toolbox 激活、18 个标准工具、外部 MCP 服务器接入（`mcp.<server>.<tool>`，配置见 `mcp_servers.yaml`）
 - **上下文装配** — 分段预算剪裁（备忘 / 摘要 / 原文 / 尾部）
 - **记忆与人格** — 向量记忆、弹性话题记忆、人格动力学（PEV3）
 - **管线** — 8 个 HookPoint、事件总线、输出渲染与过滤

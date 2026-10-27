@@ -307,6 +307,27 @@ class Config:
     TASK_NOTIFICATION_ENABLED = _env("TASK_NOTIFICATION_ENABLED", "true").lower() == "true"
     ACTION_TIMEOUT = int(_env("ACTION_TIMEOUT", "300"))
 
+    # ── 记忆系统（MEMORY_ENABLED=false 或未配模型时全部静默降级） ──
+    MEMORY_ENABLED = _env("MEMORY_ENABLED", "true").lower() == "true"
+    MEMORY_SUMMARY_LENGTH = int(_env("MEMORY_SUMMARY_LENGTH", "100"))
+    MEMORY_CONTEXT_WINDOW_SIZE = int(_env("MEMORY_CONTEXT_WINDOW_SIZE", "80"))
+    MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.7"))
+    MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
+    MEMORY_SEARCH_THRESHOLD = min(1.0, max(0.0, float(_env("MEMORY_SEARCH_THRESHOLD", "0.5"))))
+    MEMORY_DETAIL_CHARS_PER_ROUND = max(1, int(_env("MEMORY_DETAIL_CHARS_PER_ROUND", "4000")))
+    MEMORY_TOTAL_DETAIL_CHARS = max(1, int(_env("MEMORY_TOTAL_DETAIL_CHARS", "16000")))
+    MEMORY_EMBEDDING_ENABLED = _env("MEMORY_EMBEDDING_ENABLED", "false").lower() == "true"
+    MEMORY_EMBEDDING_BASE_URL = _env("MEMORY_EMBEDDING_BASE_URL", "")   # 空 = OPENAI_API_BASE
+    MEMORY_EMBEDDING_MODEL = _env("MEMORY_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5@f16")
+    MEMORY_EMBEDDING_WEIGHT = float(_env("MEMORY_EMBEDDING_WEIGHT", "0.6"))
+    TOPIC_ENABLED = _env("TOPIC_ENABLED", "false").lower() == "true"   # 话题系统休眠
+
+    # ── 语义缓存（拦截重复贵请求；需 MEMORY_EMBEDDING_ENABLED 才有 L2/语义命中） ──
+    SEMANTIC_CACHE_ENABLED = _env("SEMANTIC_CACHE_ENABLED", "false").lower() == "true"
+    SEMANTIC_CACHE_DIR = _env("SEMANTIC_CACHE_DIR", ".dsn/study_semantic_cache")
+    SEMANTIC_CACHE_SIMILARITY_THRESHOLD = float(_env("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.85"))
+    SEMANTIC_CACHE_MAX_ENTRIES = int(_env("SEMANTIC_CACHE_MAX_ENTRIES", "5000"))
+
     # ── Agent 循环 ──
     AGENT_MAX_STEPS = max(1, int(_env("AGENT_MAX_STEPS", "10")))
     AGENT_TOKEN_BUDGET = max(1, int(_env("AGENT_TOKEN_BUDGET", "1000000")))

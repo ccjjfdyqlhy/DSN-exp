@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .base import Task, TaskStatus, TaskExecutor
 
@@ -58,7 +58,13 @@ class TaskExecutorRegistry:
         finally:
             import time
             task.finished_at = time.time()
-            executor.on_complete(task)
+            # 修复：on_complete 与 _notify 各自兜底——此前 on_complete 抛异常
+            # 会跳过 _notify 并冒泡出 execute()；异步路径（submit）里该异常
+            # 被 Future 静默吞掉，完成回调全部丢失。
+            try:
+                executor.on_complete(task)
+            except Exception:  # noqa: BLE001
+                logger.exception("执行器 %s 的 on_complete 回调异常", executor.type)
             self._notify(task)
         return task
 

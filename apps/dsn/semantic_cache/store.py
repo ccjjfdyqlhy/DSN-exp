@@ -3,6 +3,7 @@ import struct
 import threading
 from datetime import datetime
 from pathlib import Path
+import numpy as np
 from typing import Optional
 
 logger = logging.getLogger("CacheStore")

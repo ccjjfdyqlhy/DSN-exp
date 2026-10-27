@@ -130,6 +130,12 @@ class RetryPolicy:
         status = getattr(error, "status_code", None)
         if status is None:
             status = getattr(error, "code", None)
+        if status is None:
+            # requests 的 HTTPError 把状态码放在 error.response.status_code，
+            # 本仓库大量使用 requests + raise_for_status()，不回退到 response
+            # 的话 429/5xx 会被误判为不可重试，与文档承诺相悖。
+            resp = getattr(error, "response", None)
+            status = getattr(resp, "status_code", None)
         if status is not None:
             return int(status) in retryable_statuses
         import socket

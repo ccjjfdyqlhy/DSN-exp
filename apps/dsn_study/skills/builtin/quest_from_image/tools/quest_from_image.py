@@ -42,7 +42,9 @@ class QuestFromImageTool:
                 raw = vm.ask(data_url, prompt, max_tokens=8192, temperature=0.1)
             else:
                 from apps.dsn_study.models.clients import LMStudioVisionFallback
-                chat = LMStudioChat(model_name=None)
+                # 修复：原写法引用未导入的 LMStudioChat（NameError）；
+                # 兜底路径本意就是 LMStudioVisionFallback（自带 describe_image）
+                chat = LMStudioVisionFallback()
                 raw = chat.describe_image(data_url, prompt)
         except Exception as e:
             logger.exception("图片识别失败")

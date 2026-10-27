@@ -205,9 +205,14 @@ class TaskTools:
         mgr, task = self._get_reminder_task(task_id)
         if not task:
             return {"success": False, "error": f"提醒任务不存在或无权操作: {task_id}"}
-        task.status = TaskStatus.CANCELLED
-        task.completed_at = datetime.now()
-        mgr._save_task(task)
+        if task.status in (TaskStatus.CANCELLED, TaskStatus.COMPLETED):
+            return {"success": True, "action": "cancelled", "already": True,
+                    "task_id": task_id,
+                    "text": task.params.get("text", ""),
+                    "task_type": task.task_type.value}
+        # 走 TaskManager.cancel_task：同时移除 schedule 里待触发的 job，
+        # 否则任务到点仍会触发（HABIT 会被重排无限复活）。
+        mgr.cancel_task(task_id)
         logger.info("cancel_reminder: task_id=%s text=%s", task_id,
                     (task.params.get("text") or "")[:50])
         return {"success": True, "action": "cancelled", "task_id": task_id,
@@ -219,6 +224,14 @@ class TaskTools:
         mgr, task = self._get_reminder_task(task_id)
         if not task:
             return {"success": False, "error": f"提醒任务不存在或无权操作: {task_id}"}
+        # 防重守卫：重复 skip 不再递增 skip_count、不再创建下一条 HABIT。
+        if task.status == TaskStatus.SKIPPED:
+            return {"success": True, "action": "skipped", "already": True,
+                    "task_id": task_id,
+                    "text": task.params.get("text", ""),
+                    "task_type": task.task_type.value,
+                    "skip_count": task.skip_count,
+                    "next_scheduled": None, "next_task_id": None}
         task.status = TaskStatus.SKIPPED
         task.skip_count += 1
         task.completed_at = datetime.now()
@@ -244,12 +257,20 @@ class TaskTools:
         mgr, task = self._get_reminder_task(task_id)
         if not task:
             return {"success": False, "error": f"提醒任务不存在或无权操作: {task_id}"}
-        task.status = TaskStatus.COMPLETED
-        task.completed_at = datetime.now()
-        mgr._save_task(task)
+        # 已取消的任务不允许"完成"（否则会把用户已取消的打卡复活）。
+        if task.status == TaskStatus.CANCELLED:
+            return {"success": False, "error": "任务已取消，无法标记完成",
+                    "task_id": task_id}
+        # 防重守卫：重复 done 不再为 HABIT 创建下一条任务。
+        already_completed = (task.status == TaskStatus.COMPLETED)
+        if not already_completed:
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now()
+            mgr._save_task(task)
         next_time = None
         new_id = None
-        if task.task_type == TaskType.HABIT and task.interval_seconds > 0:
+        if (not already_completed
+                and task.task_type == TaskType.HABIT and task.interval_seconds > 0):
             next_time = datetime.now() + timedelta(seconds=task.interval_seconds)
             new_id = mgr.create_task(
                 task_type=TaskType.HABIT, user_id=self._uid(), chat_id=task.chat_id,
@@ -336,9 +357,10 @@ class TaskTools:
 
     @staticmethod
     def _run_python(code: str) -> dict:
+        import sys
         logger.info("python: %s", code[:120])
         proc = subprocess.run(
-            ["python3", "-c", code],
+            [sys.executable, "-c", code],
             capture_output=True,
             encoding=_ENCODING, errors="replace", timeout=30,
         )

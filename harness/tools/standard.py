@@ -90,8 +90,13 @@ def tool_file_read(deps: ToolDeps):
         p = _safe_path(deps, path)
         if not p.is_file():
             return {"success": False, "error": f"文件不存在: {p}"}
+        # 修复：schema 明确承诺 "0=读完整文件"，但原实现把 0 当 falsy 回退到
+        # deps.max_output_chars —— `max_chars or deps.max_output_chars` 永远
+        # 不会是 0，按文档传 0 读完整文件实际只读到 6000 字符（连工具自己的
+        # warning 文案都在推荐 max_chars=0 读全文）。超限最终由 AgentLoop 的
+        # _truncate_output 兜底，这里尊重调用方显式给出的语义。
         ok, text, total_bytes, total_lines, truncated = _read_text(
-            p, max_chars or deps.max_output_chars)
+            p, max(0, int(max_chars or 0)))
         result: dict = {"success": ok, "content": text,
                         "total_bytes": total_bytes, "total_lines": total_lines}
         if truncated:
@@ -264,6 +269,9 @@ def tool_text_chunk():
     def run(text: str, chunk_size: int = 2000, overlap: int = 0):
         if chunk_size <= 0:
             return {"success": False, "error": "chunk_size 必须为正"}
+        # 修复：负的 overlap 会让步长超过 chunk_size（step = size - overlap > size），
+        # 每块之间静默跳过 |overlap| 个字符，切片结果悄悄丢数据。钳到 [0, chunk_size)。
+        overlap = max(0, min(int(overlap), chunk_size - 1))
         chunks = []
         i = 0
         while i < len(text):
@@ -356,6 +364,13 @@ def tool_proc_run(deps: ToolDeps):
 
 def tool_web_fetch(deps: ToolDeps):
     def run(url: str, max_chars: int = 8000):
+        # 修复：urllib 默认支持 file:// / ftp:// 等协议，不设白名单时模型可以
+        # 用 web.fetch("file:///etc/passwd") 绕过文件工具的 workspace 约束
+        # 读取本地任意文件。只放行 http/https。
+        if not isinstance(url, str) or not re.match(r"^https?://", url.strip()):
+            return {"success": False,
+                    "error": "仅支持 http/https URL（拒绝 file:// 等本地协议）"}
+        url = url.strip()
         if deps.fetcher is not None:
             try:
                 return deps.fetcher(url, max_chars=max_chars)
@@ -384,7 +399,7 @@ def tool_project_summary(deps: ToolDeps):
         p = _safe_path(deps, path)
         if not p.is_dir():
             return {"success": False, "error": f"目录不存在: {p}"}
-        total_files = total_lines = total_bytes = 0
+        total_files = total_bytes = 0
         by_ext: dict[str, int] = {}
         for root, dirs, files in os.walk(p):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
@@ -400,11 +415,6 @@ def tool_project_summary(deps: ToolDeps):
                 total_bytes += size
                 ext = fp.suffix or "(无)"
                 by_ext[ext] = by_ext.get(ext, 0) + 1
-                if total_files <= max_files:
-                    try:
-                        total_lines += sum(1 for _ in open(fp, "rb") if False)  # 占位
-                    except Exception:
-                        pass
         # 行数统计（限制文件数避免慢）
         lines = 0
         counted = 0

@@ -1,0 +1,54 @@
+name: study_memory
+display_name: "长期记忆"
+description: "跨会话的长期记忆。recall 按关键词检索过往记忆；save_memo 保存重要事实、用户偏好与约定。"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 75
+
+tools:
+  - name: recall
+    display_name: "检索记忆"
+    description: "按关键词检索过往对话记忆与备忘。当用户提到「之前」「上次」「我们说过」等往事，或需要历史上下文时使用。"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: recall
+        description: "检索记忆"
+        parameters:
+          keywords:
+            type: array
+            description: "关键词列表（2-4 个效果最好）"
+            required: true
+          count:
+            type: integer
+            description: "返回条数，默认 3"
+            required: false
+          detail:
+            type: boolean
+            description: "是否附带命中轮次的完整对话还原"
+            required: false
+
+  - name: save_memo
+    display_name: "保存备忘"
+    description: "保存长期备忘：用户的学习偏好、重要约定、关键事实（如「用户在备考 6 月的高考」「用户偏好先给结论」）。应主动、及时地保存值得长期记住的信息。"
+    module: "tools.memory_tools"
+    class: "MemoryTools"
+    methods:
+      - name: save_memo
+        description: "保存备忘"
+        parameters:
+          content:
+            type: string
+            description: "备忘内容（一句话，自包含，写明主语）"
+            required: true
+
+activation:
+  keywords: ["记忆", "记得", "之前", "上次", "偏好", "备忘"]
+  auto_activate: false
+
+dependencies: []
+tags: [memory, recall, memo]

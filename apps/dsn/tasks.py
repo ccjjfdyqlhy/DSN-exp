@@ -156,11 +156,10 @@ class TaskManager:
         # 加载持久化的任务（先加载，再启动调度器，避免 schedule 非线程安全的并发写入）
         self._load_persistent_tasks()
         
-        # 启动调度器线程
-        self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
-        self.scheduler_thread.start()
-
-        # 任务类型 → 执行器分派经 harness TaskExecutorRegistry（DSN 引擎依赖 harness 任务引擎）
+        # 任务类型 → 执行器分派经 harness TaskExecutorRegistry（DSN 引擎依赖 harness 任务引擎）。
+        # 修复：必须先建好执行器注册表再启动调度线程——线程一启动，过期的
+        # PENDING 任务立即补触发，若 _exec_registry 还没赋值，首次恢复执行
+        # 会 AttributeError 直接失败。
         from infra.tasks import TaskExecutorRegistry
         self._exec_registry = TaskExecutorRegistry(max_workers=max_workers)
         for _ttype, _fn in (
@@ -174,6 +173,10 @@ class TaskManager:
             (TaskType.ACTION, self._execute_action_task),
         ):
             self._exec_registry.register(_DsnTaskExecutor(_ttype.value, _fn))
+
+        # 启动调度器线程（最后一步：此时执行器/任务表全部就绪）
+        self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
+        self.scheduler_thread.start()
 
         self.logger.info("TaskManager 初始化完成")
 
@@ -267,6 +270,10 @@ class TaskManager:
             ).fetchall()
             
             now = datetime.now()
+            # 周期型任务的 scheduled_time 过期不应判 MISSED：
+            # 它们的下一次触发由 interval/cron/trigger_time 重算，
+            # 判 MISSED 会让停机超过 5 分钟后的周期任务永久消失。
+            recurring_types = (TaskType.HABIT, TaskType.PERIODIC, TaskType.DAILY_PLAN)
             for row in rows:
                 try:
                     params = json.loads(row["params"])
@@ -302,8 +309,10 @@ class TaskManager:
                         continue
 
                     # PENDING 且 scheduled_time 已过期超 5 分钟 → MISSED
-                    if task.status == TaskStatus.PENDING and task.scheduled_time:
-                        if task.scheduled_time < now - timedelta(minutes=5):
+                    # （仅一次性提醒；周期型任务过期则照常重新调度，见上）
+                    if (task.status == TaskStatus.PENDING and task.scheduled_time
+                            and task_type not in recurring_types
+                            and task.scheduled_time < now - timedelta(minutes=5)):
                             task.status = TaskStatus.MISSED
                             task.completed_at = now
                             self._save_task(task)
@@ -326,6 +335,7 @@ class TaskManager:
     
     def _save_task(self, task: Task):
         """保存任务到数据库"""
+        conn = None
         try:
             conn = self.db._get_connection()
             
@@ -362,7 +372,11 @@ class TaskManager:
             conn.commit()
         except Exception as e:
             self.logger.error("保存任务失败 (task_id=%s): %s", task.task_id, e)
-            conn.rollback()
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
     
     def _update_task_status(self, task_id: str, status: TaskStatus, 
                            result: Optional[Dict] = None, error: Optional[str] = None):
@@ -385,6 +399,63 @@ class TaskManager:
                 
                 self._save_task(task)
     
+    def _cancel_scheduled_job(self, task_id: str) -> None:
+        """从 schedule 库移除该任务的全部待触发 job（取消任务时调用）。
+
+        修复背景：cancel/done/skip 此前只改 task.status，schedule 里已注册的
+        job 仍会到点触发——被取消的任务照样执行、照样发通知；HABIT 更会被
+        _handle_task_result 重置回 PENDING 无限复活。
+        """
+        for job in list(self.scheduler.jobs):
+            if task_id in getattr(job, "tags", ()):
+                try:
+                    self.scheduler.cancel_job(job)
+                except Exception:  # noqa: BLE001
+                    self.logger.debug("移除调度作业失败 task=%s", task_id, exc_info=True)
+
+    def cancel_task(self, task_id: str) -> bool:
+        """取消一条任务：状态置 CANCELLED、移除待触发 job、持久化。
+
+        返回 False 表示任务不存在。这是取消的唯一正确入口——直接改
+        task.status 而不移除调度 job 会让任务到点"复活"。
+        """
+        with self.lock:
+            task = self.tasks.get(task_id)
+            if task is None:
+                return False
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.now()
+            self._save_task(task)
+        self._cancel_scheduled_job(task_id)
+        self.logger.info("任务已取消: %s (type=%s)", task_id, task.task_type.value)
+        return True
+
+    @staticmethod
+    def _normalize_trigger_time(trigger_time) -> str:
+        """把每日触发时间归一化为 schedule 库可接受的 "HH:MM"。
+
+        schedule 的 at() 强校验 `[0-2]\\d:[0-5]\\d(:[0-5]\\d)?`——"7:30"
+        这类单数字小时会抛 ScheduleValueError。
+        """
+        try:
+            parts = str(trigger_time).strip().split(":")
+            hh, mm = int(parts[0]), int(parts[1])
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise ValueError(f"小时/分钟越界: {trigger_time!r}")
+            return f"{hh:02d}:{mm:02d}"
+        except (ValueError, IndexError, AttributeError, TypeError):
+            raise ValueError(f"trigger_time 需为 HH:MM 格式，得到: {trigger_time!r}")
+
+    @classmethod
+    def _next_daily_trigger(cls, trigger_time, now: datetime) -> datetime:
+        """计算每日触发时间在下一次的本地时间点（已过今天时刻则顺延一天）。"""
+        hh_mm = cls._normalize_trigger_time(trigger_time)
+        hh, mm = int(hh_mm[:2]), int(hh_mm[3:5])
+        candidate = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
+
     def _schedule_reminder_task(self, task: Task):
         """调度提醒任务 (一次性/周期性/每日计划/cron)"""
         if not task.scheduled_time:
@@ -402,6 +473,15 @@ class TaskManager:
                              task.task_id, task.task_type.value,
                              task.scheduled_time.isoformat() if task.scheduled_time else "N/A",
                              task.user_id)
+            # 状态守卫：任务在排期后被取消/跳过/手动完成时，job 仍会到点触发。
+            # 非 PENDING 一律跳过并注销本 job，否则取消的任务照样执行，
+            # HABIT 还会被 _handle_task_result 重排成无限复活。
+            current = self.tasks.get(task.task_id)
+            if current is None or current.status != TaskStatus.PENDING:
+                self.logger.info("任务 %s 状态为 %s，跳过本次触发",
+                                 task.task_id,
+                                 current.status.value if current else "已移除")
+                return schedule.CancelJob
             self.execute_task(task.task_id)
 
             # DAILY_PLAN 通过 schedule.every().day.at() 调度，属于 daily 重复 job，不需 CancelJob
@@ -414,8 +494,10 @@ class TaskManager:
 
         # DAILY_PLAN: schedule.every().day.at("07:30")
         if task.task_type == TaskType.DAILY_PLAN:
+            # schedule 库的 at() 强校验时刻格式，统一归一化（"7:30" → "07:30"）
             trigger_time = task.params.get("trigger_time", "07:30")
-            self.scheduler.every().day.at(trigger_time).do(reminder_job).tag(task.task_id)
+            normalized = self._normalize_trigger_time(trigger_time)
+            self.scheduler.every().day.at(normalized).do(reminder_job).tag(task.task_id)
             return
 
         # PERIODIC: croniter 计算下一次
@@ -439,6 +521,9 @@ class TaskManager:
             # > 24h 的延迟不用 schedule.every().seconds (精度问题)
             # 改用 5 分钟轮询检查
             def _long_delay_check():
+                current = self.tasks.get(task.task_id)
+                if current is None or current.status != TaskStatus.PENDING:
+                    return schedule.CancelJob
                 if datetime.now() >= task.scheduled_time:
                     self.logger.info("长延迟提醒到期: %s", task.task_id)
                     reminder_job()
@@ -452,10 +537,17 @@ class TaskManager:
             self.execute_task(task.task_id)
     
     def _run_scheduler(self):
-        """运行调度器线程"""
+        """运行调度器线程
+
+        修复：run_pending() 同步执行所有到点 job，任何一个 job 抛异常都会
+        沿调用栈炸死本线程——整个任务调度静默停摆，所有后续提醒永不触发。
+        """
         _stop = threading.Event()
         while self.running and not _stop.is_set():
-            self.scheduler.run_pending()
+            try:
+                self.scheduler.run_pending()
+            except Exception:  # noqa: BLE001
+                self.logger.exception("调度循环执行 job 异常（已跳过本轮）")
             _stop.wait(timeout=1)
     
     def create_task(self, task_type: TaskType, user_id: int, chat_id: int, 
@@ -494,16 +586,26 @@ class TaskManager:
     
     def execute_task(self, task_id: str) -> Future:
         """执行任务"""
-        if task_id not in self.tasks:
+        task = self.tasks.get(task_id)
+        if task is None:
             raise ValueError(f"任务不存在: {task_id}")
-        
-        task = self.tasks[task_id]
+
+        # 状态守卫（锁内原子转移 PENDING→RUNNING）：已取消/跳过/完成的任务
+        # 被外部再次点名时直接返回已完成的 Future，不再重复执行、不再写通知；
+        # 同时避免取消与触发并发时 RUNNING 覆盖 CANCELLED 的写丢失。
+        with self.lock:
+            if task.status != TaskStatus.PENDING:
+                self.logger.info("任务 %s 状态为 %s，拒绝重复执行",
+                                 task_id, task.status.value)
+                done_future: Future = Future()
+                done_future.set_result(task.result or {})
+                return done_future
+            task.status = TaskStatus.RUNNING
+            task.started_at = datetime.now()
+            self._save_task(task)
         self.logger.info("开始执行任务: %s (类型: %s, 用户: %d, 排期: %s)",
                          task_id, task.task_type.value, task.user_id,
                          task.scheduled_time.isoformat() if task.scheduled_time else "立即")
-        
-        # 更新状态为运行中
-        self._update_task_status(task_id, TaskStatus.RUNNING)
         
         # 提交到线程池执行
         future = self.executor.submit(self._execute_task_internal, task)
@@ -750,7 +852,7 @@ class TaskManager:
         })
 
     def _action_python(self, task, content, result):
-        import subprocess, tempfile
+        import subprocess, tempfile, sys
         from apps.dsn.utils.workspace import get_workspace_manager
         encoding = locale.getpreferredencoding(False)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8-sig') as f:
@@ -758,8 +860,9 @@ class TaskManager:
             temp_file = f.name
         try:
             cwd = str(get_workspace_manager().user_dir(uid=getattr(task, 'user_id', 0)))
+            # 修复：硬编码 "python" 在只有 python3 的机器上必失败，用当前解释器
             process = subprocess.run(
-                ["python", temp_file], capture_output=True,
+                [sys.executable, temp_file], capture_output=True,
                 encoding=encoding, errors='replace', timeout=Config.ACTION_TIMEOUT,
                 cwd=cwd,
             )
@@ -811,6 +914,10 @@ class TaskManager:
             raise FileNotFoundError(f"文件不存在: {file_path}")
         with open(file_path, 'r', encoding='utf-8-sig') as f:
             file_content = f.read()
+        # 边界守卫：pattern 与 content 同时为空会把文件清空——几乎不可能是
+        # 用户的本意，显式拒绝。
+        if not pattern and not content:
+            raise ValueError("pattern 与 content 均为空，拒绝执行（会清空整个文件）")
         if pattern and replacement is not None:
             import re
             new_content = re.sub(pattern, replacement, file_content, flags=re.DOTALL | re.MULTILINE)
@@ -826,6 +933,7 @@ class TaskManager:
     
     def _save_task_result(self, task_id: str, content: str):
         """保存任务结果到数据库"""
+        conn = None
         try:
             conn = self.db._get_connection()
             conn.execute(
@@ -835,7 +943,11 @@ class TaskManager:
             conn.commit()
         except Exception as e:
             self.logger.error("保存任务结果失败 (task_id=%s): %s", task_id, e)
-            conn.rollback()
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
     
     def _handle_task_result(self, task_id: str, future: Future):
         """处理任务执行结果"""
@@ -879,6 +991,23 @@ class TaskManager:
                     self.logger.info("PERIODIC 任务 %s 下一次: %s", task_id, next_time)
                 except Exception as e:
                     self.logger.error("PERIODIC 重排失败: %s", e)
+
+        # DAILY_PLAN: 常驻每日任务。触发后若停留在 COMPLETED，重启时
+        # _load_persistent_tasks（只加载 PENDING/RUNNING）不会恢复它，
+        # 每日计划在重启后静默失效。触发完成即把状态复位为 PENDING、
+        # scheduled_time 顺延到下一次触发点。
+        if task and task.task_type == TaskType.DAILY_PLAN:
+            try:
+                next_time = self._next_daily_trigger(
+                    task.params.get("trigger_time", "07:30"), datetime.now())
+                task.scheduled_time = next_time
+                task.status = TaskStatus.PENDING
+                task.result = None
+                task.error = None
+                self._save_task(task)
+                self.logger.info("DAILY_PLAN 任务 %s 下一次: %s", task_id, next_time)
+            except Exception as e:
+                self.logger.error("DAILY_PLAN 重排失败: %s", e)
 
         try:
             self._notify_task_completion(task_id, result)
@@ -930,7 +1059,9 @@ class TaskManager:
             "       t.task_type, t.params "
             "FROM task_notifications n "
             "LEFT JOIN tasks t ON t.task_id = n.task_id "
-            "WHERE (n.user_id = ? OR n.user_id = 0) AND n.delivered = 0 AND n.dismissed = 0 "
+            "WHERE (n.user_id = ? OR n.user_id = 0) AND n.dismissed = 0 "
+            "  AND (n.delivered = 0 OR (n.delivered = 2 "
+            "       AND n.created_at < datetime('now', '-5 minutes'))) "
             "ORDER BY n.created_at ASC LIMIT ?",
             (user_id, limit)
         ).fetchall()
@@ -954,6 +1085,22 @@ class TaskManager:
                 "params": params,
             })
         return out
+
+    def claim_notification(self, notification_id: int) -> bool:
+        """原子领取一条通知（delivered 0→2，2=生成 AI 回复中）。
+
+        fetch 与"生成 AI 回复"之间存在窗口，多线程心跳会取到同一条
+        delivered=0 的通知，同一提醒被重复生成/展示。领取失败（返回
+        False）表示已被其它心跳处理，调用方应直接跳过。
+        """
+        conn = self.db._get_connection()
+        cur = conn.execute(
+            "UPDATE task_notifications SET delivered = 2 "
+            "WHERE notification_id = ? AND delivered = 0",
+            (notification_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
     def mark_notification_delivered(self, notification_id: int):
         """标记某条通知为已投递（前端已收到并展示）。"""
@@ -1084,6 +1231,9 @@ class TaskManager:
     def shutdown(self):
         """关闭任务管理器"""
         self.running = False
+        # 等待调度线程退出（最长 2 秒），避免关停路径上调度线程仍在触发任务
+        if getattr(self, "scheduler_thread", None) is not None:
+            self.scheduler_thread.join(timeout=2.0)
         self.executor.shutdown(wait=True)
         try:
             self._exec_registry.shutdown(wait=True)

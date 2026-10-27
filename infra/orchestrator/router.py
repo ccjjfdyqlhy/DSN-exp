@@ -368,7 +368,10 @@ class ModelOrchestrator:
     ) -> None:
         """注册本地 llama.cpp 推理引擎模型（受调度器显存插槽排队管理）。"""
         launcher = LlamaServerLauncher(config)
-        load_fn, unload_fn = launcher.create_scheduler_hooks(load_timeout=load_timeout)
+        # 状态回调接到钩子上：经调度器租约路径加载时（不等走到客户端的
+        # _ensure_launcher_running）也能向前端上报 loading→loaded。
+        load_fn, unload_fn = launcher.create_scheduler_hooks(
+            load_timeout=load_timeout, on_status=self._make_engine_status_cb(name))
 
         profile = ModelProfile(
             priority=priority,
@@ -448,7 +451,8 @@ class ModelOrchestrator:
         子进程、就绪探针与停机。差异仅在命令行合成（run config JSON）。
         """
         launcher = StrataServerLauncher(config)
-        load_fn, unload_fn = launcher.create_scheduler_hooks(load_timeout=load_timeout)
+        load_fn, unload_fn = launcher.create_scheduler_hooks(
+            load_timeout=load_timeout, on_status=self._make_engine_status_cb(name))
 
         profile = ModelProfile(
             priority=priority,

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Iterator, Optional
@@ -50,6 +51,10 @@ class Runtime:
         self._start_hooks: list[Callable[[], None]] = []
         self._stop_hooks: list[Callable[[], None]] = []
         self._started = False
+        # 工厂懒加载互斥：两线程同时首次 resolve 同一个工厂服务时，
+        # 各自执行 factory 并互相覆盖——factory 有副作用（创建引擎子进程、
+        # 连接池、调度器等）时会泄漏一整份资源。
+        self._factory_lock = threading.Lock()
 
     # ── 注册 ──
 
@@ -94,9 +99,13 @@ class Runtime:
         if k in self._services:
             return self._services[k]
         if k in self._factories:
-            instance = self._factories[k]()
-            self._services[k] = instance
-            return instance
+            with self._factory_lock:
+                # 双重检查：等锁期间可能已被其它线程解析
+                if k in self._services:
+                    return self._services[k]
+                instance = self._factories[k]()
+                self._services[k] = instance
+                return instance
         raise KeyError(f"服务未注册: {k}")
 
     def keys(self) -> set[str]:

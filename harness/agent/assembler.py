@@ -12,6 +12,7 @@
 #       "system_prompt": "你是一名资深工程师。",
 #       "router": {"flash_model": "deepseek-v4-flash", "pro_model": "deepseek-v4-pro"},
 #       "tools": ["standard"],            # 或 {"standard": {"include": ["file", "text"]}}
+#       "mcp": {"config": "mcp_servers.yaml"},   # 外部 MCP 工具源（惰性连接）
 #       "toolbox": {"enabled": True},     # 两阶段工具激活
 #       "budget": {"token_cap": 200000, "cost_cap": 0.5},
 #       "memory": True,                   # 会话记忆
@@ -52,6 +53,7 @@ class AgentSpec:
     memory: bool = False
     workspace: Optional[str] = None
     tool_deps: Optional[dict] = None         # ToolDeps 额外注入
+    mcp: Optional[dict] = None               # 外部 MCP 工具源: {"servers": [...]} | {"config": "path.yaml"}
 
 
 class AssembledAgent:
@@ -62,7 +64,8 @@ class AssembledAgent:
                  budget: Optional[TokenBudget] = None,
                  predictor: Optional[DurationPredictor] = None,
                  router: Optional[ModelRouter] = None,
-                 prompts: Optional[PromptEngine] = None):
+                 prompts: Optional[PromptEngine] = None,
+                 mcp: Optional[Any] = None):
         self.runtime = runtime
         self.loop = loop
         self.meter = meter
@@ -70,6 +73,9 @@ class AssembledAgent:
         self.predictor = predictor
         self.router = router
         self.prompts = prompts
+        # 外部 MCP 工具源管理器（None = 未配置）。惰性连接：装配期不建立任何
+        # 连接，见 setup_mcp() 与 harness/tools/mcp.py 模块头说明。
+        self.mcp = mcp
         self.spec: Optional[AgentSpec] = None
 
     def run(self, message: str, *, task_type: str = "") -> str:
@@ -119,6 +125,27 @@ class AssembledAgent:
             return self.prompts.build_system_prompt()
         return ""
 
+    async def setup_mcp(self) -> dict[str, str]:
+        """连接全部 MCP 服务器并注册工具（服务端 lifespan 显式预热入口）。
+
+        返回 name → 错误信息（单服务器失败隔离，全部成功为空 dict）。
+        重复调用安全：工具按全名覆盖注册。SDK 的 Agent 在异步入口会惰性
+        调用本方法，长驻服务建议启动时显式调用一次以避免首请求变慢。
+        """
+        if self.mcp is None or self.loop is None or self.loop.tools is None:
+            return {}
+        errors = await self.mcp.load_tools(self.loop.tools)
+        if self.loop.toolbox is not None:
+            # toolbox 索引有缓存，MCP 工具补注册后必须失效重建
+            self.loop.toolbox.invalidate()
+        return errors
+
+    async def aclose(self) -> None:
+        """显式关停（当前只负责 MCP 连接；Runtime.stop 的钩子要求先 start 才生效，
+        长驻服务在 lifespan shutdown 里直接 await 本方法更可靠）。"""
+        if self.mcp is not None:
+            await self.mcp.close()
+
     def __repr__(self) -> str:
         return f"<AssembledAgent name={self.spec.name if self.spec else '?'}>"
 
@@ -166,7 +193,29 @@ class AgentAssembler:
                     elif callable(item) and not isinstance(item, type):
                         tools.register(tool_from_function(item))
 
-        # 3) 提示词引擎
+        # 3) 外部 MCP 工具源（只建管理器，不连接 —— assemble 是同步的，
+        #    MCP 会话绑定事件循环，连接推迟到 setup_mcp() / 首次工具调用）
+        mcp_manager = None
+        if spec.mcp:
+            from ..tools.mcp import MCPManager
+            if isinstance(spec.mcp, str):
+                mcp_manager = MCPManager.from_yaml(spec.mcp)
+            else:
+                config = spec.mcp
+                if isinstance(config, dict) and config.get("config"):
+                    mcp_manager = MCPManager.from_yaml(config["config"])
+                    extra = MCPManager.from_config(
+                        {"servers": config.get("servers", [])})
+                    # YAML 与内联 servers 合并（内联优先，用于局部覆盖）
+                    merged = {c.name: c for c in mcp_manager.servers.values()}
+                    merged.update(extra.servers)
+                    mcp_manager = MCPManager(list(merged.values()))
+                else:
+                    mcp_manager = MCPManager.from_config(config)
+            runtime.register("mcp", mcp_manager)
+            runtime.on_stop(mcp_manager.close_sync)
+
+        # 4) 提示词引擎
         prompts = None
         if spec.prompts_dir:
             prompts = PromptEngine(spec.prompts_dir)
@@ -176,7 +225,7 @@ class AgentAssembler:
             prompts.add_fragment("core", spec.system_prompt, order=0)
         system_prompt = prompts.build_system_prompt() if prompts else spec.system_prompt
 
-        # 4) 模型路由 + 预算 + 计量 + 预测
+        # 5) 模型路由 + 预算 + 计量 + 预测
         router = None
         if spec.router:
             cfg = ModelConfig(**{k: v for k, v in spec.router.items()
@@ -190,7 +239,7 @@ class AgentAssembler:
             budget.bind(meter)
         predictor = DurationPredictor()
 
-        # 5) 工具箱（两阶段激活）
+        # 6) 工具箱（两阶段激活）
         toolbox = None
         if spec.toolbox and spec.toolbox.get("enabled", True):
             from ..tools.toolbox import RegistryIndexSource
@@ -199,13 +248,13 @@ class AgentAssembler:
                                      nested=False,
                                      max_activated=spec.toolbox.get("max_activated"))
 
-        # 6) 记忆
+        # 7) 记忆
         memory = None
         if spec.memory:
             memory = InMemoryStore(self.embedding_client)
             runtime.register("memory", memory)
 
-        # 7) Agent 循环
+        # 8) Agent 循环
         loop = AgentLoop(self.client, tools, max_steps=spec.max_steps,
                          toolbox=toolbox)
         runtime.register("loop", loop)
@@ -214,7 +263,8 @@ class AgentAssembler:
         runtime.set_default()
 
         agent = AssembledAgent(runtime, loop, meter=meter, budget=budget,
-                               predictor=predictor, router=router, prompts=prompts)
+                               predictor=predictor, router=router, prompts=prompts,
+                               mcp=mcp_manager)
         # 把真实 usage 回填到 meter/budget（policy 闭环的接线点，见 AssembledAgent._record_usage）
         loop.on_usage = agent._record_usage
         agent.spec = spec

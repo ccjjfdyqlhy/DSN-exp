@@ -71,6 +71,12 @@ class TaskScheduler:
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        # 修复：恢复上次进程中断在执行中的任务。docstring 承诺"重启后未完成
+        # 任务自动恢复"，但此前 status='running' 的行没人管——fetch_due 只取
+        # pending，这些任务既不执行也不报错，永久卡死。
+        self._conn.execute(
+            "UPDATE scheduled_tasks SET status = 'pending', updated_at = ? "
+            "WHERE status = 'running'", (time.time(),))
         self._conn.commit()
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -157,9 +163,15 @@ class TaskScheduler:
     def _run_task(self, row: dict) -> bool:
         """执行单个任务。返回是否成功。"""
         task_id = row["task_id"]
-        self._execute(
+        # 修复：认领必须带状态条件并检查 rowcount——后台线程与外部 run_once
+        # 并发时，此前两个线程都能对同一条 pending 任务各执行一次（重复提醒、
+        # 重复扣费等副作用任务受影响）。
+        cur = self._execute(
             "UPDATE scheduled_tasks SET status = 'running', updated_at = ? "
-            "WHERE task_id = ?", (time.time(), task_id))
+            "WHERE task_id = ? AND status = 'pending'", (time.time(), task_id))
+        if cur.rowcount == 0:
+            logger.debug("任务 %d 已被其它线程认领，跳过", task_id)
+            return True
         payload = {}
         try:
             payload = json.loads(row["payload"] or "{}")
@@ -177,8 +189,16 @@ class TaskScheduler:
     def _invoke_executor(self, executor: str, payload: dict) -> Any:
         fn = self.executors.get(executor)
         if fn is None and self.registry is not None:
-            # TaskExecutorRegistry 契约: execute(executor_name, payload)
-            result = self.registry.execute(executor, payload)
+            # 修复：与 TaskExecutorRegistry 的真实契约对齐——execute(task) 接收
+            # 一个 Task 对象并按 type 分发，返回执行后的 Task。此前的
+            # registry.execute(executor, payload) 签名不匹配，registry 任务
+            # 100% 以 TypeError 失败。
+            from .base import Task
+            result = self.registry.execute(Task(type=executor, params=payload))
+            if isinstance(result, Task):
+                if not result.ok and result.error:
+                    raise RuntimeError(result.error)
+                return result.result
             if hasattr(result, "__await__"):
                 import asyncio
                 return asyncio.run(result)
@@ -193,36 +213,44 @@ class TaskScheduler:
 
     def _handle_success(self, row: dict) -> None:
         if row["interval_seconds"]:
-            # 周期任务：顺延下一周期
+            # 周期任务：顺延下一周期。
+            # 修复：必须限定 status='running'——执行期间任务可能已被 cancel
+            # （cancel 允许取消 running 任务），无条件回写会把已取消的任务
+            # "复活"成 pending，继续无限调度，用户取消失效。
             self._execute(
                 "UPDATE scheduled_tasks SET status = 'pending', run_count = run_count + 1, "
-                "last_run_at = ?, scheduled_at = ?, updated_at = ? WHERE task_id = ?",
+                "last_run_at = ?, scheduled_at = ?, updated_at = ? "
+                "WHERE task_id = ? AND status = 'running'",
                 (time.time(), time.time() + row["interval_seconds"],
                  time.time(), row["task_id"]))
         else:
             self._execute(
                 "UPDATE scheduled_tasks SET status = 'done', run_count = run_count + 1, "
-                "last_run_at = ?, updated_at = ? WHERE task_id = ?",
+                "last_run_at = ?, updated_at = ? "
+                "WHERE task_id = ? AND status = 'running'",
                 (time.time(), time.time(), row["task_id"]))
 
     def _handle_failure(self, row: dict, error: str) -> None:
         retries = row.get("run_count", 0)
         if row["interval_seconds"]:
-            # 周期任务失败：顺延一个 tick 重试
+            # 周期任务失败：顺延一个 tick 重试（同样只认领 running 状态）
             self._execute(
                 "UPDATE scheduled_tasks SET status = 'pending', "
-                "last_error = ?, scheduled_at = ?, updated_at = ? WHERE task_id = ?",
+                "last_error = ?, scheduled_at = ?, updated_at = ? "
+                "WHERE task_id = ? AND status = 'running'",
                 (error, time.time() + self.tick, time.time(), row["task_id"]))
         elif retries < self.max_retries:
             # 一次性任务失败：按 retry_delay 顺延重试
             self._execute(
                 "UPDATE scheduled_tasks SET status = 'pending', run_count = run_count + 1, "
-                "last_error = ?, scheduled_at = ?, updated_at = ? WHERE task_id = ?",
+                "last_error = ?, scheduled_at = ?, updated_at = ? "
+                "WHERE task_id = ? AND status = 'running'",
                 (error, time.time() + row["retry_delay"], time.time(), row["task_id"]))
         else:
             self._execute(
                 "UPDATE scheduled_tasks SET status = 'error', run_count = run_count + 1, "
-                "last_error = ?, updated_at = ? WHERE task_id = ?",
+                "last_error = ?, updated_at = ? "
+                "WHERE task_id = ? AND status = 'running'",
                 (error, time.time(), row["task_id"]))
 
     # ── 运行 ──

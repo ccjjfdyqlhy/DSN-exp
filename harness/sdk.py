@@ -67,6 +67,7 @@ class Agent:
         budget_config: Optional[dict] = None,
         enable_toolbox: bool = False,
         enable_memory: bool = False,
+        mcp: Optional[Union[list, dict, str]] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
@@ -87,6 +88,15 @@ class Agent:
                 elif isinstance(item, str) and item == "standard":
                     tool_spec = "standard"
 
+        # 外部 MCP 工具源：str = YAML 路径 / list = 服务器列表 / dict = 完整配置
+        mcp_spec: Optional[dict] = None
+        if isinstance(mcp, str):
+            mcp_spec = {"config": mcp}
+        elif isinstance(mcp, list):
+            mcp_spec = {"servers": mcp}
+        elif isinstance(mcp, dict):
+            mcp_spec = mcp
+
         toolbox_spec = {"enabled": True} if enable_toolbox else None
 
         self.spec = AgentSpec(
@@ -99,15 +109,49 @@ class Agent:
             toolbox=toolbox_spec,
             budget=budget_config,
             memory=enable_memory,
+            mcp=mcp_spec,
         )
 
         assembler = AgentAssembler(self.client)
         self._assembled: AssembledAgent = assembler.assemble(self.spec)
+        # MCP 惰性预热标志：首个异步入口（chat_async/run_async/chat_stream）触发
+        self._mcp_ready = False
 
         # 如果手动注册了自定义工具函数，合并到 assembled.loop.tools 中
         for t in self.tool_registry.tools():
             if self._assembled.loop.tools:
                 self._assembled.loop.tools.register(t, replace=True)
+
+    async def _ensure_mcp_ready(self) -> None:
+        """首次运行前连接 MCP 服务器并注册工具（幂等，未配置时为 no-op）。
+
+        并发安全由 MCPManager 内部的 per-server 锁保证；这里只做一次性标志，
+        重复调用只会重复 load_tools（replace=True 覆盖注册，无累积）。
+        """
+        if self._mcp_ready or self._assembled.mcp is None:
+            return
+        errors = await self._assembled.setup_mcp()
+        if errors:
+            # 单服务器失败不阻断 Agent（对应服务器工具不可用），只暴露状态
+            import logging
+            logging.getLogger("harness.sdk").warning("MCP 预热部分失败: %s", errors)
+        self._mcp_ready = True
+
+    def _ensure_mcp_ready_sync(self) -> None:
+        """同步入口（chat/run）的 MCP 预热。
+
+        修复说明：此前只有异步入口（chat_async/chat_stream/run_async）会触发
+        预热，同步 chat()/run() 配置了 MCP 也永远不注册远端工具——模型根本
+        看不到它们。chat()/run() 本身经 loop.run() 内部 asyncio.run 执行，
+        说明调用时本线程没有运行中的事件循环，这里 asyncio.run 预热是安全的。
+        """
+        if self._mcp_ready or self._assembled.mcp is None:
+            return
+        asyncio.run(self._ensure_mcp_ready())
+
+    async def aclose(self) -> None:
+        """显式关停（关闭 MCP 连接等）。长驻服务在 shutdown 时调用。"""
+        await self._assembled.aclose()
 
     @property
     def tools(self) -> ToolRegistry:
@@ -131,6 +175,7 @@ class Agent:
 
     def chat(self, message: str) -> str:
         """同步多轮对话：追加用户输入，运行 Agent 循环，追加助手回复，返回结果文本。"""
+        self._ensure_mcp_ready_sync()
         self.conversation.add(ChatMessage.user(message))
         msgs = list(self.conversation.messages)
         result: AgentRunResult = self._assembled.loop.run(msgs, system_prompt=self.system_prompt_text)
@@ -139,6 +184,7 @@ class Agent:
 
     async def chat_async(self, message: str) -> str:
         """异步多轮对话。"""
+        await self._ensure_mcp_ready()
         self.conversation.add(ChatMessage.user(message))
         msgs = list(self.conversation.messages)
         result: AgentRunResult = await self._assembled.loop.run_async(msgs, system_prompt=self.system_prompt_text)
@@ -147,6 +193,7 @@ class Agent:
 
     async def chat_stream(self, message: str) -> AsyncGenerator[StreamEvent, None]:
         """异步流式多轮对话：yield 实时事件（round_start, delta, tool_call, tool_result, reply, done）。"""
+        await self._ensure_mcp_ready()
         self.conversation.add(ChatMessage.user(message))
         msgs = list(self.conversation.messages)
         final_reply = ""
@@ -161,11 +208,13 @@ class Agent:
 
     def run(self, message: str) -> AgentRunResult:
         """单次执行模式（不计入多轮历史）。"""
+        self._ensure_mcp_ready_sync()
         msgs = [ChatMessage.user(message)]
         return self._assembled.loop.run(msgs, system_prompt=self.system_prompt_text)
 
     async def run_async(self, message: str) -> AgentRunResult:
-        """异步单次执行模式。"""
+        """异步单次执行模式（不计入多轮历史）。"""
+        await self._ensure_mcp_ready()
         msgs = [ChatMessage.user(message)]
         return await self._assembled.loop.run_async(msgs, system_prompt=self.system_prompt_text)
 
@@ -184,6 +233,8 @@ def create_agent(
     token_cap: Optional[int] = None,
     enable_toolbox: bool = False,
     enable_memory: bool = False,
+    mcp_servers: Optional[list] = None,
+    mcp_config: Optional[str] = None,
     **kwargs: Any,
 ) -> Agent:
     """SDK 快速工厂函数：一行代码创建嵌入式 Agent。
@@ -201,6 +252,9 @@ def create_agent(
         token_cap: Token 数量上限
         enable_toolbox: 是否开启两阶段工具动态激活
         enable_memory: 是否开启向量记忆检索
+        mcp_servers: 外部 MCP 服务器列表（[{"name": ..., "transport": "stdio", ...}]，
+                      工具注册为 mcp.<server>.<tool>；需要 pip install 'mcp>=1.2'）
+        mcp_config: mcp_servers.yaml 路径（与 mcp_servers 可同时给，内联优先）
 
     示例:
         from harness import create_agent, tool
@@ -227,6 +281,10 @@ def create_agent(
             "token_cap": token_cap,
         }
 
+    mcp: Optional[Union[list, dict, str]] = None
+    if mcp_servers is not None or mcp_config is not None:
+        mcp = {"servers": mcp_servers or [], "config": mcp_config}
+
     return Agent(
         client=client,
         system_prompt=system_prompt,
@@ -236,4 +294,5 @@ def create_agent(
         budget_config=budget_config,
         enable_toolbox=enable_toolbox,
         enable_memory=enable_memory,
+        mcp=mcp,
     )

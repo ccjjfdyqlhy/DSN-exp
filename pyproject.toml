@@ -26,6 +26,8 @@ full = [
     "psutil>=5.9",
     "opencv-python>=4.8",
 ]
+# 外部 MCP 工具源桥接（harness/tools/mcp.py，延迟导入，可选）
+mcp = ["mcp>=1.2.0"]
 
 [tool.setuptools.packages.find]
 include = ["harness", "harness.*", "infra", "infra.*"]

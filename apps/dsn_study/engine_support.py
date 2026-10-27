@@ -50,6 +50,22 @@ class LLMService:
         resp = self._client.invoke([ChatMessage.user(prompt)])
         return resp.content or ""
 
+    def describe_image(self, image, prompt: str = "请详细描述这张图片的内容") -> str:
+        """图片描述（ScannerPipeline 等领域代码期望的契约）。
+
+        image 可为本地文件路径或 data URL。VisionModel 优先
+        （配置了 VISION_API_KEY 时），否则回退 LMStudio 视觉兜底。
+        """
+        from apps.dsn_study.config import Config
+        from apps.dsn_study.models.clients import (
+            VisionModel, LMStudioVisionFallback,
+        )
+        data_url = image if (isinstance(image, str) and image.startswith("data:")) \
+            else VisionModel.encode_image(image)
+        if Config.VISION_API_KEY:
+            return VisionModel().ask(data_url, prompt)
+        return LMStudioVisionFallback().describe_image(data_url, prompt)
+
     def __repr__(self):
         return f"<LLMService client={type(self._client).__name__}>"
 
