@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import sys
 import tempfile
@@ -32,11 +33,20 @@ if str(REPO_ROOT) not in sys.path:
 
 
 def pytest_configure(config):
-    """注册自定义 marker（pyproject.toml 里没有 [tool.pytest.ini_options]）。"""
+    """注册自定义 marker，并补齐"无 .env 也能收集"的最小环境。"""
     config.addinivalue_line("markers", "slow: 运行较慢的测试")
     config.addinivalue_line(
         "markers", "integration: 需要外部服务/设备/网络的测试"
     )
+
+    # 为什么需要这个占位 key：
+    #   1. apps/dsn/config.py 在 MAIN_MODEL_TYPE=openai（默认值）时强制要求
+    #      OPENAI_API_KEY，缺了就 EnvironmentError，收集期直接报错；
+    #   2. apps/dsn/main.py 的导入期检查发现"未配置"会拉起**交互式引导**，
+    #      而引导要读 stdin —— 在 pytest 里会把整个收集过程挂死。
+    #   3. 用 setdefault：机器上真的有 key 时以真的为准。
+    #   测试全程不访问真实模型后端（用 StubChatClient），这个值只是过导入关。
+    os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-not-real")
 
 
 @pytest.fixture(autouse=True)

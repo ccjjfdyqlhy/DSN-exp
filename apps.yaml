@@ -2,8 +2,8 @@
 #
 # AICF（Agent Infrastructure Cybernetics Framework）启动器按此文件加载应用 → 入口映射；
 # 未出现于此处的内置应用也可用。
-# launcher.py 内置清单: dsn / coding_agent / text_agent / densechat / dsn_study
-# 本文件额外登记 dsn_ui / emotion_exp。
+# launcher.py 内置清单: dsn_ui / dsn / coding_agent / text_agent / densechat / dsn_study
+# 本文件额外登记 emotion_exp。
 #
 # 合并语义（2026-10）：本文件可新增应用，也可覆盖内置应用的 description，
 # 但**不能改写内置应用的 entry**（框架保证内置入口可用）。
@@ -20,8 +20,7 @@
 
 dsn:
   entry: apps.dsn.entry
-  description: DSN 语音陪伴应用（默认启动）
-  default: true
+  description: DSN 语音陪伴应用
 
 coding_agent:
   entry: apps.coding_agent.entry
@@ -37,7 +36,8 @@ emotion_exp:
 
 dsn_ui:
   entry: apps.dsn_ui.entry
-  description: 现代化统一 Web 控制台与模型调度交互界面（基于 temp/ui_template 设计）
+  description: 现代化统一 Web 控制台与模型调度交互界面（默认启动）
+  default: true
 
 dsn_study:
   entry: apps.dsn_study.entry

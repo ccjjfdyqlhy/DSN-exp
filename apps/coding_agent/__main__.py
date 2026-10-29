@@ -6,8 +6,18 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from infra.models.openai import OpenAICompatClient
+
+# 与其他应用保持一致：优先读取仓库根目录的 .env。
+# 这样 onboarding.py 写入的模型配置对 `python -m apps.coding_agent` 也生效。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+except ImportError:  # 没装 python-dotenv 时仍然可以直接用环境变量
+    pass
 
 
 def _build_client() -> OpenAICompatClient:

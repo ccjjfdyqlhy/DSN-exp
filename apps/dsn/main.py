@@ -29,12 +29,16 @@ def _restart_process() -> None:
 
 
 def _is_env_configured() -> bool:
+    """是否已经配置好模型后端。
+
+    环境变量优先于 .env 文件：`export OPENAI_API_KEY=...` 同样算已配置。
+    此前只看 .env 文件，于是"只用环境变量配置"的用法会被误判成未配置，
+    在 CI / 容器 / pytest 收集期把整个进程挂死在交互式引导上。
+    """
+    env_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if env_key and env_key != "sk-your-key-here":
+        return True
     if not _ENV_PATH.exists():
-
-
-
-
-    # check if required environment vars are set
         return False
     try:
         with open(_ENV_PATH, "r", encoding="utf-8") as f:
@@ -52,6 +56,13 @@ def _is_env_configured() -> bool:
 
 
 if not _is_env_configured():
+    if not sys.stdin.isatty():
+        # 非交互环境（CI / 容器 / pytest 收集期）：引导流程要读 stdin，
+        # 进去只会把整个进程挂住。给一条明确出路后退出，而不是静默卡死。
+        print("\n  ✗ 未配置模型后端，且当前不是交互式终端，无法进入引导流程。")
+        print("    请创建 .env（参考 .env.example）并填入 OPENAI_API_KEY，")
+        print("    或直接 export OPENAI_API_KEY=... 后重试。\n")
+        sys.exit(1)
     print("\n  ⚠ 检测到未配置状态，进入引导流程...\n")
     try:
         from apps.dsn.onboarding import run as run_onboarding

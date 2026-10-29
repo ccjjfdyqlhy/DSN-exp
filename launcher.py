@@ -9,7 +9,7 @@
 #   1. 启动参数  --app <name>
 #   2. 配置文件  apps.yaml（{app: {entry: "apps.foo.entry", description: ...}}）
 #   3. 环境变量  DSN_APP=<name>
-#   4. 默认      dsn
+#   4. 默认      dsn_ui
 #
 # 约定: 应用包 apps/<name>/ 提供 entry 模块，含 main() 可调用对象。
 
@@ -25,14 +25,18 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parent
 APPS_CONFIG = ROOT / "apps.yaml"
 
-_DEFAULT_APP = "dsn"
+_DEFAULT_APP = "dsn_ui"
 
 # 应用清单（若存在 apps.yaml 则以其覆盖）
 APPS: dict[str, dict[str, Any]] = {
+    "dsn_ui": {
+        "entry": "apps.dsn_ui.entry",
+        "description": "现代化统一 Web 控制台与模型调度交互界面",
+        "default": True,
+    },
     "dsn": {
         "entry": "apps.dsn.entry",
-        "description": "DSN 语音陪伴应用（默认）",
-        "default": True,
+        "description": "DSN 语音陪伴应用",
     },
     "coding_agent": {
         "entry": "apps.coding_agent.entry",
@@ -111,10 +115,10 @@ def main(argv: list[str] | None = None) -> None:
     load_apps_config()
     parser = argparse.ArgumentParser(
         prog="dsn-harness",
-        description="DSN-exp Harness 应用启动器 — 默认启动 DSN 语音陪伴应用。",
+        description="DSN-exp Harness 应用启动器 — 默认启动 DSN UI 网页控制台。",
     )
     parser.add_argument("--app", default=None,
-                        help="要启动的应用名（默认 dsn，可用 DSN_APP 环境变量覆盖）")
+                        help="要启动的应用名（默认 dsn_ui，可用 DSN_APP 环境变量覆盖）")
     parser.add_argument("--list", action="store_true", help="列出可用应用")
     parser.add_argument("app_args", nargs="*", help="透传给应用的参数")
     args = parser.parse_args(argv)

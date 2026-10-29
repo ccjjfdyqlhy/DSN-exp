@@ -80,6 +80,10 @@
 
 > ⚠️ `DSN_UI_MODEL_PROFILES_DIR` 在注释里出现但**未实现**。生效的 profile 目录
 > 永远是 `apps/dsn/model_profiles/`。
+>
+> 模板与参考放在 `apps/dsn/model_profiles.example/`（默认不生效，复制过去才生效）。
+> 仓库里**不预置**带绝对路径的本地模型 —— 那些路径只在作者机器上有效，
+> 换个机器就会变成"列得出来、加载必失败"的幽灵模型。
 
 ### 2.4 Agent 行为
 
@@ -152,7 +156,7 @@
 |---|---|---|
 | API Key / 模型 | `.env`（dsn/dsn_study）或 `export`（dsn_ui） | 是 |
 | dsn_ui 端口 | `export DSN_UI_PORT=...` | 是 |
-| 本地模型清单 | `apps/dsn/model_profiles/*.yaml` | 是（dsn_ui 启动时扫描） |
+| 本地模型清单 | `apps/dsn/model_profiles/*.yaml`（模板在 `apps/dsn/model_profiles.example/`） | 是（dsn_ui 启动时扫描） |
 | 远程 Provider | dsn_ui 设置页 → 存到 `data/api_providers.json` | 否 |
 | 模型启动参数 | dsn_ui 界面 → `data/model_launch_overrides.json` | 否 |
 | 插件开关 | `plugin.yaml` 的 `condition` | 是 |

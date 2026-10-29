@@ -1,0 +1,18 @@
+# apps/dsn/model_profiles.example/gemma_3_4b_it_gguf.yaml
+# Gemma 3 4B IT (llama.cpp GGUF 基础模型)
+#
+# ⚠️ 这是**示例**，默认不在生效目录里。要用它请：
+#     cp apps/dsn/model_profiles.example/gemma_3_4b_it_gguf.yaml apps/dsn/model_profiles/
+# 然后把下面的 /path/to/... 换成你机器上的真实路径，再重启 dsn_ui。
+model: gemma-3-4b-it-gguf
+engine: llama_cpp
+priority: 75
+resident: false
+immediate: false
+orchestrated: true
+load_timeout: 120
+request_timeout: 300
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /path/to/gemma-3-4b-it-Q4_K_M.gguf

@@ -16,6 +16,10 @@ plans/*
 instances/models/*
 __pycache__/*
 .env
+# installer.py 创建的虚拟环境与可编辑安装产物 —— 不忽略的话，
+# 装完之后 git status 就会变脏，installer 的自动切分支会被拒绝。
+.venv/
+*.egg-info/
 note.txt
 /cli/webui/.credentials
 /cli/webui/.secret_key
@@ -31,6 +35,13 @@ note.txt
 AGENTS.md
 /prototypes/*
 *.distilled.json
+
+# ── 全局 onboarding（onboarding.py）产生的本地资源 ──
+/third_party/
+/models/
+.onboarding_state.json
+# 自动生成的 model profile 含本机绝对路径，不入库（模板见 model_profiles.example/）
+apps/dsn/model_profiles/onboarding_*.yaml
 
 # ── 文档目录 ──
 # 2026-10-20 起恢复跟踪：docs/ 下 17 篇架构/维护文档是本仓库最重要的知识资产，

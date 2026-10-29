@@ -30,13 +30,25 @@ pip install -e .                  # 可选：以 SDK 方式安装 harness + infr
 > `pip install -e .` 只会安装 **框架**（`harness` + `infra`）及其最小依赖，
 > **不含** Flask/FastAPI 等应用依赖。想跑 Web 界面仍然需要 `requirements.txt`。
 
-> ⚠️ **`requirements.txt` 也不完整。** `psutil`、`pydub`、`Pillow`、`opencv(cv2)`
-> 在代码里被直接 import，却**不在任何依赖清单里**。若启动时报
-> `ModuleNotFoundError`，先补装这些：
+> ⚠️ `requirements.txt` 里的版本号是**精确钉死**的（`openai==2.38.0`、
+> `numpy==1.26.4` 等），等于把作者那台机器冻住了。换机器装不上时，
+> 先怀疑的是这些钉子，而不是你的环境：
 >
 > ```bash
-> pip install psutil pydub Pillow opencv-python
+> pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple   # 换镜像
+> pip install -r requirements.txt --upgrade                                     # 放开版本约束
 > ```
+>
+> 其中 `numpy==1.26.4` 没有 Python 3.13+ 的 wheel，
+> `cryptography==50.0.0` 在部分平台需要 Rust 工具链。
+>
+> **推荐直接用一键安装器**，它会建独立虚拟环境并按 `requirements.txt` 安装：
+>
+> ```bash
+> python3 installer.py
+> ```
+>
+> 想先体检再决定：`python3 installer.py --doctor`（只读，不改动任何东西）。
 
 ### 1.3 配置
 
@@ -64,6 +76,7 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 python3 -c "import fastapi, flask, openai, yaml, dotenv; print('deps ok')"
 python3 -c "import harness; print('harness', harness.__version__)"   # 期望 0.5.0
 python3 main.py --list
+python3 installer.py --doctor                                    # 环境体检（只读）
 ```
 
 `--list` 的预期输出（7 个应用）：
@@ -112,12 +125,28 @@ python3 -m apps.dsn_ui.server --host 127.0.0.1 --port 8888 --slots 2
 
 ```bash
 python3 main.py --app dsn_study      # 学习助手（Flask，:5000）
-python3 main.py                      # DSN 语音陪伴（默认，:5000，需终端）
+python3 main.py                      # DSN UI 网页控制台（默认，:8888）
+python3 main.py --app dsn            # DSN 语音陪伴（:5000，需终端）
 python3 -m apps.coding_agent         # 编码助手 REPL
 python3 -m apps.densechat            # DenseChat WebUI（:8080）
 ```
 
 > ⚠️ `dsn` 与 `dsn_study` **默认端口都是 5000**，不要同时启动。
+
+### 2.3.1 仓库级引导（按需求自动配置）
+
+不确定该开哪些能力时，先运行根目录的 Textual TUI：
+
+```bash
+python3 onboarding.py            # 询问需求 → 选能力 → 确认计划 → 自动执行
+python3 onboarding.py --list     # 只列出目标 / 应用 / 能力
+python3 onboarding.py --check    # 非交互检查环境与已有资源
+```
+
+它会按你的选择写入 `.env`、安装依赖、克隆 llama.cpp / GPT-SoVITS、
+下载 GGUF 模型并生成 `apps/dsn/model_profiles/onboarding_*.yaml`。
+所有仓库克隆与下载都会在执行前列出，确认后才开始；已存在的文件会跳过。
+
 
 ### 2.4 端口一览
 
@@ -142,7 +171,7 @@ python3 -m apps.densechat            # DenseChat WebUI（:8080）
 ### 3.2 接本地 llama.cpp
 
 1. 编译好 llama.cpp，确认 `llama-server` 可执行；
-2. 在 `apps/dsn/model_profiles/` 放一个 YAML：
+2. 在 `apps/dsn/model_profiles/` 放一个 YAML（模板见 `apps/dsn/model_profiles.example/`）：
 
 ```yaml
 model: my-model
@@ -161,6 +190,9 @@ llama_config:
 
 > ⚠️ `apps/dsn/model_profiles/` 是**唯一生效的** profile 目录。
 > `config.py` 注释里提到的 `DSN_UI_MODEL_PROFILES_DIR` 环境变量**并未实现**，改了不生效。
+>
+> 模板在 `apps/dsn/model_profiles.example/`，复制过去并改掉路径才会生效。
+> 用 `python3 installer.py --doctor` 可以提前查出哪些 profile 的路径在本机不存在。
 
 ### 3.3 用图形界面配置（推荐新手）
 

@@ -2,10 +2,11 @@
 # AICF（Agent Infrastructure Cybernetics Framework）入口 — 应用启动器。
 #
 # 项目根目录由 AICF 框架代码占领（infra/ = 基础设施与运行时管理，
-# harness/ = Agent 核心）。启动时默认运行 DSN 语音陪伴应用，
+# harness/ = Agent 核心）。启动时默认运行 DSN UI 网页控制台，
 # 可通过以下方式切换为其他基于 AICF 构建的应用:
 #
-#   python main.py                       # 默认 → DSN 语音陪伴应用
+#   python main.py                       # 默认 → DSN UI 网页控制台
+#   python main.py --app dsn             # DSN 语音陪伴应用
 #   python main.py --app coding_agent    # 启动参数
 #   DSN_APP=coding_agent python main.py  # 环境变量
 #   python main.py --list                # 列出可用应用

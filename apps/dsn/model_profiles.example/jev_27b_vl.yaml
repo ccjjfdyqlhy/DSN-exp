@@ -1,15 +1,20 @@
-# apps/dsn/model_profiles/jev_27b_vl.yaml
+# apps/dsn/model_profiles.example/jev_27b_vl.yaml
 # JEV-27B-VL Q4_K_M —— Qwen3.8-27B 主体 + 视觉塔 + System-1 决策头（三层混合）
+#
+# ⚠️ 这是**示例**，默认不在生效目录里。要用它请：
+#     cp apps/dsn/model_profiles.example/jev_27b_vl.yaml apps/dsn/model_profiles/
+# 然后把下面的 /path/to/... 换成你机器上的真实路径，再重启 dsn_ui。
 #
 # 启动命令等价于：
 #   ~/llama.cpp/build/bin/llama-server \
-#     --model  /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.Q4_K_M.gguf \
-#     --mmproj /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.mmproj-bf16.gguf \
+#     --model  /path/to/JEV-27B-VL.Q4_K_M.gguf \
+#     --mmproj /path/to/JEV-27B-VL.mmproj-bf16.gguf \
 #     --n-gpu-layers 99 --tensor-split 11,11 --ctx-size 32768 \
 #     --flash-attn on --jinja
 #
-# 显存与层数（实测结论，别改回小数值）：
+# 显存与层数（**原作者机器**上的实测结论，别改回小数值）：
 #   27B Q4_K_M 权重 ≈ 15.4G，两张 2080 Ti 各 11G。
+#   → 换机器请按自己的显存重新分配 tensor_split 与 n_gpu_layers。
 #
 #   **必须用 --n-gpu-layers 99（=全部层上卡）**，不能按"层数刚好够"去设 47/64。
 #   本模型是 qwen35 混合架构（Gated Delta Net 线性注意力 + 标准注意力），
@@ -39,8 +44,8 @@ request_timeout: 900
 
 llama_config:
   binary_path: ~/llama.cpp/build/bin/llama-server
-  model_path: /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.Q4_K_M.gguf
-  mmproj_path: /home/darkstar/qwen_weights/JEV-27B-VL/JEV-27B-VL.mmproj-bf16.gguf
+  model_path: /path/to/JEV-27B-VL.Q4_K_M.gguf
+  mmproj_path: /path/to/JEV-27B-VL.mmproj-bf16.gguf
   # 必须 99（全部层上卡）：见文件头说明，小层数会禁用 fused GDN 算子并慢 7 倍。
   n_gpu_layers: 99
   tensor_split: "11,11"

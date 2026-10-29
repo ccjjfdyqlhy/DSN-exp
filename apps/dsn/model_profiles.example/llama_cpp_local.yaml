@@ -1,0 +1,28 @@
+# apps/dsn/model_profiles.example/llama_cpp_local.yaml
+# 最简的本地 llama.cpp 模型模板 —— 从零写 profile 看这个就够。
+#
+# 用法：
+#   1. cp apps/dsn/model_profiles.example/llama_cpp_local.yaml apps/dsn/model_profiles/
+#   2. 把 model_path 换成你的 GGUF 路径，binary_path 换成 llama-server 路径
+#   3. 重启 dsn_ui
+#
+# 路径里的 ~ 与 $VAR 会被自动展开。
+
+model: my-local-model
+engine: llama_cpp
+priority: 80
+orchestrated: true
+resident: false
+immediate: false
+load_timeout: 180
+request_timeout: 300
+
+llama_config:
+  binary_path: ~/llama.cpp/build/bin/llama-server
+  model_path: /path/to/model.gguf
+  # 有 mmproj 才具备视觉能力（多模态模型才需要）
+  # mmproj_path: /path/to/mmproj.gguf
+  n_gpu_layers: 99      # 99 = 全部层上卡；显存不够就调小
+  ctx_size: 8192        # 上下文长度，按显存与模型能力定
+  # tensor_split: "11,11"   # 多卡时按各卡显存分配
+  # flash_attn: "on"

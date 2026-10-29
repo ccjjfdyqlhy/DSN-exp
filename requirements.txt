@@ -38,6 +38,9 @@ PyJWT>=2.15.0
 schedule==1.2.2
 croniter>=1.4.1
 rich>=13.0.0
+# 全局 onboarding（onboarding.py）的 TUI 与下载客户端
+textual>=1.0
+httpx>=0.24
 
 # ── 语音与浏览器（较重，按需安装）──
 # funasr==1.3.9        # ASR：会拉入 torch 依赖链，仅在使用语音功能时需要
