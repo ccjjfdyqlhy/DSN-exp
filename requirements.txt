@@ -34,6 +34,10 @@ opencv-python>=4.8   # apps/dsn/tracking/*（摄像头、媒体处理）、psych
 cryptography==50.0.0
 PyJWT>=2.15.0
 
+# 试卷 PDF 渲染（skills/builtin/question_print 的 print_paper 必需；
+# 系统需先装 libpango/cairo 等 weasyprint 依赖库）
+weasyprint>=60.0
+
 # ── 任务调度与展示 ──
 schedule==1.2.2
 croniter>=1.4.1

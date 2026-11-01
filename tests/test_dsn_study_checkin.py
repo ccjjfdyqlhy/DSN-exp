@@ -58,15 +58,19 @@ def test_checkin_record_and_validity(checkin):
 def test_checkin_streak_and_calendar(checkin):
     uid = 7
     today = datetime.now()
-    for offset in (0, 1, 2):
-        d = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+    days = [(today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            for offset in (0, 1, 2)]
+    for d in days:
         checkin.add_checkin(uid, d, "09:00:00")
     assert checkin.compute_checkin_streak(uid) == 3
 
+    # 日历视图按「当前月」聚合：跨月的前两天会落在上个月，
+    # 因此这里按落在本月的天数断言（而非固定 3）。
     month = today.strftime("%Y-%m")
+    in_month = [d for d in days if d.startswith(month)]
     cal = checkin.month_calendar(uid, today.year, today.month)
     assert cal[today.strftime("%Y-%m-%d")] is True
-    assert sum(1 for v in cal.values() if v) >= 3
+    assert sum(1 for v in cal.values() if v) >= len(in_month) >= 1
 
 
 # ── 学习日志门面 ──

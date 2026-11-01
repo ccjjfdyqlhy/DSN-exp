@@ -29,6 +29,8 @@ class TaskTools:
         # 类级 _ctx 保留兼容 set_context 旧模式。
         self.task_manager = None
         self.db = None
+        # 复杂度分析器（由 boot 注入；缺省时按需自建）
+        self._complexity = None
 
     def _mgr(self):
         mgr = getattr(self, "task_manager", None) or self._ctx.get("task_manager")
@@ -301,6 +303,22 @@ class TaskTools:
             priority=1)
         mgr.execute_task(tid)
         return {"task_id": tid}
+
+    # ── 复杂度分析（对齐参考实现 tasks.ComplexityAnalyzer 的用途）──
+
+    def analyze_complexity(self, text: str, context_length: int = 0) -> dict:
+        """分析问题复杂度：返回 is_complex / score / reasons / suggestion。
+
+        参考实现里 ComplexityAnalyzer 由 todo_plugin 用来决定"是否需要拆解复杂任务"；
+        dsn_study 无任务拆解链路，这里把它暴露为显式工具，并同时被对话主链使用
+        （复杂度高时提示 AI 走 create_reasoner 深入推理）。
+        """
+        try:
+            from apps.dsn_study.tasks import ComplexityAnalyzer
+            analyzer = getattr(self, "_complexity", None) or ComplexityAnalyzer()
+            return analyzer.analyze_complexity(text or "", int(context_length or 0))
+        except Exception as e:
+            return {"error": f"复杂度分析失败: {e}"}
 
     # ── 动作执行（直接执行，不走 TaskManager/DB） ──
 

@@ -235,6 +235,24 @@ tools:
         type: string
         description: 上下文信息
         required: false
+- name: analyze_complexity
+  display_name: 复杂度分析
+  description: 分析问题的复杂度，返回是否需要深入推理（is_complex/score/reasons）。
+  module: tools.task_tools
+  class: TaskTools
+  methods:
+  - name: analyze_complexity
+    description: 分析问题复杂度
+    parameters:
+      text:
+        type: string
+        description: 待分析的问题文本
+        required: true
+      context_length:
+        type: integer
+        description: 上下文轮数（可选）
+        required: false
+        default: 0
 - name: execute_action
   display_name: 执行操作
   description: 在用户电脑终端同步执行 shell 命令或 Python 脚本，也可读写编辑文件。阻塞等待结果。用户说「跑一下」「执行」「终端」「命令行」「nvidia-smi」「ls」「cd」等均使用此工具。shell

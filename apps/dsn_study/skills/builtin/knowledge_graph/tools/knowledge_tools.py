@@ -85,7 +85,7 @@ class KnowledgeGraphTool:
 
     def build_from_syllabus(self, subject: str, content: str,
                             user_id: int = 0, **kwargs) -> dict:
-        from knowledge_graph.builder import KnowledgeGraphBuilder
+        from apps.dsn_study.knowledge_graph.builder import KnowledgeGraphBuilder
 
         builder = KnowledgeGraphBuilder(
             graph_store=self._store,

@@ -1,9 +1,17 @@
 # api/async_tasks.py
-# 异步任务状态查询 API — 供客户端 AsyncTaskPoller 轮询扫题/批处理结果。
+# 异步任务 API — POST /api/chat/async_send + GET /api/task/status/<id>
+#
+# 与参考实现（DSN-exp api/async_tasks.py）的对应关系：
+#   - 参考版 /chat/async_send 走插件管线（engine.pipeline.process），
+#     产出 reply + audio_b64；dsn_study 无插件管线，改为走 StudyEngine.chat，
+#     产出 reply（纯文本，无 TTS）。
+#   - 状态查询端点语义一致（STUDY 版额外做了归属校验 403）。
 
 from __future__ import annotations
 
 import logging
+import threading
+import uuid
 
 from flask import Blueprint, jsonify, request, g, current_app
 
@@ -32,6 +40,41 @@ def _require_auth():
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
     g.user = user
+
+
+@async_task_bp.route("/api/chat/async_send", methods=["POST"])
+def async_send():
+    """异步对话：立即返回 task_id，结果由 /api/task/status/<id> 轮询。"""
+    engine = current_app.config.get("ENGINE")
+    if not engine:
+        return jsonify({"error": "Engine not ready"}), 503
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Missing message"}), 400
+
+    user_id = g.user.get("uid", 0)
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    chat_id = data.get("chat_id", 0) or 0
+    session_id = data.get("session_id") or None
+    task_id = f"async_{uuid.uuid4().hex[:16]}"
+    store = engine.async_task_store
+    store.create(task_id, user_id, chat_id)
+
+    def _run():
+        try:
+            reply = engine.chat(message, user_id=user_id, session_id=session_id)
+            store.complete(task_id, reply=reply or "")
+        except Exception as e:
+            logger.error("异步执行失败 %s: %s", task_id, e)
+            store.complete(task_id, reply="", error=str(e))
+
+    threading.Thread(target=_run, daemon=True).start()
+    logger.info("异步发送: task_id=%s user=%d", task_id, user_id)
+    return jsonify({"task_id": task_id, "status": "running"}), 202
 
 
 @async_task_bp.route("/api/task/status/<task_id>", methods=["GET"])

@@ -80,11 +80,14 @@ assert db.compute_checkin_streak(2) == 4, db.compute_checkin_streak(2)
 print("  PASSED (streak=4)")
 
 print("\n=== Test 7: 月度日历 checkin_month ===")
-month = db.checkin_month(2, today.year, today.month)
+# 日历按「自然月」聚合：today-3 可能落在上个月（月初时），
+# 因此按该日期所属的月份查询，而不是一律查当前月。
+target = today - timedelta(days=3)
+month = db.checkin_month(2, target.year, target.month)
 assert month, month
 # 日期按天聚合
 dates = [m["date"] for m in month]
-assert (today - timedelta(days=3)).isoformat() in dates
+assert target.isoformat() in dates
 # 每条有 checkins 列表
 for m in month:
     assert "checkins" in m and len(m["checkins"]) >= 1

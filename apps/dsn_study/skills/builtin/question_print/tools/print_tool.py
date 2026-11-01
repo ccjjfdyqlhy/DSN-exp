@@ -114,7 +114,7 @@ class QuestionPrintTool:
             logger.error("weasyprint 不可用: %s", e)
             return ""
 
-        from utils.workspace import get_workspace_manager
+        from apps.dsn_study.workspace import get_workspace_manager
         wm = get_workspace_manager()
         try:
             out_dir = wm.user_subdir(uid, "papers")
@@ -188,7 +188,7 @@ h1 {{ font-size: 16pt; text-align: center; margin-bottom: 4pt; }}
 
     def _print(self, pdf_path: str, copies: int, printer: str) -> dict:
         try:
-            from document.printer import PrinterTool
+            from apps.dsn_study.document.printer import PrinterTool
             return PrinterTool.print_file(
                 file_path=pdf_path,
                 printer_name=printer or None,

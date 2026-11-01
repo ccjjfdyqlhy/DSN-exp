@@ -217,6 +217,40 @@ class Config:
     TTS_PROCESS_TEMPERATURE = float(_env("TTS_PROCESS_TEMPERATURE", "0.2"))
     TTS_PROCESS_TIMEOUT = int(_env("TTS_PROCESS_TIMEOUT", "30"))
 
+    # ── TTS 资源托管（infra 资源池）──
+    # 资源调度全部交给 infra.resources.ResourcePool；这里只提供参数。
+    # TTS_AUTOSTART=true  → 托管模式：资源池负责拉起/停止 GPT-SoVITS 服务。
+    # TTS_AUTOSTART=false → adopt 模式：只接入既有服务，绝不拉起也绝不杀进程。
+    TTS_AUTOSTART = _env("TTS_AUTOSTART", "true").lower() == "true"
+    TTS_PORT = max(1, int(_env("TTS_PORT", "9880")))
+    TTS_DEVICE = _env("TTS_DEVICE", "cuda")
+    # 只用于 CUDA_VISIBLE_DEVICES 的物理卡号（"0"）；留空 = 不限制。切勿填 "cuda"。
+    TTS_GPU_ID = _env("TTS_GPU_ID", "")
+    TTS_SERVER_DIR = _env("TTS_SERVER_DIR", "/home/darkstar/TTS")
+    TTS_SERVER_ENTRY = _env("TTS_SERVER_ENTRY", "api.py")
+    # 启动策略：conda（默认，GPT-SoVITS 依赖在独立 conda 环境里）/ command
+    TTS_LAUNCH_MODE = _env("TTS_LAUNCH_MODE", "conda")
+    TTS_CONDA_ENV = _env("TTS_CONDA_ENV", "GPTSoVits")
+    TTS_CONDA_EXE = _env("TTS_CONDA_EXE", "/home/darkstar/anaconda3/bin/conda")
+    TTS_CONDA_NO_CAPTURE = _env("TTS_CONDA_NO_CAPTURE", "true").lower() == "true"
+    # command 模式下的解释器（留空 = 当前解释器）
+    TTS_PYTHON = _env("TTS_PYTHON", "")
+    # 启动前预检（入口脚本存在 / conda 环境存在），失败时给出可操作的中文错误
+    TTS_PREFLIGHT = _env("TTS_PREFLIGHT", "true").lower() == "true"
+    # 服务就绪判定：GPT-SoVITS 的 GET / 缺参数时合法返回 400，故放宽为 <500
+    TTS_READY_ACCEPT_BELOW = int(_env("TTS_READY_ACCEPT_BELOW", "500"))
+    # 资源池为 TTS 预留的加载超时（GPT+SoVITS 权重加载是分钟级）
+    TTS_LOAD_TIMEOUT = int(_env("TTS_LOAD_TIMEOUT", "600"))
+    TTS_MAX_CONCURRENT = max(1, int(_env("TTS_MAX_CONCURRENT", "1")))
+    # 单次合成请求超时
+    TTS_REQUEST_TIMEOUT = float(_env("TTS_REQUEST_TIMEOUT", "180"))
+    # 音色 profile
+    TTS_PROFILE_DIR = _env("TTS_PROFILE_DIR", "")
+    TTS_PROFILE_NAME = _env("TTS_PROFILE_NAME", "")
+    # 启动后后台预热（拉起 TTS 服务）。默认关闭：GPT-SoVITS 加载权重需
+    # 分钟级并占用显存，交给运维显式预热或首次合成时按需拉起更稳妥。
+    TTS_WARMUP = _env("TTS_WARMUP", "false").lower() == "true"
+
     # ═══════════════════════════════════════════════════════════════════════
     # 第六层: 视觉系统
     # ═══════════════════════════════════════════════════════════════════════

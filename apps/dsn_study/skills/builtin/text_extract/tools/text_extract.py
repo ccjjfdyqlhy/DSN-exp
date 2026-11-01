@@ -111,7 +111,7 @@ class TextExtractTool:
         if models is not None and hasattr(models, "invoke"):
             try:
                 import importlib
-                ctx_mod = importlib.import_module("plugins.base")
+                ctx_mod = importlib.import_module("apps.dsn_study.engine_support")
                 ctx = getattr(ctx_mod, "PluginContext")()
                 return str(models.invoke(
                     messages=[{"role": "user", "content": prompt}],
@@ -131,7 +131,7 @@ class TextExtractTool:
         except Exception:
             try:
                 import importlib
-                clients_mod = importlib.import_module("apps.dsn.models.clients")
+                clients_mod = importlib.import_module("apps.dsn_study.models.clients")
                 chat_cls = getattr(clients_mod, "OpenAIChat")
                 chat = chat_cls()
                 return str(chat.send_message(prompt))

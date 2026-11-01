@@ -31,7 +31,7 @@ git clone https://github.com/ccjjfdyqlhy/DSN-exp.git && cd DSN-exp && python3 in
 | 你可能想要… | 在这里 |
 |---|---|
 | 一个能管模型、跑对话、看资源占用的 Web 控制台 | **`dsn_ui`**，默认主入口，端口 `8888` |
-| 能听会说的语音陪伴 Agent | **`dsn`** |
+| 能听会说的语音陪伴 Agent，详见[旧README](https://github.com/ccjjfdyqlhy/DSN-exp/blob/main/README_zh.md)| **`dsn`** |
 | 题库、模拟考试、知识图谱、学习计划 | **`dsn_study`** |
 | 终端里的编码助手 | **`coding_agent`** |
 | 一套可复用的 Agent 底座，写自己的应用 | `harness/` + [SDK 指南](docs/sdk_guide.md) |
@@ -63,29 +63,6 @@ infra/    基础设施     模型编排 · 资源池 · 存储 · 网关 · 鉴�
 
 ---
 
-## 🛠️ 安装器会做什么
-
-它不只是一个 `pip install`，而是一次完整的「先体检、再安装、最后带你跑起来」：
-
-| 步骤 | 内容 |
-|---|---|
-| 1 | 检查 Python / pip / git 是否就位 |
-| 2 | 检查仓库完整性（关键文件、目录、每个应用的入口）+ **源码语法体检** |
-| 3 | 探测机器配置（CPU / 内存 / 磁盘 / GPU / 端口占用） |
-| 4 | 建 `.venv` 虚拟环境，装 `requirements.txt` + `pip install -e .` |
-| 5 | 生成 `.env`，问你要不要现在接入模型后端，然后启动控制台 |
-
-> 远端默认分支是 `main`，但那只是**安装引导页**（旧的单体布局 + 一份 installer.py）。
-> 安装器会自动切到正式分支 `harness-refactor` 再继续 —— 切换发生在装依赖之前，
-> 所以 `.env` / `.venv` / 依赖都按正式分支的清单来。
-> 不想切换时加 `--no-switch`。
-
-> **为什么要有语法体检**：语法错误不会让应用"起不来"，而是让**某一块功能静默消失**。
-> 比如某个 3.12 才合法的 f-string，在 3.10 上只会让 `server.py` 的 try/except
-> 吞掉导入失败 —— 控制台照常打开，但「接入新实例 / TTS」那批 API 全落到
-> SPA catch-all，返回 HTML，前端报 `Unexpected token '<'`。
-> 体检会在装依赖之前就把这类问题指出来。
-
 ### 安装器的用法
 
 ```bash
@@ -98,44 +75,11 @@ python3 installer.py --port 8899        # 换端口（8888 被占用时）
 python3 installer.py --host 0.0.0.0     # 允许局域网访问（默认只绑 127.0.0.1）
 ```
 
-> 安装器**只用标准库**——它得在你机器上一个第三方依赖都还没有的时候就能跑起来。
-> 仓库状态不对时它会直接告诉你缺什么，而不是让你对着报错猜。
->
-> 控制台默认只监听 `127.0.0.1`：`dsn_ui` 没有鉴权，而它能读写 `.env` 里的
-> API Key、能起 agent —— 绑到 `0.0.0.0` 等于把这些能力暴露给整个局域网。
-
 ### 🧭 不知道装什么？让向导来问你
 
 ```bash
-python3 onboarding.py            # Textual TUI 向导
-python3 onboarding.py --list     # 查看可选目标 / 应用 / 能力
-python3 onboarding.py --check    # 非交互检查环境与资源
+python3 onboarding.py
 ```
-
-向导会先问你想做什么（网页控制台 / 语音陪伴 / 本地模型 / 学习 …），再让你勾选
-能力（远程 API、LM Studio、llama.cpp、GGUF 模型、TTS、记忆、浏览器自动化 …）。
-确认执行计划后，它会自动写 `.env`、装依赖、克隆 llama.cpp / GPT-SoVITS、
-下载模型并生成 `apps/dsn/model_profiles/onboarding_*.yaml`。
-已存在的仓库/文件会跳过，下载支持断点续传。
-
-> **安装器也会把你交给它**：安装流程里的「接入模型后端」菜单选
-> 「打开完整引导」，就会直接拉起这个 TUI（用 `.venv` 里的解释器跑，
-> 所以 Textual 是装好的）。安装器只管"装得上、起得来"，
-> "要什么能力、要不要下模型"归它管。
-
-### 不配模型也能跑
-
-装完就能用，**不需要** `.env`、不需要模型文件、不需要 GPU：
-
-| 应用 | 零配置启动 | 说明 |
-|---|---|---|
-| `dsn_ui` | ✅ | Web 控制台，**日常主入口** |
-| `densechat` | ✅ | DenseChat WebUI（:8080） |
-| `emotion_exp` | ✅ | 终端 Agent（自动降级到 Stub 模型） |
-| `text_agent` | ✅ | 最小占位示例 |
-| `coding_agent` | ❌ | 需要模型后端 |
-| `dsn` | ❌ | 语音陪伴，需要模型后端 |
-| `dsn_study` | ❌ | 学习助手，需要模型后端 |
 
 ---
 
@@ -163,11 +107,6 @@ python3 onboarding.py --check    # 非交互检查环境与资源
 | Node.js | **不需要** | 只有你改了前端源码要重新构建时才需要（18+） |
 | GPU | 不需要 | 跑远程 API 完全不依赖显卡；本地模型才需要 |
 | 磁盘 | ≥ 2GB | 依赖 + 模型 |
-
-> ⚠️ **两个依赖陷阱**：
-> 1. `pip install -e .` **只装 `harness` + `infra`**，不含 Flask/FastAPI，跑应用必须用 `requirements.txt`；
-> 2. `requirements.txt` 里的版本是**精确钉死**的（`numpy==1.26.4` 没有 3.13+ wheel，`cryptography==50.0.0` 某些平台要 Rust 工具链）——装不上时先怀疑这些钉子。
-
 ---
 
 ## ⚙️ 配置
@@ -199,8 +138,6 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 OPENAI_API_KEY=sk-你的真实密钥
 ```
 
-> ⚠️ 别把 `sk-your-key-here` 这个占位值留在文件里：`apps/dsn/main.py`
-> 会把它判定为「未配置」，从而拉起交互式引导——在容器 / CI 里会直接卡死。
 > 完整变量分类见 [configuration.md](docs/configuration.md)。
 
 ---
@@ -270,21 +207,6 @@ python3 installer.py --doctor          # 环境体检（只读）
 
 ---
 
-## 🩺 常见故障
-
-| 症状 | 原因 | 解决 |
-|---|---|---|
-| `python: command not found` | 系统只有 `python3` | 全部命令换成 `python3` |
-| 启动时卡在「请选择 (1-8)」 | `.env` 里还是占位密钥，触发了交互式引导 | 填真实 `OPENAI_API_KEY`，或 `export OPENAI_API_KEY=...` |
-| `pytest` 卡住不动 | 同上（收集期触发引导） | 同上；或直接跑 `pytest`（conftest 已兜底） |
-| 界面能开但对话报错 | 没接模型后端 | 「设置 → Provider」填 Key |
-| 模型列出来了但加载失败 | profile 里的路径在本机不存在 | `python3 installer.py --doctor` 查死路径，改或删该 profile |
-| 前端报 `Unexpected token '<'` | 请求打到了 SPA catch-all，返回的是 HTML | `curl -i` 看那个路径是不是 HTML |
-| 端口已被占用 | 上一次没关干净 | `python3 installer.py --port 8899` |
-| 某个功能没反应 | 该子系统初始化失败只打了一条 warning 就继续启动了 | **先看启动日志里的 warning** —— 详见 [排障总则](docs/maintenance.md) |
-
----
-
 ## 🏗️ 架构速览
 
 ```
@@ -329,26 +251,11 @@ pip install -r requirements.txt
 pip install pytest                     # pytest 不在 requirements 里
 python3 -m pytest -q                   # 全量，约 100 秒
 python3 -m pytest -m known_broken      # 查看待重做的用例
-```
-
-当前基线：**634 通过 / 0 失败 / 0 收集错误**（另有 18 个按 marker 排除）。
-全新 clone 不需要 `.env` 也能直接收集——`tests/conftest.py` 会兜底。
+```。
 
 > 仓库内置了 pytest 配置：`testpaths` 限定只扫 `tests/`，
 > 因此在根目录裸跑 `pytest` 不会误入 `temp/`
 > （那里的脚本会在**收集期真的调用外部 API**）。
-
-### 前端开发
-
-```bash
-cd apps/dsn_ui/frontend
-npm install
-npm run dev      # 开发服务器
-npm run build    # 构建并通过 scripts/sync-to-static.cjs 同步到 ../static/
-```
-
-前端源码目录 `apps/dsn_ui/frontend/` 是**被 .gitignore 忽略**的，
-仓库只提交 `apps/dsn_ui/static/` 下的构建产物。
 
 ### 外部 MCP 工具
 
@@ -376,14 +283,5 @@ npm run build    # 构建并通过 scripts/sync-to-static.cjs 同步到 ../stati
 ---
 
 ## 📌 项目现状
-
-- **远端默认分支**：`main` —— 它只是**安装引导页**（旧的单体布局 + 一份 `installer.py`）。
-  正式代码在 `harness-refactor`，`installer.py` 会自动切过去。
-- **测试基线**：634 通过 / 0 失败。
-- **已知技术债**：见 [docs/technical-debt.md](docs/technical-debt.md)（该文记录「曾经出过的错」与修复思路，
-  按仓库惯例「注释即缺陷数据库」）。
-- **许可证**：内部实验性项目，无公开许可证。
-- 部分子系统（`apps/dsn/pyncm`、`apps/dsn/psychoscope`、
-  `apps/dsn/world`）为 vendored 代码，许可证与维护状态以对应目录为准。
 
 [![RepoStars](https://repostars.dev/api/embed?repo=ccjjfdyqlhy%2FDSN-exp&theme=ocean)](https://repostars.dev/?repos=ccjjfdyqlhy%2FDSN-exp&theme=ocean)

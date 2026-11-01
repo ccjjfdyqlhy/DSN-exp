@@ -135,6 +135,97 @@ scan API 主链路（`_extract_and_store`）本来就是视觉直取。真正的
 **验收**：`tests/test_dsn_study_vision.py` 6 过（describe_image 双通道 + 文件路径入参、
 convert_via_vision 建包往返、空参校验、process_images 全链路桩管线）；全量 633 passed / 0 失败。
 
+## 阶段 6.5（P0/P1，2026-11-01）：对照参考版全量补齐 ✅
+
+> 对照基准：`/home/darkstar/DSN-exp-test/study/DSN-exp`（参考实现，git 分支 `study`）。
+> 本阶段把"学习域"功能补到与参考版一致，并把移植时遗留的坏导入彻底修掉。
+
+### 6.5.1 P0：坏导入（曾导致两个技能实际不可用）
+
+| 位置 | 症状 | 修复 |
+|---|---|---|
+| `skills/builtin/knowledge_graph/tools/knowledge_tools.py:88` | `from knowledge_graph.builder import ...` → ModuleNotFoundError，**「从考纲构建知识图谱」工具完全不可用** | 改为 `apps.dsn_study.knowledge_graph.builder` |
+| `skills/builtin/question_print/tools/print_tool.py:117,191` | `from utils.workspace` / `from document.printer` → ModuleNotFoundError，**「出题打印」技能实际失效** | 改为 `apps.dsn_study.workspace` / `apps.dsn_study.document.printer`；并给 `workspace.WorkspaceManager` 补 `user_subdir/register_subdir/root_subdir` 契约 |
+| `api/scan.py:84,93` | `from config import Config` → 扫题回退分支 ImportError | 改为 `apps.dsn_study.config` |
+| `skills/builtin/text_extract/tools/text_extract.py:114,134` | 指向 `plugins.base` / `apps.dsn.models.clients` 的死路径 | 改为 `apps.dsn_study.engine_support` / `apps.dsn_study.models.clients` |
+| `boot.py:122` | 到期复习注入取 `d.get("name")`，而 `get_due_reviews` 返回列名是 `kp_name` → 知识点名称永远显示为编码 | 改取 `kp_name` |
+| 依赖声明 | `weasyprint` 未进 requirements.txt（打印技能硬依赖）；本机缺 `schedule/croniter/numpy` | 补声明并安装 |
+
+### 6.5.2 P1：补齐参考版有、dsn_study 缺的能力
+
+| 能力 | 参考版位置 | dsn_study 落地 |
+|---|---|---|
+| **考试超时自动交卷 + 交卷关键词触发** | `plugins/builtin/exam_sim_plugin.py:34-67`（注：REF 侧 `ctx.extra["exam_session_id"]` 无写入方，实为死代码） | `chat_hooks.py`：按 user_id 查 `exam_sessions` 找进行中会话 → 超时自动 `auto_submit`；关键词收窄为明确交卷语义（"交卷/提交试卷/答完了…"），避免误伤"提交作业" |
+| **`<plan_check>` 标签勾选任务** | `plugins/builtin/plan_plugin.py:73-108` | `chat_hooks.post_process()` 解析标签 → `PlanEngine.check_off/skip_task` → 从回复中移除标签；`daily_summary` 补 `task_id`、今日计划注入补 `id=`，使标签可用 |
+| **22:00 日终报告注入** | `plugins/builtin/plan_plugin.py:110-134` | `chat_hooks._daily_report_block()`（每日一次） |
+| **聊天内图片转文字** | `plugins/builtin/vision_plugin.py` | `chat_hooks._vision_block()` + `/api/chat/send` 接受 `image` 字段（data URL 或路径） |
+| **document 子系统** | `document/doc_processor.py`(267) + `document/inputs.py`(33) + `models/clients.py` 的 OCRModel/GradingModel | 移植 `document/doc_processor.py`、`document/inputs.py`；新增 `document/ocr.py`（OCRModel 薄封装，走 infra 视觉层 `ocr_md`）、`document/grading.py`（GradingModel 移植） |
+| **document 技能（10 工具）** | `skills/builtin/document/` | 全量移植（扫描/打印/HMD/描述图片/扫描入题/**扫描作答卷判分**），import 路径改写 + 依赖注入（题库 + 模型） |
+| **打卡/学习日志的 AI 可达性** | `skills/system/tools/tracking_tools.py` | 新增 `study_tracking` 技能（7 工具：打卡/打卡统计/学习时段/学习笔记/时段列表/每日时长/每日报告） |
+| **批量操作技能** | `skills/batch/` | 新增 `batch` 技能（2 工具），依赖注入 TaskManager |
+| **异步对话入口** | `POST /chat/async_send` | 新增 `POST /api/chat/async_send`（后台线程跑 StudyEngine.chat，错误正确落库） |
+| **`<tool>` XML 标签调用协议** | `plugins/builtin/tool_plugin.py:191-240` | 新增 `tool_adapter.SkillTagToolCallAdapter`（原生 function calling 优先，标签兜底）+ `harness/agent_runtime.py` 新增可选 `adapter` 注入口 |
+| **ComplexityAnalyzer 接线** | `engine.py:223` → todo_plugin | 实例化并接到对话主链（复杂问题提示走 `create_reasoner`）+ 暴露 `analyze_complexity` 工具 |
+
+### 6.5.3 验收
+
+- 新增 `tests/test_dsn_study_functional_parity.py`（19 用例）：技能加载 / 题库往返 / 组卷 /
+  计划流程 / 任务与复杂度 / 打卡与学习日志 / document 工具可达 / batch / plan_check 回写 /
+  考试超时自动交卷 / 日终报告 / `<tool>` 标签协议 / **桩模型完整对话回路（原生 + XML 两条路径）** /
+  **依赖注入回归**（防 dep_map 键名与工具属性名不一致）/ **坏导入回归**（防未加前缀 import 复现）。
+- 既有 dsn_study 测试 66 → 全绿；全量 620 passed（17 项失败为改动前既有基线，已用 git stash 对照确认）。
+- 实机冒烟：`python -m apps.dsn_study --web` 起服务，10 个 GET + 4 个 POST 端点 200；
+  出题打印实测生成 PDF 并投递 CUPS 打印（job_id 39 / G3010LAN）。
+
+### 6.5.4 遗留（需外部条件）
+
+- LLM 端到端对话需要可用模型凭据：当前 `apps/dsn_study/.env` 的 `OPENAI_API_KEY`
+  对 `https://api.littlecold.cn/v1` 返回 **401 Invalid token**；本机无 LMStudio/llama.cpp 服务。
+  代码路径已用桩模型验证通过，换有效凭据即可直接跑。
+
+## 阶段 7（P1，2026-11-01）：TTS 语音合成（直接对接 infra 资源池）✅
+
+> 诉求：GPT-SoVITS 依赖在 conda 环境 `GPTSoVits` 里，用该环境的**独立 Python** 启动；
+> dsn_study **直接对接 infra** 调度该资源；**不做 AI 主动合成的 speak 工具**。
+
+### 7.1 落地内容
+
+| 文件 | 说明 |
+|---|---|
+| `apps/dsn_study/models/resource_setup.py` | 把 TTS 注册进 `infra.resources.ResourcePool`（`ResourceKind.TTS`、`resident=True`、`immediate=False`）；启动策略走 `LaunchMode.CONDA`，由 infra 拼出 `conda run -n GPTSoVits --cwd <dir> --no-capture-output <env python> api.py -p 9880 -d cuda` |
+| `apps/dsn_study/models/tts_client.py` | GPT-SoVITS HTTP 客户端（minimal 版）：按架构选端点（parallel→`/tts`，serial→`/`）、POST → 音频字节、`probe()` 就绪探测 |
+| `apps/dsn_study/models/tts_profile.py` | 音色 profile 管理器（移植自 apps/dsn）：YAML 多 profile、默认 profile、参考音频相对路径解析、parallel/serial 两套参数字段 |
+| `apps/dsn_study/TTS_profiles/` | 音色资产（default.yaml + ref.wav + ref_advanced.wav；参考音频与 prompt 文本必须与训练音色对齐） |
+| `apps/dsn_study/voice.py` | `VoiceService` 门面：**取 infra 租约 → 保证服务就绪 → 合成 → base64**；任何失败都降级为纯文本，绝不打断对话 |
+| `apps/dsn_study/api/voice.py` | 语音控制 API：`GET /api/voice/status`、`POST /api/voice/start`、`POST /api/voice/stop` |
+| `apps/dsn_study/boot.py` | 装配 `VoiceService`（注册进 runtime）→ 传入 `StudyEngine`；`StudyEngine.chat_audio()` 返回 `{reply, audio_b64, tts_error}` |
+| `apps/dsn_study/api/chat.py` / `api/heartbeat.py` | 响应体新增 `audio_b64` / `tts_error`（提醒播报与对话回复都带语音） |
+| `apps/dsn_study/config.py` / `settings.py` / `.env` | 新增 TTS 资源托管参数（AUTOSTART / LAUNCH_MODE / CONDA_ENV / CONDA_EXE / SERVER_DIR / PORT / DEVICE / GPU_ID / LOAD_TIMEOUT / WARMUP / PROFILE_NAME …），`voice` 命名空间同步扩充 |
+
+### 7.2 关键设计决策
+
+1. **调度全部交给 infra**：dsn_study 只做「注册 + 取租约」，FIFO 队列 / 插槽上限 /
+   优先级驱逐 / 常驻保护等调度语义零重复实现（`ResourcePool` 继承 `ModelScheduler`）。
+2. **独立 Python**：`argv[0]` 固定为 conda 环境内的解释器
+   （`/home/darkstar/anaconda3/envs/GPTSoVits/bin/python`）；base env 的 python 拉不起来
+   （缺 fast_langdetect / split_lang / peft / opencc）。
+3. **resident=True**：TTS 是重量级长驻服务（加载权重分钟级），若 immediate 会在每次
+   合成归还时立刻卸载 → 每次都重拉整个服务。
+4. **不做 speak 工具**：语音只跟随对话回复自动生成（对齐参考实现的 POST_TTS 语义），
+   AI 无主动合成入口。
+5. **按需拉起**：`TTS_WARMUP` 默认 false —— 启动不预热，首次合成时由资源池拉起；
+   需要预热用 `POST /api/voice/start`。预热期间对话照常返回纯文本。
+6. **失败即降级**：TTS 不可用/超时/报错 → `audio_b64=null, tts_error=...`，对话不受影响。
+
+### 7.3 验收
+
+- `tests/test_dsn_study_voice.py` 13 用例（profile 载入与两种架构参数 / 客户端与错误 /
+  VoiceService 合成与降级 / 文本清洗 / 资源池注册 / conda 启动策略 / chat_audio 附带音频 /
+  TTS 失败降级 / 语音路由 / **真实服务联调**（`TTS_LIVE_TEST=1` 才跑））。
+- **实测**：资源池拉起 GPT-SoVITS **9.5–24s 就绪**；合成「今天我们复习一下二次函数的顶点公式。」
+  → 产出 **276KB / 48kHz / 2.88s WAV**；`POST /api/chat/send` 返回 `audio_b64` 368700 字符，
+  `GET /api/voice/status` 显示 `loaded=true, managed=true`。
+
 ## 阶段 6（P2，可选）：外部 Agent / 人格 ☐
 
 - Agent 接入不走 cp（api/agent.py 依赖记忆同步链），改用 **harness MCP 桥接**
@@ -156,6 +247,7 @@ convert_via_vision 建包往返、空参校验、process_images 全链路桩管�
 
 ## 进度日志
 
+
 - 2026-10-26：计划创建。摸底完成（依赖面量化 + 软链风险排除）。
 - 2026-10-26：阶段 0 完成——验证结论为无需独立 compat 模块（同名契约已对齐，适配内联进被移植文件）。
 - 2026-10-26：阶段 1 完成——TaskManager + 提醒/闹钟/心跳 API + 17 工具技能 + boot 装配；新增 10 测试，全量 578 过。
@@ -164,3 +256,5 @@ convert_via_vision 建包往返、空参校验、process_images 全链路桩管�
 - 2026-10-27：阶段 4 完成——checkin 打卡（纯软件版，4点边界/有效打卡/连续天数/日历）+ tracking-lite（分天事件存储 + StudyLog 门面 + 每日报告）+ 5 个新端点；新增 7 测试，全量 627 过。
 - 2026-10-27：阶段 5 完成——摸底发现视觉基建已下沉 infra 且 study 侧配置齐全，实际修复三处死点（LLMService.describe_image 契约、quest_from_image 兜底 NameError）+ 新增 convert_via_vision/process_images 视觉直录通道；新增 6 测试，全量 633 过。
 - 2026-10-27：P0/P1 五阶段全部完成。阶段 6（P2 可选：MCP 暴露学习工具 / 导师人格）保留待办。dsn_study 当前 15 个技能（原 12 + study_tasks 17 工具 + study_memory 2 工具），boot 桥接约 84 个工具。
+- 2026-11-01：阶段 6.5 完成——对照参考版全量补齐：修 5 处坏导入（含让「知识图谱构建」「出题打印」两个技能从不可用变可用）、补考试超时自动交卷 / `<plan_check>` / 日终报告 / 聊天内图片、移植 document 子系统与 document 技能（10 工具，含扫描作答卷判分）、新增 study_tracking（7 工具）与 batch（2 工具）技能、新增 async_send 端点与 `<tool>` 标签降级适配器；新增 19 用例功能完整性测试（含桩模型完整对话回路），dsn_study 侧 66→全绿。
+- 2026-11-01：阶段 7 完成——TTS 接入：经 infra 资源池以 conda 模式（GPTSoVits 环境的独立 Python）托管 GPT-SoVITS；新增 VoiceService 门面 / TTS 客户端 / profile 管理器 / 音色资产 / voice 控制 API；对话与提醒响应新增 audio_b64；新增 13 用例（含真实服务联调）。

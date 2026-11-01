@@ -81,7 +81,7 @@ def _get_engine():
 def _get_question_store(engine):
     if engine and engine.question_store:
         return engine.question_store
-    from config import Config
+    from apps.dsn_study.config import Config
     from apps.dsn_study.db.question_bank import QuestionBankDBManager
     from apps.dsn_study.question_bank.store import QuestionStore
     return QuestionStore(db=QuestionBankDBManager(db_path=Config.QUESTION_BANK_DB_PATH))
@@ -90,7 +90,7 @@ def _get_question_store(engine):
 def _get_template_manager(engine):
     if engine and engine.template_manager:
         return engine.template_manager
-    from config import Config
+    from apps.dsn_study.config import Config
     from apps.dsn_study.db.question_bank import QuestionBankDBManager
     from apps.dsn_study.question_bank.template_manager import SubjectTemplateManager
     return SubjectTemplateManager(db=QuestionBankDBManager(db_path=Config.QUESTION_BANK_DB_PATH))

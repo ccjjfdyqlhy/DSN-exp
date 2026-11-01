@@ -57,7 +57,9 @@ class StudyEngine:
                  exam_engine, graph_store, graph_engine, kg_builder, kg_matcher,
                  scanner_pipeline, timetable_store, async_task_store, plan_engine,
                  skill_registry, skill_manager, workspace=None,
-                 task_manager=None, memory_system=None, cache_engine=None):
+                 task_manager=None, memory_system=None, cache_engine=None,
+                 chat_hooks=None, complexity_analyzer=None,
+                 studylog=None, checkin_store=None, voice=None):
         self.agent = agent
         self.chat_client = chat_client
         self.llm = llm
@@ -84,6 +86,15 @@ class StudyEngine:
         self.memory_system = memory_system
         # 语义缓存引擎（SEMANTIC_CACHE_ENABLED=false 时为 None）
         self.cache_engine = cache_engine
+        # 对话期钩子（考试超时/交卷/<plan_check> 勾选/日终报告）
+        self.chat_hooks = chat_hooks
+        # 复杂度分析器（复杂问题 → 提示走 create_reasoner 深入推理）
+        self.complexity_analyzer = complexity_analyzer
+        # 学习日志 / 打卡（供技能依赖注入与统计）
+        self.studylog = studylog
+        self.checkin_store = checkin_store
+        # 语音合成门面（infra 资源池 + GPT-SoVITS）；为 None 时不产出音频
+        self.voice = voice
         # 缓存负反馈观察：上次命中若被用户否定（"不对"），衰减该条目
         self._cache_observer_key: str = ""
         self._cache_observer_end: float = 0.0
@@ -110,7 +121,11 @@ class StudyEngine:
                 blocks.append(
                     f"[今日计划] {summary['done']}/{summary['total']} 已完成，"
                     f"{summary['pending']} 待办、{summary['skipped']} 已跳过。"
-                    + "；".join(f"{t['title']}({t['status']})" for t in summary["tasks"][:8])
+                    + "；".join(
+                        f"{t['title']}({t['status']}"
+                        + (f", id={t['task_id'][:8]}" if t.get("task_id") else "")
+                        + ")"
+                        for t in summary["tasks"][:8])
                 )
         except Exception:
             pass
@@ -118,7 +133,7 @@ class StudyEngine:
         try:  # 到期复习（KnowledgeGraphPlugin）
             due = self.graph_store.get_due_reviews(user_id)
             if due:
-                names = [d.get("name") or d.get("kp_code", "") for d in due[:6]]
+                names = [d.get("kp_name") or d.get("kp_code", "") for d in due[:6]]
                 blocks.append(f"[到期复习] {len(due)} 个知识点待复习：{', '.join(filter(None, names))}")
         except Exception:
             pass
@@ -148,6 +163,21 @@ class StudyEngine:
         if not lines:
             return ""
         return "\n".join(f"(系统上下文·仅供你参考，不要复述) {b}" for b in lines)
+
+    def _complexity_preamble(self, message: str) -> str:
+        """复杂问题提示 — 引导 AI 走 create_reasoner 深入推理。"""
+        if self.complexity_analyzer is None:
+            return ""
+        try:
+            result = self.complexity_analyzer.analyze_complexity(message or "", 0)
+        except Exception:
+            return ""
+        if not result.get("is_complex"):
+            return ""
+        reasons = "、".join(result.get("reasons", [])[:3])
+        return (f"(系统上下文·仅供你参考) 该问题复杂度较高（评分 "
+                f"{result.get('score', 0)}；{reasons}）。"
+                f"如需深入推理，可调用 create_reasoner 工具后台分析。")
 
     # ── 会话标识（记忆表用整数 chat_id） ──
 
@@ -227,7 +257,8 @@ class StudyEngine:
     # ── 对话 ──
 
     def chat(self, message: str, user_id: int = 1,
-             session_id: Optional[str] = None) -> str:
+             session_id: Optional[str] = None,
+             image: Optional[str] = None) -> str:
         session_key = session_id or self.session_id
         # 同一会话串行：防止并发请求把 run_with_tools 的"读历史→执行→写回"
         # 交错执行（轮次错乱），以及记忆轮次号重复分配。
@@ -239,7 +270,17 @@ class StudyEngine:
 
             preamble = self._build_preamble(user_id)
             memory_preamble = self._memory_preamble(user_id)
-            full_prefix = "\n\n".join(b for b in (memory_preamble, preamble) if b)
+            complexity_preamble = self._complexity_preamble(message)
+            hook_preamble = ""
+            if self.chat_hooks is not None:
+                try:
+                    hook_preamble = self.chat_hooks.pre_process(
+                        user_id, message, image)
+                except Exception:
+                    logger.warning("对话前钩子异常（已跳过）", exc_info=True)
+            full_prefix = "\n\n".join(
+                b for b in (memory_preamble, preamble, hook_preamble,
+                            complexity_preamble) if b)
             full = f"{full_prefix}\n\n{message}" if full_prefix else message
             result = self.agent.run_with_tools(full, session_id=session_key)
             reply = result.reply
@@ -256,9 +297,44 @@ class StudyEngine:
                     import logging
                     logging.getLogger("StudyEngine").warning("记忆闭环失败（已跳过）", exc_info=True)
 
+            # 对话后钩子：<plan_check> 标签回写计划任务（并从回复中移除标签）
+            if self.chat_hooks is not None:
+                try:
+                    reply, tag_results = self.chat_hooks.post_process(reply)
+                    if tag_results:
+                        ok = sum(1 for r in tag_results if r.get("success"))
+                        logger.info("plan_check 处理: %d/%d 成功", ok, len(tag_results))
+                except Exception:
+                    logger.warning("对话后钩子异常（已跳过）", exc_info=True)
+
             # 语义缓存写路径（失败静默）
             self._cache_write(user_id, message, reply)
             return reply
+
+    # ── 语音合成（跟随回复自动生成，不提供 AI 主动合成入口）──
+
+    def _synthesize(self, reply: str) -> tuple[Optional[str], str]:
+        """把回复合成为音频。返回 (audio_b64, error)；失败时 audio 为 None。"""
+        if self.voice is None:
+            return None, ""
+        try:
+            return self.voice.synthesize_b64(reply)
+        except Exception as e:
+            logger.warning("语音合成失败（已降级为纯文本）: %s", e)
+            return None, str(e)
+
+    def chat_audio(self, message: str, user_id: int = 1,
+                   session_id: Optional[str] = None,
+                   image: Optional[str] = None) -> dict:
+        """带语音的对话：返回 {reply, audio_b64, tts_error}。
+
+        chat() 保持只返回文本（REPL / 心跳 / 既有调用方不受影响）；
+        需要音频的调用方走本方法。
+        """
+        reply = self.chat(message, user_id=user_id, session_id=session_id,
+                          image=image)
+        audio_b64, tts_error = self._synthesize(reply)
+        return {"reply": reply, "audio_b64": audio_b64, "tts_error": tts_error}
 
     def __repr__(self):
         return (f"<StudyEngine tools={len(self.skill_registry.list_active_tools())} "
@@ -334,13 +410,23 @@ def _build_skill_dep_map(c) -> dict[str, dict]:
                              _models=c["llm"]),
         "quest_from_image": dict(_store=c["question_store"], _tm=c["template_manager"]),
         "doc_to_questions": dict(_pipeline=c["scanner_pipeline"]),
+        # document 技能（扫描/打印/HMD/作答卷判分）——补注入题库与模型，
+        # 否则 scan_import_questions / process_answered_scan 拿不到题库与判分模型
+        "document": dict(_question_store=c["question_store"], _models=c["llm"]),
         "question_print": dict(_store=c["question_store"], _tm=c["template_manager"]),
         "plan": {},  # PlanTools 经 get_plan_db() 全局取库
         "study_timetable": {},  # StudyTimetableTool 经 get_study_db() 全局取库
         # TaskTools 实例属性注入（_mgr/_uid 优先读实例属性，_ctx 为兼容兜底）
-        "study_tasks": dict(task_manager=c.get("task_manager"), db=c["db_mgr"]),
+        "study_tasks": dict(task_manager=c.get("task_manager"), db=c["db_mgr"],
+                            _complexity=c.get("complexity_analyzer")),
         # MemoryTools 实例属性注入
         "study_memory": dict(memory_system=c.get("memory_system")),
+        # 批量操作工具（多 action 并行提交到 TaskManager）
+        "batch": dict(task_manager=c.get("task_manager"), db=c["db_mgr"]),
+        # 学习跟踪工具（打卡 / 学习时段 / 笔记 / 每日报告）
+        # 注意：注入表的键必须是工具实例的属性名（工具内部用 _studylog/_checkin）
+        "study_tracking": dict(_studylog=c.get("studylog"),
+                               _checkin=c.get("checkin_store")),
     }
 
 
@@ -547,6 +633,14 @@ def create_application() -> Flask:
     loaded_skills = skill_manager.scan_and_load()
     logger.info("技能加载完成: %d 个", loaded_skills)
 
+    # ── 复杂度分析器（复杂问题 → 提示走 reasoner 深入推理）──
+    complexity_analyzer = None
+    try:
+        from apps.dsn_study.tasks import ComplexityAnalyzer
+        complexity_analyzer = ComplexityAnalyzer()
+    except Exception:
+        logger.warning("复杂度分析器初始化失败（已跳过）", exc_info=True)
+
     c = {
         "db_mgr": db_mgr, "llm": llm, "question_store": question_store,
         "template_manager": template_manager, "composer": composer, "scorer": scorer,
@@ -556,6 +650,8 @@ def create_application() -> Flask:
         "async_task_store": async_task_store, "plan_engine": plan_engine,
         "task_manager": task_manager, "memory_system": memory_system,
         "cache_engine": cache_engine,
+        "studylog": studylog, "checkin_store": checkin_store,
+        "complexity_analyzer": complexity_analyzer,
     }
     dep_map = _build_skill_dep_map(c)
     for skill_name in list(skill_registry._active_skills):
@@ -566,20 +662,47 @@ def create_application() -> Flask:
     # ── Agent（技能工具桥接 + 提示词聚合） ──
     skill_prompts = skill_registry.get_all_skill_prompts()
     system_prompt = (DEFAULT_SYSTEM_PROMPT + "\n\n" + skill_prompts).strip()
+    from apps.dsn_study.tool_adapter import SkillTagToolCallAdapter
     agent = AgentRuntime(
         chat_client,
         name="dsn-study-agent",
         system_prompt=system_prompt,
         max_steps=int(Config.AGENT_MAX_STEPS),
+        # 原生 function calling 优先；模型只吐 XML 时自动降级到 <tool> 标签协议
+        adapter=SkillTagToolCallAdapter(),
     )
     bridged = _bridge_tools_to_agent(agent, skill_registry, SkillLoader())
     logger.info("已桥接 %d 个技能工具到 AgentLoop", bridged)
+
+    # ── 语音合成（infra 资源池调度 GPT-SoVITS）──
+    voice = None
+    try:
+        from apps.dsn_study.voice import VoiceService
+        voice = VoiceService.create()
+        runtime.register("voice", voice)
+        if voice.available and getattr(Config, "TTS_WARMUP", True):
+            # 后台预热：拉起 TTS 服务（加载权重分钟级），不阻塞应用启动。
+            # 预热期间对话照常返回纯文本，音频在服务就绪后自动生效。
+            def _warmup():
+                try:
+                    voice.warmup()
+                except Exception as e:
+                    logger.warning("TTS 预热异常（已忽略）: %s", e)
+            threading.Thread(target=_warmup, daemon=True,
+                             name="tts-warmup").start()
+    except Exception as e:
+        logger.warning("语音子系统初始化失败（将只返回文本）: %s", e)
+
+    # ── 对话期钩子（考试超时/交卷/<plan_check>/日终报告）──
+    from apps.dsn_study.chat_hooks import StudyChatHooks
+    chat_hooks = StudyChatHooks(exam_engine=exam_engine,
+                                  plan_engine=plan_engine, llm=llm)
 
     # ── 引擎门面 ──
     engine = StudyEngine(
         agent=agent, chat_client=chat_client,
         skill_registry=skill_registry, skill_manager=skill_manager,
-        workspace=workspace, **c,
+        workspace=workspace, chat_hooks=chat_hooks, voice=voice, **c,
     )
     runtime.register("engine", engine)
     flask_app.config["ENGINE"] = engine
@@ -595,6 +718,7 @@ def create_application() -> Flask:
     from apps.dsn_study.api.heartbeat import heartbeat_bp, init_heartbeat_api
     from apps.dsn_study.api.checkin import checkin_bp, init_checkin_api
     from apps.dsn_study.api.studylog import studylog_bp, init_studylog_api
+    from apps.dsn_study.api.voice import voice_bp, init_voice_api
 
     init_scan_api(auth_manager=auth)
     init_study_timetable_api(db_mgr, auth)
@@ -606,6 +730,7 @@ def create_application() -> Flask:
     init_heartbeat_api(db_mgr, task_manager, auth, engine)
     init_checkin_api(checkin_store, auth)
     init_studylog_api(studylog, auth)
+    init_voice_api(voice, auth)
 
     blueprints = {
         "scan": scan_bp,
@@ -618,6 +743,7 @@ def create_application() -> Flask:
         "heartbeat": heartbeat_bp,
         "checkin": checkin_bp,
         "studylog": studylog_bp,
+        "voice": voice_bp,
     }
 
     from apps.dsn_study.bundles import make_dsn_study_bundles

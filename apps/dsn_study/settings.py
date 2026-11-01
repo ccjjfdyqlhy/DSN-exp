@@ -60,6 +60,14 @@ def bind_dsn_study_settings(settings: Settings) -> Settings:
     _bind(voice, "tts_base_url", "TTS_BASE_URL", "http://127.0.0.1:9880")
     _bind(voice, "tts_process_enabled", "TTS_PROCESS_ENABLED", True, _BOOL)
     _bind(voice, "asr_filter_enabled", "ASR_FILTER_ENABLED", True, _BOOL)
+    # 语音资源托管（infra 资源池）
+    _bind(voice, "tts_autostart", "TTS_AUTOSTART", True, _BOOL)
+    _bind(voice, "tts_launch_mode", "TTS_LAUNCH_MODE", "conda")
+    _bind(voice, "tts_conda_env", "TTS_CONDA_ENV", "GPTSoVits")
+    _bind(voice, "tts_conda_exe", "TTS_CONDA_EXE", "/home/darkstar/anaconda3/bin/conda")
+    _bind(voice, "tts_server_dir", "TTS_SERVER_DIR", "/home/darkstar/TTS")
+    _bind(voice, "tts_port", "TTS_PORT", 9880, _INT)
+    _bind(voice, "tts_warmup", "TTS_WARMUP", True, _BOOL)
 
     # ── 陪伴（人格 / 世界） ──
     companion = settings.namespace("companion")

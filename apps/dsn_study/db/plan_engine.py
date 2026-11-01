@@ -190,5 +190,6 @@ class PlanEngine:
             "skipped": skipped,
             "pending": pending,
             "progress": round(done / total, 2) if total > 0 else 0,
-            "tasks": [{"title": t.title, "status": t.status, "duration": t.duration_min} for t in tasks],
+            "tasks": [{"task_id": t.task_id, "title": t.title, "status": t.status,
+                        "duration": t.duration_min} for t in tasks],
         }

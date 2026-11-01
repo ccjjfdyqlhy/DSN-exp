@@ -1,0 +1,217 @@
+name: document
+display_name: "文档处理"
+description: "控制打印机和扫描仪：扫描纸质文档、OCR/HMD 处理、打印文件。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 65
+
+tools:
+  # ---- 扫描 ----
+  - name: list_scanners
+    display_name: "列出扫描仪"
+    description: "列出所有可用扫描仪设备及其描述"
+    module: "tools.scanner"
+    class: "ScannerTool"
+    methods:
+      - name: list_scanners
+        description: "枚举系统中所有可用扫描仪"
+        parameters: {}
+
+  - name: scan
+    display_name: "启动扫描"
+    description: "对扫描台上的文档执行扫描，返回生成的 PNG 文件列表。扫描完成后文件保存在工作区。"
+    async: true
+    estimated_duration: "10-120s"
+    module: "tools.scanner"
+    class: "ScannerTool"
+    methods:
+      - name: scan
+        description: "扫描文档为图片"
+        parameters:
+          resolution:
+            type: integer
+            description: "扫描分辨率 DPI (150/200/300/600)，默认 300"
+            required: false
+          mode:
+            type: string
+            description: "色彩模式: Color / Gray / Lineart，默认 Color"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID，默认自动取当前用户"
+            required: false
+
+  # ---- 打印 ----
+  - name: list_printers
+    display_name: "列出打印机"
+    description: "列出所有可用打印机及其状态"
+    module: "tools.printer"
+    class: "PrinterTool"
+    methods:
+      - name: list_printers
+        description: "枚举 CUPS 中所有打印机"
+        parameters: {}
+
+  - name: print_file
+    display_name: "打印文件"
+    description: "将文件发送到打印机"
+    module: "tools.printer"
+    class: "PrinterTool"
+    methods:
+      - name: print_file
+        description: "打印指定文件"
+        parameters:
+          file_path:
+            type: string
+            description: "要打印的文件路径（PDF/JPG/PNG 等）"
+            required: true
+          copies:
+            type: integer
+            description: "打印份数，默认 1"
+            required: false
+          page_range:
+            type: string
+            description: "页码范围，如 '1' / '1-3' / '1,3,5'"
+            required: false
+
+  # ---- 文档处理 ----
+  - name: process_scan
+    display_name: "处理扫描结果"
+    description: "把扫描 PNG 做通用文档处理：分类→OCR→打包为 .hmd（+ .md），仅供阅读文档。注意：这不是题库入库工具，录入题目请用 scan_import_questions。"
+    async: true
+    estimated_duration: "30-300s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: process_scan
+        description: "分类文档/图片、OCR 提取文本、打包 .hmd（+ .md）。支持两种参数格式：文件路径列表或对象列表。"
+        parameters:
+          scanned_files:
+            type: array
+            description: "文件路径列表（推荐）：[\"/path/to/file.png\", ...] 或对象列表：[{\"filename\": \"a.png\", \"filepath\": \"/path/a.png\", \"size\": 123}]"
+            required: true
+            items:
+              type: string
+          user_id:
+            type: integer
+            description: "用户 ID，默认自动取当前用户"
+            required: false
+
+  - name: read_hmd
+    display_name: "读取 HMD 文档"
+    description: "解包 .hmd 文件，读取其中的 OCR 文本、布局信息和图片，供 AI 理解。"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: read_hmd
+        description: "解包 .hmd 文件返回结构化内容"
+        parameters:
+          hmd_path:
+            type: string
+            description: ".hmd 文件路径"
+            required: true
+
+  # ---- 快捷操作 ----
+  - name: process_last_scan
+    display_name: "处理最近扫描"
+    description: "自动找最近一次 scan 产生的 PNG 文件，走通用文档 OCR 管线生成 .hmd 供阅读。注意：这不是题库入库工具，录入题目请用 scan_import_questions。"
+    async: true
+    estimated_duration: "30-300s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: process_last_scan
+        description: "自动查找并处理最近扫描的 PNG 文件"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户 ID，默认自动取当前用户"
+            required: false
+
+  # ---- 图片分析 ----
+  - name: describe_image
+    display_name: "分析图片"
+    description: "用视觉多模态模型描述本地图片的内容（截图/照片/扫描件等），仅用于闲聊看图预览。注意：这不是题库入库工具，录入题目请用 scan_import_questions。"
+    async: true
+    estimated_duration: "5-30s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: describe_image
+        description: "分析图片内容并返回文字描述"
+        parameters:
+          file_path:
+            type: string
+            description: "图片文件路径（支持 ~ 展开），如 ~/Desktop/图片3.png"
+            required: true
+          prompt:
+            type: string
+            description: "自定义分析提示词，留空则默认描述图片内容"
+            required: false
+
+  # ---- 扫描件智能入库 ----
+  - name: scan_import_questions
+    display_name: "扫描试卷直接入库"
+    description: "【题库入库专用·一键完成】把扫描试卷 PNG 直接导入题库，自动完成 OCR → 视觉模型识别(科目/题目原文/图片描述/答案解析) → 批量入库，一步到位。扫描录入题库只此一个入口：scan 之后直接调它，不要在它之外做任何识别/确认/拆步。"
+    async: true
+    estimated_duration: "60-300s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: scan_import_questions
+        description: "扫描试卷PNG→直接入库。内部自动：OCR→VisionModel输出科目+题目+图片描述JSON→入库"
+        parameters:
+          scanned_files:
+            type: array
+            description: "扫描文件路径列表，如 [\"/path/to/page1.png\", \"/path/to/page2.png\"]，传 document.scan 返回的 files"
+            required: true
+            items:
+              type: string
+          subject:
+            type: string
+            description: "学科代码，可留空；留空时由视觉模型从图片内容自动识别"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+
+  # ---- 已作答试卷批改 ----
+  - name: process_answered_scan
+    display_name: "批改已作答试卷"
+    description: "处理一份已作答完成的扫描试卷：自动识别题目原文和手写答案 → 匹配题库 → 判分 → 错题分析 → 记录入库。支持单张或多张图片。"
+    async: true
+    estimated_duration: "60-300s"
+    module: "tools.doc_tools"
+    class: "DocTools"
+    methods:
+      - name: process_answered_scan
+        description: "从扫描图片中提取题目和学生答案，匹配题库后判分并记录错题"
+        parameters:
+          scanned_files:
+            type: array
+            description: "扫描文件路径列表，如 [\"/path/to/page1.png\", \"/path/to/page2.png\"]"
+            required: true
+            items:
+              type: string
+          subject:
+            type: string
+            description: "学科代码 (math/physics/chemistry/english/chinese/biology)"
+            default: "math"
+          user_id:
+            type: integer
+            description: "用户 ID"
+            required: false
+
+activation:
+  keywords: ["扫描", "打印", "scan", "print", "扫一下", "录入", "印出来", "图片", "照片", "截图",
+             "image", "批改", "判分", "批卷", "阅卷", "已作答", "入库", "导入题库"]
+  auto_activate: false
+
+dependencies:
+  - question_store
+tags: [document, scanner, printer, hardware, grading]

@@ -35,11 +35,15 @@ class AgentRuntime:
         name: str = "agent",
         system_prompt: str = "",
         max_steps: int = 8,
+        adapter: Optional[Any] = None,
     ):
         self.chat_client = chat_client
         self.embedding_client = embedding_client
         self.system_prompt = system_prompt
         self.max_steps = max_steps
+        # 工具调用协议适配器（None → harness 默认的原生 function calling）。
+        # 应用可注入自定义适配器（如 dsn_study 的 <tool> 标签降级适配器）。
+        self.adapter = adapter
 
         self.runtime = Runtime(name=name)
         self.settings = Settings()
@@ -80,7 +84,8 @@ class AgentRuntime:
         """带工具循环的完整执行。"""
         conv = self.session(session_id)
         conv.add_text("user", message)
-        loop = AgentLoop(self.chat_client, self.tools, max_steps=self.max_steps)
+        loop = AgentLoop(self.chat_client, self.tools, max_steps=self.max_steps,
+                         adapter=self.adapter)
         result = loop.run(conv.messages, system_prompt=self.system_prompt,
                           tool_names=tool_names)
         conv.add_text("assistant", result.reply)

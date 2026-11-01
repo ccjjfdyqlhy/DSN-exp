@@ -1,0 +1,150 @@
+name: study_tracking
+display_name: "学习跟踪"
+description: "打卡、学习时长、学习笔记与每日报告"
+version: "1.0.0"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: "70"
+prompts:
+  - "prompts/instruction.md"
+tools:
+  - name: record_checkin
+    display_name: "今日打卡"
+    description: "记录今日打卡，可附一句打卡备注。返回连续天数与累计天数。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: record_checkin
+        description: "记录今日打卡"
+        parameters:
+          text:
+            type: string
+            description: "打卡备注（可空）"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false
+  - name: query_checkin_stats
+    display_name: "打卡统计"
+    description: "查询打卡统计：累计天数、连续天数、今日是否已打卡、最近记录。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: query_checkin_stats
+        description: "查询打卡统计"
+        parameters:
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false
+  - name: record_study_session
+    display_name: "记录学习时段"
+    description: "记录一段学习时间（学科 + 分钟数）。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: record_session
+        description: "记录学习时段"
+        parameters:
+          subject:
+            type: string
+            description: "学科，如 math / 物理"
+            required: false
+            default: "未分类"
+          minutes:
+            type: number
+            description: "学习分钟数"
+            required: true
+          note:
+            type: string
+            description: "备注"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false
+  - name: record_study_note
+    display_name: "记录学习笔记"
+    description: "记录一条自由文本学习笔记。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: record_note
+        description: "记录学习笔记"
+        parameters:
+          text:
+            type: string
+            description: "笔记内容"
+            required: true
+          subject:
+            type: string
+            description: "学科标签"
+            required: false
+            default: "未分类"
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false
+  - name: list_study_sessions
+    display_name: "学习时段列表"
+    description: "列出学习时段记录。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: list_sessions
+        description: "列出学习时段记录"
+        parameters:
+          since:
+            type: string
+            description: "起始日期 YYYY-MM-DD"
+            required: false
+          until:
+            type: string
+            description: "结束日期 YYYY-MM-DD"
+            required: false
+          limit:
+            type: integer
+            description: "返回条数"
+            required: false
+            default: 20
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false
+  - name: study_minutes_by_day
+    display_name: "每日学习时长"
+    description: "最近 N 天每日学习分钟数。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: minutes_by_day
+        description: "每日学习分钟数"
+        parameters:
+          days:
+            type: integer
+            description: "统计天数，默认 7"
+            required: false
+            default: 7
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false
+  - name: study_daily_report
+    display_name: "每日报告"
+    description: "汇总打卡 + 学习时段 + 今日计划完成度。"
+    module: "tools.tracking_tools"
+    class: "StudyTrackingTools"
+    methods:
+      - name: daily_report
+        description: "生成每日报告"
+        parameters:
+          day:
+            type: string
+            description: "日期 YYYY-MM-DD，默认今天"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 ID，默认 1"
+            required: false

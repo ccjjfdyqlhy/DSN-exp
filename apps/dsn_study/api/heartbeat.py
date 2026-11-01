@@ -134,9 +134,12 @@ def heartbeat():
                     reply = "⏰ " + "；".join(
                         f"{a['time']} {a['message']}" for a in triggered_alarms)
                 alarm = triggered_alarms[0]
+                audio_b64, tts_error = _synthesize(reply)
                 return jsonify({
                     "has_notification": True,
                     "reply": reply,
+                    "audio_b64": audio_b64,
+                    "tts_error": tts_error,
                     "task_id": f"alarm_{alarm['id']}",
                     "task_type": "alarm",
                     "alarm": alarm,
@@ -208,14 +211,34 @@ def heartbeat():
     logger.info("心跳通知已投递: uid=%d task=%s type=%s reply=%d chars",
                 uid, task_id, task_type, len(reply))
 
+    audio_b64, tts_error = _synthesize(reply)
     return jsonify({
         "has_notification": True,
         "reply": reply,
+        "audio_b64": audio_b64,
+        "tts_error": tts_error,
         "task_id": task_id,
         "chat_id": chat_id,
         "notification_id": notification_id,
         "task_type": task_type,
     })
+
+
+def _synthesize(reply: str) -> tuple:
+    """把提醒文案合成为语音。返回 (audio_b64, tts_error)；不可用时为 (None, "")。
+
+    语音是增强项：任何失败都降级为纯文本，绝不影响通知投递。
+    """
+    if not reply or _engine is None:
+        return None, ""
+    voice = getattr(_engine, "voice", None)
+    if voice is None:
+        return None, ""
+    try:
+        return voice.synthesize_b64(reply)
+    except Exception as e:
+        logger.warning("提醒语音合成失败（已降级为纯文本）: %s", e)
+        return None, str(e)
 
 
 def _engine_chat_safe(prompt: str, uid: int) -> str:

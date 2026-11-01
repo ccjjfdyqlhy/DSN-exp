@@ -40,14 +40,15 @@ def send():
 
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
-    if not message:
+    image = (data.get("image") or data.get("image_data") or "").strip()
+    if not message and not image:
         return jsonify({"error": "Missing message"}), 400
 
     user_id = g.user.get("uid", 0) or 1
     try:
-        reply = engine.chat(message, user_id=user_id)
+        result = engine.chat_audio(message, user_id=user_id, image=image or None)
     except Exception as e:
         logger.exception("对话处理失败")
         return jsonify({"error": str(e)}), 500
 
-    return jsonify({"reply": reply})
+    return jsonify(result)
