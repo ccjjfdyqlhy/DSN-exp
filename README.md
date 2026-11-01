@@ -251,7 +251,7 @@ pip install -r requirements.txt
 pip install pytest                     # pytest 不在 requirements 里
 python3 -m pytest -q                   # 全量，约 100 秒
 python3 -m pytest -m known_broken      # 查看待重做的用例
-```。
+```
 
 > 仓库内置了 pytest 配置：`testpaths` 限定只扫 `tests/`，
 > 因此在根目录裸跑 `pytest` 不会误入 `temp/`
