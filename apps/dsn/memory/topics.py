@@ -690,7 +690,9 @@ class TopicManager:
             rids = [r for r in rids if r in want]
         if not rids:
             return ""
-        lines = [f"[话题·{label}·{topic.get('title') or f'第{topic['start_round']}轮起'}·第{rids[0]}-{rids[-1]}轮]"]
+        # 嵌套 f-string 的引号在 3.10 上会提前截断外层字符串，先算出标题。
+        title = topic.get("title") or f"第{topic['start_round']}轮起"
+        lines = [f"[话题·{label}·{title}·第{rids[0]}-{rids[-1]}轮]"]
         total = 0
         for ri in rids:
             for m in rounds[ri]:

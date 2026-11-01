@@ -269,7 +269,7 @@ class PlayAsModelCLI:
         })
 
         if resp.get("error"):
-            print(f"  {_color(f'请求失败: {resp["error"]}', 'red')}")
+            print(f"  {_color('请求失败: ' + str(resp['error']), 'red')}")
             return
 
         if resp.get("filtered"):
@@ -367,7 +367,7 @@ class PlayAsModelCLI:
         })
 
         if resp.get("error"):
-            print(f"  {_color(f'请求失败: {resp["error"]}', 'red')}")
+            print(f"  {_color('请求失败: ' + str(resp['error']), 'red')}")
             return
 
         status = resp.get("status", "completed")

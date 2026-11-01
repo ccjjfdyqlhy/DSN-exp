@@ -350,9 +350,11 @@ def _register_local_model(eng: Any, body: dict) -> Any:
 
         binary_path = _expand(cfg.binary_path)
         if not Path(binary_path).exists():
+            # 3.10 的 f-string 表达式里不能再出现同种引号，先取出来再拼。
+            default_binary = _local_defaults("llama_cpp")["binary_path"]
             return _bad(
                 f"找不到 llama-server 可执行文件: {binary_path}。"
-                f"请填写正确的 binary_path（默认 {_local_defaults("llama_cpp")["binary_path"]}）。"
+                f"请填写正确的 binary_path（默认 {default_binary}）。"
             )
         cfg.binary_path = binary_path
 

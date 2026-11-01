@@ -310,9 +310,11 @@ class SkillMgrTool:
             ) if (target_dir / ".." / ".." / "claw_skills" / name / "SKILL.md").exists() else ""
         )
 
+        # f-string 表达式里不能含反斜杠（3.10 限制），转义先在外部做完。
+        safe_description = fm.get("description", "").replace('"', '\\"')[:200]
         yaml_content = f"""name: {name}
 display_name: "{fm.get('name', name).replace('-', ' ').title()}"
-description: "{fm.get('description', '').replace('"', '\\"')[:200]}"
+description: "{safe_description}""
 version: "1.0"
 author: "claw_converted"
 source: "custom"

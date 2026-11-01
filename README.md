@@ -70,13 +70,21 @@ infra/    基础设施     模型编排 · 资源池 · 存储 · 网关 · 鉴�
 | 步骤 | 内容 |
 |---|---|
 | 1 | 检查 Python / pip / git 是否就位 |
-| 2 | 检查仓库完整性（关键文件、目录、每个应用的入口是否都在） |
+| 2 | 检查仓库完整性（关键文件、目录、每个应用的入口）+ **源码语法体检** |
 | 3 | 探测机器配置（CPU / 内存 / 磁盘 / GPU / 端口占用） |
 | 4 | 建 `.venv` 虚拟环境，装 `requirements.txt` + `pip install -e .` |
 | 5 | 生成 `.env`，问你要不要现在接入模型后端，然后启动控制台 |
 
-> 它会自动切到当前正式分支 `harness-refactor`，并把旧版安装器备份到 `logs/installer.py`。
+> 远端默认分支是 `main`，但那只是**安装引导页**（旧的单体布局 + 一份 installer.py）。
+> 安装器会自动切到正式分支 `harness-refactor` 再继续 —— 切换发生在装依赖之前，
+> 所以 `.env` / `.venv` / 依赖都按正式分支的清单来。
 > 不想切换时加 `--no-switch`。
+
+> **为什么要有语法体检**：语法错误不会让应用"起不来"，而是让**某一块功能静默消失**。
+> 比如某个 3.12 才合法的 f-string，在 3.10 上只会让 `server.py` 的 try/except
+> 吞掉导入失败 —— 控制台照常打开，但「接入新实例 / TTS」那批 API 全落到
+> SPA catch-all，返回 HTML，前端报 `Unexpected token '<'`。
+> 体检会在装依赖之前就把这类问题指出来。
 
 ### 安装器的用法
 
@@ -87,10 +95,14 @@ python3 installer.py --non-interactive  # 不提问，全默认（CI / 容器）
 python3 installer.py --branch main      # 安装前切到指定分支
 python3 installer.py --reinstall        # 重建 .venv 后重装依赖
 python3 installer.py --port 8899        # 换端口（8888 被占用时）
+python3 installer.py --host 0.0.0.0     # 允许局域网访问（默认只绑 127.0.0.1）
 ```
 
 > 安装器**只用标准库**——它得在你机器上一个第三方依赖都还没有的时候就能跑起来。
 > 仓库状态不对时它会直接告诉你缺什么，而不是让你对着报错猜。
+>
+> 控制台默认只监听 `127.0.0.1`：`dsn_ui` 没有鉴权，而它能读写 `.env` 里的
+> API Key、能起 agent —— 绑到 `0.0.0.0` 等于把这些能力暴露给整个局域网。
 
 ### 🧭 不知道装什么？让向导来问你
 
@@ -105,6 +117,11 @@ python3 onboarding.py --check    # 非交互检查环境与资源
 确认执行计划后，它会自动写 `.env`、装依赖、克隆 llama.cpp / GPT-SoVITS、
 下载模型并生成 `apps/dsn/model_profiles/onboarding_*.yaml`。
 已存在的仓库/文件会跳过，下载支持断点续传。
+
+> **安装器也会把你交给它**：安装流程里的「接入模型后端」菜单选
+> 「打开完整引导」，就会直接拉起这个 TUI（用 `.venv` 里的解释器跑，
+> 所以 Textual 是装好的）。安装器只管"装得上、起得来"，
+> "要什么能力、要不要下模型"归它管。
 
 ### 不配模型也能跑
 
@@ -360,7 +377,8 @@ npm run build    # 构建并通过 scripts/sync-to-static.cjs 同步到 ../stati
 
 ## 📌 项目现状
 
-- **默认分支**：`harness-refactor`（AICF 三层重构后的版本）。
+- **远端默认分支**：`main` —— 它只是**安装引导页**（旧的单体布局 + 一份 `installer.py`）。
+  正式代码在 `harness-refactor`，`installer.py` 会自动切过去。
 - **测试基线**：634 通过 / 0 失败。
 - **已知技术债**：见 [docs/technical-debt.md](docs/technical-debt.md)（该文记录「曾经出过的错」与修复思路，
   按仓库惯例「注释即缺陷数据库」）。
