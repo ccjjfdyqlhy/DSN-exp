@@ -20,6 +20,7 @@
 #   python3 installer.py --no-switch         # 不自动切换分支
 #   python3 installer.py --reinstall         # 重建 .venv 后重装依赖
 #   python3 installer.py --no-launch         # 装完不自动拉起 Web 控制台
+#   python3 installer.py --host 0.0.0.0      # 控制台监听局域网（默认只绑本机）
 #
 # 分支策略（2026-10）：
 #   main 分支只保留这个安装器作为引导页，真正的 AICF 代码在 harness-refactor。
@@ -68,6 +69,11 @@ MIN_PY = (3, 10)
 DEFAULT_UI_PORT = 8888
 DEFAULT_STUDY_PORT = 5000
 
+#: 控制台默认只绑本机。dsn_ui 没有鉴权，而且它能读写 .env 里的 API Key、
+#: 能起 agent —— 绑到 0.0.0.0 等于把这些能力暴露给整个局域网。
+#: 要在局域网里访问，显式加 --host 0.0.0.0。
+DEFAULT_HOST = "127.0.0.1"
+
 #: 远程模型后端预设 —— 与 apps/dsn/onboarding.py 的 API_PROVIDERS 保持一致口径
 PROVIDER_PRESETS = [
     ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
@@ -76,6 +82,11 @@ PROVIDER_PRESETS = [
     ("Moonshot Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
     ("硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "Qwen/Qwen2.5-7B-Instruct"),
 ]
+
+#: 语法体检的扫描范围 —— 只用 compile() 解析，不写 .pyc，
+#: 体检不该在用户工作区留垃圾。
+SYNTAX_SCAN_DIRS = ("apps", "harness", "infra")
+SYNTAX_SCAN_FILES = ("main.py", "launcher.py", "installer.py", "onboarding.py")
 
 #: 仓库完整性清单 —— 缺任何一个都说明 clone 不完整或分支不对。
 #: 取的是"框架骨架 + 每个应用的入口"，不是逐个文件穷举。
@@ -115,6 +126,49 @@ CRITICAL_DIRS = (
     "tests",
     "docs",
 )
+
+
+def scan_syntax_errors() -> list[tuple[str, int, str]]:
+    """扫描源码里的语法错误，返回 [(相对路径, 行号, 错误信息)]。
+
+    为什么非做不可：语法错误不会让"应用起不来"，而是让**某一块功能静默消失**。
+    例如 apps/dsn_ui/onboarding_api.py 里一个 3.12 才合法的 f-string，
+    在 3.10 上只会让 server.py 的 try/except 吞掉导入失败 —— 控制台照常打开，
+    但「接入新实例 / TTS」那批 API 全部落到 SPA catch-all，返回 HTML。
+    这种故障在启动日志里只有一行 warning，用户很难定位。
+
+    只用 compile() 做解析，不写 .pyc —— 体检不该在用户工作区留垃圾。
+    """
+    problems: list[tuple[str, int, str]] = []
+    targets: list[Path] = []
+    for name in SYNTAX_SCAN_DIRS:
+        directory = ROOT / name
+        if directory.is_dir():
+            targets.extend(sorted(directory.rglob("*.py")))
+    for name in SYNTAX_SCAN_FILES:
+        candidate = ROOT / name
+        if candidate.is_file():
+            targets.append(candidate)
+
+    for path in targets:
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            compile(source, str(path), "exec")
+        except SyntaxError as exc:
+            try:
+                rel = str(path.relative_to(ROOT))
+            except ValueError:
+                rel = str(path)
+            problems.append((rel, exc.lineno or 0, exc.msg or str(exc)))
+        except ValueError as exc:      # 例如源码里有 NUL 字节
+            problems.append((str(path), 0, str(exc)))
+    return problems
+
 
 #: 需要用到的第三方模块 → (import 名, pip 包名, 是否必需)
 REQUIRED_MODULES = (
@@ -601,20 +655,23 @@ def intro() -> None:
     out("  接下来这个脚本会依次完成：")
     out("    1. 检查运行环境")
     out(f"    2. 自动切换到 {DEFAULT_TARGET_BRANCH} 分支（main 只是安装引导）")
-    out("    3. 校验仓库完整性")
+    out("    3. 校验仓库完整性（关键文件 + 源码语法体检）")
     out("    4. 探测机器配置（Python / 内存 / 磁盘 / GPU / 端口）")
     out("    5. 建立虚拟环境并安装依赖（harness + infra + 应用依赖）")
     out("    6. 生成 .env、引导接入模型后端并启动 Web 控制台")
+    out("       想要「自动装依赖 / 下载模型 / 编译 llama.cpp」？")
+    out("       → 在下一步的菜单里选「打开完整引导」，进入 onboarding.py 的 Textual TUI")
     out()
 
 
-def interactive_provider_setup() -> bool:
+def interactive_provider_setup(python_exe: Path | None = None) -> bool:
     """引导配置远程模型后端。返回是否成功写入。"""
     out()
     out(paint("  ── 接入模型后端 ──", Ansi.BOLD))
     out("  [1] 远程 API（OpenAI 兼容：DeepSeek / OpenAI / GLM / Kimi …）")
     out("  [2] 本地 llama.cpp（需要自己准备 GGUF 与 llama-server）")
     out("  [3] 稍后再说（先启动界面，之后在「设置 → Provider」里配）")
+    out("  [4] 打开完整引导（Textual TUI：选目标 → 选能力 → 自动下载模型）")
     choice = ask("请选择", "3")
     if choice is None:
         return False
@@ -655,21 +712,71 @@ def interactive_provider_setup() -> bool:
         hint("也可以稍后在 Web 控制台的「接入新实例」向导里扫描本地 GGUF 自动完成")
         return False
 
+    if choice == "4":
+        return run_onboarding_tui(python_exe)
+
     hint("随时可在 Web 控制台「设置 → Provider」里补配置")
     return False
 
 
+def run_onboarding_tui(python_exe: Path | None = None) -> bool:
+    """把用户交给仓库级的完整引导（onboarding.py，Textual TUI）。
+
+    安装器只管"装得上、起得来"；"要用什么能力、要不要本地模型、TTS、
+    llama.cpp 要不要自己编译"是另一类问题，由 onboarding.py 负责：
+    它会写 .env、pip 装依赖、clone 第三方仓库、从 Hugging Face 下 GGUF、
+    生成 apps/dsn/model_profiles/*.yaml。
+
+    以前这两个引导是各干各的（README 里把 onboarding.py 列为"按需求自动配置"，
+    安装器却从不提它），用户根本不知道还有这条路。现在接上了。
+    """
+    script = ROOT / "onboarding.py"
+    if not script.is_file():
+        warn("仓库里没有 onboarding.py，无法打开完整引导")
+        return False
+
+    target = python_exe or Path(sys.executable)
+    out()
+    out(paint("  ── 打开完整引导（onboarding.py）──", Ansi.BOLD))
+    info("选目标 → 勾选能力 → 确认执行计划 → 自动装依赖 / 下载模型")
+    info("随时可以退出：向导里的每一步都可重复执行")
+    out()
+    # 不能走 run()：它会 capture_output，把 TUI 的画面吞进管道里。
+    # Textual 需要真正的 TTY 才能渲染 —— 这里直接继承当前终端的 stdio。
+    try:
+        proc = subprocess.run([str(target), str(script)], cwd=str(ROOT))
+        rc = proc.returncode
+    except KeyboardInterrupt:
+        out()
+        warn("引导向导被中断")
+        return False
+    except OSError as exc:
+        fail(f"无法启动引导向导: {exc}")
+        hint("也可以之后单独运行：python3 onboarding.py")
+        return False
+    if rc != 0:
+        fail(f"引导向导退出码 {rc}")
+        hint("也可以之后单独运行：python3 onboarding.py")
+        return False
+    ok("引导向导已结束")
+    return True
+
+
 # ── 启动 Web 控制台 ─────────────────────────────────────────────────
 
-def launch_ui(python_exe: Path, port: int) -> tuple[int | None, Path]:
+def launch_ui(python_exe: Path, port: int, host: str = DEFAULT_HOST) -> tuple[int | None, Path]:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / "dsn_ui.log"
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
-    with open(log_path, "w", encoding="utf-8") as log_fh:
+    # 追加而不是覆盖：装第二次时，上一次的启动日志（尤其是那些"某子系统
+    # 初始化失败"的 warning）不该被冲掉 —— 它们往往正是排障的关键。
+    with open(log_path, "a", encoding="utf-8") as log_fh:
+        log_fh.write("\n" + "=" * 60 + "\n=== 启动于 " + time.strftime("%Y-%m-%d %H:%M:%S") + " ===\n" + "=" * 60 + "\n")
+        log_fh.flush()
         proc = subprocess.Popen(
             [str(python_exe), "-m", "apps.dsn_ui.server",
-             "--host", "0.0.0.0", "--port", str(port), "--slots", "2"],
+             "--host", host, "--port", str(port), "--slots", "2"],
             cwd=str(ROOT), env=env, stdout=log_fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
         )
@@ -756,9 +863,10 @@ def step_git(branch: str | None, force: bool, auto_switch: bool = True) -> bool:
             return False
     else:
         if is_legacy_layout():
-            fail("这个仓库看起来是旧版本（单体布局，没有 harness/ 目录）")
-            hint(f"去掉 --no-switch 以自动切到 {DEFAULT_TARGET_BRANCH}，"
-                 f"或运行：git checkout {DEFAULT_TARGET_BRANCH}")
+            fail("当前是引导分支的旧单体布局（还没有 harness/ 与 apps/）")
+            hint(f"这不是「clone 坏了」：全新 clone 默认停在引导分支，"
+                 f"安装器会自动切到 {DEFAULT_TARGET_BRANCH}")
+            hint(f"体检目标分支：python3 installer.py --branch {DEFAULT_TARGET_BRANCH} --doctor")
             return False
         hint("已禁用自动切分支；如需切换：python3 installer.py --branch <名字>")
 
@@ -768,8 +876,18 @@ def step_git(branch: str | None, force: bool, auto_switch: bool = True) -> bool:
     return True
 
 
-def step_integrity() -> bool:
+def step_integrity(doctor_only: bool = False) -> bool:
     step(3, 5, "仓库完整性")
+
+    # 全新 clone 停在引导分支（旧的单体布局）是**正常起点**，不是"仓库坏了"。
+    # 体检模式不会自动切分支（那是只读保证），所以在这里说清楚，而不是
+    # 甩出"缺 26 项"这种让人以为自己 clone 坏了的结论。
+    if doctor_only and is_legacy_layout():
+        info("当前是引导分支的旧单体布局（还没有 harness/ 与 apps/）")
+        hint("全新 clone 的正常起点 —— 安装器会自动切到 harness-refactor 后再体检")
+        hint("想直接体检目标分支：python3 installer.py --branch harness-refactor --doctor")
+        return True
+
     missing_files, missing_dirs = check_integrity()
     entry_problems = check_registered_entries()
     total_missing = len(missing_files) + len(missing_dirs) + len(entry_problems)
@@ -794,6 +912,16 @@ def step_integrity() -> bool:
         hint("在 Web 控制台「接入新实例」里改路径，或删除对应 profile")
     else:
         ok("模型 profile 路径检查通过")
+
+    syntax_problems = scan_syntax_errors()
+    if syntax_problems:
+        fail(f"源码有 {len(syntax_problems)} 处语法错误（部分功能会静默失效）：")
+        for rel, lineno, msg in syntax_problems[:8]:
+            fail(f"{rel}:{lineno}: {msg}")
+        hint("语法错误往往意味着代码要求更高版本的 Python（3.12+ 才有的 f-string 语法）")
+        hint(f"当前解释器：{platform.python_version()}；换 3.12+ 重跑，或修掉上面这几处")
+        return False
+    ok("源码语法体检通过")
     return True
 
 
@@ -917,6 +1045,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="装完不自动拉起 Web 控制台")
     parser.add_argument("--port", type=int, default=DEFAULT_UI_PORT,
                         help=f"Web 控制台端口（默认 {DEFAULT_UI_PORT}）")
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help=f"控制台绑定地址（默认 {DEFAULT_HOST}；局域网访问用 0.0.0.0）")
     args = parser.parse_args(argv)
 
     interactive = not (args.non_interactive or args.doctor or not sys.stdin.isatty())
@@ -927,13 +1057,19 @@ def main(argv: list[str] | None = None) -> int:
         out()
         ok_env = step_environment()
         ok_git = step_git(args.branch, args.force, auto_switch=False)
-        ok_files = step_integrity()
+        ok_files = step_integrity(doctor_only=True)
         step_machine()
         step_dependencies(args.no_venv, args.reinstall, doctor_only=True)
         out()
         if ok_env and ok_git and ok_files:
             ok(paint("体检通过：环境满足运行要求", Ansi.GREEN))
             return 0
+        if is_legacy_layout():
+            # 这不是"体检失败"，是"还没到能体检的时候"——
+            # 引导分支上本来就没有 harness/ 与 apps/，无从检查。
+            warn("体检未完成：你还在引导分支上，目标分支还没被检查")
+            hint("执行 python3 installer.py 即可（它会自动切分支并完成安装）")
+            return 1
         fail("体检未通过：请按上面的 ✗ 项处理后重试")
         return 1
 
@@ -969,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
         ok(f"已生成 {ENV_FILE.name}（未填假密钥 —— 空的比假的更能暴露问题）")
 
     if interactive and not (had_env and env_values().get("OPENAI_API_KEY")):
-        interactive_provider_setup()
+        interactive_provider_setup(python_exe)
     elif not interactive:
         hint("非交互模式：跳过模型后端配置")
 
@@ -981,7 +1117,8 @@ def main(argv: list[str] | None = None) -> int:
         launch = ask_yes_no("现在就启动 Web 控制台吗？", True)
     if not launch:
         hint(f"稍后手动启动：{venv_python() or Path(sys.executable)} "
-             f"-m apps.dsn_ui.server --port {args.port}")
+             f"-m apps.dsn_ui.server --host {args.host} --port {args.port}")
+        hint("想自动装更多能力（本地模型 / TTS / llama.cpp）：python3 onboarding.py")
         return 0
 
     if not port_free(args.port):
@@ -989,7 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
         hint(f"换一个端口：python3 installer.py --port {args.port + 1}")
         return 1
 
-    pid, log_path = launch_ui(python_exe, args.port)
+    pid, log_path = launch_ui(python_exe, args.port, args.host)
     if pid is None:
         fail("启动失败")
         return 1
@@ -1000,11 +1137,13 @@ def main(argv: list[str] | None = None) -> int:
         warn(f"健康检查超时，但进程可能仍在启动（看 {log_path.relative_to(ROOT)}）")
     out()
     out(paint("  下一步：", Ansi.BOLD))
-    out(f"    1. 浏览器打开  http://127.0.0.1:{args.port}")
+    out(f"    1. 浏览器打开  http://{args.host}:{args.port}")
     out("    2. 右上角「设置 → Provider」接入模型后端")
     out("    3. 在「模型」页签添加本地 GGUF（需要 llama-server）")
+    out("    4. 想让它自己装依赖 / 下模型 / 编译 llama.cpp → python3 onboarding.py")
     out()
     out(paint(f"  停止控制台：kill {pid}", Ansi.DIM))
+    out(paint(f"  看启动日志：{log_path.relative_to(ROOT)}（子系统初始化失败只在这里留痕）", Ansi.DIM))
     out()
     return 0
 
