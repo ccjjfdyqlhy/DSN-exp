@@ -403,6 +403,23 @@ class Config:
     STEWARD_MAX_TOKENS = int(_env("STEWARD_MAX_TOKENS", "2048"))
     STEWARD_HISTORY_LIMIT = int(_env("STEWARD_HISTORY_LIMIT", "40"))
 
+    # ── 外部 MCP（Obsidian 知识库 / 笔记）──
+    # MCP_ENABLED=false 时完全跳过 MCP 连接（不影响其余功能）。
+    MCP_ENABLED = _env("MCP_ENABLED", "true").lower() == "true"
+    MCP_CONFIG_PATH = _env(
+        "MCP_CONFIG_PATH",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_servers.yaml"))
+    # Obsidian vault 绝对路径（必须含 .obsidian 目录）；经 OBSIDIAN_VAULT_PATH
+    # 环境变量注入 MCP 配置，避免把路径写死在 yaml 里。
+    OBSIDIAN_VAULT_PATH = _env(
+        "OBSIDIAN_VAULT_PATH", "/home/darkstar/dsn_workspace/library/library")
+    # vault 在 MCP 侧的短名（AI 调用工具时要传）
+    OBSIDIAN_VAULT_ID = _env("OBSIDIAN_VAULT_ID", "study")
+    # 知识点索引笔记的目录（相对 vault 根）
+    OBSIDIAN_KP_FOLDER = _env("OBSIDIAN_KP_FOLDER", "知识点库")
+    # 学习笔记目录
+    OBSIDIAN_NOTE_FOLDER = _env("OBSIDIAN_NOTE_FOLDER", "学习笔记")
+
     # ── 语义缓存 ──
     SEMANTIC_CACHE_ENABLED = _env("SEMANTIC_CACHE_ENABLED", "false").lower() == "true"
     SEMANTIC_CACHE_DIR = _env("SEMANTIC_CACHE_DIR", ".dsn/semantic_cache")

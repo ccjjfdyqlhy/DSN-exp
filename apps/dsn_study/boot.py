@@ -435,6 +435,9 @@ def _bridge_tools_to_agent(agent: AgentRuntime, skill_registry, skill_loader) ->
     count = 0
     for key, spec in skill_registry._tool_specs.items():
         skill_name, tool_name = key.split(".", 1)
+        # 协程工具由 _bridge_async_tools_to_agent 处理（同步 handler 无法 await）
+        if skill_registry.is_async_tool(skill_name, tool_name):
+            continue
         tool_spec_obj = spec.get("_tool_spec_obj")
         parameters = {"type": "object", "properties": {}}
         if tool_spec_obj is not None:
@@ -449,6 +452,38 @@ def _bridge_tools_to_agent(agent: AgentRuntime, skill_registry, skill_loader) ->
 
         agent.register_tool(key, spec.get("description", ""), _handler,
                             parameters=parameters)
+        count += 1
+    return count
+
+
+def _bridge_async_tools_to_agent(agent: AgentRuntime, skill_registry,
+                                 skill_loader=None) -> int:
+    """把「协程方法」的技能工具以异步 handler 桥接进 AgentLoop。
+
+    需要 await 外部资源（典型：MCP 服务器，如 Obsidian）的技能工具必须走这条路：
+    同步 handler 在 AgentLoop 的事件循环里无法 await。
+    """
+    count = 0
+    for key in list(skill_registry._tool_instances.keys()):
+        skill_name, tool_name = key.split(".", 1)
+        if not skill_registry.is_async_tool(skill_name, tool_name):
+            continue
+        spec = skill_registry._tool_specs.get(key) or {}
+        description = spec.get("description", "")
+        parameters = {"type": "object", "properties": {}}
+        tool_spec_obj = spec.get("_tool_spec_obj")
+        if tool_spec_obj is not None and skill_loader is not None:
+            try:
+                schema = skill_loader.build_function_schema(skill_name, tool_spec_obj)
+                parameters = schema["function"]["parameters"]
+            except Exception:
+                logger.warning("工具 %s 参数 schema 生成失败，使用空参", key, exc_info=True)
+
+        async def _ahandler(_sk=skill_name, _tl=tool_name, **kwargs):
+            return await skill_registry.call_tool_async(_sk, _tl, kwargs)
+
+        agent.register_tool(key, description, _ahandler,
+                            parameters=parameters, async_mode=True)
         count += 1
     return count
 
@@ -674,6 +709,50 @@ def create_application() -> Flask:
     bridged = _bridge_tools_to_agent(agent, skill_registry, SkillLoader())
     logger.info("已桥接 %d 个技能工具到 AgentLoop", bridged)
 
+    # 协程工具（需 await 外部资源，如 MCP）单独以异步 handler 桥接
+    bridged_async = _bridge_async_tools_to_agent(agent, skill_registry, SkillLoader())
+    if bridged_async:
+        logger.info("已桥接 %d 个异步技能工具到 AgentLoop", bridged_async)
+
+    # ── 外部 MCP（Obsidian 知识库 / 笔记）──
+    # 连接放后台线程：stdio 子进程冷启动（npx 拉包）数秒，不能阻塞启动。
+    # 连不上只影响 MCP 工具，其余功能照常（失败隔离）。
+    mcp_bridge = None
+    if getattr(Config, "MCP_ENABLED", False):
+        try:
+            from apps.dsn_study.mcp_bridge import MCPBridge
+            mcp_bridge = MCPBridge(
+                agent,
+                config_path=getattr(Config, "MCP_CONFIG_PATH", ""),
+                env={"OBSIDIAN_VAULT_PATH":
+                     getattr(Config, "OBSIDIAN_VAULT_PATH", "")},
+            )
+            mcp_bridge.start()
+            runtime.register("mcp", mcp_bridge)
+            runtime.on_stop(mcp_bridge.close)
+        except Exception:
+            logger.warning("MCP 桥接初始化失败（外部 MCP 工具不可用）",
+                           exc_info=True)
+
+    # ── Obsidian 知识库技能依赖注入 ──
+    if mcp_bridge is not None:
+        try:
+            from apps.dsn_study.skills.builtin.obsidian_notes.tools.obsidian_tools import (
+                ObsidianNotesTool,
+            )
+            if not skill_registry.inject_dependencies(
+                "obsidian_notes",
+                mcp_bridge=mcp_bridge,
+                graph_store=graph_store,
+                plan_engine=plan_engine,
+                vault_id=getattr(Config, "OBSIDIAN_VAULT_ID", "study"),
+                kp_folder=getattr(Config, "OBSIDIAN_KP_FOLDER", "知识点库"),
+                note_folder=getattr(Config, "OBSIDIAN_NOTE_FOLDER", "学习笔记"),
+            ):
+                logger.warning("Obsidian 技能依赖注入未命中（属性名不匹配）")
+        except Exception:
+            logger.warning("Obsidian 技能依赖注入失败", exc_info=True)
+
     # ── 语音合成（infra 资源池调度 GPT-SoVITS）──
     voice = None
     try:
@@ -719,6 +798,7 @@ def create_application() -> Flask:
     from apps.dsn_study.api.checkin import checkin_bp, init_checkin_api
     from apps.dsn_study.api.studylog import studylog_bp, init_studylog_api
     from apps.dsn_study.api.voice import voice_bp, init_voice_api
+    from apps.dsn_study.api.obsidian import obsidian_bp, init_obsidian_api
 
     init_scan_api(auth_manager=auth)
     init_study_timetable_api(db_mgr, auth)
@@ -731,6 +811,7 @@ def create_application() -> Flask:
     init_checkin_api(checkin_store, auth)
     init_studylog_api(studylog, auth)
     init_voice_api(voice, auth)
+    init_obsidian_api(mcp_bridge, skill_registry, auth)
 
     blueprints = {
         "scan": scan_bp,
@@ -744,6 +825,7 @@ def create_application() -> Flask:
         "checkin": checkin_bp,
         "studylog": studylog_bp,
         "voice": voice_bp,
+        "obsidian": obsidian_bp,
     }
 
     from apps.dsn_study.bundles import make_dsn_study_bundles

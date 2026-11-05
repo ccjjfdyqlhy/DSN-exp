@@ -1,0 +1,99 @@
+name: obsidian_notes
+display_name: "Obsidian 知识库"
+description: "把知识图谱知识点索引成 Obsidian 笔记，并写入/检索学习笔记"
+version: "1.0.0"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: "70"
+prompts:
+  - "prompts/instruction.md"
+tools:
+  - name: index_knowledge_points
+    display_name: "索引知识点库"
+    description: "把知识图谱中的知识点批量索引成 Obsidian 笔记（每个知识点一篇，含 frontmatter：编码/科目/掌握度/下次复习）。用于把学习知识沉淀进 Obsidian 知识库。"
+    module: "tools.obsidian_tools"
+    class: "ObsidianNotesTool"
+    methods:
+      - name: index_knowledge_points
+        description: "把知识点索引为 Obsidian 笔记"
+        parameters:
+          subject:
+            type: string
+            description: "科目代码（math/physics/…）；留空表示全部科目"
+            required: false
+          limit:
+            type: integer
+            description: "最多索引多少个知识点，默认 50"
+            required: false
+            default: 50
+          overwrite:
+            type: boolean
+            description: "笔记已存在时是否覆盖更新，默认 false（跳过）"
+            required: false
+            default: false
+  - name: write_study_note
+    display_name: "写学习笔记"
+    description: "把一段学习内容写成 Obsidian 笔记（自动带 frontmatter 与标签）。适合记录复盘、错题原因、知识点总结。"
+    module: "tools.obsidian_tools"
+    class: "ObsidianNotesTool"
+    methods:
+      - name: write_study_note
+        description: "写一篇学习笔记"
+        parameters:
+          title:
+            type: string
+            description: "笔记标题"
+            required: true
+          content:
+            type: string
+            description: "笔记正文（Markdown）"
+            required: true
+          tags:
+            type: string
+            description: "附加标签，逗号分隔"
+            required: false
+          subject:
+            type: string
+            description: "学科标签（如 数学）"
+            required: false
+          filename:
+            type: string
+            description: "自定义文件名（留空用标题生成）"
+            required: false
+  - name: search_obsidian_notes
+    display_name: "搜索知识库笔记"
+    description: "在 Obsidian 知识库中搜索笔记内容。"
+    module: "tools.obsidian_tools"
+    class: "ObsidianNotesTool"
+    methods:
+      - name: search_notes
+        description: "搜索 Obsidian 笔记"
+        parameters:
+          query:
+            type: string
+            description: "搜索关键词"
+            required: true
+          limit:
+            type: integer
+            description: "返回条数，默认 20"
+            required: false
+            default: 20
+  - name: list_obsidian_notes
+    display_name: "列出知识库笔记"
+    description: "列出 Obsidian 知识库中的笔记（默认列学习笔记目录）。"
+    module: "tools.obsidian_tools"
+    class: "ObsidianNotesTool"
+    methods:
+      - name: list_notes
+        description: "列出 Obsidian 笔记"
+        parameters:
+          path:
+            type: string
+            description: "相对 vault 根的目录（留空 = 学习笔记目录）"
+            required: false
+          limit:
+            type: integer
+            description: "返回条数，默认 50"
+            required: false
+            default: 50

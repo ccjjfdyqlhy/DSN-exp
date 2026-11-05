@@ -52,6 +52,15 @@ def bind_dsn_study_settings(settings: Settings) -> Settings:
     _bind(mem, "embedding_enabled", "MEMORY_EMBEDDING_ENABLED", True, _BOOL)
     _bind(mem, "summary_backend", "MEMORY_SUMMARY_BACKEND", "openai")
 
+    # ── Obsidian 知识库（MCP）──
+    obsidian = settings.namespace("obsidian")
+    _bind(obsidian, "mcp_enabled", "MCP_ENABLED", True, _BOOL)
+    _bind(obsidian, "vault_path", "OBSIDIAN_VAULT_PATH",
+          "/home/darkstar/dsn_workspace/library/library")
+    _bind(obsidian, "vault_id", "OBSIDIAN_VAULT_ID", "study")
+    _bind(obsidian, "kp_folder", "OBSIDIAN_KP_FOLDER", "知识点库")
+    _bind(obsidian, "note_folder", "OBSIDIAN_NOTE_FOLDER", "学习笔记")
+
     # ── 语音 ──
     voice = settings.namespace("voice")
     _bind(voice, "asr_enabled", "ASR_ENABLED", True, _BOOL)

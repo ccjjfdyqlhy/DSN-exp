@@ -74,6 +74,35 @@ class SkillRegistry:
             raise ValueError(f"工具方法不存在: {key}.{tool_name}")
         return method(**params)
 
+    async def call_tool_async(self, skill_name: str, tool_name: str,
+                              params: dict[str, Any]) -> Any:
+        """异步调用工具：工具方法是协程时 await，否则直接返回。
+
+        需要 await 外部资源（如 MCP 服务器）的技能工具用这个入口。
+        """
+        import inspect
+
+        key = f"{skill_name}.{tool_name}"
+        instance = self._tool_instances.get(key)
+        if not instance:
+            raise ValueError(f"工具不存在: {key}")
+        method = getattr(instance, tool_name, None)
+        if not method or not callable(method):
+            raise ValueError(f"工具方法不存在: {key}.{tool_name}")
+        if inspect.iscoroutinefunction(method):
+            return await method(**params)
+        return method(**params)
+
+    def is_async_tool(self, skill_name: str, tool_name: str) -> bool:
+        """工具方法是否为协程（决定桥接时用同步还是异步 handler）。"""
+        import inspect
+
+        instance = self._tool_instances.get(f"{skill_name}.{tool_name}")
+        if not instance:
+            return False
+        method = getattr(instance, tool_name, None)
+        return bool(method) and inspect.iscoroutinefunction(method)
+
     def get_tool_spec(self, skill_name: str, tool_name: str) -> dict | None:
         return self._tool_specs.get(f"{skill_name}.{tool_name}")
 

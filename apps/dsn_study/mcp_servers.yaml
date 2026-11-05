@@ -1,0 +1,33 @@
+# apps/dsn_study/mcp_servers.yaml
+# dsn_study 的外部 MCP 工具源声明（格式见仓库根 mcp_servers.yaml）。
+#
+# 当前接入：**Obsidian** —— 作为学习知识库（知识点索引 + 笔记）的落地载体。
+#
+# 为什么选 obsidian-mcp（npm, StevenStavrakis）：
+#   * 直接操作 vault 里的 Markdown 文件，**Obsidian 桌面端无需运行**；
+#   * 无需安装社区插件、无需 API Key、无需开端口；
+#   * 纯 stdio 子进程，由 harness 的 MCPManager 统一托管与失败隔离。
+#   （另一路 obsidian-mcp-server 需要 Obsidian 的 Local REST API 插件 + 应用常驻，
+#     对"应用侧长期后台运行"的场景更重，故未采用。）
+#
+# 工具以 mcp.obsidian.<远端工具名> 命名空间注册进 AgentLoop，AI 可直接调用：
+#   obsidian_list_vaults / obsidian_read_note / obsidian_create_note /
+#   obsidian_edit_note / obsidian_delete_note / obsidian_move_note /
+#   obsidian_create_directory / obsidian_search_vault /
+#   obsidian_add_tags / obsidian_remove_tags / obsidian_rename_tag /
+#   obsidian_manage_tags
+#
+# ${OBSIDIAN_VAULT_PATH} 由 apps.dsn_study.config.Config 提供（见 mcp_bridge.py 注入）。
+servers:
+  - name: obsidian
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "obsidian-mcp@2"
+      - "serve"
+      - "--vault"
+      - "study=${OBSIDIAN_VAULT_PATH}"
+    enabled: true
+    connect_timeout: 90
+    call_timeout: 120

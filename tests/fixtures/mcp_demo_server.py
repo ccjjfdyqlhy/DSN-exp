@@ -5,14 +5,22 @@
 #   command=sys.executable, args=[本文件绝对路径]
 # 提供两个工具：add(a, b) / echo(text)。文件名刻意不叫 test_*.py，避免被收集。
 #
+# SDK 兼容：
+#   mcp 1.x：mcp.server.fastmcp.FastMCP
+#   mcp 2.x：FastMCP 更名为 MCPServer（mcp.server.mcpserver.MCPServer）
+# 两种都认，测试夹具不因 SDK 升级而失效。
+#
 # 注：structured_output=False 是刻意的 —— 本机 mcp 1.28 + pydantic 2.9 组合下，
 # FastMCP 为原始类型返回值建包装输出模型会触发 pydantic 2.9 的
 # "non-annotated attribute" 报错（mcp 1.28 预期更新的 pydantic）。
 # 非结构化输出走文本内容路径，完全绕开该兼容问题；harness 客户端不受影响。
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp 2.x
+    from mcp.server.mcpserver import MCPServer as _Server
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP as _Server
 
-mcp = FastMCP("demo")
+mcp = _Server("demo")
 
 
 @mcp.tool(structured_output=False)

@@ -45,7 +45,7 @@ class StudyBundle(DsnStudyBundle):
     name = "study"
     description = "扫题/扫印、学习时间表、异步任务状态、打卡与学习日志"
     settings_namespaces = ["study", "vision"]
-    blueprint_names = ["scan", "study_timetable", "async_tasks", "checkin", "studylog", "voice"]
+    blueprint_names = ["scan", "study_timetable", "async_tasks", "checkin", "studylog", "voice", "obsidian"]
 
 
 class PlanBundle(DsnStudyBundle):

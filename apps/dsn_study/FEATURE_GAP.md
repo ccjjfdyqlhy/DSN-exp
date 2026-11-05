@@ -183,6 +183,56 @@ convert_via_vision 建包往返、空参校验、process_images 全链路桩管�
   对 `https://api.littlecold.cn/v1` 返回 **401 Invalid token**；本机无 LMStudio/llama.cpp 服务。
   代码路径已用桩模型验证通过，换有效凭据即可直接跑。
 
+## 阶段 8（P1，2026-11-01）：Obsidian MCP 接入（知识点库索引 + 笔记）✅
+
+> 诉求：给 dsn_study 连接 Obsidian 的 MCP，允许其用 Obsidian 做**知识点库索引**和**笔记**。
+
+### 8.1 选型
+
+| 候选 | 机制 | 是否采用 |
+|---|---|---|
+| `obsidian-mcp@2`（npm, StevenStavrakis） | 直接操作 vault 里的 Markdown，**Obsidian 桌面端无需运行**；无需社区插件 / API Key / 端口 | ✅ **采用** |
+| `obsidian-mcp-server`（npm, cyanheads） | 需要 Obsidian 的 Local REST API 插件 + 应用常驻 + API Key | ✗ |
+| `mcp-obsidian`（npm, steipete） | 同上，依赖 REST API 插件 | ✗ |
+
+本机已装 `/opt/Obsidian`，vault 位于 `/home/darkstar/dsn_workspace/library/library`（含 `.obsidian/`）。
+选文件系统型 MCP 的原因：dsn_study 是后台长期运行的应用，不该依赖一个 GUI 应用常驻。
+
+### 8.2 落地内容
+
+| 文件 | 说明 |
+|---|---|
+| `apps/dsn_study/mcp_servers.yaml` | dsn_study 专属 MCP 声明：`obsidian` 服务器（stdio → `npx obsidian-mcp@2 serve --vault study=...`） |
+| `apps/dsn_study/mcp_bridge.py` | `MCPBridge`：加载 YAML → **专属常驻事件循环** → 连接 → 把 12 个远端工具注册给 AgentRuntime（命名空间 `mcp.obsidian.*`）；失败隔离、状态快照、跨线程调用 |
+| `apps/dsn_study/skills/builtin/obsidian_notes/` | 「Obsidian 知识库」技能（4 工具）：`index_knowledge_points`（知识点批量索引）、`write_study_note`（写笔记）、`search_obsidian_notes`、`list_obsidian_notes` |
+| `apps/dsn_study/api/obsidian.py` | `GET /api/obsidian/status`、`POST /api/obsidian/index` |
+| `apps/dsn_study/skills/registry.py` | 新增 `call_tool_async` / `is_async_tool`（支持需要 await 外部资源的技能工具） |
+| `apps/dsn_study/boot.py` | 装配 MCPBridge（后台线程）→ 注入技能依赖 → 异步工具以 async handler 桥接 |
+| `harness/tools/mcp.py` | **前向兼容**：MCP SDK 2.x 把 `streamablehttp_client` 改名、`read_timeout_seconds` 从 timedelta 改为 float —— 两种 SDK 版本都能用 |
+
+### 8.3 关键设计决策
+
+1. **专属常驻事件循环**：MCP 会话（stdio 子进程 + anyio task group）必须活在与它同一个事件循环里。
+   用 `asyncio.run()` 建连再退出，循环关闭会把会话一起销毁，表现为「工具列出来了但调用永远失败」。
+   现在由 `MCPBridge` 持一个常驻 loop 线程，跨线程调用用 `run_coroutine_threadsafe`。
+2. **原始 MCP 工具 + 领域技能并存**：12 个 `mcp.obsidian.*` 工具直接给 AI（自由读写笔记），
+   技能补的是「知识点图谱 → 结构化笔记」这类需要 dsn_study 内部数据的复合动作。
+3. **索引幂等**：已存在的笔记默认跳过；`overwrite=true` 才覆盖刷新。
+4. **ALREADY_EXISTS 按文本判定**：obsidian-mcp 把「笔记已存在」当**成功**返回（正文带标记），
+   不能只看 `success`，否则会把「已存在」误判成「索引成功」。
+5. **连接不阻塞启动**：stdio 子进程冷启动数秒（npx 拉包），连接放后台线程；
+   MCP 不可用时其余功能完全不受影响。
+6. **删除可恢复**：obsidian-mcp 默认走 trash（`.obsidian-mcp/trash`），永久删除需显式确认。
+
+### 8.4 验收
+
+- `tests/test_dsn_study_obsidian.py` **16 用例**（配置声明与 env 展开 / MCPBridge 生命周期 /
+  索引渲染与跳过覆盖语义 / 笔记写入与追加 / 依赖注入命中 / 异步工具不重复注册 / 路由 /
+  **真实 MCP 往返**（`MCP_LIVE_TEST=1`））。
+- **实测**：MCP 连接成功、**12 个工具**注册进 AgentLoop；索引 2 个知识点 →
+  vault 里生成 `知识点库/<科目>/<kp_code>.md`（frontmatter 含 kp_code/科目/掌握度/下次复习）；
+  `GET /api/obsidian/status` 返回 `connected=true, tool_count=12`。
+
 ## 阶段 7（P1，2026-11-01）：TTS 语音合成（直接对接 infra 资源池）✅
 
 > 诉求：GPT-SoVITS 依赖在 conda 环境 `GPTSoVits` 里，用该环境的**独立 Python** 启动；
@@ -258,3 +308,4 @@ convert_via_vision 建包往返、空参校验、process_images 全链路桩管�
 - 2026-10-27：P0/P1 五阶段全部完成。阶段 6（P2 可选：MCP 暴露学习工具 / 导师人格）保留待办。dsn_study 当前 15 个技能（原 12 + study_tasks 17 工具 + study_memory 2 工具），boot 桥接约 84 个工具。
 - 2026-11-01：阶段 6.5 完成——对照参考版全量补齐：修 5 处坏导入（含让「知识图谱构建」「出题打印」两个技能从不可用变可用）、补考试超时自动交卷 / `<plan_check>` / 日终报告 / 聊天内图片、移植 document 子系统与 document 技能（10 工具，含扫描作答卷判分）、新增 study_tracking（7 工具）与 batch（2 工具）技能、新增 async_send 端点与 `<tool>` 标签降级适配器；新增 19 用例功能完整性测试（含桩模型完整对话回路），dsn_study 侧 66→全绿。
 - 2026-11-01：阶段 7 完成——TTS 接入：经 infra 资源池以 conda 模式（GPTSoVits 环境的独立 Python）托管 GPT-SoVITS；新增 VoiceService 门面 / TTS 客户端 / profile 管理器 / 音色资产 / voice 控制 API；对话与提醒响应新增 audio_b64；新增 13 用例（含真实服务联调）。
+- 2026-11-01：阶段 8 完成——Obsidian MCP 接入：经 harness MCPManager 以 stdio 接入 obsidian-mcp@2（Obsidian 桌面端无需运行），12 个 mcp.obsidian.* 工具进 AgentLoop；新增 Obsidian 知识库技能（知识点索引/写笔记/搜索/列举）与 obsidian 控制 API；MCPBridge 采用专属常驻事件循环；harness 兼容 MCP SDK 1.x/2.x；新增 16 用例。

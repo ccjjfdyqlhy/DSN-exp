@@ -214,6 +214,34 @@ class DSNUIEngine:
             or "http://localhost:4501"
         )
 
+    def _claimed_local_ports(self) -> set[int]:
+        """已被其它本地模型占用的端口集合。
+
+        新注册的本地模型据此避让端口。两个模型共用一个端口会导致
+        System-1 的身份校验（/props 比对 model_path）打到错的模型上，
+        进而把"这个模型不支持决策"误判成"支持"。
+        """
+        claimed: set[int] = set()
+        try:
+            for spec in self.orchestrator._specs.values():
+                url = getattr(spec, "base_url", None) or ""
+                if not url:
+                    continue
+                # 只统计本地引擎模型（llama_cpp / strata）
+                engine = getattr(getattr(spec, "profile", None), "engine", None)
+                if engine not in ("llama_cpp", "strata"):
+                    continue
+                port = getattr(spec, "llama_config", None)
+                port = getattr(port, "port", None) if port is not None else None
+                if port is None:
+                    st = getattr(spec, "strata_config", None)
+                    port = getattr(st, "port", None) if st is not None else None
+                if port:
+                    claimed.add(int(port))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("收集已占用端口失败: %s", e)
+        return claimed
+
     def _init_default_profiles(self) -> None:
         """从 model_profiles 目录预加载模型定义至 Orchestrator。
 
@@ -321,3 +349,17 @@ class DSNUIEngine:
                 logger.info("Strata 集成就绪，已注册 %d 个模型: %s", len(names), names)
         except Exception as e:  # noqa: BLE001
             logger.warning("Strata 集成失败（忽略，不影响启动）: %s", e)
+
+        # ── JEV-27B-VL 集成（可选）──
+        # 自动发现 ~/qwen_weights 下的 JEV GGUF，注册成可调度的本地模型。
+        # JEV 独占双卡且必须独占一个端口（System-1 的身份校验靠 /props
+        # 比对 model_path，两个模型共用端口会打到错的模型上），
+        # 因此把已被占用的端口传进去，让它自动避让。
+        try:
+            from apps.dsn_ui.jev_integration import register_jev_models
+            claimed = self._claimed_local_ports()
+            names = register_jev_models(self.orchestrator, claimed_ports=claimed)
+            if names:
+                logger.info("JEV 集成就绪，已注册 %d 个模型: %s", len(names), names)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("JEV 集成失败（忽略，不影响启动）: %s", e)

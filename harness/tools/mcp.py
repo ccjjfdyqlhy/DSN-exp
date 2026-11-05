@@ -73,6 +73,30 @@ def _sanitize(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name)
 
 
+def _read_timeout_arg(seconds: float):
+    """构造 read_timeout_seconds 实参，兼容 MCP SDK 1.x / 2.x。
+
+    SDK 1.x 的 call_tool(read_timeout_seconds=timedelta)；
+    SDK 2.x 改成了 float（秒）。两者的类型不通用，传错会在 SDK 内部
+    抛 "unsupported operand type(s) for +: 'float' and 'datetime.timedelta'"。
+    这里按签名注解自适应，避免使用者被迫锁死某个 SDK 版本。
+    """
+    try:
+        import inspect
+        from mcp import ClientSession
+
+        param = inspect.signature(ClientSession.call_tool).parameters.get(
+            "read_timeout_seconds")
+        annotation = str(getattr(param, "annotation", "") or "")
+    except Exception:
+        annotation = ""
+    if "timedelta" in annotation:
+        import datetime as _dt
+
+        return _dt.timedelta(seconds=seconds)
+    return float(seconds)
+
+
 def _require_mcp_sdk() -> Any:
     """延迟导入官方 mcp SDK，缺包时报可操作的安装指引。"""
     try:
@@ -80,13 +104,20 @@ def _require_mcp_sdk() -> Any:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
         from mcp.client.stdio import StdioServerParameters, stdio_client
-        from mcp.client.streamable_http import streamablehttp_client
     except ImportError as e:
         raise ImportError(
             "外部 MCP 桥接需要官方 SDK：pip install 'mcp>=1.2'"
             "（或在本仓库执行 pip install -e '.[mcp]'）"
         ) from e
+    # MCP SDK 2.x 把 streamablehttp_client 改名为 streamable_http_client；
+    # 两个名字都认，保证 1.x / 2.x SDK 都能用。
     import types
+    try:
+        from mcp.client.streamable_http import streamablehttp_client
+    except ImportError:
+        from mcp.client.streamable_http import (
+            streamable_http_client as streamablehttp_client,
+        )
     return types.SimpleNamespace(
         ClientSession=ClientSession,
         sse_client=sse_client,
@@ -355,7 +386,11 @@ class MCPManager:
         remote_name = remote.name
         full_name = f"mcp.{_sanitize(cfg.name)}.{_sanitize(remote_name)}"
         desc = (remote.description or remote_name).strip()
-        schema = dict(remote.inputSchema) if getattr(remote, "inputSchema", None) \
+        # MCP SDK 1.x 用 inputSchema，2.x 改名为 input_schema；
+        # 两个名字都读，否则模型拿不到参数说明（会瞎调）。
+        raw_schema = getattr(remote, "inputSchema", None) \
+            or getattr(remote, "input_schema", None)
+        schema = dict(raw_schema) if raw_schema \
             else {"type": "object", "properties": {}}
         manager = self
 
@@ -443,7 +478,7 @@ class MCPManager:
             result = await asyncio.wait_for(
                 session.call_tool(
                     tool, arguments or {},
-                    read_timeout_seconds=_dt.timedelta(seconds=cfg.call_timeout)),
+                    read_timeout_seconds=_read_timeout_arg(cfg.call_timeout)),
                 timeout=cfg.call_timeout + _OUTER_TIMEOUT_MARGIN)
         except asyncio.TimeoutError:
             return ToolResult.retry(
