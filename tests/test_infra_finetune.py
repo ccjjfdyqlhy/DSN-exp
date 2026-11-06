@@ -588,3 +588,86 @@ def test_cuda_visible_devices_is_set_before_torch_import():
     assert "_apply_cuda_visible_devices(spec)" in main_body
     # 设置必须排在 train(spec)（会 import torch）之前
     assert main_body.index("_apply_cuda_visible_devices(spec)") < main_body.index("train(spec)")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 10. 行为级奖励（reward）：从判分到"好样本学得多"
+# ════════════════════════════════════════════════════════════════════════════
+#
+# 光有晋级门槛是**整批准入**（过/不过）：情绪分 0.9 和 0.3 的样本进了训练集
+# 权重一样 —— 那"奖励"就只是句空话。加权是让奖励真正起作用的那一步。
+
+def test_weighted_mean_semantics():
+    """reward=0.9 与 reward=0.3 的样本，梯度贡献比必须是 3:1。"""
+    from infra.finetune.dataset import weighted_mean
+
+    # 两个样本逐样本 loss 相同 → 加权平均只反映权重比例
+    assert weighted_mean([1.0, 1.0], [0.9, 0.3]) == pytest.approx(1.0)
+    # 把权重换成 [0.3, 0.0]：高权重样本独占 → 仍然是 1.0
+    assert weighted_mean([1.0, 1.0], [0.3, 0.0]) == pytest.approx(1.0)
+    # 权重全 0 → 退化为普通平均（不除零）
+    assert weighted_mean([1.0, 2.0], [0.0, 0.0]) == pytest.approx(1.5)
+    # 权重与值长度不一致 → 明确报错
+    with pytest.raises(ValueError):
+        weighted_mean([1.0], [0.5, 0.5])
+
+
+def test_build_sft_dataset_keeps_reward_and_labels(tmp_path):
+    """数据集层必须把 reward 与 incident 标签一起带到训练集里。"""
+    from infra.finetune.dataset import build_sft_dataset
+
+    records = [
+        {"messages": [{"role": "user", "content": "在吗"},
+                      {"role": "assistant", "content": "在的"}],
+         "reward": 0.9, "source": "selfplay", "incident_id": "inc-1"},
+        {"messages": [{"role": "user", "content": "你好"},
+                      {"role": "assistant", "content": "你好呀"}],
+         "reward": 0.3, "source": "selfplay"},
+        # 没有 reward 的老记录 → 缺省 1.0（向后兼容）
+        {"messages": [{"role": "user", "content": "嗯"},
+                      {"role": "assistant", "content": "嗯嗯"}]},
+    ]
+    stats, train_path, val_path = build_sft_dataset(records, tmp_path, val_ratio=0.0)
+    assert stats.kept == 3
+    # 无 reward 的老记录按 1.0（中性）算，所以 max 是 1.0 而不是 0.9
+    assert stats.reward_max == pytest.approx(1.0)
+    assert stats.reward_min == pytest.approx(0.3)
+    assert stats.reward_mean == pytest.approx((0.9 + 0.3 + 1.0) / 3, abs=1e-3)
+
+    out = [json.loads(l) for l in train_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(out) == 3
+    by_reward = sorted(r["reward"] for r in out)
+    assert by_reward == pytest.approx([0.3, 0.9, 1.0])
+    # incident 标签不能丢
+    assert any(r.get("incident_id") == "inc-1" for r in out)
+
+
+def test_trajectory_carries_reward():
+    """harness 层：轨迹要能带 reward，并原样写进 record。"""
+    from harness.learning.dataset_builder import DatasetBuilder
+
+    b = DatasetBuilder(out_dir="~/dsn-finetune/data/_t", val_ratio=0.0)
+    assert b.from_messages(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}],
+        source="selfplay", reward=0.8,
+    )
+    rec = b._trajectories[0].to_record()
+    assert rec["reward"] == pytest.approx(0.8)
+    assert rec["source"] == "selfplay"
+    # 缺省是中性 1.0
+    b2 = DatasetBuilder(out_dir="~/dsn-finetune/data/_t2", val_ratio=0.0)
+    b2.from_messages([{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}])
+    assert b2._trajectories[0].to_record()["reward"] == pytest.approx(1.0)
+
+
+def test_train_script_wires_reward_weighting():
+    """训练脚本必须真的用上加权，否则 reward 只是躺在 JSONL 里。"""
+    src = (Path(__file__).resolve().parents[1] / "infra" / "finetune" / "train_sft.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_make_reward_weighted_trainer" in src
+    assert "has_rewards" in src, "训练脚本没有按 reward 选择加权 Trainer"
+    # 只有存在非中性 reward 时才切换 → 旧数据集行为不变
+    assert 'any(abs(r - 1.0) > 1e-6 for r in rewards)' in src
+    # collator 必须把 reward 放进 batch
+    assert '"reward": torch.tensor(rewards, dtype=torch.float32)' in src

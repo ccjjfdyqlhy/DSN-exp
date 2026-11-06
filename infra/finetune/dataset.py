@@ -36,6 +36,10 @@ class DatasetStats:
     kept: int = 0
     dropped: int = 0
     reasons: dict[str, int] = field(default_factory=dict)
+    #: reward 分布（缺省 1.0 = 中性，向后兼容）。
+    reward_mean: float = 1.0
+    reward_min: float = 1.0
+    reward_max: float = 1.0
 
     def drop(self, reason: str) -> None:
         self.dropped += 1
@@ -45,9 +49,37 @@ class DatasetStats:
         return {
             "total": self.total,
             "kept": self.kept,
+            "reward_mean": round(self.reward_mean, 4),
+            "reward_min": round(self.reward_min, 4),
+            "reward_max": round(self.reward_max, 4),
             "dropped": self.dropped,
             "reasons": dict(self.reasons),
         }
+
+
+def weighted_mean(values: list[float], weights: list[float]) -> float:
+    """按权重求加权平均；**权重全为 0 时退化为普通平均**。
+
+    这是"行为级奖励"的数学定义：训练时每个样本的 loss 按它的 reward 加权，
+    所以 reward=0.9 的样本对梯度的贡献是 reward=0.3 的 **3 倍**。
+
+    为什么要有这个纯函数：训练脚本（train_sft.py）跑在独立解释器里，
+    它的加权实现用 torch；把语义抽成纯 Python 函数，
+    就能在**不装 torch 的环境**里测同一套规则（框架层不许依赖 torch）。
+
+    参数:
+        values: 逐样本的值（如逐样本 loss）
+        weights: 与 values 等长的权重（reward，0~1）
+    """
+    if not values:
+        return 0.0
+    if len(values) != len(weights):
+        raise ValueError(f"values/weights 长度不一致: {len(values)} vs {len(weights)}")
+    total_w = sum(max(0.0, w) for w in weights)
+    if total_w <= 1e-9:
+        # 权重全 0 → 退化为普通平均（而不是除零）
+        return sum(values) / len(values)
+    return sum(v * max(0.0, w) for v, w in zip(values, weights)) / total_w
 
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -189,7 +221,20 @@ def build_sft_dataset(
         if estimate_chars(messages) > max_tokens:
             stats.drop(f"超过长度上限({max_tokens} token 估算)")
             continue
-        kept.append({"messages": messages})
+        # reward（可选）：行为级奖励信号。0~1，缺省 1.0（中性，向后兼容）。
+        # 训练时按它给样本的 loss 加权 —— "好样本学得多"（计划三 §3.2.2）。
+        reward = rec.get("reward", rec.get("weight"))
+        try:
+            reward = float(reward) if reward is not None else 1.0
+        except (TypeError, ValueError):
+            reward = 1.0
+        reward = max(0.0, min(1.0, reward))
+        record: dict[str, Any] = {"messages": messages, "reward": reward}
+        # 其它可传字段原样带走（incident_id / threat_type 等标签不能丢）。
+        for key in ("source", "incident_id", "threat_type", "recovery_outcome", "meta"):
+            if rec.get(key) is not None:
+                record[key] = rec[key]
+        kept.append(record)
 
     rng = random.Random(seed)
     rng.shuffle(kept)
@@ -209,8 +254,13 @@ def build_sft_dataset(
     write_jsonl(val_path, val_records)
 
     stats.kept = len(kept)
+    rewards = [r["reward"] for r in kept]
+    if rewards:
+        stats.reward_mean = sum(rewards) / len(rewards)
+        stats.reward_min = min(rewards)
+        stats.reward_max = max(rewards)
     logger.info(
-        "数据集构建完成: %s（train=%d val=%d 丢弃=%d）",
-        out, len(train_records), len(val_records), stats.dropped,
+        "数据集构建完成: %s（train=%d val=%d 丢弃=%d reward均值=%.3f）",
+        out, len(train_records), len(val_records), stats.dropped, stats.reward_mean,
     )
     return stats, train_path, val_path

@@ -38,6 +38,74 @@ def _load_spec(path: str) -> dict:
         return json.load(fh)
 
 
+class _RewardWeightedTrainer:
+    """占位：真正的类在下面按 transformers 版本动态构造。
+
+    见 `_make_reward_weighted_trainer()`。
+    """
+
+
+def _make_reward_weighted_trainer():
+    """构造一个「按 reward 给样本 loss 加权」的 Trainer。
+
+    为什么需要它：光有晋级门槛是**整批准入**（过/不过），
+    情绪分 0.9 和 0.3 的样本进了训练集**权重一样** —— 那"奖励"就只是句空话。
+    加权之后，「好样本学得多」才真的成立。
+
+    实现要点：
+      * 逐样本算 loss（先对 token 求均值），再按 reward 加权求和 / 加权总和；
+      * reward 全为 0 时退化为不加权（否则除零）；
+      * **不走 Trainer 的默认 compute_loss**：它把 labels 交给模型内部算 loss，
+        我们要逐样本算，所以自己接 logits 与 labels；
+      * `num_items_in_batch` 之类的版本相关参数用 **kwargs 吸收 ——
+        忽略它只影响 loss 的绝对尺度（梯度累积下的归一化），
+        不影响**样本之间的相对权重**，而后者才是这里要的东西。
+
+    只在数据集里**真的存在非中性 reward** 时才启用（见 `train()`），
+    否则走原生 Trainer，保证旧行为一字不变。
+    """
+    from transformers import Trainer
+    import torch
+    import torch.nn.functional as F
+
+    class RewardWeightedTrainer(Trainer):
+        """按 reward 加权逐样本 loss。"""
+
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            rewards = inputs.pop("reward", None)
+            if rewards is None:
+                return super().compute_loss(
+                    model, inputs, return_outputs=return_outputs, **kwargs
+                )
+            labels = inputs.pop("labels", None)
+            if labels is None:
+                return super().compute_loss(
+                    model, inputs, return_outputs=return_outputs, **kwargs
+                )
+
+            outputs = model(**inputs)
+            logits = outputs.logits
+            # 与因果语言模型的标准 loss 对齐：右移一位，-100 的位置不算。
+            shift_logits = logits[:, :-1, :].contiguous().float()
+            shift_labels = labels[:, 1:].contiguous()
+            token_loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                reduction="none",
+            ).view(shift_labels.shape)
+            mask = (shift_labels != -100).float()
+            per_sample = (token_loss * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+
+            weights = rewards.to(per_sample.dtype).clamp(min=0.0)
+            if float(weights.sum()) <= 1e-6:
+                # 全是 0 权重 → 退化为不加权（而不是除零）
+                weights = torch.ones_like(weights)
+            loss = (per_sample * weights).sum() / weights.sum()
+            return (loss, outputs) if return_outputs else loss
+
+    return RewardWeightedTrainer
+
+
 def _build_dataset(tokenizer, records_path: str, seq_len: int):
     """把 JSONL 的 messages 套 chat template 后 tokenize。"""
     from torch.utils.data import Dataset
@@ -77,7 +145,17 @@ def _build_dataset(tokenizer, records_path: str, seq_len: int):
                     ids = enc["input_ids"]
                     if len(ids) < 8:
                         continue
-                    self.samples.append({"input_ids": ids, "labels": list(ids)})
+                    # reward：行为级奖励信号（0~1，缺省 1.0 = 中性）。
+                    # 训练时按它给样本的 loss 加权：「好样本学得多」。
+                    try:
+                        reward = float(rec.get("reward", rec.get("weight", 1.0)))
+                    except (TypeError, ValueError):
+                        reward = 1.0
+                    self.samples.append({
+                        "input_ids": ids,
+                        "labels": list(ids),
+                        "reward": max(0.0, min(1.0, reward)),
+                    })
 
         def __len__(self) -> int:
             return len(self.samples)
@@ -93,7 +171,7 @@ def _collator(tokenizer, pad_id: int):
         import torch
 
         max_len = max(len(f["input_ids"]) for f in features)
-        input_ids, labels, attention = [], [], []
+        input_ids, labels, attention, rewards = [], [], [], []
         for f in features:
             ids = list(f["input_ids"])
             lab = list(f["labels"])
@@ -101,10 +179,13 @@ def _collator(tokenizer, pad_id: int):
             input_ids.append(ids + [pad_id] * pad)
             labels.append(lab + [-100] * pad)     # -100 = 不参与 loss
             attention.append([1] * len(ids) + [0] * pad)
+            rewards.append(float(f.get("reward", 1.0)))
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
             "attention_mask": torch.tensor(attention, dtype=torch.long),
+            # reward 随 batch 走，在 compute_loss 里被 pop 掉（不进 model.forward）
+            "reward": torch.tensor(rewards, dtype=torch.float32),
         }
 
     return collate
@@ -287,7 +368,20 @@ def train(spec: dict) -> dict:
         remove_unused_columns=False,
     )
 
-    trainer = Trainer(
+    # 只有数据集里**真的存在非中性 reward** 时才换成加权 Trainer，
+    # 否则走原生 Trainer —— 保证旧数据集（无 reward）的训练行为一字不变。
+    rewards = [float(s.get("reward", 1.0)) for s in getattr(dataset, "samples", [])]
+    has_rewards = any(abs(r - 1.0) > 1e-6 for r in rewards)
+    trainer_cls = _make_reward_weighted_trainer() if has_rewards else Trainer
+    if has_rewards:
+        print(
+            f"[train_sft] 启用 reward 加权：{len(rewards)} 条样本，"
+            f"reward 均值 {sum(rewards) / max(len(rewards), 1):.3f} "
+            f"min {min(rewards):.3f} max {max(rewards):.3f}",
+            flush=True,
+        )
+
+    trainer = trainer_cls(
         model=model,
         args=args,
         train_dataset=dataset,
@@ -307,6 +401,10 @@ def train(spec: dict) -> dict:
     metrics = {
         "elapsed_sec": round(elapsed, 2),
         "train_samples": len(dataset),
+        "reward_weighted": bool(has_rewards),
+        "reward_mean": round(sum(rewards) / len(rewards), 4) if rewards else 1.0,
+        "reward_min": round(min(rewards), 4) if rewards else 1.0,
+        "reward_max": round(max(rewards), 4) if rewards else 1.0,
         "train_loss": float(getattr(result, "training_loss", 0.0) or 0.0),
         "steps": global_step,
         "epochs": round(float(getattr(getattr(trainer, "state", None), "epoch", 0.0) or 0.0), 3),

@@ -43,10 +43,19 @@ class Trajectory:
 
     source 用来标记来源，评测时可以按来源分层看指标
     （自生成的分数高不代表真实对话上表现好）。
+
+    reward 是**行为级奖励**（0~1，缺省 1.0 = 中性）：
+    它来自"这次探索当场被判了多少分"（结构分 / 情感分 / 生存分），
+    训练时按它给样本的 loss 加权 ——「好样本学得多」。
+
+    为什么要有它：光有"晋级门槛"是**整批准入**（过/不过），
+    情绪分 0.9 和 0.3 的样本进了训练集**权重一样**，
+    那"奖励"就只是句空话。分批量的加权才能让奖励真正起作用。
     """
 
     messages: list[dict]
     source: str = "chat"
+    reward: float = 1.0
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self, *, strip_reasoning: bool = True) -> dict[str, Any]:
@@ -56,7 +65,14 @@ class Trajectory:
             for msg in msgs:
                 for key in STRIP_FIELDS:
                     msg.pop(key, None)
-        return {"messages": msgs, "source": self.source, **({"meta": self.meta} if self.meta else {})}
+        record: dict[str, Any] = {
+            "messages": msgs,
+            "source": self.source,
+            "reward": max(0.0, min(1.0, float(self.reward))),
+        }
+        if self.meta:
+            record["meta"] = self.meta
+        return record
 
 
 @dataclass
@@ -119,9 +135,11 @@ class DatasetBuilder:
     def add_many(self, trajectories: Iterable[Trajectory]) -> int:
         return sum(1 for t in trajectories if self.add(t))
 
-    def from_messages(self, messages: list[dict], *, source: str = "chat") -> bool:
+    def from_messages(
+        self, messages: list[dict], *, source: str = "chat", reward: float = 1.0
+    ) -> bool:
         """从一段消息（线上会话的一轮）加入一条轨迹。"""
-        return self.add(Trajectory(messages=list(messages), source=source))
+        return self.add(Trajectory(messages=list(messages), source=source, reward=reward))
 
     def from_session(self, store, session_id: str, *, source: str = "chat") -> bool:
         """从 SessionStore 取一个会话的完整消息并加入。
