@@ -132,7 +132,16 @@ class OpenAICompatClient(ChatClientAdapter):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
+        extra_body: Optional[dict] = None,
     ) -> ChatResponse:
+        """调一次模型。
+
+        `extra_body` 是**厂商私有字段的正规通道**（OpenAI SDK 的同名参数）：
+        例如 llama.cpp 的 `chat_template_kwargs={"enable_thinking": false}`
+        —— 不关掉的话，Qwen3 会把 max_tokens 全花在 thinking 上，
+        返回的 content 是**空的**（实测踩过）。
+        不传就完全不进请求体，其他网关不受影响。
+        """
         if self.protocol == "responses":
             return self._invoke_responses(messages, tools, temperature=temperature,
                                           max_tokens=max_tokens, timeout=timeout)
@@ -141,6 +150,8 @@ class OpenAICompatClient(ChatClientAdapter):
         self._apply_tools(kwargs, tools)
         self._apply_sampling(kwargs, temperature=temperature, max_tokens=max_tokens)
 
+        if extra_body:
+            kwargs["extra_body"] = dict(extra_body)
         resp = self._client.chat.completions.create(**kwargs)
         if not hasattr(resp, "choices"):
             # 有些网关**无视 stream=false，强制返回 SSE**（实测：newapi.gay）。
