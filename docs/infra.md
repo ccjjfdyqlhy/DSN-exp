@@ -108,6 +108,15 @@ class IChatClient(Protocol):
 **`FailoverChat` 的流式语义**（`failover.py:193`）：未产出任何内容前失败 → 换端点重试；
 **已开始输出后失败 → 直接上抛**（不能重放，否则用户会看到重复内容）。
 
+**`OpenAICompatClient.invoke` 的 SSE 兜底**（`openai.py`）：有一批网关
+（实测：`newapi.gay`）**无视 `stream=false`，直接返回 `text/event-stream`**。
+openai SDK 这时交回来的是原始字符串而不是 Completion 对象，
+不兜住就是 `'str' object has no attribute 'choices'`。
+网关是别人的，改不了，只能自己兜：`invoke` 发现响应没有 `choices` 时，
+自动改走流式请求再把增量拼成一次普通响应（工具调用也会按 index 拼回去）。
+这条路径影响面不小——**教师链路**（`harness/learning/teacher.py`）走的正是 `invoke`，
+远端教师一旦遇到这种网关就整条链断掉。
+
 ### 1.5 `LocalServerLauncher`：子进程的两个硬约束
 
 **约束一：Popen 必须发生在指定线程上**（`local_engine.py:61` `_popen_on_launch_thread`）。

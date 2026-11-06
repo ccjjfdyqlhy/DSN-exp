@@ -142,7 +142,81 @@ class OpenAICompatClient(ChatClientAdapter):
         self._apply_sampling(kwargs, temperature=temperature, max_tokens=max_tokens)
 
         resp = self._client.chat.completions.create(**kwargs)
+        if not hasattr(resp, "choices"):
+            # 有些网关**无视 stream=false，强制返回 SSE**（实测：newapi.gay）。
+            # openai SDK 这时给回来的是原始字符串而不是 Completion 对象，
+            # 直接 _to_response 会炸：'str' object has no attribute 'choices'。
+            #
+            # 这条路径影响面不小：教师链路（harness/learning/teacher.py 走 invoke）、
+            # 任何非流式的远端调用都会挂。网关是别人的，我们改不了——
+            # 只能在自己这边兜住：退回流式调用，把增量拼成一次普通响应。
+            logger.debug("网关返回的不是 JSON 响应，退回流式聚合")
+            return self._invoke_by_stream(kwargs)
         return self._to_response(resp)
+
+    def _invoke_by_stream(self, params: dict[str, Any]) -> ChatResponse:
+        """用流式请求拼出一次普通的非流式响应。
+
+        给「强制 SSE 的网关」用：对调用方来说仍然是一次普通的 invoke。
+        """
+        stream_params = {**params, "stream": True}
+        if self._send_usage_in_stream:
+            stream_params.setdefault("stream_options", {"include_usage": True})
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_acc: dict[int, dict[str, Any]] = {}
+        usage: dict[str, Any] = {}
+        finish: Optional[str] = None
+
+        with self._client.chat.completions.create(**stream_params) as stream:
+            for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    usage = _plain(chunk.usage)
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish = getattr(choice, "finish_reason", None) or finish
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                if getattr(delta, "content", None):
+                    content_parts.append(delta.content)
+                if getattr(delta, "reasoning_content", None):
+                    reasoning_parts.append(delta.reasoning_content)
+                for tc in (getattr(delta, "tool_calls", None) or []):
+                    idx = getattr(tc, "index", 0) or 0
+                    slot = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if getattr(tc, "id", None):
+                        slot["id"] = tc.id
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            slot["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            slot["arguments"] += fn.arguments
+
+        tool_calls: list[ToolCall] = []
+        for idx, slot in sorted(tool_acc.items()):
+            raw_args = slot["arguments"] or ""
+            try:
+                arguments = json.loads(raw_args) if raw_args else {}
+            except json.JSONDecodeError:
+                # 网关把参数切碎了或截断了：宁可给空参，也不要把半个 JSON 传下去
+                arguments = {}
+            tool_calls.append(
+                ToolCall(id=slot["id"] or f"call_{idx}", name=slot["name"], arguments=arguments)
+            )
+
+        return ChatResponse(
+            content="".join(content_parts),
+            tool_calls=tool_calls,
+            usage=usage,
+            model=params.get("model"),
+            finish_reason=finish,
+            reasoning_content="".join(reasoning_parts) or None,
+        )
 
     def _invoke_responses(
         self,

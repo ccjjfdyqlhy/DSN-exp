@@ -297,3 +297,61 @@ def test_promotion_force_bypasses_gate():
     result = manager.promote("j1", "slot", force=True)
     assert result["forced"] is True
     assert store.active("slot") == "j1"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 按来源分层的批量评测（selfplay 落地后补：自生成 vs 真实要分开看）
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_evaluate_batch_groups_by_source():
+    """自生成样本与真实对话的分数要分开统计，不能混成一个平均分。"""
+    from harness.learning.evaluator import Evaluator, EvalPolicy
+
+    ev = Evaluator(policy=EvalPolicy(threshold=0.9, hard_gate=True))
+    records = [
+        # 真实对话：合规
+        {"source": "dsn_ui:topic_x", "messages": [
+            {"role": "user", "content": "在吗"},
+            {"role": "assistant", "content": "在的，怎么了？"},
+        ]},
+        # 自生成：结构没问题，但长度超限 → 规则层扣分 → 不通过
+        {"source": "selfplay", "messages": [
+            {"role": "user", "content": "情境"},
+            {"role": "assistant", "content": "x" * 8000},
+        ]},
+        # 自生成：带思维链 → 一票否决
+        {"source": "selfplay", "messages": [
+            {"role": "user", "content": "情境"},
+            {"role": "assistant", "content": "答案", "reasoning_content": "想了一下…"},
+        ]},
+    ]
+    report = ev.evaluate_batch(records, rubric="是否贴合角色")
+
+    assert report.total == 3
+    assert report.passed == 1, "只有合规那条应该通过（阈值 0.9 + 硬闸门）"
+
+    by = report.to_dict()["by_source"]
+    assert set(by) == {"dsn_ui:topic_x", "selfplay"}
+    assert by["dsn_ui:topic_x"]["count"] == 1
+    assert by["dsn_ui:topic_x"]["passed"] == 1
+    assert by["selfplay"]["count"] == 2
+    assert by["selfplay"]["passed"] == 0
+    # 自生成那批的问题原因要能被看见
+    reasons = " ".join(by["selfplay"]["reasons"])
+    assert "reasoning_content" in reasons or "长度超限" in reasons
+
+
+def test_evaluate_batch_empty_and_missing_source():
+    from harness.learning.evaluator import Evaluator
+
+    ev = Evaluator()
+    empty = ev.evaluate_batch([])
+    assert empty.total == 0
+    assert empty.to_dict()["pass_rate"] == 0.0
+
+    # 没写 source 的归到 unknown
+    report = ev.evaluate_batch([{"messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "你好"},
+    ]}])
+    assert "unknown" in report.to_dict()["by_source"]

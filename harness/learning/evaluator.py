@@ -51,6 +51,38 @@ class EvalScore:
 
 
 @dataclass
+class EvalBatchReport:
+    """一批轨迹的评测结果（按来源分层）。
+
+    为什么要有"按来源分层"：自生成样本（source="selfplay"）与真实对话
+    的质量分布**不一样**，混在一起看一个平均分会把两者的问题互相掩盖。
+    计划二 §4.4 要求"评测时能按来源分层看指标"——这一层就落在这里。
+    """
+
+    total: int = 0
+    passed: int = 0
+    #: source → {count, passed, mean_total, reasons}
+    by_source: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "passed": self.passed,
+            "pass_rate": round(self.passed / self.total, 4) if self.total else 0.0,
+            "by_source": {
+                src: {
+                    "count": stat["count"],
+                    "passed": stat["passed"],
+                    "pass_rate": round(stat["passed"] / stat["count"], 4) if stat["count"] else 0.0,
+                    "mean_total": round(stat["mean_total"], 4),
+                    "reasons": stat["reasons"][:10],
+                }
+                for src, stat in self.by_source.items()
+            },
+        }
+
+
+@dataclass
 class EvalPolicy:
     """评测策略。"""
 
@@ -168,6 +200,46 @@ class Evaluator:
         result.total = self._aggregate(result.layers)
         result.passed = result.total >= self.policy.threshold
         return result
+
+    def evaluate_batch(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        rubric: str = "",
+        has_user_data: bool = False,
+    ) -> EvalBatchReport:
+        """评测一批轨迹，按 source 分层汇总。
+
+        每条 record 至少要带 ``messages``；``source`` 用于分层（缺省归到
+        ``"unknown"``）；``has_user_data`` 可以逐条覆盖批次的默认值。
+
+        框架层**不认识** "selfplay" 是什么——它只是把 source 当成分组键，
+        具体来源的含义由调用方决定（应用无关）。
+        """
+        report = EvalBatchReport()
+        for record in records:
+            messages = record.get("messages") or []
+            source = str(record.get("source") or "unknown")
+            score = self.evaluate(
+                messages,
+                rubric=rubric,
+                has_user_data=bool(record.get("has_user_data", has_user_data)),
+            )
+            report.total += 1
+            if score.passed:
+                report.passed += 1
+            stat = report.by_source.setdefault(
+                source, {"count": 0, "passed": 0, "mean_total": 0.0, "reasons": []}
+            )
+            stat["count"] += 1
+            stat["passed"] += 1 if score.passed else 0
+            stat["mean_total"] += score.total
+            for reason in score.reasons:
+                if reason not in stat["reasons"]:
+                    stat["reasons"].append(reason)
+        for stat in report.by_source.values():
+            stat["mean_total"] = stat["mean_total"] / stat["count"] if stat["count"] else 0.0
+        return report
 
     def _aggregate(self, layers: dict[str, float]) -> float:
         """按权重加权；缺失的层把权重按比例分给其余层。"""
