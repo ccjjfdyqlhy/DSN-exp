@@ -14,6 +14,7 @@
 
 from .dataset_builder import BuildReport, DatasetBuilder, Trajectory
 from .evaluator import EvalPolicy, EvalScore, Evaluator, RuleEvaluator
+from .probes import Probe, ProbeReport, ProbeResult, ProbeRunner
 from .promotion import PromotionDecision, PromotionManager, PromotionPolicy
 from .selfplay import (
     SELFPLAY_SOURCE,
@@ -40,6 +41,10 @@ __all__ = [
     "EvalScore",
     "Evaluator",
     "PROTECTED_FIELDS",
+    "Probe",
+    "ProbeReport",
+    "ProbeResult",
+    "ProbeRunner",
     "PromotionDecision",
     "PromotionManager",
     "PromotionPolicy",
