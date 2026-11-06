@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -28,6 +29,18 @@ import yaml
 from .base import local_probe_session
 
 logger = logging.getLogger("ModelScheduler")
+
+
+def _env_int(name: str, default: int) -> int:
+    """读环境变量整数；非法值退回默认值（不让配置错误把服务搞挂）。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("环境变量 %s=%r 不是整数，使用默认值 %d", name, raw, default)
+        return default
 
 
 def list_loaded_models(base_url: str) -> list[str]:
@@ -80,6 +93,219 @@ class ModelInfo:
     loading: bool = False
 
 
+@dataclass(slots=True)
+class DeviceLease:
+    """一次显存独占租约。"""
+
+    id: str
+    holder: str                       # 持有者：模型名或 "finetune:<job_id>"
+    device_ids: tuple[int, ...]
+    reason: str = ""
+    acquired_at: float = field(default_factory=time.time)
+    released: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "holder": self.holder,
+            "device_ids": list(self.device_ids),
+            "reason": self.reason,
+            "acquired_at": self.acquired_at,
+            "released": self.released,
+        }
+
+
+class DeviceBusy(RuntimeError):
+    """显存被占用且在超时时间内没有拿到租约。"""
+
+
+class DeviceGate:
+    """显存（GPU 设备）独占租约闸门。
+
+    为什么放在编排器里，而不是新建 infra/resources/device_pool.py：
+      - infra/resources/pool.py 的 ResourceKind 只有 ASR / TTS 两种，且明确写了
+        「不得凭空发明成员」；LLM 的显存由编排器管（docs/infra.md:150-151）。
+      - 训练（infra/finetune）与推理（llama.cpp 服务）抢的是**同一批卡**，
+        必须由同一个仲裁点裁决，否则两边各自以为卡是空的，最后 OOM。
+
+    本机现实（本机实测）：
+      - 2×RTX 2080Ti，各 11264 MiB；
+      - Bonsai-2（PQ2_0 7.2GB）单卡即可，训练可用另一张卡；
+      - JEV-27B-VL（Q4_K_M 16.5GB）必须 -ngl 99，**独占双卡**，
+        它在的时候训练只能排队。
+    """
+
+    def __init__(self, device_count: int = 2):
+        self._condition = threading.Condition(threading.RLock())
+        self._device_count = max(1, int(device_count))
+        self._leases: dict[str, DeviceLease] = {}
+        self._by_device: dict[int, str] = {}
+
+    @property
+    def device_count(self) -> int:
+        return self._device_count
+
+    # ── 查询 ──
+
+    def free_devices(self) -> list[int]:
+        with self._condition:
+            return [d for d in range(self._device_count) if d not in self._by_device]
+
+    def occupancy(self) -> dict:
+        with self._condition:
+            out: dict = {}
+            for dev, lease_id in self._by_device.items():
+                lease = self._leases.get(lease_id)
+                out[str(dev)] = lease.to_dict() if lease else {"id": lease_id}
+            return out
+
+    def is_free(self, device_ids: tuple[int, ...]) -> bool:
+        with self._condition:
+            return all(d not in self._by_device for d in device_ids)
+
+    # ── 占用 ──
+
+    def claim(
+        self,
+        device_ids: tuple[int, ...],
+        holder: str,
+        *,
+        reason: str = "",
+        replace: bool = False,
+    ) -> DeviceLease:
+        """非阻塞占用设备（用于编排器登记模型已加载）。
+
+        设备已被别人占着时：
+          - replace=True → 强行替换（**只允许编排器用它来抢占自己登记的模型**）；
+          - replace=False → 抛 DeviceBusy。
+        """
+        with self._condition:
+            for dev in device_ids:
+                if dev in self._by_device and not replace:
+                    other = self._leases.get(self._by_device[dev])
+                    raise DeviceBusy(
+                        f"设备 {dev} 已被占用: {other.holder if other else '?'}"
+                    )
+            lease = DeviceLease(
+                id=str(uuid.uuid4()), holder=holder, device_ids=tuple(device_ids), reason=reason,
+            )
+            self._leases[lease.id] = lease
+            for dev in device_ids:
+                self._by_device[dev] = lease.id
+            logger.info("设备占用: %s → %s", holder, list(device_ids))
+            return lease
+
+    def acquire(
+        self,
+        device_ids: tuple[int, ...],
+        holder: str,
+        *,
+        reason: str = "",
+        timeout: float = 0.0,
+        preempt=None,
+    ) -> DeviceLease:
+        """阻塞占用设备直到拿到租约或超时。
+
+        preempt: 可调用对象，签名 (holder) -> bool。
+        当设备被**模型**占着时调用它尝试让路（编排器会卸载空闲模型）；
+        训练作业之间**不互相抢占**——两个训练同时跑必然 OOM，宁可排队。
+        """
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            with self._condition:
+                busy = [d for d in device_ids if d in self._by_device]
+                if not busy:
+                    lease = DeviceLease(
+                        id=str(uuid.uuid4()), holder=holder,
+                        device_ids=tuple(device_ids), reason=reason,
+                    )
+                    self._leases[lease.id] = lease
+                    for dev in device_ids:
+                        self._by_device[dev] = lease.id
+                    logger.info("设备占用: %s → %s", holder, list(device_ids))
+                    return lease
+
+                blockers = []
+                for dev in busy:
+                    lease = self._leases.get(self._by_device[dev])
+                    blockers.append(f"{dev}:{lease.holder if lease else '?'}")
+
+            if preempt is not None:
+                for dev in busy:
+                    with self._condition:
+                        lease = self._leases.get(self._by_device.get(dev, ""))
+                    if lease is not None and lease.holder != holder:
+                        try:
+                            preempt(lease.holder)
+                        except Exception:
+                            logger.exception("设备让路失败: %s", lease.holder)
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise DeviceBusy(
+                    f"等待设备 {list(device_ids)} 超时（{timeout}s），当前占用: {', '.join(blockers)}"
+                )
+            with self._condition:
+                self._condition.wait(min(0.5, remaining))
+
+    def release(self, lease: DeviceLease | str) -> None:
+        """释放租约（按 lease 对象或 lease id）。"""
+        lease_id = lease.id if isinstance(lease, DeviceLease) else lease
+        with self._condition:
+            held = self._leases.pop(lease_id, None)
+            if held is None:
+                return
+            held.released = True
+            for dev in list(held.device_ids):
+                if self._by_device.get(dev) == lease_id:
+                    del self._by_device[dev]
+            logger.info("设备释放: %s ← %s", held.holder, list(held.device_ids))
+            self._condition.notify_all()
+
+    def release_holder(self, holder: str) -> None:
+        """释放某个持有者的全部租约（模型卸载时调用）。"""
+        with self._condition:
+            for lease_id, lease in list(self._leases.items()):
+                if lease.holder == holder:
+                    self.release(lease_id)
+
+    def leases_for(self, holder: str) -> list[DeviceLease]:
+        """某个持有者当前持有的租约。"""
+        with self._condition:
+            return [lease for lease in self._leases.values() if lease.holder == holder]
+
+    def acquire_any(
+        self,
+        holder: str,
+        *,
+        reason: str = "",
+        timeout: float = 0.0,
+    ) -> DeviceLease:
+        """等待并占用**任意一张**空闲设备。
+
+        训练用：两张卡都被模型占着时，训练应该等到有一张空出来，
+        而不是死等某一张特定的卡。
+        """
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            with self._condition:
+                free = [d for d in range(self._device_count) if d not in self._by_device]
+                if free:
+                    lease = DeviceLease(
+                        id=str(uuid.uuid4()), holder=holder,
+                        device_ids=(free[0],), reason=reason,
+                    )
+                    self._leases[lease.id] = lease
+                    self._by_device[free[0]] = lease.id
+                    logger.info("设备占用: %s → [%d]", holder, free[0])
+                    return lease
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise DeviceBusy(f"等待任意空闲设备超时（{timeout}s）")
+            with self._condition:
+                self._condition.wait(min(0.5, remaining))
+
+
 class ModelScheduler:
     """线程安全的多模型编排器。
 
@@ -124,8 +350,54 @@ class ModelScheduler:
         #: ModelInfo 是 slots=True 的 dataclass，不能挂动态属性，故放在调度器里。
         self._last_block_log: dict[str, float] = {}
         self._profiles_by_name = self._load_profiles()
-        logger.info("ModelScheduler initialized (slots=%d, profiles=%d)",
-                    self.max_concurrent, len(self._profiles_by_name))
+        #: 显存独占闸门：训练与推理共用同一批卡时的唯一仲裁点。
+        #: 设备数默认 2（本机 2×RTX 2080Ti），可用环境变量 DSN_GPU_COUNT 覆盖。
+        self._device_gate = DeviceGate(_env_int("DSN_GPU_COUNT", 2))
+        logger.info("ModelScheduler initialized (slots=%d, profiles=%d, devices=%d)",
+                    self.max_concurrent, len(self._profiles_by_name), self._device_gate.device_count)
+
+    # ── 显存闸门 ──
+
+    @property
+    def device_gate(self) -> DeviceGate:
+        """显存独占闸门。训练作业通过它排队等待空闲显卡。"""
+        return self._device_gate
+
+    def _devices_for_profile(self, profile: ModelProfile) -> tuple[int, ...]:
+        """推断一个模型 profile 独占哪些设备。
+
+        规则（来自 llama.cpp 的实际行为）：
+          - llama_config 里显式给了 devices → 用它；
+          - n_gpu_layers / ngl == -1 → 全量分层，**独占所有卡**；
+          - 其余（部分分层、纯 CPU）→ 不独占（它只吃一部分显存，允许别人并行）。
+        """
+        cfg = profile.llama_config or {}
+        explicit = cfg.get("devices")
+        if isinstance(explicit, (list, tuple)) and explicit:
+            return tuple(int(d) for d in explicit)
+        ngl = cfg.get("n_gpu_layers", cfg.get("ngl", cfg.get("gpu_layers")))
+        if ngl is None:
+            return ()
+        try:
+            ngl = int(ngl)
+        except (TypeError, ValueError):
+            return ()
+        if ngl == -1:
+            return tuple(range(self._device_gate.device_count))
+        return ()
+
+    def _claim_devices(self, model_name: str, profile: ModelProfile) -> None:
+        """模型加载成功后登记它占用的设备（让训练排队）。"""
+        devices = self._devices_for_profile(profile)
+        if not devices:
+            return
+        try:
+            self._device_gate.claim(devices, model_name, reason="model loaded", replace=True)
+        except DeviceBusy:
+            logger.warning("模型 %s 加载完成但设备登记失败（已被占用）: %s", model_name, list(devices))
+
+    def _release_devices(self, model_name: str) -> None:
+        self._device_gate.release_holder(model_name)
 
     # ── profile 加载 ──
 
@@ -227,6 +499,7 @@ class ModelScheduler:
             info.refcount = 0
             if model_name in self._slot_order:
                 self._slot_order.remove(model_name)
+            self._release_devices(model_name)
             self._condition.notify_all()
 
     @contextmanager
@@ -456,6 +729,8 @@ class ModelScheduler:
         info.displaced_by_immediate = False
         if info.profile.orchestrated and not info.profile.resident:
             self._bump_slot(model_name)
+        # 登记显存占用：全量分层的模型独占所有卡，训练作业必须为它让路。
+        self._claim_devices(model_name, info.profile)
         logger.info("Model loaded: %s", model_name);
 
     def _do_unload(self, model_name: str, reason: str = "eviction") -> None:
@@ -470,6 +745,7 @@ class ModelScheduler:
         info.loaded = False
         if model_name in self._slot_order:
             self._slot_order.remove(model_name)
+        self._release_devices(model_name)
 
     def _bump_slot(self, model_name: str) -> None:
         info = self._models.get(model_name)

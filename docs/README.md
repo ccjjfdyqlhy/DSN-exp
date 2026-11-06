@@ -40,8 +40,8 @@ docs/app-development.md  → 写一个新应用
 | 文档 | 内容 | 什么时候读 |
 |---|---|---|
 | [architecture.md](architecture.md) | 三层结构、依赖方向、模块地图、一次请求的完整路径、全局单例清单、质量基线 | 任何时候先读这篇 |
-| [harness.md](harness.md) | AgentLoop 控制流与 9 种事件、AgentSpec、工具系统、18 个标准工具、上下文四段剪裁、8 个 HookPoint | 改 Agent 行为时 |
-| [infra.md](infra.md) | orchestrator 四层结构、调度器算法、各 provider 客户端、资源池、policy、store | 改模型/资源/存储时 |
+| [harness.md](harness.md) | AgentLoop 控制流与 9 种事件、AgentSpec、工具系统、18 个标准工具、上下文四段剪裁、8 个 HookPoint、**学习子系统（数据集构建/教师边界/分层判官/晋级回滚）** | 改 Agent 行为时 |
+| [infra.md](infra.md) | orchestrator 四层结构、调度器算法、各 provider 客户端、资源池、policy、store、**finetune 训练子系统（契约/体检/GGUF 容错解析）、显存闸门 DeviceGate** | 改模型/资源/存储时 |
 | [apps.md](apps.md) | 7 个应用的定位与启动、dsn_ui 路由与对话四分支、dsn_study 技能表、dsn 子包速查 | 找功能在哪时 |
 | [app-development.md](app-development.md) | 三种装配路线、最小应用模板、写工具/技能/Web 应用、不要抄的地方 | 要加功能或写新应用时 |
 | [getting-started.md](getting-started.md) | 环境、依赖、配置、启动、端口表、常见故障排查 | 第一次跑 / 跑不起来时 |

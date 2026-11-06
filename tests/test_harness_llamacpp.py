@@ -60,6 +60,45 @@ def test_command_synthesis_qwen_flash():
     assert "--reasoning-format" in cmd and "deepseek" in cmd
 
 
+def test_lora_flags_are_optional_and_correct():
+    """LoRA 挂载：默认不加任何 flag（行为不变），给了才加。
+
+    --lora-scaled 的格式是 FNAME:SCALE（冒号分隔，见 common/arg.cpp）。
+    --lora-init-without-apply 用于"加载但不生效"，之后用 POST /lora-adapters 热插拔。
+    """
+    base = LlamaServerConfig(model_path="/tmp/model.gguf")
+    assert "--lora" not in base.build_command()
+    assert "--lora-scaled" not in base.build_command()
+    assert "--lora-init-without-apply" not in base.build_command()
+
+    cfg = LlamaServerConfig(model_path="/tmp/model.gguf", lora_path="~/adapter")
+    cmd = cfg.build_command()
+    assert "--lora" in cmd
+    assert "/home/darkstar/adapter" in cmd      # ~ 被展开
+    assert "--lora-init-without-apply" not in cmd
+
+    cfg2 = LlamaServerConfig(
+        model_path="/tmp/model.gguf",
+        lora_path="/tmp/adapter",
+        lora_scale=0.7,
+        lora_init_without_apply=True,
+    )
+    cmd2 = cfg2.build_command()
+    assert "--lora-scaled" in cmd2
+    assert "/tmp/adapter:0.7" in cmd2
+    assert "--lora-init-without-apply" in cmd2
+
+
+def test_lora_flags_roundtrip_from_command_string():
+    """从命令行反向解析时也要认出 LoRA 参数。"""
+    cfg = LlamaServerConfig.from_command_string(
+        "llama-server --model /tmp/m.gguf --lora-scaled /tmp/adapter:0.5 --lora-init-without-apply"
+    )
+    assert cfg.lora_path == "/tmp/adapter"
+    assert cfg.lora_scale == 0.5
+    assert cfg.lora_init_without_apply is True
+
+
 def test_command_from_cmd_txt_line1_roundtrip():
     """测试解析 cmd.txt 第一行并还原配置。"""
     cmd_line = (

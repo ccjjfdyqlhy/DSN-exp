@@ -208,7 +208,98 @@ with pool.acquire("tts") as lease:
 
 ---
 
-## 五、`infra.models` 是兼容 shim（重要）
+
+## 五、finetune：训练子系统（框架层）
+
+> 本节只描述**框架层能力**（`infra/finetune/`）。具体实验应用、数据来源、
+> 混沌演练等属于本地实验，不在本仓库。
+
+### 5.1 边界：主进程永远不 import torch
+
+仓库里 `infra/` `harness/` `apps/` **零 `import torch`**（唯一例外是
+`apps/dsn/models/asr_engine.py:92` 用 `sys.modules.get("torch")` 做防御性检查）。
+训练因此跑在**独立解释器 + 独立脚本**里：
+
+```
+DSN 主进程                    训练解释器（dsn-train 环境）
+------------                  -------------------------
+infra/finetune/runner.py  --写 spec.json-->  infra/finetune/train_sft.py
+        |                                     （零仓库依赖，只 import torch/…）
+        <--读 result.json / train.log---------
+```
+
+`infra/finetune/probe.py` 是**独立脚本**（不 import 仓库任何模块），
+由 `infra/finetune/env.py` 用子进程调用来体检环境，主进程只拿到 JSON。
+测试 `tests/test_infra_finetune.py` 里有一条不变式测试：
+`import infra.finetune` 之后 `sys.modules` 里不能出现 `torch`。
+
+### 5.2 模块分工
+
+| 模块 | 职责 |
+|---|---|
+| `base.py` | **契约**：`JobState` / `TrainSpec` / `TrainJob` / 异常族；参数自检 |
+| `env.py` | 解释器定位（`FINETUNE_PYTHON` → `~/anaconda3/envs/dsn-train/bin/python` → `sys.executable`）与体检 |
+| `probe.py` | 独立探针脚本：torch/cuda/设备/bf16/依赖版本/SDPA 后端真探针 |
+| `gguf.py` | GGUF 头部元数据读取（**容错私有量化类型**） |
+| `dataset.py` | 数据集**格式层**：角色归一、结构校验、train/val 切分、写盘 |
+| `train_sft.py` | 训练脚本（独立运行于训练解释器；QLoRA/LoRA/full 三种方法） |
+| `runner.py` | `FinetuneManager`：提交 / 查询 / 晋级 / 回滚；排队与等卡 |
+| `store.py` | 作业与槽位登记（SQLite，走 `infra/store` 的迁移机制） |
+
+### 5.3 公开 API
+
+```python
+from infra.finetune import FinetuneManager, TrainSpec
+
+mgr = FinetuneManager()
+job = mgr.submit(TrainSpec(
+    base_model="Qwen/Qwen3-4B",       # HF 权重，不能是 GGUF
+    dataset_path="~/dsn-finetune/data/train.jsonl",
+    output_dir="~/dsn-finetune/out/j1",
+    method="qlora",                    # 单卡 11GB 的现实选择
+))
+mgr.status(job.id); mgr.list_jobs()
+mgr.promote(job.id, slot="student")   # 候选 -> 生效
+mgr.rollback("student")               # 生效 -> 上一个
+```
+
+训练作业复用仓库既有的通用任务系统（`infra/tasks`）：作业就是一个
+`Task(type="finetune.train")`，由**单 worker** 的 `TaskExecutorRegistry` 执行
+——训练在本机天然串行（同时跑两个 QLoRA 必 OOM）。
+
+### 5.4 显存闸门（`DeviceGate`）
+
+`DeviceGate` 在 `infra/orchestrator/scheduler.py` 里，**不新建** `device_pool.py`：
+`infra/resources/pool.py` 的 `ResourceKind` 只有 ASR/TTS 且明确禁止凭空发明成员，
+LLM 的显存由编排器管。
+
+规则：
+
+- `ModelProfile.llama_config` 里 `n_gpu_layers == -1`（全量分层）→ **独占所有卡**；
+  部分分层不独占（它只吃一部分显存）。
+- 模型加载成功 → `DeviceGate.claim()`；卸载 → `release_holder()`。
+- 训练作业通过 `DeviceGate.acquire()` / `acquire_any()` 排队等卡，
+  拿不到就在 `FINETUNE_DEVICE_TIMEOUT`（默认 3600s）后失败，**不硬抢**。
+
+### 5.5 GGUF 容错读取
+
+`infra/finetune/gguf.py` 自带只读头部的 GGUF 解析器，因为**上游 gguf-py 读不了
+私有量化类型**：`general.file_type` 与张量类型是**两套独立编号**
+（`LLAMA_FTYPE_*` vs `GGML_TYPE_*`），Bonsai-2 的 PQ2_0 用的张量类型 id 141/142
+越过了上游 `GGML_TYPE_COUNT`（本地 llama.cpp 为 43），上游会抛
+`ValueError: 142 is not a valid GGMLQuantizationType`。
+本模块把未知 id 当作"私有类型"记录，并用 `upstream_compatible()` 给出结论——
+**不用真的加载 7.2GB 权重就能判断上游能不能跑**。
+
+### 5.6 纪律
+
+- **训练期不开 thinking**：`TrainSpec.validate()` 直接拒绝 `enable_thinking=True`。
+- **训练标签不含推理内容**：剥离在 `harness/learning/dataset_builder.py` 做。
+- **教师只能改写/标注/打分**，不能定义行为、不能输出思维链标签、
+  不能在未授权时把用户数据送出机器（见 `docs/harness.md` 的学习子系统一节）。
+
+
+## 六、`infra.models` 是兼容 shim（重要）
 
 `infra/models/` 目录里**只有一个 `__init__.py`**，它把 `infra.orchestrator.*`
 镜像进 `sys.modules["infra.models.*"]`（`models/__init__.py:8-20`）。
@@ -224,7 +315,7 @@ from infra.orchestrator.base import ChatMessage # 推荐写法
 
 ---
 
-## 六、改这一层时的检查清单
+## 七、改这一层时的检查清单
 
 - [ ] 是否引入了新的**进程级全局**？先看能不能通过构造参数注入。
 - [ ] 涉及 `ModelScheduler` 的锁，是否保证 `load_fn` 在**锁外**执行？

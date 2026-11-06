@@ -61,6 +61,15 @@ class LlamaServerConfig:
     mmproj_no_offload: bool = False
     # 图像视觉 token 上限（--image-max-tokens）。0 表示不限制。
     image_max_tokens: Optional[int] = None
+    # LoRA 适配器（微调产物的挂载点）。
+    #   lora_path —— 适配器目录（PEFT 导出的 adapter_config.json 所在目录）。
+    #   lora_scale —— 缩放系数；给了就用 --lora-scaled（格式是 FNAME:SCALE，
+    #     分隔符是**冒号**，不是空格 —— 见 common/arg.cpp 的 --lora-scaled 解析）。
+    #   lora_init_without_apply —— 只加载不生效，之后用 POST /lora-adapters 热插拔。
+    #     这条是"训练完不重启服务就换适配器"的关键：默认 --lora 会在启动时直接套用。
+    lora_path: Optional[str] = None
+    lora_scale: Optional[float] = None
+    lora_init_without_apply: bool = False
     # llama-server 的额外环境变量（如自定义二进制所需的 LD_LIBRARY_PATH）。
     env: dict = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
@@ -139,6 +148,19 @@ class LlamaServerConfig:
                 cmd.append("--no-mmproj-offload")
         if self.image_max_tokens is not None:
             cmd.extend(["--image-max-tokens", str(self.image_max_tokens)])
+
+        # LoRA 适配器：--lora / --lora-scaled / --lora-init-without-apply
+        if self.lora_path:
+            lora_path = os.path.abspath(
+                os.path.expanduser(os.path.expandvars(self.lora_path))
+            )
+            if self.lora_scale is not None:
+                # 注意分隔符是冒号：--lora-scaled FNAME:SCALE
+                cmd.extend(["--lora-scaled", f"{lora_path}:{self.lora_scale}"])
+            else:
+                cmd.extend(["--lora", lora_path])
+            if self.lora_init_without_apply:
+                cmd.append("--lora-init-without-apply")
 
         # 显存管理：把 KV cache 留在 CPU 内存（--no-kv-offload）。
         # 放在 extra_args 之前，允许用户通过 extra_args 覆盖。
@@ -230,6 +252,23 @@ class LlamaServerConfig:
             elif arg == "--image-max-tokens" and i + 1 < n:
                 config.image_max_tokens = int(tokens[i + 1])
                 i += 2
+            elif arg == "--lora" and i + 1 < n:
+                config.lora_path = tokens[i + 1]
+                i += 2
+            elif arg == "--lora-scaled" and i + 1 < n:
+                # 格式 FNAME:SCALE（冒号分隔）
+                raw = tokens[i + 1]
+                if ":" in raw:
+                    fname, _, scale = raw.rpartition(":")
+                    config.lora_path = fname
+                    try:
+                        config.lora_scale = float(scale)
+                    except ValueError:
+                        pass
+                i += 2
+            elif arg == "--lora-init-without-apply":
+                config.lora_init_without_apply = True
+                i += 1
             else:
                 extra.append(arg)
                 i += 1

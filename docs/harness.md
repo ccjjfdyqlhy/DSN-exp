@@ -332,7 +332,69 @@ OUTPUT        输出渲染 / 投递
 
 ---
 
-## 八、改这一层时的检查清单
+
+## 八、学习子系统：把经历变成可训练资产
+
+> `harness/learning/` 只做**框架层**的四件事，不含任何具体应用语义
+> （情感、沙箱、混沌演练都属于本地实验应用，不在本仓库）。
+
+| 模块 | 职责 |
+|---|---|
+| `dataset_builder.py` | 取数与筛选：只收 agent **自己**的轨迹，剥掉推理内容，校验工具轨迹完整性 |
+| `teacher.py` | 教师适配器与**教师边界**（远端 OpenAI 兼容推理模型） |
+| `evaluator.py` | 分层判官：规则层一票否决 → 本地判官层 → 远端教师层 |
+| `promotion.py` | 候选 → 暂存 → 生效 → 回滚（门槛由 `PromotionPolicy` 决定） |
+
+### 8.1 教师边界（写进代码的硬约束）
+
+允许：① 改写 agent **自己**的轨迹；② 标注；③ 给结论与评分。
+禁止：① 定义行为（宪法 / drives / 目标层）；② 把思维链当成训练标签；
+③ 未经同意把用户数据送出机器。
+
+- 目标层保护：`TeacherRefiner` 遇到含 `constitution` / `drives` /
+  `affect_state` / `survival_desire` 的轨迹直接抛 `TeacherBoundaryError`。
+- 外发开关：`FINETUNE_TEACHER_ALLOW_EXFIL`（默认关）。开启后仍需调用方在
+  每条轨迹上显式声明 `has_user_data=True`，否则拒发。
+- 思维链剥离：教师返回的 `<think>…</think>` 在解析前删除；
+  消息里的 `reasoning_content` / `thinking` 字段在进训练集前删掉。
+
+### 8.2 分层判官
+
+| 层 | 成本 | 职责 |
+|---|---|---|
+| L1 规则 | 零 | 结构完整性、工具轨迹合法、思维链泄漏、目标层泄漏、长度 → **一票否决** |
+| L2 本地判官 | 低 | 本地模型（Bonsai / JEV）按评分标准打内容分 |
+| L3 远端教师 | 高 | 可选终审或兜底 |
+
+默认权重 `L1:L2:L3 = 0.2 : 0.6 : 0.2`，缺失的层按比例归一化；
+`EvalPolicy.threshold` 是通过线。
+
+### 8.3 晋级门槛
+
+`PromotionPolicy`：`min_score`（默认 0.75）、`min_samples`（默认 20）、
+`require_local_judge`（默认 True，避免只靠规则就上线）。
+不满足就 `ValueError`；`force=True` 可强行晋级，但返回值里带 `forced=True` 标记。
+
+### 8.4 与 infra 的关系
+
+数据流是单向的：
+
+```
+agent 轨迹 ──▶ harness/learning/dataset_builder ──▶ JSONL
+                                                         │
+                                    infra/finetune.FinetuneManager.submit()
+                                                         │
+                                    训练进程（独立解释器）──▶ LoRA 适配器
+                                                         │
+                                    harness/learning/evaluator 评测
+                                                         │
+                                    harness/learning/promotion 晋级 / 回滚
+```
+
+`harness/` 依赖 `infra/`（向下），反之不成立。
+
+
+## 九、改这一层时的检查清单
 
 - [ ] 新能力是否**场景无关**？如果出现了“语音/学习/提醒”字样，它应该去 `apps/`。
 - [ ] 是否破坏 `IChatClient` 契约？`stream()` 只能 yield `str` 或约定 dict。
