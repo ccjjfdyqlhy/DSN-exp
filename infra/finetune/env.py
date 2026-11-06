@@ -68,6 +68,13 @@ def subprocess_env() -> dict[str, str]:
     )
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # 11GB 卡上 8B QLoRA 会因为显存碎片而 OOM（实测：8.25GiB 在用、其中 1.24GiB
+    # 是"已 reserve 但没分配"， expandable_segments 能把这部分碎片还给分配器）。
+    # 想覆盖就用 FINETUNE_ALLOC_CONF 传空字符串关掉它。
+    env.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF",
+        os.environ.get("FINETUNE_ALLOC_CONF", "expandable_segments:True"),
+    )
     return env
 
 

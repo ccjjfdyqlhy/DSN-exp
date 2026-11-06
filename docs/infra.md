@@ -299,6 +299,28 @@ LLM 的显存由编排器管。
   不能在未授权时把用户数据送出机器（见 `docs/harness.md` 的学习子系统一节）。
 
 
+### 5.7 单卡 11GB 上的显存纪律（2026-11-06 实测）
+
+2×RTX 2080Ti（各 11GB / sm_75）上跑 8B QLoRA，连踩三个坑才跑通。
+这三条都写进了 `tests/test_infra_finetune.py` 的不变式测试，改回去会红。
+
+| 坑 | 现象 | 规则 |
+|---|---|---|
+| `prepare_model_for_kbit_training` 把**所有** fp16 参数升 fp32 | `embed_tokens` 与 `lm_head` 各 1.24GB（词表 151936 × 隐层 4096），一起升 fp32 ＝ **一次多花 2.32GB**，11GB 卡直接 OOM | 用 `train_sft._prepare_for_qlora`：只升 **1 维**参数（LayerNorm/bias） |
+| `use_cache=True` 让 transformers **拒绝启用梯度检查点** | 36 层激活全量留在显存里，实测多吃约 4GB | 训练期必须 `model.config.use_cache = False` |
+| `device_map={"": g}` 只决定**权重**放哪 | HF Trainer 仍按 `args.device`（默认 `cuda:0`）放优化器状态与激活 → 「模型在物理 GPU 1、训练状态在物理 GPU 0」，而 DeviceGate 记的是「占了 GPU 1」 | 用 `CUDA_VISIBLE_DEVICES` 圈卡，且**必须在 `import torch` 之前**设置（transformers 的导入会触发 `torch.cuda.is_available()`，那一次就把 CUDA 运行时初始化了） |
+
+实测结果（Qwen3-8B / 4bit nf4 / seq_len 512 / batch 1 / 单卡）：
+
+```
+加载后            5.67 GB
+训练峰值          7.23 GB   ← 之前的实现会在这里 OOM
+147 样本 × 2 轮   38 步 / 126 秒 / train_loss 2.36
+```
+
+另有一条：`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 已在
+`infra/finetune/env.py` 的子进程环境里默认打开——11GB 卡上的碎片化能省下几百 MB。
+
 ## 六、`infra.models` 是兼容 shim（重要）
 
 `infra/models/` 目录里**只有一个 `__init__.py`**，它把 `infra.orchestrator.*`

@@ -260,7 +260,7 @@ class FinetuneManager:
                 str(TRAIN_SCRIPT),
                 "--spec", str(spec_path),
             ]
-            env = self._subprocess_env()
+            env = self._subprocess_env(job.spec.gpus)
             logger.info("启动训练: %s", " ".join(cmd))
             with open(log_path, "w", encoding="utf-8") as log_fh:
                 log_fh.write(f"# cmd: {' '.join(cmd)}\n")
@@ -331,6 +331,14 @@ class FinetuneManager:
         scheduler.device_gate.release(lease)
 
     @staticmethod
-    def _subprocess_env() -> dict[str, str]:
-        """子进程环境变量（HF_ENDPOINT 指向 hf-mirror 等）。"""
-        return subprocess_env()
+    def _subprocess_env(gpus=()) -> dict[str, str]:
+        """子进程环境变量（HF_ENDPOINT 指向 hf-mirror 等）。
+
+        这里把请求的卡号写进 CUDA_VISIBLE_DEVICES，是**父进程侧的权威映射**：
+        编排器的 DeviceGate 租约记的是这几张卡，子进程就必须真的只用这几张。
+        （训练脚本里还会再设一次，那是脚本被单独调用时的自保。）
+        """
+        env = subprocess_env()
+        if gpus:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(int(g)) for g in gpus)
+        return env

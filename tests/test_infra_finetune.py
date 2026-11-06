@@ -527,3 +527,64 @@ def test_importing_finetune_does_not_import_torch():
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. 不变式：11GB 卡上 8B QLoRA 能跑（2026-11-06 实测踩过的三个坑）
+# ════════════════════════════════════════════════════════════════════════════
+#
+# 这三条都是**实测踩出来的**（8B QLoRA 在单张 2080Ti 上 OOM 三次之后定位的），
+# 写成不变式测试是为了防止以后有人"顺手改回去"。
+
+_TRAIN_SFT = Path(__file__).resolve().parents[1] / "infra" / "finetune" / "train_sft.py"
+
+
+def test_qlora_does_not_upcast_embedding_and_lm_head():
+    """不能用 peft 的 prepare_model_for_kbit_training。
+
+    它会把**所有** fp16 参数升成 fp32，包括 embed_tokens 与 lm_head。
+    Qwen3-8B 的词表 151936 × 隐层 4096，这两张表各 1.24GB(fp16)，
+    一起升 fp32 就是一次多花 2.32GB —— 实测就是这一步把 11GB 卡顶爆。
+    正确做法：只升 1 维参数（LayerNorm/bias），见 _prepare_for_qlora。
+    """
+    source = _TRAIN_SFT.read_text(encoding="utf-8")
+    # 注意：只查「导入/调用」，不查裸名字——注释里提到它是正常的。
+    assert "import prepare_model_for_kbit_training" not in source, (
+        "训练脚本又用回 peft 的官方准备了：它会把 embed/lm_head 升 fp32，"
+        "在 11GB 卡上直接 OOM。改用本文件里的 _prepare_for_qlora。"
+    )
+    assert "prepare_model_for_kbit_training(" not in source
+    assert "_prepare_for_qlora" in source
+
+
+def test_training_disables_kv_cache():
+    """训练期必须 use_cache=False。
+
+    transformers 看到 use_cache=True 会拒绝启用梯度检查点
+    （KV cache 是推理才需要的东西），于是 36 层的激活被全量留在显存里。
+    实测 8B QLoRA 因此多吃约 4GB。
+    """
+    source = _TRAIN_SFT.read_text(encoding="utf-8")
+    assert "model.config.use_cache = False" in source
+
+
+def test_cuda_visible_devices_is_set_before_torch_import():
+    """指定 gpus 必须真的把那几张卡圈起来。
+
+    只设 device_map 是不够的：那只决定模型权重放哪，
+    HF Trainer 仍按 args.device（默认 cuda:0）放优化器状态与激活。
+    实测出现过「模型在物理 GPU 1、训练状态在物理 GPU 0」的错位，
+    而编排器的 DeviceGate 记的是「占了 GPU 1」——闸门与实际用卡对不上。
+    另外设置时机必须在 transformers 导入之前：
+    transformers 的导入会触发 torch.cuda.is_available()，那一次就把 CUDA 运行时初始化了。
+    """
+    from infra.finetune.runner import FinetuneManager
+
+    env = FinetuneManager._subprocess_env((1,))
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+    source = _TRAIN_SFT.read_text(encoding="utf-8")
+    main_body = source[source.index("def main("):]
+    assert "_apply_cuda_visible_devices(spec)" in main_body
+    # 设置必须排在 train(spec)（会 import torch）之前
+    assert main_body.index("_apply_cuda_visible_devices(spec)") < main_body.index("train(spec)")

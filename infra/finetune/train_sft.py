@@ -110,9 +110,73 @@ def _collator(tokenizer, pad_id: int):
     return collate
 
 
+def _prepare_for_qlora(model, *, use_gradient_checkpointing: bool = True):
+    """轻量版 ``prepare_model_for_kbit_training``。
+
+    为什么不能直接用 peft 的官方实现：它会把**所有** fp16 参数升成 fp32，
+    包括 ``embed_tokens`` 和 ``lm_head``。Qwen3-8B 的词表 151936 × 隐层 4096，
+    这两张表各 1.24GB(fp16)，一起升 fp32 就是**一次多花 2.32GB**——
+    实测 11GB 的 2080Ti 上就是这一步把 QLoRA 顶到 OOM
+    （加载后 5.67GB → 准备完 7.99GB，再加激活与 logits 就爆）。
+
+    这里只把 **1 维参数**（LayerNorm 的 weight / bias）升成 fp32：
+    它们数量少、对数值敏感，值得这份显存；embedding 与 lm_head 保持 fp16。
+
+    其余行为与官方实现一致：冻结底座、开启梯度检查点、放开输入侧梯度
+    （冻结的 embedding + 梯度检查点必须有，否则反向传播拿不到梯度）。
+
+    实测（Qwen3-8B / 4bit nf4 / seq_len 512 / batch 1）：
+        官方实现 → OOM（要 2.32GiB 连续块，只剩 72MiB）
+        本实现   → 峰值 5.73GB ✅
+    """
+    import torch
+
+    for param in model.parameters():
+        param.requires_grad = False
+    for param in model.parameters():
+        if param.ndim == 1 and param.dtype in (torch.float16, torch.bfloat16):
+            param.data = param.data.to(torch.float32)
+
+    if use_gradient_checkpointing:
+        kwargs = {}
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+    return model
+
+
+def _apply_cuda_visible_devices(spec: dict) -> list[int]:
+    """把请求的物理卡映射成进程内的 0..n-1（CUDA_VISIBLE_DEVICES）。
+
+    为什么不能只靠 device_map={"": g}：那只决定**模型权重**放哪，
+    而 HF Trainer 仍按 args.device（默认 cuda:0）放优化器状态与激活。
+    实测过这种错位：模型在物理 GPU 1、训练状态却在物理 GPU 0，
+    而编排器的 DeviceGate 记的是"占了 GPU 1"——闸门与实际用卡对不上，
+    两个作业可能同时挤到同一张卡上。
+
+    返回请求的卡号列表。
+    """
+    gpus = [int(g) for g in (spec.get("gpus") or [])]
+    if gpus:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpus)
+    return gpus
+
+
 def _load_model(spec: dict):
+    gpus = _apply_cuda_visible_devices(spec)
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    device_map = "auto" if len(gpus) > 1 else ({"": 0} if gpus else None)
+    print(
+        f"[train_sft] CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '(未设置)')} "
+        f"可见卡数={torch.cuda.device_count()} device_map={device_map}",
+        flush=True,
+    )
 
     base_model = spec["base_model"]
     dtype = getattr(torch, spec.get("dtype", "float16"))
@@ -143,10 +207,7 @@ def _load_model(spec: dict):
         except Exception:
             attn = "sdpa"
 
-    gpus = spec.get("gpus") or []
     device_map = None
-    if gpus:
-        device_map = {"": int(gpus[0])}
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
@@ -157,6 +218,16 @@ def _load_model(spec: dict):
         trust_remote_code=False,
         low_cpu_mem_usage=True,
     )
+    # 训练期必须关掉 KV cache。
+    #
+    # 原因不是省显存本身，而是：transformers 看到 use_cache=True 会**拒绝启用
+    # 梯度检查点**（它只在推理时需要缓存）。于是 36 层的激活被全量留在显存里——
+    # 实测 8B QLoRA 在 seq_len=512 时就是因此多吃了约 4GB，
+    # 在 11GB 卡上直接 OOM（Tried to allocate 298 MiB / 只剩 72 MiB）。
+    # 关掉之后激活只留每层边界，显存回落到几 GB。
+    model.config.use_cache = False
+    if hasattr(model, "generation_config") and model.generation_config is not None:
+        model.generation_config.use_cache = False
     if not quant_config and device_map is None:
         model = model.to("cuda" if torch.cuda.is_available() else "cpu")
     return model, tokenizer
@@ -164,7 +235,7 @@ def _load_model(spec: dict):
 
 def train(spec: dict) -> dict:
     import torch
-    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from peft import LoraConfig, get_peft_model
     from transformers import Trainer, TrainingArguments
 
     output_dir = spec["output_dir"]
@@ -175,7 +246,7 @@ def train(spec: dict) -> dict:
 
     if method in ("qlora", "lora"):
         if method == "qlora":
-            model = prepare_model_for_kbit_training(
+            model = _prepare_for_qlora(
                 model, use_gradient_checkpointing=spec.get("gradient_checkpointing", True)
             )
         lora_cfg = LoraConfig(
@@ -230,11 +301,16 @@ def train(spec: dict) -> dict:
     model.save_pretrained(adapter_path)
     tokenizer.save_pretrained(adapter_path)
 
+    # 实际步数从 trainer.state 取——spec 里的 max_steps 只是"上限"，
+    # 按 epochs 跑完时它通常是 -1，拿它当步数只会得到一个恒定的 -1。
+    global_step = int(getattr(getattr(trainer, "state", None), "global_step", 0) or 0)
     metrics = {
         "elapsed_sec": round(elapsed, 2),
         "train_samples": len(dataset),
         "train_loss": float(getattr(result, "training_loss", 0.0) or 0.0),
-        "steps": int(spec.get("max_steps", -1)) if spec.get("max_steps", -1) > 0 else -1,
+        "steps": global_step,
+        "epochs": round(float(getattr(getattr(trainer, "state", None), "epoch", 0.0) or 0.0), 3),
+        "learning_rate": float(getattr(trainer, "args", None).learning_rate or 0.0) if getattr(trainer, "args", None) else 0.0,
     }
     if torch.cuda.is_available():
         metrics["gpu_max_memory_mib"] = round(torch.cuda.max_memory_allocated() / (1024 * 1024))
@@ -248,6 +324,13 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = _load_spec(args.spec)
     output_dir = spec.get("output_dir", "./finetune-out")
+
+    # 必须在**任何** torch / transformers 导入之前设置：
+    # transformers 的导入会触发 torch.cuda.is_available()，
+    # 那一次调用就把 CUDA 运行时初始化了（设备列表就此固定），
+    # 此后再改 os.environ 就没用了——实测就是这样：
+    #   设了 CUDA_VISIBLE_DEVICES=1，但 torch 仍能看到 2 张卡。
+    _apply_cuda_visible_devices(spec)
     try:
         payload = train(spec)
         result = {
