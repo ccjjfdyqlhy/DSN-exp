@@ -700,6 +700,18 @@ def _stage_prompt_and_skills():
         from apps.dsn.skills.manager import SkillManager
         Config.load_skill_configs()
         skill_registry = SkillRegistry()
+        # 能力注册（技能依赖注入的唯一来源，见 harness/skills/capabilities.py）。
+        # 技能在 skill.yaml 的 dependencies 里写语义名，工具类用 needs 声明
+        # "语义能力 → 实例属性名"，由 harness 自动注入 —— 不必再改 boot.py。
+        _caps = {
+            "db_mgr": db,
+            "engine": engine,
+            "task_manager": task_manager,
+            "memory_system": memory_system,
+            "world_engine": _world_engine,
+        }
+        skill_registry.register_capabilities(
+            {k: v for k, v in _caps.items() if v is not None})
         skill_manager = SkillManager(
             skill_dirs=[os.path.join(os.path.dirname(__file__), "skills", "builtin"),
                         os.path.join(os.path.dirname(__file__), "skills", "custom"),

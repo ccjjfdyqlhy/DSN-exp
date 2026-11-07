@@ -459,7 +459,15 @@ class Config:
 
     @classmethod
     def load_skill_configs(cls):
-        """加载 skills/*/skill.env，让技能能声明自己的环境配置。"""
+        """加载 skills/*/skill.env，让技能能声明自己的环境配置。
+
+        注意（2026-11）：**这个方法在本应用里此前从未被调用过** ——
+        写了 skill.env 也是静默失效的。现加载链路已统一到
+        harness/skills/env_loader.py（由 SkillManager 在扫描时调用，
+        值写进 os.environ，并挂到 Skill.env）。
+        本方法保留用于"把技能私有配置也挂成 Config 属性"的场景，
+        技能侧推荐直接读 os.environ。
+        """
         try:
             from dotenv import load_dotenv as _load_dotenv
         except ImportError:

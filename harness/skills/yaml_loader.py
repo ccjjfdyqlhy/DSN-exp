@@ -17,7 +17,7 @@ import re
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("SkillLoader")
 
@@ -32,6 +32,9 @@ class ToolSpec:
     module: str = ""
     class_name: str = ""
     methods: list = field(default_factory=list)
+    # 语义能力 → 实例属性名。工具类里也可以用类属性 needs 声明；
+    # 两处都写时以这里的为准（插件作者不改工具源码也能声明依赖）。
+    needs: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -61,6 +64,37 @@ class Skill:
     dependencies: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     skill_dir: str = ""
+    # skill.env 解析结果（由 harness.skills.env_loader 填充）
+    env: dict = field(default_factory=dict)
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """宽松转 int：YAML 里写成 '70'（带引号）也能吃下，转不动就用默认值。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_tool_module_path(skill_dir: str, module_path: str) -> Optional[Path]:
+    """把 skill.yaml 的 module 字段解析成工具文件路径。
+
+    支持三种写法（都指向同一个文件时行为一致）：
+      "tools.gaokzx_tools"     → <skill_dir>/tools/gaokzx_tools.py
+      "tools/gaokzx_tools.py"  → <skill_dir>/tools/gaokzx_tools.py
+      "gaokzx_tools.py"        → <skill_dir>/tools/gaokzx_tools.py
+    """
+    if not module_path:
+        return None
+    base = Path(skill_dir)
+    if module_path.endswith(".py"):
+        rel = module_path.replace("\\", "/")
+        return base / rel if "/" in rel else base / "tools" / rel
+    parts = module_path.split(".")
+    if len(parts) == 1:
+        return base / "tools" / f"{parts[0]}.py"
+    sub = "/".join(parts[:-1])
+    return base / sub / f"{parts[-1]}.py"
 
 
 class SkillLoader:
@@ -95,7 +129,7 @@ class SkillLoader:
             enabled=data.get("enabled", True),
             status=data.get("status", "active"),
             prompt_category=data.get("prompt_category", "skills"),
-            prompt_priority=data.get("prompt_priority", 60),
+            prompt_priority=_as_int(data.get("prompt_priority", 60), 60),
             tools=tools,
             prompts=prompts,
             activation=data.get("activation", {}),
@@ -139,6 +173,7 @@ class SkillLoader:
                 module=t.get("module", ""),
                 class_name=t.get("class", ""),
                 methods=t.get("methods", []),
+                needs=t.get("needs", {}) or {},
             )
             spec.async_mode = t.get("async", False)
             spec.estimated_duration = t.get("estimated_duration", "")

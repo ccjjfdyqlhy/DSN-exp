@@ -186,6 +186,8 @@ Flask + Config + 日志
 
 所有技能 `auto_activate` 均为 false，靠关键词触发两阶段 toolbox 激活。
 
+> 数量以运行时为准：`GET /api/skills` 的 `skills` 字段是权威列表。
+
 ### 3.3 启动
 
 ```bash
@@ -194,11 +196,25 @@ python -m apps.dsn_study --web     # Flask，默认 0.0.0.0:5000
 python main.py --app dsn_study     # 等价于 --web
 ```
 
-### 3.4 ⚠️ 符号链接
+### 3.4 技能系统
 
-`apps/dsn_study/skills/loader.py`、`manager.py`、`api/__init__.py`、`db/__init__.py`
-都是**指向 `apps/dsn/` 的软链**。改 `apps/dsn` 会静默改变 dsn_study 的行为。
-回归测试时必须两边都看。
+技能系统的**唯一实现**在 `harness/skills/`，`apps/dsn` 与 `apps/dsn_study` 共用
+（loader / manager / registry 三个文件都只是转发）。
+
+* 目录：`apps/dsn_study/skills/{builtin,custom}/<技能名>/`
+* `custom/` 是**插件目录**：放进去的技能即插即用；目录不存在时启动会自动创建
+  并写一份说明（README.md）
+* 依赖注入走**能力（capability）**机制：应用注册语义能力，工具类用
+  `needs = {"question_store": "_store"}` 声明 —— 写新技能不必改 `boot.py`
+* 加载期做一致性校验（类/方法/参数/能力/wire 名），问题可查：
+  `GET /api/skills`
+* 运行时管理（装/卸/启停/重载）：`POST /api/skills/install|reload|<name>/<action>`
+
+详见 [skills.md](skills.md)。
+
+> 2026-10 之前 `apps/dsn_study/skills/{loader,manager}.py` 与 `api/__init__.py`
+> 是指向 `apps/dsn/` 的**软链**，改一边会静默改变另一边。
+> 现已全部下沉到 harness 并改成普通转发文件，行为一致且无文件系统耦合。
 
 ---
 

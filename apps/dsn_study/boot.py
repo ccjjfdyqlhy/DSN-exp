@@ -393,6 +393,106 @@ def _make_chat(model_type: str):
 
 # ── 技能依赖注入 ──
 
+# 插件目录说明 —— 首次创建 custom/ 时写入，让"技能可以插拔"这件事有据可查。
+_CUSTOM_SKILL_README = """# 自定义技能目录（可插拔）
+
+把一个技能包放进本目录的子目录里，重启应用即可生效（也可调用
+`POST /api/skills/install` 在运行时安装，不必重启）。
+
+## 目录结构
+
+```
+skills/custom/<技能名>/
+├── skill.yaml          # 必需：技能元信息 + 工具声明
+├── prompts/*.md        # 可选：注入 system prompt 的说明
+├── tools/*.py          # 可选：工具实现
+└── skill.env           # 可选：技能私有配置（KEY=VALUE）
+```
+
+## 依赖注入（不再需要改 boot.py）
+
+工具类用类属性 `needs` 声明需要哪些**能力**，harness 会自动注入：
+
+```python
+class MyTool:
+    needs = {"question_store": "_store", "workspace": "_workspace"}
+
+    def __init__(self):
+        self._store = None
+        self._workspace = None
+```
+
+可用能力见 `GET /api/skills` 的 `capabilities` 字段。
+能力缺失时该工具**不会被注册**（而不是静默拿到 None）。
+
+## 声明与实现不一致时
+
+工具类名、方法名、参数名必须与 skill.yaml 一致，否则加载期就会报出
+具体是哪一条不对（见 `GET /api/skills` 的 `issues`）。
+"""
+
+
+def _ensure_custom_skill_dir(custom_dir: str) -> str:
+    """确保插件目录存在（不存在就建，并写一份说明）。"""
+    try:
+        os.makedirs(custom_dir, exist_ok=True)
+    except Exception as e:
+        logger.warning("创建自定义技能目录失败 %s: %s", custom_dir, e)
+        return custom_dir
+    readme = os.path.join(custom_dir, "README.md")
+    if not os.path.exists(readme):
+        try:
+            with open(readme, "w", encoding="utf-8") as f:
+                f.write(_CUSTOM_SKILL_README)
+        except Exception as e:
+            logger.warning("写入自定义技能目录说明失败: %s", e)
+    return custom_dir
+
+
+def _register_skill_capabilities(skill_registry, c: dict,
+                                 workspace=None) -> list[str]:
+    """注册技能可用的**语义能力** —— 技能依赖注入的唯一来源。
+
+    技能在 skill.yaml 的 dependencies 里写语义名（如 question_store），
+    工具类用 needs 声明"语义能力 → 实例属性名"，由 harness 自动注入。
+    以前这套是应用层一张硬编码的属性名映射表，新技能必须去改 boot.py；
+    现在新技能只需要声明自己需要什么。
+    """
+    caps = {
+        # 题库 / 模板 / 模型
+        "question_store": c.get("question_store"),
+        "template_manager": c.get("template_manager"),
+        "models_plugin": c.get("llm"),
+        "llm": c.get("llm"),
+        "db_mgr": c.get("db_mgr"),
+        # 考试 / 评分
+        "exam_engine": c.get("exam_engine"),
+        "exam_scorer": c.get("scorer"),
+        "scorer": c.get("scorer"),
+        # 知识图谱
+        "graph_store": c.get("graph_store"),
+        "graph_engine": c.get("graph_engine"),
+        "knowledge_matcher": c.get("kg_matcher"),
+        "kg_matcher": c.get("kg_matcher"),
+        "kg_builder": c.get("kg_builder"),
+        # 扫描 / 计划 / 任务 / 记忆
+        "scanner_pipeline": c.get("scanner_pipeline"),
+        "plan_engine": c.get("plan_engine"),
+        "task_manager": c.get("task_manager"),
+        "memory_system": c.get("memory_system"),
+        "cache_engine": c.get("cache_engine"),
+        # 学习跟踪
+        "studylog": c.get("studylog"),
+        "checkin_store": c.get("checkin_store"),
+        # 工作区（落盘：扫描件、下载的图片/PDF 走这里）
+        "workspace": workspace,
+    }
+    usable = {k: v for k, v in caps.items() if v is not None}
+    skill_registry.register_capabilities(usable)
+    logger.info("已注册 %d 个技能能力: %s", len(usable), ", ".join(sorted(usable)))
+    return sorted(usable)
+
+
 def _build_skill_dep_map(c) -> dict[str, dict]:
     """skill 名 → 工具实例属性注入表。"""
     return {
@@ -428,64 +528,6 @@ def _build_skill_dep_map(c) -> dict[str, dict]:
         "study_tracking": dict(_studylog=c.get("studylog"),
                                _checkin=c.get("checkin_store")),
     }
-
-
-def _bridge_tools_to_agent(agent: AgentRuntime, skill_registry, skill_loader) -> int:
-    """把 SkillRegistry 里的全部工具桥接为 harness AgentLoop 工具。"""
-    count = 0
-    for key, spec in skill_registry._tool_specs.items():
-        skill_name, tool_name = key.split(".", 1)
-        # 协程工具由 _bridge_async_tools_to_agent 处理（同步 handler 无法 await）
-        if skill_registry.is_async_tool(skill_name, tool_name):
-            continue
-        tool_spec_obj = spec.get("_tool_spec_obj")
-        parameters = {"type": "object", "properties": {}}
-        if tool_spec_obj is not None:
-            try:
-                schema = skill_loader.build_function_schema(skill_name, tool_spec_obj)
-                parameters = schema["function"]["parameters"]
-            except Exception:
-                logger.warning("工具 %s 参数 schema 生成失败，使用空参", key, exc_info=True)
-
-        def _handler(_sk=skill_name, _tl=tool_name, **kwargs):
-            return skill_registry.call_tool(_sk, _tl, kwargs)
-
-        agent.register_tool(key, spec.get("description", ""), _handler,
-                            parameters=parameters)
-        count += 1
-    return count
-
-
-def _bridge_async_tools_to_agent(agent: AgentRuntime, skill_registry,
-                                 skill_loader=None) -> int:
-    """把「协程方法」的技能工具以异步 handler 桥接进 AgentLoop。
-
-    需要 await 外部资源（典型：MCP 服务器，如 Obsidian）的技能工具必须走这条路：
-    同步 handler 在 AgentLoop 的事件循环里无法 await。
-    """
-    count = 0
-    for key in list(skill_registry._tool_instances.keys()):
-        skill_name, tool_name = key.split(".", 1)
-        if not skill_registry.is_async_tool(skill_name, tool_name):
-            continue
-        spec = skill_registry._tool_specs.get(key) or {}
-        description = spec.get("description", "")
-        parameters = {"type": "object", "properties": {}}
-        tool_spec_obj = spec.get("_tool_spec_obj")
-        if tool_spec_obj is not None and skill_loader is not None:
-            try:
-                schema = skill_loader.build_function_schema(skill_name, tool_spec_obj)
-                parameters = schema["function"]["parameters"]
-            except Exception:
-                logger.warning("工具 %s 参数 schema 生成失败，使用空参", key, exc_info=True)
-
-        async def _ahandler(_sk=skill_name, _tl=tool_name, **kwargs):
-            return await skill_registry.call_tool_async(_sk, _tl, kwargs)
-
-        agent.register_tool(key, description, _ahandler,
-                            parameters=parameters, async_mode=True)
-        count += 1
-    return count
 
 
 # ── 启动 ──
@@ -653,21 +695,6 @@ def create_application() -> Flask:
     except Exception:
         workspace = None
 
-    # ── 技能系统 ──
-    from apps.dsn_study.skills.registry import SkillRegistry
-    from apps.dsn_study.skills.manager import SkillManager
-    from apps.dsn_study.skills.loader import SkillLoader
-
-    skill_registry = SkillRegistry()
-    app_root = os.path.dirname(__file__)
-    skill_dirs = [os.path.join(app_root, "skills", "builtin")]
-    custom_dir = os.path.join(app_root, "skills", "custom")
-    if os.path.isdir(custom_dir):
-        skill_dirs.append(custom_dir)
-    skill_manager = SkillManager(skill_dirs, skill_registry)
-    loaded_skills = skill_manager.scan_and_load()
-    logger.info("技能加载完成: %d 个", loaded_skills)
-
     # ── 复杂度分析器（复杂问题 → 提示走 reasoner 深入推理）──
     complexity_analyzer = None
     try:
@@ -688,11 +715,31 @@ def create_application() -> Flask:
         "studylog": studylog, "checkin_store": checkin_store,
         "complexity_analyzer": complexity_analyzer,
     }
-    dep_map = _build_skill_dep_map(c)
-    for skill_name in list(skill_registry._active_skills):
-        deps = dep_map.get(skill_name)
-        if deps and not skill_registry.inject_dependencies(skill_name, **deps):
-            logger.warning("技能 %s 依赖注入未命中任何工具属性", skill_name)
+
+    # ── 技能系统 ──
+    from apps.dsn_study.skills.registry import SkillRegistry
+    from apps.dsn_study.skills.manager import SkillManager
+    from apps.dsn_study.skills.loader import SkillLoader
+
+    skill_registry = SkillRegistry()
+    app_root = os.path.dirname(__file__)
+    skill_dirs = [os.path.join(app_root, "skills", "builtin")]
+    custom_dir = os.path.join(app_root, "skills", "custom")
+    # 插件目录不存在就建一个 —— 以前 custom/ 不存在时静默跳过，
+    # 放进去的技能要等"建目录"这个动作发生才生效，坑得很隐蔽。
+    _ensure_custom_skill_dir(custom_dir)
+    skill_dirs.append(custom_dir)
+
+    # 能力注册（技能依赖注入的唯一来源）—— 必须在扫描之前，
+    # 否则工具类用 needs 声明的能力会判定为"缺失"。
+    _register_skill_capabilities(skill_registry, c, workspace)
+
+    skill_manager = SkillManager(skill_dirs, skill_registry)
+    # 旧式按属性名注入（兼容老技能；新技能请用工具类的 needs 声明）。
+    # 交给 manager 保管：enable/reload 换了新的工具实例后会补注入一次。
+    skill_manager.set_legacy_deps(_build_skill_dep_map(c))
+    loaded_skills = skill_manager.scan_and_load()
+    logger.info("技能加载完成: %d 个", loaded_skills)
 
     # ── Agent（技能工具桥接 + 提示词聚合） ──
     skill_prompts = skill_registry.get_all_skill_prompts()
@@ -706,13 +753,10 @@ def create_application() -> Flask:
         # 原生 function calling 优先；模型只吐 XML 时自动降级到 <tool> 标签协议
         adapter=SkillTagToolCallAdapter(),
     )
-    bridged = _bridge_tools_to_agent(agent, skill_registry, SkillLoader())
+    # 技能工具桥接（同步 + 协程）—— 走 harness 的唯一实现
+    from harness.skills.agent_bridge import bridge_skills_to_agent
+    bridged = bridge_skills_to_agent(agent, skill_registry, SkillLoader())
     logger.info("已桥接 %d 个技能工具到 AgentLoop", bridged)
-
-    # 协程工具（需 await 外部资源，如 MCP）单独以异步 handler 桥接
-    bridged_async = _bridge_async_tools_to_agent(agent, skill_registry, SkillLoader())
-    if bridged_async:
-        logger.info("已桥接 %d 个异步技能工具到 AgentLoop", bridged_async)
 
     # ── 外部 MCP（Obsidian 知识库 / 笔记）──
     # 连接放后台线程：stdio 子进程冷启动（npx 拉包）数秒，不能阻塞启动。
@@ -799,6 +843,7 @@ def create_application() -> Flask:
     from apps.dsn_study.api.studylog import studylog_bp, init_studylog_api
     from apps.dsn_study.api.voice import voice_bp, init_voice_api
     from apps.dsn_study.api.obsidian import obsidian_bp, init_obsidian_api
+    from apps.dsn_study.api.skills import skills_bp, init_skills_api
 
     init_scan_api(auth_manager=auth)
     init_study_timetable_api(db_mgr, auth)
@@ -812,6 +857,7 @@ def create_application() -> Flask:
     init_studylog_api(studylog, auth)
     init_voice_api(voice, auth)
     init_obsidian_api(mcp_bridge, skill_registry, auth)
+    init_skills_api(skill_manager, skill_registry, auth)
 
     blueprints = {
         "scan": scan_bp,
@@ -826,6 +872,7 @@ def create_application() -> Flask:
         "studylog": studylog_bp,
         "voice": voice_bp,
         "obsidian": obsidian_bp,
+        "skills": skills_bp,
     }
 
     from apps.dsn_study.bundles import make_dsn_study_bundles

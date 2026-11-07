@@ -1,0 +1,102 @@
+name: gaokzx
+display_name: "高考在线抓取"
+description: "从 gaokzx.com 搜索、解析并下载试题与答案图片。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 72
+
+tools:
+  - name: search_papers
+    display_name: "搜索试卷"
+    description: "按关键词搜索高考在线上的试题文章，返回 id/标题/链接/是否含答案。"
+    module: "tools.gaokzx_tools"
+    class: "GaokzxTool"
+    methods:
+      - name: search_papers
+        description: "关键词搜索试题文章"
+        parameters:
+          keyword:
+            type: string
+            description: "搜索关键词，如「一七一中 初一 数学 期中」"
+            required: true
+          page:
+            type: integer
+            description: "页码，从 1 开始"
+            required: false
+          page_size:
+            type: integer
+            description: "每页条数，默认 20"
+            required: false
+
+  - name: inspect_paper
+    display_name: "解析试卷"
+    description: "解析一篇试题文章：分页、试题图/答案图清单、附件 PDF（不下载图片）。"
+    module: "tools.gaokzx_tools"
+    class: "GaokzxTool"
+    methods:
+      - name: inspect_paper
+        description: "解析文章详情，列出试题图与答案图（含判别依据）"
+        parameters:
+          paper_id:
+            type: integer
+            description: "文章 id（数字），与 url 至少给一个"
+            required: false
+          url:
+            type: string
+            description: "文章网页 URL，如 https://www.gaokzx.com/gk/shitiku/161882.html；与 paper_id 至少给一个"
+            required: false
+
+  - name: find_answer_paper
+    display_name: "查找答案文章"
+    description: "给试题文章找配套的答案文章；答案就在本文时直接指出，否则给相似候选。"
+    module: "tools.gaokzx_tools"
+    class: "GaokzxTool"
+    methods:
+      - name: find_answer_paper
+        description: "查找与该试题配套的答案文章"
+        parameters:
+          paper_id:
+            type: integer
+            description: "试题文章 id（数字），与 title 至少给一个"
+            required: false
+          title:
+            type: string
+            description: "试题标题（不传 paper_id 时可直接给标题）"
+            required: false
+
+  - name: download_images
+    display_name: "下载试题/答案图"
+    description: "下载文章的试题图或答案图到工作区，已下载过的自动跳过（幂等）。"
+    module: "tools.gaokzx_tools"
+    class: "GaokzxTool"
+    methods:
+      - name: download_images
+        description: "下载试题图/答案图到工作区目录"
+        parameters:
+          paper_id:
+            type: integer
+            description: "文章 id（数字）"
+            required: true
+          kind:
+            type: string
+            description: "question=只要试题图（默认）/ answer=只要答案图 / all=全都要。本文是「有答案」套卷时，question 会回退为下载整套扫描件（kind_fallback=true，note 里说明）"
+            required: false
+          user_id:
+            type: integer
+            description: "用户 id，默认 1"
+            required: false
+          max_images:
+            type: integer
+            description: "最多下载几张，0=不限"
+            required: false
+
+activation:
+  keywords: ["高考真题", "试题", "答案", "抓取", "gaokzx", "北京高考在线"]
+  auto_activate: false
+
+dependencies: []
+tags: [crawl, gaokao, question, image]

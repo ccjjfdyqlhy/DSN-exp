@@ -22,7 +22,10 @@ class ErrorAnalysisTool:
             "related_kps": analysis.get("related_kps", []),
         }
 
-    def stats(self, user_id: int, subject: str = None) -> dict:
+    # user_id 给默认值 0：与同文件的 analyze() 一致。
+    # 此前没有默认值，而 skill.yaml 的 schema 又不声明 user_id，
+    # Agent 调用 get_error_stats 必然 TypeError（缺 1 个必填位置参数）。
+    def stats(self, user_id: int = 0, subject: str = None) -> dict:
         if not self._store:
             return {"error": "QuestionStore 未初始化"}
 
@@ -49,7 +52,9 @@ class ErrorAnalysisTool:
     def recommend_questions(self, **kwargs) -> dict:
         return self.recommend(**kwargs)
 
-    def recommend(self, user_id: int, subject: str, count: int = 5) -> dict:
+    # 同 stats()：user_id 给默认值，并排在有默认值的参数之后。
+    # 此前 user_id 无默认值而 schema 不声明它 → recommend_questions 调用必炸。
+    def recommend(self, subject: str, user_id: int = 0, count: int = 5) -> dict:
         weak_points = self._analyzer().get_weak_points(user_id, subject)
         if not weak_points:
             return {"error": "没有找到薄弱知识点"}
