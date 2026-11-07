@@ -9,7 +9,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import apps.dsn.psychoscope.minimal as m
+import apps.dsn.CLI.camera as m
+import apps.dsn.CLI.tui as tui  # print_cameras 等 UI 函数在拆分后归 tui
 from apps.dsn.api.vision import VisionCoordinator
 
 
@@ -210,7 +211,7 @@ def test_print_cameras_button():
     os.environ.pop("DSN_CAMERA_MAP", None)
     try:
         with mock.patch("builtins.print") as mp:
-            m.print_cameras(None)
+            tui.print_cameras(None)
         texts = [str(c.args[0]) for c in mp.call_args_list]
         joined = "\n".join(texts)
         assert "cam0" in joined and "cam1" in joined, texts
@@ -225,7 +226,7 @@ def test_print_cameras_button():
                         return {"cameras": [{"logical_name": "cam1", "note": "门口摄像头"}]}
                 return _R()
         with mock.patch("builtins.print") as mp:
-            m.print_cameras(_FakeClient())
+            tui.print_cameras(_FakeClient())
         texts2 = [str(c.args[0]) for c in mp.call_args_list]
         assert any("门口摄像头" in t for t in texts2), texts2
     finally:
@@ -260,10 +261,10 @@ def test_capture_save_to_temp():
     m.cv2 = _SaveCv()
     os.environ.pop("DSN_CAMERA_MAP", None)
     tmp = Path(tempfile.mkdtemp())
-    m.TTS_DIR = tmp
+    tui.TEMP_DIR = tmp  # 拆分后拍照保存目录常量归 tui（来自 env.TEMP_DIR）
     try:
         with mock.patch("builtins.print") as mp:
-            m.print_cameras(None)
+            tui.print_cameras(None)
         texts = [str(c.args[0]) for c in mp.call_args_list]
         files = sorted(tmp.glob("camera_*.jpg"))
         assert len(files) == 2, files  # cam0 / cam1 各一张

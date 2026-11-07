@@ -15,12 +15,12 @@ TTS_DIR = HERE / "temp"
 def scan():
     """扫描 temp/ 目录中的所有 .wav 文件，读取并打印采样率"""
     if not TTS_DIR.exists():
-        print(f" temp/ 目录不存在，请先运行 minimal.py 产生一些 TTS 音频")
+        print(f" temp/ 目录不存在，请先运行 `python -m apps.dsn.CLI` 产生一些 TTS 音频")
         return None
 
     wav_files = sorted(TTS_DIR.glob("*.wav"))
     if not wav_files:
-        print(f" temp/ 中没有 .wav 文件，请先运行 minimal.py 说几句话")
+        print(f" temp/ 中没有 .wav 文件，请先运行 `python -m apps.dsn.CLI` 说几句话")
         return None
 
     rates = {}

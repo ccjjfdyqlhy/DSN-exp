@@ -253,7 +253,8 @@ personality_v3、personality、tts、tool、notebook、task、plan、recall、vi
 | `models/` | 客户端 / 多账号 failover / TTS / ASR（**与 infra 重复，历史遗留**） |
 | `prompt/` | V2 / V3 人格 + `PromptEngine` |
 | `plugins/` | 插件框架 + 16 个 builtin |
-| `psychoscope/` | Tkinter 客户端 + 感知来源（实验性） |
+| `CLI/` | 边缘设备多模态终端客户端（TUI + 感知来源，实验性；原 `psychoscope/minimal.py` 拆分而来） |
+| `psychoscope/` | 客户端 Web 面板（`server.py` + `static/`，实验性） |
 | `pyncm/` | 网易云音乐客户端（**vendored**，不要改） |
 | `semantic_cache/` | L1/L2/L3 三层缓存 |
 | `skills/` | 技能框架 + 10 个 builtin 技能 |

@@ -255,7 +255,7 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 | 文件 | 指数 | 最复杂函数 |
 |---|---:|---|
 | `apps/dsn/plugins/pipeline.py` | 56.55 | `_dsn_agent_round` (44)、`_poll_pending_tasks` (38) |
-| `apps/dsn/psychoscope/minimal.py` | 56.50 | `main`、`_poll_loop` |
+| `apps/dsn/psychoscope/minimal.py` → **已拆分为 `apps/dsn/CLI/` 包**（2026-11-07，数据为拆分前） | 56.50 | `main`、`_poll_loop` |
 | `apps/dsn/main.py` | 52.68 | `_cmd_reminder` (31)、`_cmd_plan` (21) |
 | `apps/densechat/static/app.js` | 52.50 | `handleMessage` (62) |
 | `apps/dsn_ui/server.py` | 48.64 | `_produce_sse` (72)、`chat_completions` (57) |

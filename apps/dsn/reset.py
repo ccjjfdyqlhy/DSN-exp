@@ -12,7 +12,9 @@ TARGETS = [
     ("主数据库", os.path.join(BASE, "DSN_usrdata.db")),
     ("聊天数据库", os.path.join(BASE, "chats.db")),
     (".dsn 目录", os.path.join(BASE, ".dsn")),
-    ("客户端密钥", os.path.join(_APP, "psychoscope", ".dsn_client.json")),
+    # 客户端密钥已随 CLI 包拆分迁到 CLI/（旧路径是一次性迁移源，两个都要清）
+    ("客户端密钥", os.path.join(_APP, "CLI", ".dsn_client.json")),
+    ("客户端密钥（旧路径）", os.path.join(_APP, "psychoscope", ".dsn_client.json")),
 ]
 
 print("⚠ 即将永久删除以下数据：")

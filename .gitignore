@@ -11,8 +11,11 @@ tests/*.wav
 .vscode/*
 .dekacode/*
 .dsn/*
-logs/*
-plans/*
+# 注意：gitignore 里**含斜杠的模式锚定在仓库根**，所以 `logs/*` 只匹配
+# `/logs/*`，嵌套目录（apps/*/CLI/logs/ 等）一律漏网 —— 运行日志会被误提交。
+# 用 `**/logs/*` 覆盖任意层级的 logs 目录。
+**/logs/*
+**/plans/*
 instances/models/*
 __pycache__/*
 .env
@@ -63,6 +66,10 @@ apps/dsn/model_profiles/onboarding_*.yaml
 /apps/dsn/psychoscope/logs/*
 /apps/dsn/psychoscope/temp/*
 /apps/dsn/psychoscope/.dsn_client.json
+# CLI 客户端包（原 psychoscope/minimal.py 拆分而来）的运行期产物
+/apps/dsn/CLI/logs/*
+/apps/dsn/CLI/temp/*
+/apps/dsn/CLI/.dsn_client.json
 
 # ── DSN 学习特化应用 (apps/dsn_study/) 运行时目录与用户内容 ──
 /apps/dsn_study/website/*
