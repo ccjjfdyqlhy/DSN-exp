@@ -196,15 +196,49 @@ class SkillRegistry:
 
     # ── 工具调用 ──
 
+    def _resolve_method(self, skill_name: str, tool_name: str,
+                        instance: Any) -> Any:
+        """定位工具的可调用实现。
+
+        约定（skill.yaml 契约）：
+          tools[].name      —— 对外暴露的工具名（function-calling 用的 wire 名）
+          tools[].methods[] —— 实现方法；``methods[].name`` 才是类上的**真实方法名**。
+
+        历史行为只按 ``tools[].name`` 查属性，于是「工具名 ≠ 方法名」的声明
+        （例如 tool=record_study_session / methods=[record_session]）
+        **注册成功但调用必挂** ``ValueError: 工具方法不存在``。
+
+        现在按两级解析：
+          1. 先按工具名找（绝大多数技能工具名 == 方法名，行为不变）；
+          2. 找不到时，若该工具**恰好声明了一个**方法，则回退到该方法名；
+             声明了多个方法时无法判定意图，保持报错（由启动自检暴露）。
+
+        :raises ValueError: 工具未注册或找不到可调用的实现。
+        """
+        method = getattr(instance, tool_name, None)
+        if method and callable(method):
+            return method
+
+        spec = self._tool_specs.get(f"{skill_name}.{tool_name}") or {}
+        declared = []
+        for entry in spec.get("methods") or []:
+            name = entry.get("name") if isinstance(entry, dict) else entry
+            if name:
+                declared.append(name)
+        if len(declared) == 1:
+            fallback = getattr(instance, declared[0], None)
+            if fallback and callable(fallback):
+                return fallback
+
+        raise ValueError(f"工具方法不存在: {skill_name}.{tool_name}")
+
     def call_tool(self, skill_name: str, tool_name: str,
                   params: dict[str, Any]) -> Any:
         key = f"{skill_name}.{tool_name}"
         instance = self._tool_instances.get(key)
         if not instance:
             raise ValueError(f"工具不存在: {key}")
-        method = getattr(instance, tool_name, None)
-        if not method or not callable(method):
-            raise ValueError(f"工具方法不存在: {key}.{tool_name}")
+        method = self._resolve_method(skill_name, tool_name, instance)
         return method(**params)
 
     async def call_tool_async(self, skill_name: str, tool_name: str,
@@ -214,9 +248,7 @@ class SkillRegistry:
         instance = self._tool_instances.get(key)
         if not instance:
             raise ValueError(f"工具不存在: {key}")
-        method = getattr(instance, tool_name, None)
-        if not method or not callable(method):
-            raise ValueError(f"工具方法不存在: {key}.{tool_name}")
+        method = self._resolve_method(skill_name, tool_name, instance)
         if inspect.iscoroutinefunction(method):
             return await method(**params)
         return method(**params)
@@ -226,8 +258,36 @@ class SkillRegistry:
         instance = self._tool_instances.get(f"{skill_name}.{tool_name}")
         if not instance:
             return False
-        method = getattr(instance, tool_name, None)
+        try:
+            method = self._resolve_method(skill_name, tool_name, instance)
+        except ValueError:
+            return False
         return bool(method) and inspect.iscoroutinefunction(method)
+
+    def undispatchable_tools(self) -> list[dict]:
+        """列出「注册成功但无法派发」的工具（自检用）。
+
+        这是阶段 0 加的护栏：过去这类缺陷会静默存在 —— 技能注册成功、
+        工具出现在 schema 里，一到模型真正调用才抛「工具方法不存在」。
+        启动时跑一遍就能把问题挡在服务上线之前。
+        """
+        broken: list[dict] = []
+        for key, instance in self._tool_instances.items():
+            skill_name, _, tool_name = key.partition(".")
+            try:
+                self._resolve_method(skill_name, tool_name, instance)
+            except ValueError as exc:
+                spec = self._tool_specs.get(key) or {}
+                declared = [
+                    (e.get("name") if isinstance(e, dict) else e)
+                    for e in (spec.get("methods") or [])
+                ]
+                broken.append({
+                    "key": key,
+                    "reason": str(exc),
+                    "declared_methods": [n for n in declared if n],
+                })
+        return broken
 
     # ── 查询 ──
 

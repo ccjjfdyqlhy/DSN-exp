@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
 import requests
+
+from infra.orchestrator.lmstudio import is_no_model_error
 
 logger = logging.getLogger("infra.vision")
 
@@ -231,3 +234,151 @@ class LMStudioVisionFallback:
 
     def __repr__(self) -> str:
         return f"<LMStudioVisionFallback model={self.model_name!r}>"
+
+
+class OCRModel:
+    """deepseek-ocr 客户端。纯视觉 → markdown 模型，无文本提示。
+
+    下沉说明（迁移计划阶段 5.5）：此前这份实现在 apps/dsn/models/clients.py
+    一份独苗（唯一没被下沉的模型客户端），与 dsn 的 ModelScheduler 耦合。
+    本模块是唯一实现：配置显式传入、加载/卸载走 infra.models 层的
+    LMStudio 助手，调度（managed）由调用方注入 use() 上下文管理器完成 ——
+    infra 层不依赖任何应用的 Config 或调度器。
+
+    用法:
+        ocr = OCRModel(base_url="http://localhost:4502", model_name="deepseek-ocr")
+        md = ocr.ocr(data_url)          # 单张 → markdown
+        results = ocr.ocr_batch([...])  # 批量 → [{filename, markdown}]
+        ocr.unload()                    # 手动卸载
+    """
+
+    def __init__(self, base_url: str = "", model_name: str = "",
+                 auto_load: bool = True, unload_after_use: bool = True,
+                 scheduler: Optional[Any] = None, timeout: int = 300):
+        self.base_url = (base_url or "").rstrip("/")
+        self.model_name = model_name or ""
+        self.unload_after_use = bool(unload_after_use)
+        self.timeout = timeout
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._http_session = requests.Session()
+        self._load_lock = threading.Lock()
+        self._model_ready = threading.Event()
+
+        # 调度器（可选）：提供 use(model_name) 上下文管理器的对象
+        # （如 ModelScheduler）。注入后按需换入换出由调度器接管。
+        self._scheduler = scheduler
+        if not self._scheduler and auto_load and self.model_name:
+            self._ensure_loaded()
+
+    # ── 公开 API ──
+
+    def ocr(self, data_url: str, max_tokens: int = 4096) -> str:
+        """对单张图片执行 OCR，返回 markdown 文本。"""
+        results = self.ocr_batch([{"filename": "image", "data_url": data_url}],
+                                 max_tokens)
+        return results[0]["markdown"] if results else ""
+
+    def ocr_batch(self, images: list, max_tokens: int = 4096) -> list:
+        """批量 OCR。
+
+        :param images: [{filename, data_url}, ...]
+        :return: [{filename, markdown}, ...]
+
+        非 scheduler 托管且 unload_after_use=true 时，完成全部处理后自动卸载。
+        """
+        results = []
+        for img in images:
+            filename = img.get("filename", "unknown")
+            text = self._ocr_single(img.get("data_url", ""), max_tokens)
+            results.append({"filename": filename, "markdown": text})
+        self.logger.info("OCR 完成: %d 张 → %d 条结果", len(images), len(results))
+        if not self._scheduler and self.unload_after_use:
+            self.logger.info("unload_after_use=true，卸载模型")
+            self.unload()
+        return results
+
+    def unload(self) -> bool:
+        """卸载 LMStudio 端的模型。"""
+        from infra.orchestrator.lmstudio import unload_lmstudio_model
+        self._model_ready.clear()
+        return unload_lmstudio_model(self.base_url, self.model_name)
+
+    # ── 内部 ──
+
+    def _ensure_loaded(self) -> bool:
+        from infra.orchestrator.lmstudio import load_lmstudio_model
+        with self._load_lock:
+            if self._model_ready.is_set():
+                return True
+            ok = load_lmstudio_model(self.base_url, self.model_name,
+                                     "OCR 模型", timeout=300)
+            if ok:
+                self._model_ready.set()
+            return ok
+
+    def _ocr_single(self, data_url: str, max_tokens: int) -> str:
+        if not data_url:
+            return ""
+
+        messages = [{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": data_url}}],
+        }]
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "stream": False,
+        }
+        url = f"{self.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+
+        def _do_request() -> str:
+            result = _post_json(self._http_session, url, headers, payload,
+                                self.timeout)
+            if "choices" in result and result["choices"]:
+                return result["choices"][0]["message"]["content"].strip()
+            return ""
+
+        # 调度路径：由调度器确保模型已加载
+        if self._scheduler:
+            with self._scheduler.use(self.model_name, timeout=self.timeout,
+                                     immediate=True):
+                return _do_request()
+
+        # 传统路径：手动管理加载/卸载
+        if self._model_ready.is_set():
+            try:
+                return _do_request()
+            except requests.exceptions.HTTPError as e:
+                if is_no_model_error(e.response):
+                    self._model_ready.clear()
+                else:
+                    self.logger.error("OCR 请求失败: %s", e)
+                    return ""
+
+        with self._load_lock:
+            if self._model_ready.is_set():
+                return _do_request()
+            try:
+                result = _do_request()
+                self._model_ready.set()
+                return result
+            except requests.exceptions.HTTPError as e:
+                if is_no_model_error(e.response):
+                    if self._ensure_loaded():
+                        self._model_ready.set()
+                        try:
+                            return _do_request()
+                        except Exception as e2:
+                            self.logger.error("OCR 重试失败: %s", e2)
+                            return ""
+                self.logger.error("OCR 请求失败: %s", e)
+                return ""
+            except Exception as e:
+                self.logger.error("OCR 请求失败: %s", e)
+                return ""
+
+    def __repr__(self) -> str:
+        return f"<OCRModel model={self.model_name!r} base_url={self.base_url!r}>"

@@ -80,22 +80,33 @@ class AgentRuntime:
 
     def run_with_tools(self, message: str, *,
                        session_id: Optional[str] = None,
-                       tool_names: Optional[list[str]] = None) -> AgentRunResult:
-        """带工具循环的完整执行。"""
+                       tool_names: Optional[list[str]] = None,
+                       system_prompt: Optional[str] = None) -> AgentRunResult:
+        """带工具循环的完整执行。
+
+        ``system_prompt`` 可按调用覆盖实例默认 —— 有些内容**逐轮变化**
+        （人格状态按 uid、上下文按会话/用户），不能只靠实例上的静态字符串。
+        AgentLoop.run 本就接受 per-call 的 system_prompt，这里只是把它透出来。
+        """
         conv = self.session(session_id)
         conv.add_text("user", message)
         loop = AgentLoop(self.chat_client, self.tools, max_steps=self.max_steps,
                          adapter=self.adapter)
-        result = loop.run(conv.messages, system_prompt=self.system_prompt,
+        result = loop.run(conv.messages,
+                          system_prompt=(self.system_prompt
+                                         if system_prompt is None
+                                         else system_prompt),
                           tool_names=tool_names)
         conv.add_text("assistant", result.reply)
         self.memory.add(MemoryEntry(
             text=f"user: {message}\nassistant: {result.reply}"))
         return result
 
-    def run(self, message: str, *, session_id: Optional[str] = None) -> str:
+    def run(self, message: str, *, session_id: Optional[str] = None,
+            system_prompt: Optional[str] = None) -> str:
         """单轮便捷入口，返回最终文本回复。"""
-        return self.run_with_tools(message, session_id=session_id).reply
+        return self.run_with_tools(message, session_id=session_id,
+                                   system_prompt=system_prompt).reply
 
     def __repr__(self) -> str:
         return f"<AgentRuntime name={self.runtime.name} tools={len(self.tools)}>"
