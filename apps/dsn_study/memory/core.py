@@ -64,10 +64,22 @@ class MemorySystem:
         self._embedding_enabled = (
             embedding_client is not None and Config.MEMORY_EMBEDDING_ENABLED
         )
-        # 话题系统休眠（见文件头说明 3）；保留属性以维持 dsn 侧调用形态兼容
+        # 话题系统（迁移计划阶段 7）：boot 在 TOPIC_ENABLED 时经 wire_topics()
+        # 注入 TopicManager；None = 休眠（恒走 memo/exp 装配路径）
         self._topics = None
         self._lock = threading.Lock()
         self._init_table()
+
+    def wire_topics(self, topic_manager) -> None:
+        """装配话题策略层（迁移计划阶段 7.5）。
+
+        :param topic_manager: apps.dsn_study.memory.topics.TopicManager 实例。
+        装配后：
+          - assemble_context(chat_id=...) 委托话题策略（单条 system + SEG_TAIL）；
+          - record_round 由管线侧（MemoryRecordPlugin）同步 record_turn。
+        """
+        self._topics = topic_manager
+        logger.info("话题系统已接入（TOPIC_ENABLED=%s）", Config.TOPIC_ENABLED)
 
     def _init_table(self):
         """initialize the memory database tables"""
@@ -287,7 +299,18 @@ class MemorySystem:
         self, user_id: int, history: list[dict], cross_user_id: Optional[int] = None,
         chat_id: Optional[int] = None,
     ) -> list[dict]:
-        # 话题系统休眠（_topics 恒为 None），恒走 memo/exp 装配路径
+        # 话题系统（迁移计划阶段 7）：TOPIC_ENABLED 且装配了 TopicManager 时，
+        # 上下文委托给话题策略层（单条 system + SEG_TAIL 保底）——
+        # 与 dsn 侧 MemorySystem.assemble_context 的分派模式镜像。
+        if Config.TOPIC_ENABLED and chat_id and self._topics is not None:
+            try:
+                return self._topics.assemble_topic_context(
+                    int(user_id), int(chat_id),
+                    system_prefix="", include_tail=True)
+            except Exception:
+                logging.getLogger("StudyMemory").warning(
+                    "话题上下文组装失败（回退 memo/exp 路径）", exc_info=True)
+
         memos = self._get_memos(user_id)
         exps = self._get_exp_memories(user_id)
         window = Config.MEMORY_CONTEXT_WINDOW_SIZE
@@ -907,3 +930,23 @@ class MemorySystem:
                 break
             lines.append("─" * 56)
         return "\n".join(lines)
+
+
+# ── 迁移计划阶段 7.6：显式满足 harness 记忆契约 ──
+# MemoryStorePort 是 runtime_checkable Protocol（harness/memory/base.py:36）。
+# MemorySystem 的方法集与签名对齐：
+#   assemble_context(user_id, history, cross_user_id=..., chat_id=...)
+#   summarize_turn(user_id, chat_id, round_idx, user_msg, assistant_reply, **kw)
+#   search(user_id, keywords, limit=..., **kw) / add_memo / delete_memo
+# 调用方（harness 侧未来组件）可按该契约依赖本实现，无需适配层。
+try:
+    from harness.memory.base import MemoryStorePort  # noqa: F401
+
+    def assert_memory_store_port(system: "MemorySystem") -> "MemorySystem":
+        """运行时校验实现满足契约（isinstance 走 Protocol 方法存在性检查）。"""
+        assert isinstance(system, MemoryStorePort), (
+            "MemorySystem 不满足 MemoryStorePort 契约")
+        return system
+except Exception:   # noqa: BLE001 - 契约缺失时静默（老版本 harness）
+    def assert_memory_store_port(system: "MemorySystem") -> "MemorySystem":
+        return system

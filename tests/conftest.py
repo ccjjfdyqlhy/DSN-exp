@@ -48,6 +48,16 @@ def pytest_configure(config):
     #   测试全程不访问真实模型后端（用 StubChatClient），这个值只是过导入关。
     os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy-not-real")
 
+    # dsn_study 的 TaskManager 开关：**统一在这里定一次**。
+    #
+    # 为什么必须全局统一：`apps/dsn_study/config.py` 的 Config 是**类属性**，
+    # `_env(...)` 在**模块导入时**求值 → 环境变量只被快照一次。
+    # 各测试文件在自己 fixture 里改这个变量，只有「第一个导入 config 的文件」
+    # 生效 → 测试结果**依赖文件执行顺序**。
+    # （之前 dsn_study 的用例分散设置 true/false，单独跑某几个文件就会炸：
+    #  batch 技能找不到 TaskManager → "TaskManager 未注入"。）
+    os.environ.setdefault("TASK_MANAGER_ENABLED", "true")
+
 
 @pytest.fixture(autouse=True)
 def _isolate_repo_state(monkeypatch):

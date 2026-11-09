@@ -39,6 +39,23 @@ from apps.dsn_study.config import Config
 from apps.dsn_study.settings import bind_dsn_study_settings
 from apps.dsn_study.auth import LocalAuthManager
 from apps.dsn_study.engine_support import LLMService, StudyPipeline
+from apps.dsn_study.prompts import StudyPromptBuilder
+from apps.dsn_study.pipeline import (
+    AsrFilterPlugin,
+    StudyPipelineRunner,
+    SystemPromptPlugin,
+    TopicContextPlugin,
+    VisionContextPlugin,
+    ExamSessionPlugin,
+    DailyReportPlugin,
+    ComplexityPlugin,
+    ModelInvokePlugin,
+    PlanCheckPlugin,
+    MemoryRecordPlugin,
+    PersonalityFeedbackPlugin,
+    TTSPlugin,
+)
+from harness.pipeline.base import Context
 
 logger = logging.getLogger("boot")
 
@@ -59,7 +76,9 @@ class StudyEngine:
                  skill_registry, skill_manager, workspace=None,
                  task_manager=None, memory_system=None, cache_engine=None,
                  chat_hooks=None, complexity_analyzer=None,
-                 studylog=None, checkin_store=None, voice=None):
+                 studylog=None, checkin_store=None, voice=None,
+                 prompt_builder=None, personality=None,
+                 pipeline_runner=None, vision_coordinator=None):
         self.agent = agent
         self.chat_client = chat_client
         self.llm = llm
@@ -107,8 +126,24 @@ class StudyEngine:
         # conversation 历史、重复分配记忆轮次号。不同会话互不阻塞。
         self._chat_locks: dict[str, threading.Lock] = {}
         self._chat_locks_guard = threading.Lock()
+        #: system prompt 组装器（阶段 1）：逐轮重建，支持 {personality}/{user_context}
+        self.prompt_builder = prompt_builder
+        #: 人格系统（阶段 2，harness/personality PEV3）；None = 无性格运行
+        self.personality = personality
+        #: 对话管线（阶段 3，harness/pipeline）；None = 走直连模型兜底
+        self.pipeline_runner = pipeline_runner
+        #: 视觉感知协调器（阶段 5）；None = 无摄像头链路
+        self.vision_coordinator = vision_coordinator
+        #: 上一轮管线产出的音频（chat_audio 用）
+        self._last_tts: tuple = (None, "")
         # 旧管线代码兼容别名（api/scan.py 期望 engine.pipeline）
-        self.pipeline = StudyPipeline(chat_client, system_prompt=DEFAULT_SYSTEM_PROMPT)
+        # 扫题批次总结用的这条轻量管线此前只有 58 字身份 —— 与主助手人格割裂。
+        # 这里给「身份 + 人格」两段（不含 17KB 技能指令：总结任务用不上）。
+        self.pipeline = StudyPipeline(
+            chat_client,
+            system_prompt=(prompt_builder.build(only_tags=["core", "personality"])
+                           if prompt_builder is not None
+                           else DEFAULT_SYSTEM_PROMPT))
 
     # ── 学习上下文注入（对齐参考实现 4 个 PRE_PROCESS 插件的职责） ──
 
@@ -128,7 +163,9 @@ class StudyEngine:
                         for t in summary["tasks"][:8])
                 )
         except Exception:
-            pass
+            # 静默吞掉会让「今日计划」块无声消失 —— 学习上下文注入是
+            # dsn_study 的核心价值，DB/schema 一漂移就静默降级且零日志。
+            logger.warning("今日计划注入失败（已跳过）", exc_info=True)
 
         try:  # 到期复习（KnowledgeGraphPlugin）
             due = self.graph_store.get_due_reviews(user_id)
@@ -136,14 +173,14 @@ class StudyEngine:
                 names = [d.get("kp_name") or d.get("kp_code", "") for d in due[:6]]
                 blocks.append(f"[到期复习] {len(due)} 个知识点待复习：{', '.join(filter(None, names))}")
         except Exception:
-            pass
+            logger.warning("到期复习注入失败（已跳过）", exc_info=True)
 
         try:  # 错题概况（QuestionBankPlugin）
             total_errors = self.question_store.get_total_errors(user_id)
             if total_errors:
                 blocks.append(f"[错题本] 累计 {total_errors} 道错题待巩固")
         except Exception:
-            pass
+            logger.warning("错题本注入失败（已跳过）", exc_info=True)
 
         if not blocks:
             return ""
@@ -258,7 +295,9 @@ class StudyEngine:
 
     def chat(self, message: str, user_id: int = 1,
              session_id: Optional[str] = None,
-             image: Optional[str] = None) -> str:
+             image: Optional[str] = None,
+             tts_enabled: bool = False,
+             is_asr_input: bool = False) -> str:
         session_key = session_id or self.session_id
         # 同一会话串行：防止并发请求把 run_with_tools 的"读历史→执行→写回"
         # 交错执行（轮次错乱），以及记忆轮次号重复分配。
@@ -268,44 +307,72 @@ class StudyEngine:
             if served:
                 return served
 
-            preamble = self._build_preamble(user_id)
-            memory_preamble = self._memory_preamble(user_id)
-            complexity_preamble = self._complexity_preamble(message)
-            hook_preamble = ""
-            if self.chat_hooks is not None:
+            # 人格系统：首次对话前确保用户已绑定角色卡（PEV3 会自动绑默认卡）
+            if self.personality is not None:
                 try:
-                    hook_preamble = self.chat_hooks.pre_process(
-                        user_id, message, image)
+                    self.personality.ensure_user_bound(user_id)
                 except Exception:
-                    logger.warning("对话前钩子异常（已跳过）", exc_info=True)
-            full_prefix = "\n\n".join(
-                b for b in (memory_preamble, preamble, hook_preamble,
-                            complexity_preamble) if b)
-            full = f"{full_prefix}\n\n{message}" if full_prefix else message
-            result = self.agent.run_with_tools(full, session_id=session_key)
-            reply = result.reply
+                    logger.warning("人格角色卡绑定失败（已跳过）", exc_info=True)
 
-            # 记忆闭环：原始轮次落库 → 异步摘要 → 回复中的 <memo>/<recall> 标签处理
-            if self.memory_system is not None:
-                try:
-                    cid = self._chat_id_for(session_key)
-                    ridx = self._next_round(cid)
-                    self.memory_system.record_round(user_id, cid, ridx, message, reply)
-                    self.memory_system.summarize_turn(user_id, cid, ridx, message, reply)
-                    reply = self.memory_system.handle_tags(user_id, cid, reply)
-                except Exception:
-                    import logging
-                    logging.getLogger("StudyEngine").warning("记忆闭环失败（已跳过）", exc_info=True)
+            # ── system prompt 逐轮重建（阶段 1）──
+            # 学习上下文（今日计划 / 到期复习 / 错题本 / 长期备忘）描述的是
+            # 「当前学习状态」而非用户说的话，放 system 侧语义更准，
+            # 学习上下文（计划 / 到期复习 / 错题本 / 备忘）→ 进 system prompt 的
+            # {user_context} 插槽（阶段 1）。它描述的是「当前学习状态」而非用户
+            # 说的话，放 system 侧语义更准，因此走 system 插槽而不是塞进 user 轮。
+            learning_context = "\n\n".join(
+                b for b in (self._memory_preamble(user_id),
+                            self._build_preamble(user_id)) if b)
 
-            # 对话后钩子：<plan_check> 标签回写计划任务（并从回复中移除标签）
-            if self.chat_hooks is not None:
+            # ── 对话管线（阶段 3）──
+            # 能力全部挂在 harness/pipeline 的钩子上：
+            #   PREPARE      组装 system prompt（身份+人格+上下文+技能指令）
+            #   PRE_PROCESS  视觉 / 考试 / 日终报告 / 复杂度（与本条消息强相关）
+            #   MODEL_INVOKE 调模型
+            #   POST_PROCESS <plan_check> 回写 / 记忆落库 / 人格回写
+            #   POST_TTS     语音合成
+            ctx = Context(user_id=user_id, message=message,
+                          session_id=session_key, image_data=image,
+                          chat_id=self._chat_id_for(session_key),
+                          nickname="用户", tts_enabled=bool(tts_enabled),
+                          is_asr_input=bool(is_asr_input))
+            # 附件通道（阶段 5.6）：图片走 Attachment(kind="image")，
+            # 插件侧优先消费 attachments，image_data 保留为兼容来源。
+            if image:
+                from harness.pipeline.base import Attachment
+                ctx.attachments.append(Attachment(
+                    kind="image", data=image, mime="image/jpeg", name="chat-image"))
+            ctx.extra["user_message"] = message
+            ctx.extra["round_index"] = self._next_round(ctx.chat_id)
+            try:
+                ctx = self.pipeline_runner.run(ctx)
+                reply = ctx.reply or ""
+                # POST_TTS 插件的产物（chat_audio 直接取，不再二次合成）
+                self._last_tts = (ctx.audio_b64, ctx.tts_error or "")
+                tag_results = ctx.outputs.get("plan_check") or []
+                if tag_results:
+                    ok = sum(1 for r in tag_results if r.get("success"))
+                    logger.info("plan_check 处理: %d/%d 成功", ok, len(tag_results))
+            except Exception:
+                logger.warning("对话管线失败（回退到直连模型）", exc_info=True)
+                reply = ""
+
+            if not reply:
+                # 管线不可用（未启动 / 模型调用失败）→ 直连模型兜底，
+                # 保证对话永远有结果。
+                self._last_tts = (None, "")
                 try:
-                    reply, tag_results = self.chat_hooks.post_process(reply)
-                    if tag_results:
-                        ok = sum(1 for r in tag_results if r.get("success"))
-                        logger.info("plan_check 处理: %d/%d 成功", ok, len(tag_results))
+                    if self.prompt_builder is not None:
+                        self.prompt_builder.begin_turn(user_id, learning_context)
+                    result = self.agent.run_with_tools(
+                        message, session_id=session_key,
+                        system_prompt=(self.prompt_builder.build()
+                                       if self.prompt_builder is not None
+                                       else None))
+                    reply = result.reply or ""
                 except Exception:
-                    logger.warning("对话后钩子异常（已跳过）", exc_info=True)
+                    logger.warning("直连模型兜底也失败", exc_info=True)
+                    reply = ""
 
             # 语义缓存写路径（失败静默）
             self._cache_write(user_id, message, reply)
@@ -325,15 +392,20 @@ class StudyEngine:
 
     def chat_audio(self, message: str, user_id: int = 1,
                    session_id: Optional[str] = None,
-                   image: Optional[str] = None) -> dict:
+                   image: Optional[str] = None,
+                   is_asr_input: bool = False) -> dict:
         """带语音的对话：返回 {reply, audio_b64, tts_error}。
 
         chat() 保持只返回文本（REPL / 心跳 / 既有调用方不受影响）；
         需要音频的调用方走本方法。
         """
         reply = self.chat(message, user_id=user_id, session_id=session_id,
-                          image=image)
-        audio_b64, tts_error = self._synthesize(reply)
+                          image=image, tts_enabled=True,
+                          is_asr_input=is_asr_input)
+        # POST_TTS 插件已在管线里合成过；管线不可用时退回本地合成。
+        audio_b64, tts_error = self._last_tts
+        if audio_b64 is None and reply:
+            audio_b64, tts_error = self._synthesize(reply)
         return {"reply": reply, "audio_b64": audio_b64, "tts_error": tts_error}
 
     def __repr__(self):
@@ -527,6 +599,9 @@ def _build_skill_dep_map(c) -> dict[str, dict]:
         # 注意：注入表的键必须是工具实例的属性名（工具内部用 _studylog/_checkin）
         "study_tracking": dict(_studylog=c.get("studylog"),
                                _checkin=c.get("checkin_store")),
+        # 视觉感知工具（阶段 5）：协调器 + 模型服务
+        "visual_perception": dict(_coordinator=c.get("vision_coordinator"),
+                                  _models=c.get("llm")),
     }
 
 
@@ -655,6 +730,30 @@ def create_application() -> Flask:
         runtime.register("memory", memory_system)
         flask_app.config["MEMORY_SYSTEM"] = memory_system
 
+        # ── 话题系统（阶段 7）：策略层装配 + 接热路径 ──
+        # 剪裁引擎是 harness 的 SegmentedContextAssembler，这里只写策略层
+        # （存储/边界/pin/摘要）。压缩持久化（compressed_chunks）由
+        # close_topic 经 infra SessionStore 接线。
+        if Config.TOPIC_ENABLED:
+            try:
+                from apps.dsn_study.memory.topics import TopicManager
+                topics_dir = os.path.dirname(db_path)
+                os.makedirs(topics_dir, exist_ok=True)
+                topic_manager = TopicManager(
+                    os.path.join(topics_dir, "topics.db"),
+                    summary_model=summary_model,
+                    embedding_client=(embedding_client
+                                      if Config.MEMORY_EMBEDDING_ENABLED else None),
+                    judge_chat=llm,
+                )
+                memory_system.wire_topics(topic_manager)
+                runtime.register("topics", topic_manager)
+                flask_app.config["TOPIC_MANAGER"] = topic_manager
+                logger.info("话题系统已装配: %s", os.path.join(topics_dir, "topics.db"))
+            except Exception:
+                logger.warning("话题系统初始化失败（记忆走 memo/exp 路径）",
+                               exc_info=True)
+
     # ── 语义缓存（L1/L2/L3；拦截重复贵请求，组卷场景收益最大） ──
     cache_engine = None
     if Config.SEMANTIC_CACHE_ENABLED:
@@ -693,6 +792,11 @@ def create_application() -> Flask:
         from apps.dsn_study.workspace import init_workspace_manager
         workspace = init_workspace_manager(Config.WORKSPACE_DIR)
     except Exception:
+        # 这条路径此前**完全不记日志**（全 boot.py 唯一一处），
+        # 而 workspace 能力注册不上去 → 按能力声明规则，
+        # question_print / document / quest_from_image 的工具会被**静默不注册**。
+        logger.error("工作区初始化失败（相关技能工具将不可用）: %s",
+                     Config.WORKSPACE_DIR, exc_info=True)
         workspace = None
 
     # ── 复杂度分析器（复杂问题 → 提示走 reasoner 深入推理）──
@@ -702,6 +806,31 @@ def create_application() -> Flask:
         complexity_analyzer = ComplexityAnalyzer()
     except Exception:
         logger.warning("复杂度分析器初始化失败（已跳过）", exc_info=True)
+
+    # ── 视觉感知协调器（阶段 5）──
+    # 必须在技能装配**之前**初始化：visual_perception 技能的依赖注入表
+    # 引用协调器，装配晚了会注入 None（工具永远报「未就绪」）。
+    from apps.dsn_study.api.vision import init_vision_api
+    init_vision_api(db=db_mgr, engine=None, auth_manager=auth, workspace=workspace)
+    from apps.dsn_study.api import vision as _vision_mod
+    flask_app.config["VISION_COORDINATOR"] = _vision_mod.coordinator
+    runtime.register("vision_coordinator", _vision_mod.coordinator)
+    if getattr(Config, "VISION_ENABLED", True) and getattr(Config, "VISION_WARMUP", True):
+        def _vision_warmup():
+            try:
+                from apps.dsn_study.models.clients import VisionModel
+                vm = VisionModel()
+                if getattr(vm, "api_key", ""):
+                    vm.ask(
+                        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+                        "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                        "这是一张 1x1 测试图。请只回复一个词：ok。",
+                        max_tokens=8, temperature=0.0)
+                    logger.debug("VisionModel 预热完成 (model=%s)", vm.model_name)
+            except Exception as e:
+                logger.debug("VisionModel 预热失败（不影响运行）: %s", e)
+        threading.Thread(target=_vision_warmup, daemon=True,
+                         name="vision-warmup").start()
 
     c = {
         "db_mgr": db_mgr, "llm": llm, "question_store": question_store,
@@ -714,6 +843,7 @@ def create_application() -> Flask:
         "cache_engine": cache_engine,
         "studylog": studylog, "checkin_store": checkin_store,
         "complexity_analyzer": complexity_analyzer,
+        "vision_coordinator": _vision_mod.coordinator,
     }
 
     # ── 技能系统 ──
@@ -741,9 +871,84 @@ def create_application() -> Flask:
     loaded_skills = skill_manager.scan_and_load()
     logger.info("技能加载完成: %d 个", loaded_skills)
 
+    # ── 工具派发自检（护栏）──
+    # 过去「注册成功但调用必挂」这类缺陷会静默存在：技能正常加载、工具出现在
+    # function-calling schema 里，直到模型真的调用才抛「工具方法不存在」。
+    # 这里在装配期就跑一遍，把问题挡在服务上线之前。
+    try:
+        undispatchable = skill_registry.undispatchable_tools()
+    except Exception:
+        logger.warning("工具派发自检失败（已跳过）", exc_info=True)
+        undispatchable = []
+    if undispatchable:
+        for item in undispatchable:
+            logger.error("工具无法派发（注册成功但调用必挂）: %s — %s；"
+                         "skill.yaml 声明的方法=%s",
+                         item.get("key"), item.get("reason"),
+                         item.get("declared_methods"))
+        flask_app.config["UNDISPATCHABLE_TOOLS"] = undispatchable
+        logger.error("共 %d 个工具无法派发", len(undispatchable))
+    else:
+        flask_app.config["UNDISPATCHABLE_TOOLS"] = []
+
+    # ── 人格系统（harness/personality PEV3，阶段 2）──
+    # 复用 harness 的实现（它是 apps/dsn/prompt/personality_v3 的迁移后超集），
+    # **不复制 dsn 的副本**。角色卡目录必须显式指定：
+    # harness/personality 的 _find_default_cards_dir() 会去找 apps/dsn/character_cards
+    # —— 那是 dsn 的 EXA（AI 同事）卡，study 要的是学习导师卡。
+    personality = None
+    if getattr(Config, "PERSONALITY_ENABLED", True):
+        try:
+            from harness.personality import PersonalitySystemV3
+            cards_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "character_cards")
+            default_card = os.path.join(
+                cards_dir,
+                getattr(Config, "PERSONALITY_DEFAULT_CARD", "study_tutor.yaml"))
+            personality = PersonalitySystemV3(
+                db=db_mgr,
+                personality_model_chat=chat_client,
+                distillation_chat=chat_client,
+                fast_distillation_chat=chat_client,
+                cards_dir=cards_dir,
+                default_card_path=default_card,
+            )
+            personality.init_tables()
+            personality.enabled = True
+            runtime.register("personality", personality)
+            logger.info("人格系统已就绪: cards_dir=%s default=%s",
+                        cards_dir, os.path.basename(default_card))
+
+            # 预热（后台线程）：
+            #   * ensure_user_bound —— 绑定默认角色卡，否则没有状态；
+            #   * generate_personality_prompt —— PEV3 的 generate() **首调返回兜底串**，
+            #     LLM 版在后台线程算、**下次调用才生效**。不预热的话，
+            #     用户的第一轮对话拿到的就是没有性格的兜底文案；
+            #   * warmup_distillation —— 50 维特质蒸馏同样耗 LLM，放后台。
+            def _warm_personality():
+                try:
+                    personality.ensure_user_bound(1)
+                    personality.generate_personality_prompt(1)
+                    personality.warmup_distillation()
+                except Exception:
+                    logger.warning("人格预热失败（已忽略）", exc_info=True)
+
+            threading.Thread(target=_warm_personality, daemon=True,
+                             name="personality-warmup").start()
+        except Exception:
+            logger.warning("人格系统初始化失败（将无性格运行）", exc_info=True)
+            personality = None
+
     # ── Agent（技能工具桥接 + 提示词聚合） ──
-    skill_prompts = skill_registry.get_all_skill_prompts()
-    system_prompt = (DEFAULT_SYSTEM_PROMPT + "\n\n" + skill_prompts).strip()
+    # system prompt 片段化组装（阶段 1）：身份 + 人格 + 学习上下文 + 技能指令。
+    # 逐轮重建 → 禁用技能后其指令文本立即消失（旧的 boot 时拼死字符串做不到）。
+    prompt_builder = StudyPromptBuilder(skill_registry=skill_registry)
+    if personality is not None:
+        # 人格提示词按 uid 取（PEV3 的状态按用户存），
+        # 且首调返回兜底串 + 后台生成 LLM 版 —— 故预热一次，避免首轮没有性格。
+        prompt_builder.set_personality_provider(
+            lambda uid: personality.generate_personality_prompt(uid))
+    system_prompt = prompt_builder.build()
     from apps.dsn_study.tool_adapter import SkillTagToolCallAdapter
     agent = AgentRuntime(
         chat_client,
@@ -792,6 +997,9 @@ def create_application() -> Flask:
                 vault_id=getattr(Config, "OBSIDIAN_VAULT_ID", "study"),
                 kp_folder=getattr(Config, "OBSIDIAN_KP_FOLDER", "知识点库"),
                 note_folder=getattr(Config, "OBSIDIAN_NOTE_FOLDER", "学习笔记"),
+                # vault 本地路径：obsidian-mcp 是文件系统型 MCP，
+                # list_notes 直接读磁盘目录（MCP 侧无 obsidian_list_notes 工具）
+                vault_path=getattr(Config, "OBSIDIAN_VAULT_PATH", ""),
             ):
                 logger.warning("Obsidian 技能依赖注入未命中（属性名不匹配）")
         except Exception:
@@ -816,16 +1024,67 @@ def create_application() -> Flask:
     except Exception as e:
         logger.warning("语音子系统初始化失败（将只返回文本）: %s", e)
 
+    # ── 语音识别（infra 资源池调度 FunASR sidecar）──
+    asr = None
+    try:
+        from apps.dsn_study.asr import ASRService
+        asr = ASRService.create()
+        runtime.register("asr", asr)
+        flask_app.config["ASR_SERVICE"] = asr
+        if asr.available and getattr(Config, "ASR_WARMUP", False):
+            # 后台预热：拉起 sidecar 并加载模型（分钟级），不阻塞应用启动。
+            def _asr_warmup():
+                try:
+                    asr.warmup()
+                except Exception as e:
+                    logger.warning("ASR 预热异常（已忽略）: %s", e)
+            threading.Thread(target=_asr_warmup, daemon=True,
+                             name="asr-warmup").start()
+    except Exception as e:
+        logger.warning("语音识别子系统初始化失败（语音输入不可用）: %s", e)
+
     # ── 对话期钩子（考试超时/交卷/<plan_check>/日终报告）──
     from apps.dsn_study.chat_hooks import StudyChatHooks
     chat_hooks = StudyChatHooks(exam_engine=exam_engine,
                                   plan_engine=plan_engine, llm=llm)
 
+    # ── 对话管线（阶段 3，harness/pipeline）──
+    # 能力从 chat_hooks 的 if/else 串接迁到插件；chat_hooks 保留为兼容门面。
+    # ASR 输入过滤（PRE_FILTER）：只过滤 ASR 来源的轮次，文本输入一律放行。
+    asr_filter_model = None
+    if getattr(Config, "ASR_FILTER_ENABLED", False):
+        try:
+            from apps.dsn_study.asr_filter import AsrFilterModel
+            asr_filter_model = AsrFilterModel(chat=chat_client)
+            runtime.register("asr_filter", asr_filter_model)
+        except Exception:
+            logger.warning("ASR 过滤器初始化失败（将不过滤）", exc_info=True)
+
+    pipeline_runner = StudyPipelineRunner(plugins=[
+        AsrFilterPlugin(filter_model=asr_filter_model),
+        SystemPromptPlugin(prompt_builder=prompt_builder),
+        TopicContextPlugin(memory_system=memory_system, agent=agent),
+        VisionContextPlugin(llm=llm, workspace=workspace),
+        ExamSessionPlugin(exam_engine=exam_engine),
+        DailyReportPlugin(plan_engine=plan_engine),
+        ComplexityPlugin(complexity_analyzer=complexity_analyzer),
+        ModelInvokePlugin(agent=agent),
+        PlanCheckPlugin(plan_engine=plan_engine),
+        MemoryRecordPlugin(memory_system=memory_system),
+        PersonalityFeedbackPlugin(personality=personality),
+        TTSPlugin(voice=voice),
+    ])
+    pipeline_runner.start()
+    runtime.on_stop(pipeline_runner.stop)
+    flask_app.config["PIPELINE_RUNNER"] = pipeline_runner
+
     # ── 引擎门面 ──
     engine = StudyEngine(
         agent=agent, chat_client=chat_client,
         skill_registry=skill_registry, skill_manager=skill_manager,
-        workspace=workspace, chat_hooks=chat_hooks, voice=voice, **c,
+        workspace=workspace, chat_hooks=chat_hooks, voice=voice,
+        prompt_builder=prompt_builder, personality=personality,
+        pipeline_runner=pipeline_runner, **c,
     )
     runtime.register("engine", engine)
     flask_app.config["ENGINE"] = engine
@@ -836,28 +1095,45 @@ def create_application() -> Flask:
     from apps.dsn_study.api.plan import plan_bp, init_plan_api
     from apps.dsn_study.api.async_tasks import async_task_bp, init_async_tasks_api
     from apps.dsn_study.api.chat import chat_bp, init_chat_api
+    from apps.dsn_study.api.chat_stream import chat_stream_bp, init_chat_stream_api
     from apps.dsn_study.api.reminder import reminder_bp, init_reminder_api
     from apps.dsn_study.api.alarm import alarm_bp, init_alarm_api
     from apps.dsn_study.api.heartbeat import heartbeat_bp, init_heartbeat_api
     from apps.dsn_study.api.checkin import checkin_bp, init_checkin_api
     from apps.dsn_study.api.studylog import studylog_bp, init_studylog_api
     from apps.dsn_study.api.voice import voice_bp, init_voice_api
+    from apps.dsn_study.api.asr import asr_bp, init_asr_api
     from apps.dsn_study.api.obsidian import obsidian_bp, init_obsidian_api
     from apps.dsn_study.api.skills import skills_bp, init_skills_api
+    from apps.dsn_study.api.personality import (
+        personality_bp, init_personality_api,
+    )
+    from apps.dsn_study.api.vision import vision_bp as _vision_bp
+
+    # ── 管理面板（阶段 8）：主应用 /api/admin 蓝图 + infra/auth 认证 ──
+    # 不再另起 4500 端口；密钥来自 WEB_ADMIN_API_KEY，未配置则自动生成并打日志。
+    from apps.dsn_study.web_admin.routes import admin_bp, init_web_admin
+    admin_key = init_web_admin(
+        engine, api_key=os.environ.get("WEB_ADMIN_API_KEY", ""),
+        totp_secret=os.environ.get("WEB_ADMIN_TOTP_SECRET", ""))
+    flask_app.config["WEB_ADMIN_KEY"] = admin_key
 
     init_scan_api(auth_manager=auth)
     init_study_timetable_api(db_mgr, auth)
     init_plan_api(db_mgr, auth)
     init_async_tasks_api(auth)
     init_chat_api(auth)
+    init_chat_stream_api(auth, get_engine)
     init_reminder_api(db_mgr, task_manager, auth)
     init_alarm_api(db_mgr, auth)
     init_heartbeat_api(db_mgr, task_manager, auth, engine)
     init_checkin_api(checkin_store, auth)
     init_studylog_api(studylog, auth)
     init_voice_api(voice, auth)
+    init_asr_api(asr, auth, get_engine)
     init_obsidian_api(mcp_bridge, skill_registry, auth)
     init_skills_api(skill_manager, skill_registry, auth)
+    init_personality_api(personality, auth)
 
     blueprints = {
         "scan": scan_bp,
@@ -865,15 +1141,27 @@ def create_application() -> Flask:
         "plan": plan_bp,
         "async_tasks": async_task_bp,
         "chat": chat_bp,
+        "chat_stream": chat_stream_bp,
         "reminder": reminder_bp,
         "alarm": alarm_bp,
         "heartbeat": heartbeat_bp,
         "checkin": checkin_bp,
         "studylog": studylog_bp,
         "voice": voice_bp,
+        "asr": asr_bp,
         "obsidian": obsidian_bp,
         "skills": skills_bp,
+        "personality": personality_bp,
+        "vision": _vision_bp,
+        "web_admin": admin_bp,
     }
+
+    # CLI 自更新（阶段 6.5）：**独立的 study 清单**。
+    # 过去复用 apps.dsn.api.update，其 DISTRIBUTED_FILES 指向 apps/dsn/CLI/*，
+    # study 客户端会拉到 dsn 的字节 —— 现在用自己的蓝图（只发 apps/dsn_study_cli/*）。
+    from apps.dsn_study.api.update import update_bp, init_update_api
+    init_update_api(token=os.environ.get("DSN_STUDY_TOKEN", ""))
+    blueprints["update"] = update_bp
 
     from apps.dsn_study.bundles import make_dsn_study_bundles
 

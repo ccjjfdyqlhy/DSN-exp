@@ -192,11 +192,20 @@ def test_write_study_note_creates_note():
 
 
 def test_write_study_note_appends_when_exists():
+    """已存在时走 **obsidian_edit_note(operation="append")**。
+
+    2026-11-08 修正：此前用的是 `obsidian_append_to_note` —— 但 obsidian-mcp@2
+    的 12 个工具里**没有这个工具**（只有 edit_note 的 operation 枚举含 append），
+    所以「给已存在的笔记追加内容」这条路径在真实 MCP 上必然失败。
+    """
     manager = _StubManager({"obsidian_create_note": "ALREADY_EXISTS: exists"})
     tool, _ = _tool(manager)
     result = asyncio.run(tool.write_study_note("t", "c"))
     assert result.get("appended") is True
-    assert any(c[1] == "obsidian_append_to_note" for c in manager.calls)
+    assert any(c[1] == "obsidian_edit_note" for c in manager.calls), \
+        "应调用 obsidian_edit_note（不存在 obsidian_append_to_note 这个工具）"
+    edit_calls = [c for c in manager.calls if c[1] == "obsidian_edit_note"]
+    assert edit_calls and edit_calls[0][2].get("operation") == "append"
 
 
 def test_safe_name_strips_path_separators():

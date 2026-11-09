@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import time
 
 logger = logging.getLogger("skill.obsidian_notes")
 
@@ -28,14 +30,28 @@ class ObsidianNotesTool:
 
     def __init__(self, mcp_bridge=None, graph_store=None, plan_engine=None,
                  vault_id: str = "study", kp_folder: str = "知识点库",
-                 note_folder: str = "学习笔记"):
+                 note_folder: str = "学习笔记", vault_path: str = ""):
         # 属性名必须与 inject_dependencies 的 key 一致，否则依赖注入会被静默跳过
         self.mcp_bridge = mcp_bridge
         self.graph_store = graph_store
         self.plan_engine = plan_engine
-        self._vault = vault_id
-        self._kp_folder = (kp_folder or "知识点库").strip("/")
-        self._note_folder = (note_folder or "学习笔记").strip("/")
+        # 注意：inject_dependencies 只在 hasattr(instance, dep_name) 为真时注入，
+        # 而注入键是 vault_id / kp_folder / note_folder / vault_path（无下划线）。
+        # 过去这里只存了下划线版本 → 那些依赖**从未被真正注入**，
+        # 只是默认值恰好与 Config 相同才没暴露。两种命名都存，注入才生效。
+        self.vault_id = vault_id
+        self.kp_folder = (kp_folder or "知识点库").strip("/")
+        self.note_folder = (note_folder or "学习笔记").strip("/")
+        self._vault = self.vault_id
+        self._kp_folder = self.kp_folder
+        self._note_folder = self.note_folder
+        # vault 本地路径 —— obsidian-mcp 是**文件系统型** MCP，vault 就是磁盘目录。
+        # 目录列举走本地文件系统（见 list_notes），不走 MCP 搜索：
+        #   * MCP 侧没有 obsidian_list_notes 这个工具（obsidian-mcp@2 只有 12 个）；
+        #   * obsidian_search_vault 的 query 有 minLength=1，空查询被拒；
+        #   * query="*" 会触发全库通配，实测 >120s 超时。
+        self.vault_path = (vault_path or "").strip()
+        self._vault_path = self.vault_path
 
     # ── 基础设施 ──
 
@@ -232,8 +248,12 @@ class ObsidianNotesTool:
         if ok and "ALREADY_EXISTS" not in out.upper():
             return {"success": True, "path": path, "tags": tag_list}
         if "ALREADY_EXISTS" in out.upper():
-            ok2, out2 = await self._call("obsidian_append_to_note",
+            # 追加走 obsidian_edit_note(operation="append")。
+            # obsidian-mcp@2 **没有** obsidian_append_to_note 这个工具
+            # （12 个工具里只有 edit_note 的 operation 枚举含 append）。
+            ok2, out2 = await self._call("obsidian_edit_note",
                                          {"vault": self._vault, "path": path,
+                                          "operation": "append",
                                           "content": "\n\n---\n\n" + (content or "")})
             if ok2:
                 return {"success": True, "path": path, "appended": True,
@@ -253,12 +273,46 @@ class ObsidianNotesTool:
         return {"success": True, "query": query, "result": out}
 
     async def list_notes(self, path: str = "", limit: int = 50) -> dict:
-        """列出 vault 中的笔记（path 为空则列学习笔记目录）。"""
-        ok, out = await self._call("obsidian_list_notes",
-                                   {"vault": self._vault,
-                                    "path": path or self._note_folder,
-                                    "limit": limit})
-        if not ok:
-            return {"error": out[:200]}
-        return {"success": True, "path": path or self._note_folder,
-                "result": out}
+        """列出 vault 中的笔记（path 为空则列学习笔记目录）。
+
+        直接读本地文件系统：obsidian-mcp 是文件系统型 MCP，vault 就是磁盘目录；
+        而 MCP 侧并没有 obsidian_list_notes 工具（见 __init__ 注释）。
+        """
+        rel = (path or self._note_folder).strip().strip("/")
+        # 读公开属性：inject_dependencies 是**装配后**注入的，
+        # __init__ 里设的下划线别名拿不到注入值。
+        vault_path = self.vault_path or self._vault_path
+        if not vault_path:
+            return {"error": "未配置 Obsidian vault 路径（OBSIDIAN_VAULT_PATH）"}
+        root = os.path.join(vault_path, rel) if rel else vault_path
+        if not os.path.isdir(root):
+            return {"success": True, "path": rel, "count": 0, "notes": [],
+                    "result": "目录不存在: %s" % rel}
+        notes = []
+        try:
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for fn in sorted(filenames):
+                    if not fn.lower().endswith(".md"):
+                        continue
+                    full = os.path.join(dirpath, fn)
+                    try:
+                        rel_path = os.path.relpath(full, vault_path)
+                        mtime = os.path.getmtime(full)
+                        size = os.path.getsize(full)
+                    except OSError:
+                        continue
+                    notes.append({
+                        "path": rel_path.replace(os.sep, "/"),
+                        "name": fn[:-3],
+                        "size": size,
+                        "modified": time.strftime("%Y-%m-%d %H:%M:%S",
+                                                  time.localtime(mtime)),
+                    })
+        except OSError as exc:
+            return {"error": "读取目录失败: %s" % exc}
+        notes.sort(key=lambda n: n["modified"], reverse=True)
+        total = len(notes)
+        notes = notes[:max(1, int(limit or 50))]
+        return {"success": True, "path": rel, "count": len(notes),
+                "total": total, "notes": notes,
+                "result": "共 %d 篇笔记（显示 %d 篇）" % (total, len(notes))}

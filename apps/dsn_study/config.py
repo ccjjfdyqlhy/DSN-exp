@@ -14,7 +14,6 @@ try:
 except ImportError:
     pass
 
-
 def _env(key: str, default: str = "", required: bool = False) -> str:
     val = os.environ.get(key, default)
     if required and not val:
@@ -23,10 +22,8 @@ def _env(key: str, default: str = "", required: bool = False) -> str:
         )
     return val if val is not None else ""
 
-
 def _env_bool(key: str, default: str = "false") -> bool:
     return str(_env(key, default)).lower() in ("1", "true", "yes", "on")
-
 
 class Config:
     # ═══════════════════════════════════════════════════════════════════════
@@ -111,16 +108,8 @@ class Config:
     # ═══════════════════════════════════════════════════════════════════════
 
     # ── 记忆与摘要 ──
-    MEMORY_ENABLED = _env("MEMORY_ENABLED", "true").lower() == "true"
     MEMORY_SUMMARY_BACKEND = _env("MEMORY_SUMMARY_BACKEND", "openai")    # "openai" | "lmstudio"
     MEMORY_MODEL = _env("MEMORY_MODEL", "deepseek-v4-flash")
-    MEMORY_SUMMARY_LENGTH = int(_env("MEMORY_SUMMARY_LENGTH", "100"))
-    MEMORY_CONTEXT_WINDOW_SIZE = int(_env("MEMORY_CONTEXT_WINDOW_SIZE", "80"))
-    MEMORY_REPLACE_THRESHOLD_RATIO = float(_env("MEMORY_REPLACE_THRESHOLD_RATIO", "0.7"))
-    MEMORY_ASYNC_ENABLED = _env("MEMORY_ASYNC_ENABLED", "true").lower() == "true"
-    MEMORY_SEARCH_THRESHOLD = min(1.0, max(0.0, float(_env("MEMORY_SEARCH_THRESHOLD", "0.5"))))
-    MEMORY_DETAIL_CHARS_PER_ROUND = max(1, int(_env("MEMORY_DETAIL_CHARS_PER_ROUND", "4000")))
-    MEMORY_TOTAL_DETAIL_CHARS = max(1, int(_env("MEMORY_TOTAL_DETAIL_CHARS", "16000")))
     MEMORY_QUERY_LIMIT = max(1, int(_env("MEMORY_QUERY_LIMIT", "50")))
 
     # 摘要模型参数
@@ -131,13 +120,9 @@ class Config:
     SUMMARY_TIMEOUT = max(1, int(_env("SUMMARY_TIMEOUT", "60")))
 
     # ── 向量嵌入检索 ──
-    MEMORY_EMBEDDING_ENABLED = _env("MEMORY_EMBEDDING_ENABLED", "false").lower() == "true"
-    MEMORY_EMBEDDING_MODEL = _env("MEMORY_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5@f16")
     MEMORY_EMBEDDING_DIMS = int(_env("MEMORY_EMBEDDING_DIMS", "768"))
-    MEMORY_EMBEDDING_WEIGHT = float(_env("MEMORY_EMBEDDING_WEIGHT", "0.6"))
 
     # ── 话题系统 (话题) ──
-    TOPIC_ENABLED = _env("TOPIC_ENABLED", "true").lower() == "true"
     TOPIC_IDLE_SECONDS = max(1, int(_env("TOPIC_IDLE_SECONDS", "1800")))   # 30min 不聊 → 关话题/划新话题
     TOPIC_ACTIVATION_THRESHOLD = min(1.0, max(0.0, float(_env("TOPIC_ACTIVATION_THRESHOLD", "0.55"))))
     TOPIC_CONTINUE_THRESHOLD = min(1.0, max(0.0, float(_env("TOPIC_CONTINUE_THRESHOLD", "0.65"))))
@@ -195,6 +180,34 @@ class Config:
     ASR_BATCH_SIZE_SECONDS = max(1, int(_env("ASR_BATCH_SIZE_SECONDS", "60")))
     ASR_CONVERT_TIMEOUT = max(1, int(_env("ASR_CONVERT_TIMEOUT", "15")))
     DEBUG_ASR = _env("DEBUG_ASR", "false").lower() == "true"
+
+    # ── ASR 资源托管（infra 资源池）──
+    # 与 TTS 同构：资源调度全交给 infra.resources.ResourcePool，这里只提供参数。
+    # ASR_AUTOSTART=true  → 托管模式：资源池按 LaunchSpec 拉起 sidecar（conda 环境）。
+    # ASR_AUTOSTART=false → adopt 模式：只接入既有服务，绝不拉起也绝不杀进程。
+    # FunASR 依赖（torch/funasr）只在 conda 环境里有，因此默认走 conda 模式。
+    ASR_AUTOSTART = _env("ASR_AUTOSTART", "true").lower() == "true"
+    ASR_PORT = max(1, int(_env("ASR_PORT", "9881")))
+    ASR_BASE_URL = _env("ASR_BASE_URL", "http://127.0.0.1:9881")
+    # sidecar 脚本所在目录与入口文件名（默认与本文件同目录）
+    ASR_SERVER_DIR = _env("ASR_SERVER_DIR", str(Path(__file__).resolve().parent))
+    ASR_SERVER_ENTRY = _env("ASR_SERVER_ENTRY", "asr_server.py")
+    # 启动策略：conda（默认，funasr/torch 只在独立 conda 环境里）/ command
+    ASR_LAUNCH_MODE = _env("ASR_LAUNCH_MODE", "conda")
+    ASR_CONDA_ENV = _env("ASR_CONDA_ENV", "GPTSoVits")
+    ASR_CONDA_EXE = _env("ASR_CONDA_EXE", "/home/darkstar/anaconda3/bin/conda")
+    ASR_CONDA_NO_CAPTURE = _env("ASR_CONDA_NO_CAPTURE", "true").lower() == "true"
+    # command 模式下的解释器（留空 = 当前解释器）
+    ASR_PYTHON = _env("ASR_PYTHON", "")
+    # 启动前预检（入口脚本存在 / conda 环境存在），失败时给出可操作的中文错误
+    ASR_PREFLIGHT = _env("ASR_PREFLIGHT", "true").lower() == "true"
+    # 资源池为 ASR 预留的加载超时（FunASR 权重加载是分钟级）
+    ASR_LOAD_TIMEOUT = int(_env("ASR_LOAD_TIMEOUT", "600"))
+    # 单次识别请求超时
+    ASR_REQUEST_TIMEOUT = float(_env("ASR_REQUEST_TIMEOUT", "180"))
+    # 启动后后台预热（拉起 sidecar 并加载模型）。默认关闭：加载耗时且占显存，
+    # 交给运维显式预热或首次识别时按需拉起更稳妥。
+    ASR_WARMUP = _env("ASR_WARMUP", "false").lower() == "true"
 
     # ── ASR 过滤器 ──
     ASR_FILTER_ENABLED = _env("ASR_FILTER_ENABLED", "false").lower() == "true"
@@ -261,11 +274,28 @@ class Config:
     VISION_API_KEY = _env("VISION_API_KEY", "")
     VISION_API_BASE = _env("VISION_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
     VISION_MODEL_NAME = _env("VISION_MODEL_NAME", "glm-4.6v")
+    # 本地视觉兜底端点的模型名（LM Studio 等）。
+    # **绝不复用 MAIN_MODEL_NAME** —— 主模型常是纯文本模型，
+    # 把 image_url 发给它会得到幻觉描述而不是报错。
+    # 留空 = 不启用本地兜底，未配 VISION_API_KEY 时视觉功能明确报错。
+    VISION_FALLBACK_MODEL_NAME = _env("VISION_FALLBACK_MODEL_NAME", "")
+
+    # ── 人格系统（harness/personality PEV3）──
+    # 角色卡目录必须指向 dsn_study 自己的（harness 的默认查找会落到
+    # apps/dsn/character_cards —— 那是 dsn 的 EXA「AI 同事」卡）。
+    PERSONALITY_ENABLED = _env("PERSONALITY_ENABLED", "true").lower() == "true"
+    PERSONALITY_DEFAULT_CARD = _env("PERSONALITY_DEFAULT_CARD", "study_tutor.yaml")
     VISION_OVERRIDE = _env("VISION_OVERRIDE", "false").lower() == "true"
     # 启动时预热 VLM（后台发一次低 token dummy 请求，摊薄首次 look_around 冷启动）
     VISION_WARMUP = _env("VISION_WARMUP", "true").lower() == "true"
     # look_around 短时去重窗口（秒）：窗口内同 focus+camera 的重复观察直接复用上次结果
     VISION_LOOK_AROUND_DEDUP = float(_env("VISION_LOOK_AROUND_DEDUP", "10"))
+    # 按需视觉请求的等待超时（秒）：look_around 阻塞等待客户端回帧的上限，
+    # 过期请求在其 +10s 缓冲内即被 GC（不复制 dsn 的 120s 僵尸滞留）
+    VISION_REQUEST_TIMEOUT = float(_env("VISION_REQUEST_TIMEOUT", "8"))
+    # 实时流推送：无人订阅时是否仍下发 streams 推送配置（study 默认关，
+    # 心跳里有订阅者时自动视为开）
+    VISION_STREAMS_ENABLED = _env_bool("VISION_STREAMS_ENABLED", "false")
 
     # ── OCR ──
     OCR_MODEL = _env("OCR_MODEL", "deepseek-ocr")
@@ -357,10 +387,6 @@ class Config:
     TOPIC_ENABLED = _env("TOPIC_ENABLED", "false").lower() == "true"   # 话题系统休眠
 
     # ── 语义缓存（拦截重复贵请求；需 MEMORY_EMBEDDING_ENABLED 才有 L2/语义命中） ──
-    SEMANTIC_CACHE_ENABLED = _env("SEMANTIC_CACHE_ENABLED", "false").lower() == "true"
-    SEMANTIC_CACHE_DIR = _env("SEMANTIC_CACHE_DIR", ".dsn/study_semantic_cache")
-    SEMANTIC_CACHE_SIMILARITY_THRESHOLD = float(_env("SEMANTIC_CACHE_SIMILARITY_THRESHOLD", "0.85"))
-    SEMANTIC_CACHE_MAX_ENTRIES = int(_env("SEMANTIC_CACHE_MAX_ENTRIES", "5000"))
 
     # ── Agent 循环 ──
     AGENT_MAX_STEPS = max(1, int(_env("AGENT_MAX_STEPS", "10")))
@@ -419,6 +445,11 @@ class Config:
     OBSIDIAN_KP_FOLDER = _env("OBSIDIAN_KP_FOLDER", "知识点库")
     # 学习笔记目录
     OBSIDIAN_NOTE_FOLDER = _env("OBSIDIAN_NOTE_FOLDER", "学习笔记")
+    # 暴露侧 MCP（FEATURE_GAP 阶段 6）：把学习技能工具经 stdio MCP 暴露给外部
+    # Agent（apps/dsn_study/mcp_server.py）。MCP_EXPOSE_ENABLED=false 时不启动。
+    MCP_EXPOSE_ENABLED = _env_bool("MCP_EXPOSE_ENABLED", "true")
+    # MCP 工具名上限（MCP 规范建议 ≤64，且仅限字母/数字/下划线/连字符）
+    MCP_EXPOSE_TOOL_NAME_MAX = 64
 
     # ── 语义缓存 ──
     SEMANTIC_CACHE_ENABLED = _env("SEMANTIC_CACHE_ENABLED", "false").lower() == "true"

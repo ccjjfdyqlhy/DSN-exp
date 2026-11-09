@@ -1,0 +1,64 @@
+name: visual_perception
+display_name: "视觉感知"
+description: "查看摄像头画面：look_around 让边缘客户端抓帧并由视觉模型描述；set_camera_note 给摄像头写备注；list_cameras 列出已登记摄像头。"
+version: "1.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 68
+
+tools:
+  - name: look_around
+    display_name: "看看周围"
+    description: "让边缘客户端对指定摄像头抓一帧，由视觉模型描述画面内容。用户问「你看到了什么」「看一下桌子/书桌」或你需要视觉信息时使用。"
+    module: "tools.visual_tools"
+    class: "VisualPerceptionTool"
+    methods:
+      - name: look_around
+        description: "抓帧并描述画面"
+        parameters:
+          camera:
+            type: string
+            description: "目标摄像头逻辑名（如 cam0/cam1）；留空=主摄像头，\"all\"=全部摄像头"
+            required: false
+          focus:
+            type: string
+            description: "关注点提示，如「桌上的卷子」「 webcam 前的人」；会传给视觉模型"
+            required: false
+
+  - name: set_camera_note
+    display_name: "写摄像头备注"
+    description: "给某台摄像头写备注（如「cam0=书桌正面」「cam1=文档摄像头」），备注会持久化并注入后续 look_around 的提示。"
+    module: "tools.visual_tools"
+    class: "VisualPerceptionTool"
+    methods:
+      - name: set_camera_note
+        description: "写备注"
+        parameters:
+          logical_name:
+            type: string
+            description: "摄像头逻辑名"
+            required: true
+          note:
+            type: string
+            description: "备注内容（这台摄像头拍的是什么）"
+            required: true
+
+  - name: list_cameras
+    display_name: "列出摄像头"
+    description: "列出已登记的摄像头（逻辑名/备注/最近在线时间）。"
+    module: "tools.visual_tools"
+    class: "VisualPerceptionTool"
+    methods:
+      - name: list_cameras
+        description: "列出摄像头"
+        parameters: {}
+
+activation:
+  keywords: ["看", "摄像头", "镜头", "看一下", "看到了什么", "拍一张"]
+  auto_activate: false
+
+dependencies: []
+tags: [vision, camera, perception, look_around]

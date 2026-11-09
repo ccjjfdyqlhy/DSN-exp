@@ -45,13 +45,17 @@ def test_describe_image_uses_vision_model(monkeypatch, tmp_path):
 
 
 def test_describe_image_falls_back_to_lmstudio(monkeypatch):
+    """本地兜底只在**显式配置了视觉模型名**时启用。"""
     from apps.dsn_study.config import Config
     monkeypatch.setattr(Config, "VISION_API_KEY", "", raising=False)
+    monkeypatch.setattr(Config, "VISION_FALLBACK_MODEL_NAME", "qwen2-vl",
+                        raising=False)
 
     called = {}
 
     def fake_fallback(self, data_url, prompt):
         called["ok"] = True
+        called["model"] = self.model_name
         return "LMStudio 描述"
 
     import apps.dsn_study.models.clients as clients_mod
@@ -59,6 +63,33 @@ def test_describe_image_falls_back_to_lmstudio(monkeypatch):
                         "describe_image", fake_fallback)
     out = LLMService(_StubChat()).describe_image("data:image/png;base64,AAAA")
     assert out == "LMStudio 描述" and called.get("ok")
+    assert called.get("model") == "qwen2-vl"
+
+
+def test_describe_image_refuses_to_feed_text_model(monkeypatch):
+    """未配视觉模型时**必须报错**，不得把图片发给纯文本模型。
+
+    2026-11-08 修正：兜底过去直接复用 MAIN_MODEL_NAME（默认 deepseek-v4-flash，
+    纯文本模型）→ 要么 400，要么返回**凭空编造的描述** —— 后者更危险，
+    因为题目入库会写入幻觉内容。现在无视觉模型时明确报错。
+    """
+    from apps.dsn_study.config import Config
+    monkeypatch.setattr(Config, "VISION_API_KEY", "", raising=False)
+    monkeypatch.setattr(Config, "VISION_FALLBACK_MODEL_NAME", "",
+                        raising=False)
+
+    called = {"ok": False}
+
+    def fake_fallback(self, data_url, prompt):
+        called["ok"] = True
+        return "不该被调用"
+
+    import apps.dsn_study.models.clients as clients_mod
+    monkeypatch.setattr(clients_mod.LMStudioVisionFallback,
+                        "describe_image", fake_fallback)
+    with pytest.raises(RuntimeError, match="未配置视觉模型"):
+        LLMService(_StubChat()).describe_image("data:image/png;base64,AAAA")
+    assert not called.get("ok"), "不应把图片发给任何模型"
 
 
 def test_describe_image_accepts_file_path(monkeypatch, tmp_path):

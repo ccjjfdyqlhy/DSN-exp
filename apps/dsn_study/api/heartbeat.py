@@ -10,8 +10,10 @@
 #
 # 与 dsn 原版的差异:
 #   - StudyEngine.chat(message, user_id) 返回纯文本（无 TTS/audio 字段）；
-#   - 去掉视觉感知分支与 after_request 的 vision/sensing/streams 配置注入
-#     （study 无摄像头/麦克风硬件链路，且那些配置来自 dsn 专属 Config 字段）。
+#   - 视觉感知字段（迁移计划阶段 5）：vision_request / active_vision / streams /
+#     sensing 四块经 after_request 注入（与 dsn 逐字段对齐）。vision_request 是
+#     "AI 主动说『看一下』"的唯一通道；sensing/tracking 恒为 disabled
+#     （study 无麦克风感知硬件链路，仅保留字段形状供 CLI 自配置）。
 
 import json
 import logging
@@ -248,6 +250,97 @@ def _engine_chat_safe(prompt: str, uid: int) -> str:
     用户主聊天会话的历史里，污染后续对话上下文。
     """
     return _engine.chat(message=prompt, user_id=uid, session_id=f"notify-{uid}")
+
+
+# ── 视觉感知字段注入（迁移计划阶段 5.3） ──
+
+@heartbeat_bp.after_request
+def _inject_vision_fields(response):
+    """向 /api/heartbeat 响应注入:
+    - vision_request: 当存在待响应的按需 look_around 请求时下发给客户端
+    - active_vision: 主动视觉配置 {enabled, interval, camera}，供 CLI 自配置周期观测线程
+    - streams: 实时流推送配置 {enabled, interval}，无人订阅/未启用时不推送
+    - sensing / tracking: 闲置感知配置（study 无感知硬件，恒 disabled，字段形状保留）
+
+    与通知逻辑解耦：无论是否有通知，每次心跳都附带这几个字段。
+    """
+    if request.path != "/api/heartbeat":
+        return response
+
+    try:
+        data = response.get_json()
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        return response
+
+    changed = False
+
+    # on-demand 视觉请求（来自 VisionCoordinator）
+    try:
+        from apps.dsn_study.api.vision import coordinator as _coord
+        if _coord is not None:
+            # after_request 也会在认证失败(401/503)时运行，此时 g.user 未设置，
+            # 必须用 getattr 安全读取，否则 AttributeError 会覆盖原始响应
+            user = getattr(g, "user", None)
+            uid = user.get("uid", 0) if user else 0
+            vr = _coord.pending_for_uid(uid)
+            if vr:
+                data["vision_request"] = vr
+                changed = True
+    except Exception:
+        logger.warning("注入 vision_request 失败", exc_info=True)
+
+    # 主动视觉配置（让 CLI 自配置周期观测线程）
+    try:
+        from apps.dsn_study.config import Config as _Cfg
+        data["active_vision"] = {
+            "enabled": bool(getattr(_Cfg, "ACTIVE_VISION_ENABLED", False)),
+            "interval": int(getattr(_Cfg, "ACTIVE_VISION_INTERVAL", 300)),
+            "camera": getattr(_Cfg, "ACTIVE_VISION_CAMERA", "") or "",
+        }
+        changed = True
+    except Exception:
+        logger.warning("注入 active_vision 配置失败", exc_info=True)
+
+    # 实时监控流推送配置：有订阅者或显式启用时让 CLI 周期推帧。
+    # 无人观看时不推送，避免无谓的抓帧和网络开销。
+    try:
+        from apps.dsn_study.config import Config as _Cfg
+        from apps.dsn_study.api.vision import stream_hub as _hub
+        enabled = bool(getattr(_Cfg, "VISION_STREAMS_ENABLED", False))
+        if _hub is not None and _hub.has_local_subscribers():
+            enabled = True
+        data["streams"] = {
+            "enabled": enabled,
+            "interval": float(getattr(_Cfg, "STREAM_LOCAL_INTERVAL", 2.0)),
+        }
+        changed = True
+    except Exception:
+        logger.warning("注入 streams 推送配置失败", exc_info=True)
+
+    # 闲置时感知配置（study 无麦克风感知硬件链路，恒 disabled；
+    # 字段形状保留，CLI 侧据此自配置、不会误启用聆听线程）
+    try:
+        from apps.dsn_study.config import Config as _Cfg
+        data["sensing"] = {
+            "enabled": False,
+            "cooldown": int(getattr(_Cfg, "SENSING_COOLDOWN", 60)),
+            "max_record_secs": float(getattr(_Cfg, "SENSING_MAX_RECORD_SECS", 6.0)),
+        }
+        data["tracking"] = {
+            "enabled": False,
+            "cooldown": int(getattr(_Cfg, "SENSING_COOLDOWN", 60)),
+            "max_record_secs": float(getattr(_Cfg, "SENSING_MAX_RECORD_SECS", 6.0)),
+        }
+        changed = True
+    except Exception:
+        logger.warning("注入 sensing/tracking 配置失败", exc_info=True)
+
+    if changed:
+        response.set_data(json.dumps(data, ensure_ascii=False))
+        response.headers["Content-Length"] = str(len(response.get_data()))
+    return response
 
 
 @heartbeat_bp.route("/api/heartbeat/dismiss", methods=["POST"])

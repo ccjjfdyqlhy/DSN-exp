@@ -36,16 +36,16 @@ class DsnStudyBundle(AppBundle):
 
 class CoreBundle(DsnStudyBundle):
     name = "core"
-    description = "题库主库、模型客户端、认证垫片、工作区"
+    description = "题库主库、模型客户端、认证垫片、工作区 + CLI 自更新清单"
     settings_namespaces = ["model", "study"]
-    blueprint_names = []
+    blueprint_names = ["update"]
 
 
 class StudyBundle(DsnStudyBundle):
     name = "study"
-    description = "扫题/扫印、学习时间表、异步任务状态、打卡与学习日志"
+    description = "扫题/扫印、学习时间表、异步任务状态、打卡与学习日志、视觉感知"
     settings_namespaces = ["study", "vision"]
-    blueprint_names = ["scan", "study_timetable", "async_tasks", "checkin", "studylog", "voice", "obsidian", "skills"]
+    blueprint_names = ["scan", "study_timetable", "async_tasks", "checkin", "studylog", "voice", "asr", "obsidian", "skills", "personality", "vision", "web_admin"]
 
 
 class PlanBundle(DsnStudyBundle):
@@ -59,7 +59,7 @@ class AgentChatBundle(DsnStudyBundle):
     name = "agent_chat"
     description = "AI 对话入口（harness AgentLoop）"
     settings_namespaces = []
-    blueprint_names = ["chat"]
+    blueprint_names = ["chat", "chat_stream"]
 
 
 def make_dsn_study_bundles(blueprints: dict[str, Any]) -> list[DsnStudyBundle]:

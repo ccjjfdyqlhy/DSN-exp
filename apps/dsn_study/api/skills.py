@@ -63,11 +63,20 @@ def list_skills():
         except Exception:
             s["tools"] = []
 
+    # 无法派发的工具（注册成功但调用必挂）—— 阶段 0 的护栏。
+    # 装配期已打 ERROR 日志，这里再暴露一份，便于运维/CI 直接断言。
+    try:
+        undispatchable = _registry.undispatchable_tools()
+    except Exception:
+        undispatchable = []
+
     payload = {
         "skills": skills,
         "tools": _registry.get_tools_index(),
         "capabilities": _registry.capability_names(),
         "diagnostics": _manager.diagnostics(),
+        "undispatchable_tools": undispatchable,
+        "undispatchable_count": len(undispatchable),
     }
     return jsonify(payload)
 

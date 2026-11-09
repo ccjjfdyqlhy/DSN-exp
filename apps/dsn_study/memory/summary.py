@@ -56,7 +56,12 @@ class LLMSummaryModel:
         try:
             out = self._check().send_message(prompt).strip()
         except Exception:
-            logger.exception("summarize_dialog 失败")
+            # 日志流可能已关闭（进程退出 / 测试收尾）→ 记日志本身也会抛，
+            # 必须兜住，否则后台线程异常会污染测试结果。
+            try:
+                logger.exception("summarize_dialog 失败")
+            except Exception:
+                pass
             return None
         return out or None
 
@@ -68,7 +73,10 @@ class LLMSummaryModel:
         try:
             out = self._check().send_message(prompt).strip()
         except Exception:
-            logger.exception("summarize_text 失败")
+            try:
+                logger.exception("summarize_text 失败")
+            except Exception:
+                pass
             return None
         return out or None
 

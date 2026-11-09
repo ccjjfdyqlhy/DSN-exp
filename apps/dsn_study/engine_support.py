@@ -53,8 +53,17 @@ class LLMService:
     def describe_image(self, image, prompt: str = "请详细描述这张图片的内容") -> str:
         """图片描述（ScannerPipeline 等领域代码期望的契约）。
 
-        image 可为本地文件路径或 data URL。VisionModel 优先
-        （配置了 VISION_API_KEY 时），否则回退 LMStudio 视觉兜底。
+        image 可为本地文件路径或 data URL。
+
+        路由（阶段 0.8 修正）：
+          1. 配了 VISION_API_KEY → VisionModel（远程 VLM，推荐）；
+          2. 否则回退 LMStudio 本地视觉端点。
+
+        过去兜底把 model_name 直接取 MAIN_MODEL_NAME（默认 deepseek-v4-flash，
+        **纯文本模型**），于是「发图给文本模型」——要么 400，要么返回一段
+        凭空编造的描述，比直接报错更危险（题目入库会写入幻觉内容）。
+        现在兜底只接受显式配置的视觉模型名，且失败时抛出可读错误，
+        不再把图片喂给文本模型。
         """
         from apps.dsn_study.config import Config
         from apps.dsn_study.models.clients import (
@@ -64,7 +73,24 @@ class LLMService:
             else VisionModel.encode_image(image)
         if Config.VISION_API_KEY:
             return VisionModel().ask(data_url, prompt)
-        return LMStudioVisionFallback().describe_image(data_url, prompt)
+
+        # 本地兜底：只认显式的 VISION_FALLBACK_MODEL_NAME，
+        # 绝不复用 MAIN_MODEL_NAME（可能是纯文本模型）。
+        fallback_model = (getattr(Config, "VISION_FALLBACK_MODEL_NAME", "") or "").strip()
+        if not fallback_model:
+            raise RuntimeError(
+                "未配置视觉模型：VISION_API_KEY 为空，且未设置 "
+                "VISION_FALLBACK_MODEL_NAME（本地视觉端点的模型名）。"
+                "不把图片发给纯文本模型 —— 请配置远程 VLM 或本地视觉模型。"
+            )
+        try:
+            return LMStudioVisionFallback(model_name=fallback_model).describe_image(
+                data_url, prompt)
+        except Exception as exc:
+            raise RuntimeError(
+                "本地视觉兜底失败（model=%s, base=%s）: %s"
+                % (fallback_model, getattr(Config, "LMSTUDIO_BASE_URL", "?"), exc)
+            ) from exc
 
     def __repr__(self):
         return f"<LLMService client={type(self._client).__name__}>"

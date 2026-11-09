@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsn_study 管理面板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3346; --tx:#dbe3f0; --dim:#8794ab; --ok:#5bd6a2; --warn:#f0b45c; --bad:#ef7285; --acc:#6ea8fe; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif; }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; }
+  header input { background:var(--card); border:1px solid var(--line); color:var(--tx); border-radius:6px; padding:5px 9px; width:300px; }
+  header button { background:var(--acc); border:0; color:#0b1220; border-radius:6px; padding:6px 14px; cursor:pointer; font-weight:600; }
+  nav { display:flex; gap:6px; padding:10px 22px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  nav button { background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:6px; padding:5px 12px; cursor:pointer; }
+  nav button.on { color:var(--tx); border-color:var(--acc); background:#16203a; }
+  main { padding:18px 22px; max-width:1200px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h3 { margin:0 0 10px; font-size:14px; color:var(--acc); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; }
+  .kv { display:flex; justify-content:space-between; gap:10px; }
+  .kv span:first-child { color:var(--dim); }
+  .pill { display:inline-block; padding:1px 9px; border-radius:99px; font-size:12px; border:1px solid var(--line); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .dim { color:var(--dim); }
+  pre { background:#0b101b; border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; max-height:420px; font-size:12px; white-space:pre-wrap; }
+  .err { color:var(--bad); }
+  .note { color:var(--dim); font-size:12px; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>dsn_study 管理面板</h1>
+  <input id="token" placeholder="面板密钥（WEB_ADMIN_API_KEY）">
+  <button onclick="saveToken()">连接</button>
+  <span id="connState" class="dim"></span>
+</header>
+<nav id="tabs"></nav>
+<main id="view"><p class="dim">输入面板密钥后连接。</p></main>
+
+<script>
+const TABS = ["status","resources","models","questions","reminders","plugins",
+              "memory","topics","persona","config","prompt","plans","checkin","logs"];
+let token = localStorage.getItem("admin_token") || "";
+document.getElementById("token").value = token;
+
+function saveToken(){ token = document.getElementById("token").value.trim();
+  localStorage.setItem("admin_token", token); show("status"); }
+
+async function api(path, opts={}){
+  const r = await fetch(`/api/admin${path}`, {...opts,
+    headers:{"X-Admin-Token":token, "Content-Type":"application/json",
+             ...(opts.headers||{})}});
+  if (r.status === 401) throw new Error("认证失败：密钥不对");
+  return r.json();
+}
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const kv = (o) => Object.entries(o).map(([k,v]) =>
+  `<div class="kv"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("");
+const table = (head, rows) => `<table><tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>` +
+  rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("") + "</table>";
+
+const VIEWS = {
+  status: async () => {
+    const d = await api("/status");
+    const flags = {pipeline:"管线", personality:"人格", topics_enabled:"话题",
+      memory:"记忆", task_manager:"任务", voice:"语音", vision:"视觉"};
+    return `<div class="grid"><div class="card"><h3>运行状态</h3>${kv({
+      "运行时长(秒)": d.uptime_seconds, "工具数": d.tools, "技能数": d.skills,
+      "题库题目": d.questions_count, "任务": d.tasks_count, "对话轮次": d.chat_rounds_count,
+      "会话": d.session_id})}</div>
+      <div class="card"><h3>子系统</h3>${Object.entries(flags).map(([k,n]) =>
+        `<div class="kv"><span>${n}</span><span class="${d[k]?"ok":"dim"}">${d[k]?"● 运行":"○ 未启用"}</span></div>`).join("")}</div></div>`;
+  },
+  resources: async () => {
+    const d = await api("/resources");
+    if (!d.resources?.length) return `<p class="dim">${esc(d.note||"无资源")}</p>`;
+    return `<div class="card"><h3>资源槽（infra ResourcePool）</h3>${table(
+      ["名称","类型","状态","常驻","显存估计"], d.resources.map(r=>[
+        esc(r.name), esc(r.kind), esc(r.status||"-"),
+        r.resident?"是":"否", r.vram_estimate_mb??"-"]))}
+      <h3 style="margin-top:12px">插槽</h3><pre>${esc(JSON.stringify(d.slots,null,2))}</pre></div>`;
+  },
+  models: async () => {
+    const d = await api("/models");
+    return `<div class="card"><h3>模型编排（ModelOrchestrator）</h3><pre>${esc(JSON.stringify(d.orchestrator,null,2))}</pre></div>`;
+  },
+  questions: async () => {
+    const d = await api("/questions");
+    return `<div class="grid">
+      <div class="card"><h3>题库总览</h3>${kv({"题目总数":d.total,"错题":d.errors})}</div>
+      <div class="card"><h3>按科目</h3>${table(["科目","数量"], d.by_subject.map(s=>[esc(s.subject??"-"), s.n]))}</div>
+      <div class="card"><h3>最近录入</h3>${table(["ID","内容","难度"],
+        d.recent.map(q=>[q.question_id, esc(String(q.content).slice(0,40)), q.difficulty]))}</div></div>`;
+  },
+  reminders: async () => {
+    const d = await api("/reminders");
+    return `<div class="card"><h3>任务</h3>${table(["task_id","类型","用户","状态","计划时间"],
+      d.tasks.map(t=>[`<code>${esc(t.task_id.slice(0,18))}</code>`, esc(t.task_type), t.user_id,
+        esc(t.status||"-"), esc(t.scheduled_time||"-")]))}
+    <h3 style="margin-top:12px">最近通知</h3>${table(["ID","任务","已投递","忽略","时间"],
+      d.notifications.map(n=>[n.notification_id, `<code>${esc(n.task_id.slice(0,14))}</code>`,
+        n.delivered?"是":"否", n.dismissed?"是":"否", esc(n.created_at)]))}</div>`;
+  },
+  plugins: async () => {
+    const d = await api("/plugins");
+    return `<div class="card"><h3>技能（${d.plugins.length}）</h3>
+      <p>${d.plugins.map(p=>`<span class="pill">${esc(p)}</span>`).join(" ")}</p>
+      <h3>工具（${d.tools.length}）</h3>${table(["键","描述"],
+      d.tools.map(t=>[`<code>${esc(t.key)}</code>`, esc(t.description)]))}</div>`;
+  },
+  memory: async () => {
+    const users = await api("/memory/users");
+    let html = `<div class="card"><h3>用户记忆</h3>${table(["用户","轮次","备忘","最近活跃"],
+      users.users.map(u=>[u.user_id, u.rounds, u.memos, esc(u.last_round||"-")]))}</div>`;
+    const uid = users.users[0]?.user_id ?? 1;
+    const chats = await api(`/memory/chats/${uid}`);
+    html += `<div class="card"><h3>用户 ${uid} 的会话</h3>${table(["chat_id","轮次","最后活跃"],
+      chats.chats.map(c=>[c.chat_id, c.rounds, esc(c.last_round||"-")]))}</div>`;
+    return html;
+  },
+  topics: async () => {
+    const d = await api(`/memory/topics/1`);
+    if (!d.topics?.length) return `<p class="dim">${esc(d.note||"无话题")}</p>`;
+    return `<div class="card"><h3>话题（阶段 7 TopicManager）</h3>${table(
+      ["topic_id","标题","状态","pin","摘要"],
+      d.topics.map(t=>[`<code>${esc(t.topic_id)}</code>`, esc(t.title),
+        `<span class="${t.status==="open"?"ok":"dim"}">${esc(t.status)}</span>`,
+        t.is_pinned?"📌":"", esc(String(t.summary||"").slice(0,50))]))}</div>`;
+  },
+  persona: async () => {
+    const d = await api("/persona/list");
+    if (!d.cards?.length) return `<p class="dim">${esc(d.note||"无角色卡")}</p>`;
+    const st = await api(`/persona/status/${encodeURIComponent(d.cards[0].card_id ?? d.cards[0].id ?? "")}`).catch(()=>null);
+    return `<div class="card"><h3>角色卡</h3>${table(["card_id","名称"],
+      d.cards.map(c=>[`<code>${esc(c.card_id??c.id)}</code>`, esc(c.name??c.display_name??"")]))}</div>
+      ${st?`<div class="card"><h3>当前状态（uid=1）</h3><pre>${esc(JSON.stringify(st.snapshot,null,2))}</pre></div>`:""}`;
+  },
+  config: async () => {
+    const d = await api("/config");
+    return `<div class="card"><h3>配置（只读）</h3><p class="note">${esc(d.note)}</p>
+      <table><tr><th>键</th><th>值</th></tr>${Object.entries(d.config).map(([k,v])=>
+        `<tr><td><code>${esc(k)}</code></td><td>${esc(v)}</td></tr>`).join("")}</table></div>`;
+  },
+  prompt: async () => {
+    const d = await api("/prompt?uid=1");
+    return `<div class="card"><h3>系统提示词（uid=1）</h3><pre>${esc(d.prompt)}</pre></div>`;
+  },
+  plans: async () => {
+    const d = await api("/plans");
+    const t = await api("/plan/today");
+    return `<div class="grid"><div class="card"><h3>学习目标</h3>
+      ${d.goals?.length?table(["ID","标题","状态"], d.goals.map(g=>[g.goal_id??g.id, esc(g.title??g.name??""), esc(g.status??"-")])):"<p class='dim'>无</p>"}</div>
+      <div class="card"><h3>今日计划</h3><pre>${esc(JSON.stringify(t.summary,null,2))}</pre></div></div>`;
+  },
+  checkin: async () => {
+    const d = await api("/checkin/calendar");
+    return `<div class="card"><h3>打卡（连续 ${d.streak} 天）</h3><pre>${esc(JSON.stringify(d.calendar,null,2))}</pre></div>`;
+  },
+  logs: async () => {
+    const d = await api("/logs");
+    return `<div class="card"><h3>日志（最近 200 行）</h3><pre>${esc(d.logs.join("\n"))}</pre></div>`;
+  },
+};
+
+function show(name){
+  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on", b.dataset.t===name));
+  const view = document.getElementById("view");
+  view.innerHTML = "<p class='dim'>加载中…</p>";
+  const state = document.getElementById("connState");
+  VIEWS[name]().then(html=>{
+    state.textContent = "已连接"; state.className = "ok";
+    view.innerHTML = html;
+  }).catch(e=>{
+    state.textContent = e.message; state.className = "bad";
+    view.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+  });
+}
+document.getElementById("tabs").innerHTML =
+  TABS.map(t=>`<button data-t="${t}" onclick="show('${t}')">${t}</button>`).join("");
+if (token) show("status");
+</script>
+</body>
+</html>

@@ -218,8 +218,10 @@ def test_daily_report_after_22h(study_app):
     hooks = study_app.chat_hooks
     hooks._report_date = ""
     hooks._report_user = -1
-    import apps.dsn_study.chat_hooks as ch
-    orig = ch.datetime
+    # 阶段 3：日终报告的实现已迁到 pipeline 插件（chat_hooks 只是门面），
+    # 所以要 patch **插件模块**里的 datetime，而不是 chat_hooks 的。
+    import apps.dsn_study.pipeline.plugins as pl
+    orig = pl.datetime
 
     class _FakeDT(orig):
         @classmethod
@@ -227,11 +229,11 @@ def test_daily_report_after_22h(study_app):
             import datetime as _d
             return _d.datetime.now().replace(hour=23, minute=30)
 
-    ch.datetime = _FakeDT
+    pl.datetime = _FakeDT
     try:
         block = hooks._daily_report_block(1)
     finally:
-        ch.datetime = orig
+        pl.datetime = orig
     assert "日终报告" in block, block
 
 
