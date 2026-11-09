@@ -2987,6 +2987,18 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
     except Exception as e:  # noqa: BLE001
         log_exception(logger, "挂载 Agent 运行时 API 失败", e)
 
+    # ── 9.13 微调工坊 API（本地实验用，不上 GitHub）──
+    # 门面层：把 infra.finetune 的 submit/status/promote/rollback 翻译成 HTTP。
+    # 训练本身跑在独立解释器里（infra/finetune/train_sft.py），主进程不 import torch。
+    # 同样必须在 SPA catch-all 之前注册。
+    try:
+        from apps.dsn_ui.finetune_api import register_finetune_routes
+
+        register_finetune_routes(app)
+        logger.info("微调工坊 API 已启用: /api/finetune/*")
+    except Exception as e:  # noqa: BLE001
+        log_exception(logger, "挂载微调工坊 API 失败", e)
+
     # ── 10. 静态资源与 SPA 路由 ──
 
     static_dir = Path(__file__).resolve().parent / "static"

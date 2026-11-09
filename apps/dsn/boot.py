@@ -421,7 +421,8 @@ def _stage_core():
     global _impression_manager, skill_registry, skill_manager
     global completion_queue, _auth_manager
     global world_engine, world_state_manager, narrative_model
-    global _cache_engine, _script_engine, _tts_process_model
+    global _cache_engine, _script_engine, _tts_process_model, harness_runtime
+    global blueprints, _asr_pool, resource_setup
     # ── Harness Runtime ──
     # 场景无关的 DI 容器。新代码经 Runtime 解析服务，旧代码走模块级全局（兼容层）。
     from harness import Runtime, Settings
@@ -545,7 +546,8 @@ def _stage_models_and_memory():
     global _impression_manager, skill_registry, skill_manager
     global completion_queue, _auth_manager
     global world_engine, world_state_manager, narrative_model
-    global _cache_engine, _script_engine, _tts_process_model
+    global _cache_engine, _script_engine, _tts_process_model, harness_runtime
+    global blueprints, _asr_pool, resource_setup
     # ── 模型预加载（在记忆系统之前，避免 EmbeddingClient 加载时挤掉主模型）──
     _lmstudio_enabled = Config.LMSTUDIO_ENABLED
     if _lmstudio_enabled:
@@ -648,7 +650,8 @@ def _stage_prompt_and_skills():
     global _impression_manager, skill_registry, skill_manager
     global completion_queue, _auth_manager
     global world_engine, world_state_manager, narrative_model
-    global _cache_engine, _script_engine, _tts_process_model
+    global _cache_engine, _script_engine, _tts_process_model, harness_runtime
+    global blueprints, _asr_pool, resource_setup
     global _world_engine, _world_state_manager, _narrative_model
     # ── Prompt ──
     _prompt_dir = os.path.join(os.path.dirname(__file__), "prompt", "prompts")
@@ -770,7 +773,8 @@ def _stage_engine_and_services():
     global _impression_manager, skill_registry, skill_manager
     global completion_queue, _auth_manager
     global world_engine, world_state_manager, narrative_model
-    global _cache_engine, _script_engine, _tts_process_model
+    global _cache_engine, _script_engine, _tts_process_model, harness_runtime
+    global blueprints, _asr_pool, resource_setup
     # ── DSNEngine ──
     from apps.dsn.engine import create_engine_with_defaults
     engine = create_engine_with_defaults(
@@ -989,7 +993,8 @@ def _stage_maintenance_and_dual():
     global _impression_manager, skill_registry, skill_manager
     global completion_queue, _auth_manager
     global world_engine, world_state_manager, narrative_model
-    global _cache_engine, _script_engine, _tts_process_model
+    global _cache_engine, _script_engine, _tts_process_model, harness_runtime
+    global blueprints, _asr_pool, resource_setup
     # ── 维护模块 ──
     _maint_disabled = True
     try:
@@ -1087,7 +1092,8 @@ def create_application():
     global tts_client, tts_profile_mgr, personality_v3, maint_system
     global _tts_process_model, filter_model, asr_model, prompt_engine
     global _impression_manager, skill_registry, skill_manager
-    global completion_queue, _auth_manager
+    global completion_queue, _auth_manager, harness_runtime
+    global blueprints
 
     _t_log.clear()
     _t("start")

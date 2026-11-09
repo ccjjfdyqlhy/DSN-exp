@@ -228,10 +228,20 @@ class ProbeRunner:
         *,
         evaluator: Optional[Evaluator] = None,
         policy: Optional[EvalPolicy] = None,
+        disable_thinking: bool = True,
     ) -> None:
         self.client = client
         self.policy = policy or EvalPolicy(threshold=0.6, hard_gate=True)
         self.evaluator = evaluator or Evaluator(policy=self.policy)
+        #: 探针生成时**关掉 thinking**。
+        #:
+        #: 为什么必须关：学生是按 non-thinking 模板训的（训练期禁 thinking），
+        #: 而 Qwen3 默认会思考——max_tokens 全被思考吃掉，**返回的 content 是空的**。
+        #: 实测：max_tokens=64 → 64 token 全是 reasoning、content 空；
+        #: 关掉后 3 token 就答出动作名。
+        #:
+        #: 附带好处：探针快了十几倍（不用等它想完）。
+        self.disable_thinking = bool(disable_thinking)
 
     def run(
         self,
@@ -286,11 +296,24 @@ class ProbeRunner:
         return report
 
     def _generate(self, probe: Probe, *, max_tokens: int, temperature: float) -> str:
-        resp = self.client.invoke(
-            probe.to_messages(),
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        messages = probe.to_messages()
+        if self.disable_thinking:
+            try:
+                resp = self.client.invoke(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+            except TypeError:
+                # 客户端不支持 extra_body → 退回最简调用
+                resp = self.client.invoke(
+                    messages, temperature=temperature, max_tokens=max_tokens,
+                )
+        else:
+            resp = self.client.invoke(
+                messages, temperature=temperature, max_tokens=max_tokens,
+            )
         content = getattr(resp, "content", None)
         if content is None and isinstance(resp, dict):
             choices = resp.get("choices") or []

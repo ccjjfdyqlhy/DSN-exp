@@ -52,9 +52,11 @@ def iter_sse_lines(response: requests.Response):
 # ════════════════════════════════════════════════════════════════
 
 class DSNClient:
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, no_auth: bool = False):
         self.base = f"http://{host}:{port}"
         self.api_key: Optional[str] = None
+        # no_auth：面向无认证后端（如 dsn_study 本地单用户垫片），跳过配对流程
+        self._no_auth = no_auth
         self.uid: int = 0
         self.chat_id: Optional[int] = None
         self.display_name: str = ""
@@ -215,7 +217,7 @@ class DSNClient:
                 log.warning("保存 chat_id=%s 到配置失败", chat_id, exc_info=True)
 
     def send_async(self, message: str) -> Optional[str]:
-        if not self.api_key or not message.strip():
+        if (not self.api_key and not self._no_auth) or not message.strip():
             return None
         try:
             resp = self._http_post("/api/chat/async_send", json={
@@ -232,7 +234,7 @@ class DSNClient:
             return None
 
     def send_audio(self, audio_b64: str) -> Optional[str]:
-        if not self.api_key:
+        if not self.api_key and not self._no_auth:
             return None
 
         t0 = time.perf_counter()
@@ -248,6 +250,9 @@ class DSNClient:
                 },
             )
             if resp.status_code != 200:
+                # 静默失败曾是盲区：语音说完没反应却无任何提示。至少落到日志与终端。
+                log.warning("语音上行失败 HTTP %d: %s", resp.status_code, resp.text[:200])
+                print(f"\n  \u26a0\ufe0f 语音上行失败 (HTTP {resp.status_code})：{resp.text[:80]}")
                 return None
 
             reply_text, t_first_audio = self._handle_sse_stream(resp, self._tts_queue, t0, async_poller=self.async_poller)
@@ -270,24 +275,24 @@ class DSNClient:
             log.error("Audio send failed: %s", e)
             return None
 
-    def send_text(self, message: str) -> Optional[str]:
-        if not self.api_key or not message.strip():
+    def send_text(self, message: str, image_data: str = "") -> Optional[str]:
+        if (not self.api_key and not self._no_auth) or not (message.strip() or image_data):
             return None
 
         t0 = time.perf_counter()
         log.info("[DEBUG_CLI] send_text: 开始 SSE 请求, t=%.4f", t0)
 
         try:
-            resp = self._http_post_stream(
-                "/api/chat/stream_send",
-                json={
-                    "message": message,
-                    "chat_id": self.chat_id,
-                    "chat_name": "edge-cli",
-                    "tts_enabled": True,
-                    "is_asr_input": False,
-                },
-            )
+            body = {
+                "message": message,
+                "chat_id": self.chat_id,
+                "chat_name": "edge-cli",
+                "tts_enabled": True,
+                "is_asr_input": False,
+            }
+            if image_data:
+                body["image_data"] = image_data
+            resp = self._http_post_stream("/api/chat/stream_send", json=body)
             if resp.status_code != 200:
                 log.warning("Text send HTTP %d: %s", resp.status_code, resp.text[:200])
                 return None
@@ -313,8 +318,8 @@ class DSNClient:
     def send_audio_async(self, audio_b64: str):
         self._send_queue.put(("audio", audio_b64))
 
-    def send_text_async(self, message: str):
-        self._send_queue.put(("text", message))
+    def send_text_async(self, message: str, image_data: str = ""):
+        self._send_queue.put(("text", message, image_data))
 
     def _send_worker(self):
         while True:
@@ -322,13 +327,14 @@ class DSNClient:
             if item is None:
                 self._send_queue.task_done()
                 continue
-            kind, payload = item
+            kind, payload = item[0], item[1]
+            image_data = item[2] if len(item) > 2 else ""
             self._sending.set()
             try:
                 if kind == "audio":
                     self.send_audio(payload)
                 elif kind == "text":
-                    self.send_text(payload)
+                    self.send_text(payload, image_data=image_data)
             except Exception:
                 log.exception("Send worker error")
             finally:

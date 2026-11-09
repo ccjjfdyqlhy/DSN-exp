@@ -35,6 +35,32 @@ from .tui import (_ensure_raw_mode, print_cameras, print_checkin_status,
 from .vision import StreamPusher, VisionObserver
 
 
+def _load_local_image(text: str) -> str:
+    """输入若是本地图片路径（~/ 或绝对路径，jpg/png/webp/bmp/gif）→ 转 data URL；否则返回空串。"""
+    if not (text.startswith("~") or text.startswith("/")):
+        return ""
+    from pathlib import Path
+    p = Path(text).expanduser()
+    if not p.is_file() or p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
+        return ""
+    try:
+        import base64
+        mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+        if p.suffix.lower() == ".webp":
+            mime = "image/webp"
+        elif p.suffix.lower() == ".gif":
+            mime = "image/gif"
+        elif p.suffix.lower() == ".bmp":
+            mime = "image/bmp"
+        b64 = base64.b64encode(p.read_bytes()).decode()
+        print(f"  \U0001f4b7 已附加图片: {p.name} ({p.stat().st_size // 1024} KB)")
+        return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        log.warning("读取图片失败: %s", e)
+        print(f"  \u26a0\ufe0f 图片读取失败: {e}")
+        return ""
+
+
 def _report_cameras_background(client):
     """枚举摄像头并上报后端（多摄像头支持）——后台守护线程，避免 cv2 打开慢设备阻塞启动。"""
     try:
@@ -73,6 +99,8 @@ def main():
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--pairing", default="")
+    parser.add_argument("--no-auth", action="store_true",
+                        help="跳过配对认证（面向 dsn_study 等本地无认证后端）")
     parser.add_argument("--headless", action="store_true",
                         help="无终端模式：跳过键盘循环，仅运行后台组件（心跳/轮询/感知/视觉）")
     args = parser.parse_args()
@@ -96,7 +124,11 @@ def main():
 
     cfg["host"] = f"{host}:{args.port}"
 
-    client = DSNClient(host, args.port)
+    # no_auth 必须**在构造时传入**：DSNClient.__init__ 把 self._no_auth 定下来，
+    # 而 send_text/send_audio/send_async 依据它决定是否直接 return None。
+    # 此前只在下面设 client.uid = 1、没传 no_auth → self._no_auth 恒 False →
+    # --no-auth 模式下所有对话与语音发送**静默失效**（无任何报错）。
+    client = DSNClient(host, args.port, no_auth=args.no_auth)
 
     print(f"  Backend: http://{host}:{args.port}")
     try:
@@ -125,7 +157,12 @@ def main():
         if cfg_file.get("api_key"):
             pairing_code = "cached"
 
-    if args.headless:
+    if args.no_auth:
+        # 无认证后端（dsn_study 本地单用户垫片）：跳过配对，直接放行。
+        # _no_auth 已在构造时传入（否则发送路径会静默 return None）。
+        client.uid = 1
+        print("  无认证模式 (--no-auth)：跳过配对流程")
+    elif args.headless:
         # 无终端：不弹交互注册，认证失败即退出（systemd 场景配置应预先就绪）
         ok = client.authenticate(code=pairing_code, name=display_name)
         if not ok:
@@ -453,14 +490,20 @@ def main():
                     except Exception as e:
                         print(f"\n  Alarm status failed: {e}")
 
-                # ── t: 文本输入（流式 SSE + TTS）──
+                # ── t: 文本/图片输入（流式 SSE + TTS）──
+                # 输入以 ~ 或 / 开头且指向本地图片文件时 → 以图片+附言发送（多模态）
                 elif ch.lower() == "t":
-                    text = raw_input("  Text Input: ").strip()
+                    text = raw_input("  Text/Image Input: ").strip()
                     if text:
                         if client.is_sending:
                             print("\n  \u23f3 上一轮对话还在发送中，请稍候...")
                         else:
-                            client.send_text_async(text)
+                            image_data = _load_local_image(text)
+                            if image_data:
+                                note = raw_input("  附言(可空): ").strip()
+                                client.send_text_async(note or "请看这张图片", image_data=image_data)
+                            else:
+                                client.send_text_async(text)
 
                 # ── =: 异步任务 ──
                 elif ch == "=":
