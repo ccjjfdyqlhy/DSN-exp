@@ -276,12 +276,20 @@ convert_via_vision 建包往返、空参校验、process_images 全链路桩管�
   → 产出 **276KB / 48kHz / 2.88s WAV**；`POST /api/chat/send` 返回 `audio_b64` 368700 字符，
   `GET /api/voice/status` 显示 `loaded=true, managed=true`。
 
-## 阶段 6（P2，可选）：外部 Agent / 人格 ☐
+## 阶段 6（P2，可选）：外部 Agent / 人格 ✅
 
 - Agent 接入不走 cp（api/agent.py 依赖记忆同步链），改用 **harness MCP 桥接**
-  把学习工具暴露出去（2026-10 已交付 harness/tools/mcp.py）。
-- 人格：`harness/personality`（PEV3）配导师卡；cp `prompt/personality_v3`
-  （1.1M）成本高，另行评估。
+  把学习工具暴露出去（2026-10 已交付 harness/tools/mcp.py —— 消费侧；
+  **2026-11-09 补齐暴露侧**：新增 `apps/dsn_study/mcp_server.py`，
+  `python -m apps.dsn_study.mcp_server` 起 stdio MCP 服务，把 99 个已注册技能
+  工具以 `skill__tool` 命名暴露给任何 MCP 客户端（外部 Agent / 另一 DSN 实例）；
+  复用 boot 的能力注册与依赖注入表，最小装配不起 Flask / 不预热视觉 / 不连
+  Obsidian 消费桥，对应工具因能力缺失自然不注册或明确报错；
+  工具调用异常折返为 `{"success":false,"error":…}` 载荷不断协议；
+  `MCP_EXPOSE_ENABLED` 开关 + `--check` 自检。测试
+  `tests/test_dsn_study_mcp_server.py` 8 例，含真实子进程 stdio 往返）。
+- 人格：`harness/personality`（PEV3）配导师卡 —— 已由 MIGRATION_PLAN 阶段 2
+  交付（study_tutor 卡 + 人格 API + 逐轮回写）。
 
 ## 明确不搬清单
 
@@ -309,3 +317,5 @@ convert_via_vision 建包往返、空参校验、process_images 全链路桩管�
 - 2026-11-01：阶段 6.5 完成——对照参考版全量补齐：修 5 处坏导入（含让「知识图谱构建」「出题打印」两个技能从不可用变可用）、补考试超时自动交卷 / `<plan_check>` / 日终报告 / 聊天内图片、移植 document 子系统与 document 技能（10 工具，含扫描作答卷判分）、新增 study_tracking（7 工具）与 batch（2 工具）技能、新增 async_send 端点与 `<tool>` 标签降级适配器；新增 19 用例功能完整性测试（含桩模型完整对话回路），dsn_study 侧 66→全绿。
 - 2026-11-01：阶段 7 完成——TTS 接入：经 infra 资源池以 conda 模式（GPTSoVits 环境的独立 Python）托管 GPT-SoVITS；新增 VoiceService 门面 / TTS 客户端 / profile 管理器 / 音色资产 / voice 控制 API；对话与提醒响应新增 audio_b64；新增 13 用例（含真实服务联调）。
 - 2026-11-01：阶段 8 完成——Obsidian MCP 接入：经 harness MCPManager 以 stdio 接入 obsidian-mcp@2（Obsidian 桌面端无需运行），12 个 mcp.obsidian.* 工具进 AgentLoop；新增 Obsidian 知识库技能（知识点索引/写笔记/搜索/列举）与 obsidian 控制 API；MCPBridge 采用专属常驻事件循环；harness 兼容 MCP SDK 1.x/2.x；新增 16 用例。
+- 2026-11-09：阶段 6（P2 可选）收尾——补齐暴露侧 MCP（mcp_server.py，见阶段 6 表），
+  人格部分引用 MIGRATION_PLAN 阶段 2 交付；全部阶段不再有 ☐。

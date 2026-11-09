@@ -89,6 +89,7 @@ apps/dsn/model_profiles/onboarding_*.yaml
 /apps/dsn_study/*.db
 /apps/dsn_study/*.key
 /apps/dsn_study/*.enc
+/apps/dsn_study/reports/*
 
 /.reasonix/
 /.zcode/
