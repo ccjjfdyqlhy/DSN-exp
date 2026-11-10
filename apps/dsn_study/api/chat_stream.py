@@ -60,32 +60,68 @@ def stream_send():
     user_id = g.user.get("uid", 0) or 1
 
     def generate():
+        """流式对话（方案 D）：文本增量 + 逐句音频。
+
+        事件：text_delta / line / text_ready / tool_error / completed。
+        text_ready 在末尾补发一次完整文本，兼容只认它的旧客户端。
+        """
+        tts_err = ""
         try:
-            if tts_enabled:
-                # chat_audio = chat + TTS 合成（TTS 失败自动降级纯文本）
-                result = engine.chat_audio(message, user_id=user_id, image=image or None)
-                reply = result.get("reply", "")
-                audio = result.get("audio_b64") or ""
-                tts_error = result.get("tts_error", "")
+            if tts_enabled and hasattr(engine, "chat_stream_audio"):
+                for ev in engine.chat_stream_audio(
+                        message, user_id=user_id, image=image or None):
+                    etype = ev.get("type")
+                    if etype == "text_delta":
+                        yield _sse({"status": "text_delta",
+                                    "text": ev.get("text", "")})
+                    elif etype == "audio":
+                        yield _sse({"status": "line",
+                                    "index": ev.get("index", 0),
+                                    "total": None,
+                                    "text": ev.get("text", ""),
+                                    "audio_b64": ev.get("audio_b64", "")})
+                    elif etype in ("tool_call", "tool_result"):
+                        yield _sse({"status": etype,
+                                    "name": ev.get("name", ""),
+                                    "arguments": ev.get("arguments"),
+                                    "success": ev.get("success")})
+                    elif etype == "error":
+                        if ev.get("scope") == "tts":
+                            tts_err = ev.get("error", "")
+                    elif etype == "done":
+                        reply = ev.get("reply", "")
+                        if reply:
+                            yield _sse({"status": "text_ready",
+                                        "reply": reply, "chat_id": None})
+                        if ev.get("tts_error"):
+                            tts_err = ev["tts_error"]
             else:
-                reply = engine.chat(message, user_id=user_id, image=image or None)
-                audio, tts_error = "", ""
+                if tts_enabled:
+                    # 退化：一次性合成（无流式引擎时）
+                    result = engine.chat_audio(message, user_id=user_id,
+                                               image=image or None)
+                    reply = result.get("reply", "")
+                    audio = result.get("audio_b64") or ""
+                    tts_err = result.get("tts_error", "")
+                else:
+                    reply = engine.chat(message, user_id=user_id,
+                                        image=image or None)
+                    audio, tts_err = "", ""
+                if reply:
+                    yield _sse({"status": "text_ready", "reply": reply,
+                                "chat_id": None})
+                if audio:
+                    yield _sse({"status": "line", "index": 0, "total": 1,
+                                "text": reply, "audio_b64": audio})
         except Exception as e:  # noqa: BLE001
             logger.exception("流式对话处理失败")
             yield _sse({"status": "tool_error", "tool": "chat", "error": str(e)})
+        finally:
+            if tts_err:
+                yield _sse({"status": "tool_error", "tool": "tts",
+                            "error": tts_err})
             yield _sse({"status": "completed"})
             yield "data: [DONE]\n\n"
-            return
-
-        if reply:
-            yield _sse({"status": "text_ready", "reply": reply, "chat_id": None})
-        if audio:
-            yield _sse({"status": "line", "index": 0, "total": 1,
-                        "text": reply, "audio_b64": audio})
-        if tts_error:
-            yield _sse({"status": "tool_error", "tool": "tts", "error": tts_error})
-        yield _sse({"status": "completed"})
-        yield "data: [DONE]\n\n"
 
     return Response(
         generate(),

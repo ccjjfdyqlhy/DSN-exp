@@ -422,6 +422,13 @@ class PersonalitySystemV3:
 
     # === 性格提示词生成（主入口） ===
 
+    def set_before_generate(self, fn) -> None:
+        """把"生成前钩子"转给生成器（见 PersonalityPromptGenerator）。"""
+        try:
+            self._generator.set_before_generate(fn)
+        except Exception:   # noqa: BLE001
+            logger.debug("设置人格生成前置钩子失败（已跳过）", exc_info=True)
+
     def generate_personality_prompt(self, uid: int) -> str:
         if not self._enabled:
             logger.debug("V3: generate_personality_prompt 跳过 (enabled=False)")
@@ -448,6 +455,7 @@ class PersonalitySystemV3:
         user_message: str,
         ai_reply: str,
         conversation_history: str = "",
+        judge_chat=None,
     ) -> MoodUpdateResult | None:
         if not self._enabled:
             logger.debug("V3: analyze_interaction 跳过 (enabled=False)")
@@ -488,6 +496,7 @@ class PersonalitySystemV3:
 
         # 1. LLM 只负责事件分类（语义判断，不产生数值）
         perception = self._judge.classify(
+            chat=judge_chat,
             user_message=user_message,
             ai_reply=ai_reply,
             previous_mood=prev_mood,

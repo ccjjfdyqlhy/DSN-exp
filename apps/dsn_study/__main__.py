@@ -10,7 +10,27 @@ import os
 import sys
 
 
+def _enable_faulthandler() -> None:
+    """注册 SIGUSR1 → 打印所有线程栈（无头服务排障用）。
+
+    faulthandler 是标准库能力，不需要额外依赖。触发：
+        kill -USR1 <pid>
+    栈会打到 stderr（systemd 下进 journal）。
+    """
+    import faulthandler
+    import signal
+    try:
+        faulthandler.enable(file=sys.stderr, all_threads=True)
+        faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True,
+                              chain=False)
+        print("已注册 SIGUSR1 线程栈转储（kill -USR1 %d）" % __import__("os").getpid(),
+              flush=True)
+    except Exception as e:   # noqa: BLE001
+        print("faulthandler 注册失败（已跳过）: %s" % e, flush=True)
+
+
 def main(web: bool = False) -> None:
+    _enable_faulthandler()
     from .boot import create_application, get_engine
 
     flask_app = create_application()

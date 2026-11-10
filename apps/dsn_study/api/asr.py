@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import base64
+import time
 import json
 import logging
 
@@ -69,6 +70,20 @@ def _asr_enabled(default: bool) -> bool:
         return bool(current_app.config.get("ASR_ENABLED", default))
     except Exception:
         return default
+
+
+def _wav_seconds(data: bytes) -> float:
+    """WAV 字节 → 秒数（按文件头里的真实采样率，不猜）。
+
+    之前按 32kHz 硬算，而客户端送的是 16kHz → 日志里时长少一半。
+    """
+    try:
+        import io
+        import wave
+        with wave.open(io.BytesIO(data)) as wf:
+            return wf.getnframes() / float(wf.getframerate() or 1)
+    except Exception:   # noqa: BLE001
+        return 0.0
 
 
 def _sse(payload: dict) -> str:
@@ -127,12 +142,17 @@ def asr_passthrough():
     if _asr is None:
         return jsonify({"error": "ASR processing failed"}), 500
 
+    t_asr = time.perf_counter()
     try:
         normalized = _asr.normalize_audio(audio_bytes)
         recognized_text, _segments, error = _asr.transcribe_with_error(normalized)
     except Exception:  # noqa: BLE001
         logger.exception("ASR 识别失败")
         return jsonify({"error": "ASR processing failed"}), 500
+    logger.info("ASR 耗时 %.2fs (音频 %.1fs, 识别文本 %d 字)",
+                time.perf_counter() - t_asr,
+                _wav_seconds(audio_bytes),
+                len(recognized_text or ""))
 
     if error:
         logger.warning("ASR 识别失败: %s", error)
@@ -153,37 +173,99 @@ def asr_passthrough():
     user_id = g.user.get("uid", 0) or 1
     tts_enabled = bool(data.get("tts_enabled", True))
     image = (data.get("image_data") or "").strip() or None
-    # 与参考实现一致：识别文本包进一句固定前缀再进对话
-    message = f"你听到用户那边传来的声音：{recognized_text}"
+    # 识别文本**原样**进对话 —— 不加任何人工前缀。
+    #
+    # 此前是 f"你听到用户那边传来的声音：{recognized_text}"，那个前缀会流进
+    # 下游的每一个模型：embedding（向量化的是带前缀的整句）、话题系统的语义
+    # 判定、记忆落库、主模型。等于让人为的措辞污染了全链路语义。
+    # "这一轮来自语音"这个信息由 ctx.is_asr_input 承载 —— 那是结构化标记，
+    # 不该混进文本内容。
+    message = recognized_text
 
     def generate():
+        """流式语音链路（方案 D）。
+
+        事件序列（与 CLI 的 SSE 解析器兼容）：
+          text_delta   文本增量（前端/CLI 可即时显示）
+          line         每句音频（index 递增，audio_b64）
+          text_ready   完整文本（兼容旧客户端：它们只认这个）
+          tool_error   TTS 失败（文本仍可用）
+          completed    结束
+
+        为什么保留 text_ready：CLI 的 ``_stream_chat`` 用 final_reply 覆盖式
+        写法，只有收到 text_ready 才会打印整段回复。新事件是**增量**事件，
+        旧客户端不认识也无害。
+        """
+        t_first_event = time.perf_counter()
+        got_audio = False
+        tts_err = ""
+        text_ready_sent = False
         try:
-            if tts_enabled:
-                result = engine.chat_audio(message, user_id=user_id, image=image,
-                                           is_asr_input=True)
-                reply = result.get("reply", "")
-                audio = result.get("audio_b64") or ""
-                tts_error = result.get("tts_error") or ""
+            if tts_enabled and hasattr(engine, "chat_stream_audio"):
+                for ev in engine.chat_stream_audio(
+                        message, user_id=user_id, image=image,
+                        is_asr_input=True):
+                    etype = ev.get("type")
+                    if etype == "text_delta":
+                        yield _sse({"status": "text_delta",
+                                    "text": ev.get("text", "")})
+                    elif etype == "audio":
+                        if not got_audio:
+                            got_audio = True
+                            logger.info("语音链路首段音频 %.2fs (index=%s)",
+                                        time.perf_counter() - t_first_event,
+                                        ev.get("index"))
+                        yield _sse({"status": "line",
+                                    "index": ev.get("index", 0),
+                                    "total": None,
+                                    "text": ev.get("text", ""),
+                                    "audio_b64": ev.get("audio_b64", "")})
+                    elif etype in ("tool_call", "tool_result"):
+                        yield _sse({"status": etype,
+                                    "name": ev.get("name", ""),
+                                    "arguments": ev.get("arguments"),
+                                    "success": ev.get("success")})
+                    elif etype == "error":
+                        if ev.get("scope") == "tts":
+                            tts_err = ev.get("error", "")
+                    elif etype == "done":
+                        reply = ev.get("reply", "")
+                        if reply:
+                            text_ready_sent = True
+                            yield _sse({"status": "text_ready",
+                                        "reply": reply, "chat_id": None})
+                        if ev.get("tts_error"):
+                            tts_err = ev["tts_error"]
             else:
-                reply = engine.chat(message, user_id=user_id, image=image,
-                                    is_asr_input=True)
-                audio, tts_error = "", ""
+                # 退化路径：引擎不支持流式 → 走原来的整段链路
+                if tts_enabled:
+                    result = engine.chat_audio(message, user_id=user_id,
+                                               image=image, is_asr_input=True)
+                    reply = result.get("reply", "")
+                    audio = result.get("audio_b64") or ""
+                    tts_err = result.get("tts_error") or ""
+                else:
+                    reply = engine.chat(message, user_id=user_id, image=image,
+                                        is_asr_input=True)
+                    audio, tts_err = "", ""
+                if reply:
+                    text_ready_sent = True
+                    yield _sse({"status": "text_ready", "reply": reply,
+                                "chat_id": None})
+                if audio:
+                    yield _sse({"status": "line", "index": 0, "total": 1,
+                                "text": reply, "audio_b64": audio})
         except Exception as e:  # noqa: BLE001
             logger.exception("语音上行对话处理失败")
             yield _sse({"status": "tool_error", "tool": "chat", "error": str(e)})
+        finally:
+            if tts_err:
+                yield _sse({"status": "tool_error", "tool": "tts",
+                            "error": tts_err})
+            if not got_audio and tts_enabled:
+                logger.warning("语音链路未产出任何音频（tts_err=%r）", tts_err)
             yield _sse({"status": "completed"})
             yield "data: [DONE]\n\n"
-            return
-
-        if reply:
-            yield _sse({"status": "text_ready", "reply": reply, "chat_id": None})
-        if audio:
-            yield _sse({"status": "line", "index": 0, "total": 1,
-                        "text": reply, "audio_b64": audio})
-        if tts_error:
-            yield _sse({"status": "tool_error", "tool": "tts", "error": tts_error})
-        yield _sse({"status": "completed"})
-        yield "data: [DONE]\n\n"
 
     return Response(
         generate(),

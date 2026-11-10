@@ -62,6 +62,7 @@ class OpenAICompatClient(ChatClientAdapter):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
         extra_headers: Optional[dict] = None,
         protocol: str = "chat",
         tool_choice: Any = "auto",
@@ -81,20 +82,40 @@ class OpenAICompatClient(ChatClientAdapter):
         self._max_tokens = max_tokens
         self._timeout = timeout
         self._extra_headers = extra_headers or {}
+        #: SDK 默认 max_retries=2 —— 超时会被重试，单次 8s 超时变成 24s。
+        #: 对话链路要"快失败"，默认降到 1。
+        self._max_retries = max_retries if max_retries is not None else 1
 
         from openai import AsyncOpenAI, OpenAI  # 延迟导入，避免未安装时影响其他模块
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            max_retries=self._max_retries,
             default_headers=self._extra_headers or None,
         )
         self._async_client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            max_retries=self._max_retries,
             default_headers=self._extra_headers or None,
         )
+
+    def set_timeout(self, timeout: Optional[float]) -> None:
+        """动态调整请求超时（秒）。
+
+        对讲机场景需要"快失败"：语音轮用更短的超时，provider 卡住时
+        及时报错，而不是让用户干等一分钟。
+        """
+        self._timeout = timeout
+        for cli in (getattr(self, "_client", None),
+                    getattr(self, "_async_client", None)):
+            if cli is not None:
+                try:
+                    cli.timeout = timeout
+                except Exception:   # noqa: BLE001
+                    pass
 
     def _apply_tools(self, params: dict[str, Any], tools: Optional[list[dict]]) -> None:
         """把工具 schema 与 tool_choice 写进请求体（invoke / stream 共用）。
@@ -133,6 +154,7 @@ class OpenAICompatClient(ChatClientAdapter):
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
         extra_body: Optional[dict] = None,
+        max_retries: Optional[int] = None,
     ) -> ChatResponse:
         """调一次模型。
 
@@ -146,12 +168,23 @@ class OpenAICompatClient(ChatClientAdapter):
             return self._invoke_responses(messages, tools, temperature=temperature,
                                           max_tokens=max_tokens, timeout=timeout)
         msgs = self._to_message_dicts(messages)
+        # 【诊断】这次调用有多大 —— provider 账单里出现 18k~26k token 的
+        # 请求且答案只有十几个字，说明某个后台调用把整段历史塞进了 prompt。
+        try:
+            _chars = sum(len(str(m.get("content") or "")) for m in msgs)
+            if _chars > 4000:
+                logger.info("[LLM大请求] model=%s msgs=%d 总字符=%d",
+                            self.model, len(msgs), _chars)
+        except Exception:   # noqa: BLE001
+            pass
         kwargs: dict[str, Any] = {"model": self.model, "messages": msgs}
         self._apply_tools(kwargs, tools)
         self._apply_sampling(kwargs, temperature=temperature, max_tokens=max_tokens)
 
         if extra_body:
             kwargs["extra_body"] = dict(extra_body)
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
         resp = self._client.chat.completions.create(**kwargs)
         if not hasattr(resp, "choices"):
             # 有些网关**无视 stream=false，强制返回 SSE**（实测：newapi.gay）。

@@ -114,6 +114,31 @@ class AsrFilterPlugin(_BaseStudyPlugin):
 # PREPARE —— 上下文组装
 # ══════════════════════════════════════════════════════════════
 
+#: 语音输入（ASR）时追加到 system prompt 的补充指令。
+#:
+#: 为什么需要它：语音场景的回复会被送进 TTS 合成，实测合成耗时
+#: ≈ 1.3s 固定 + 0.045s/字（8 字 1.3s / 24 字 1.7s / 67 字 4.2s）。
+#: 也就是说回复写长了，用户要**多等同样长的时间**才听见声音 ——
+#: 对讲机场景下这是体感延迟的最大来源。文本对话则相反，长一点没关系。
+#: 语音模式保留的提示词片段标签 —— **不含 "skills"**。
+#: 实测完整技能说明有 17KB（19KB 的 system prompt 里的大头），而语音场景
+#: 多数是闲聊/答疑；模型只需要知道"有哪些能力可用"，不必背说明书。
+#: 完整技能说明仍然可以通过紧凑索引里的技能名触发。
+VOICE_PROMPT_TAGS = ("core", "personality", "context")
+
+VOICE_MODE_INSTRUCTION = (
+    "【语音对话模式 —— 本条覆盖上面「步骤该展开就展开」的通用要求】\n"
+    "用户是用**说的**在跟你交流，你的回答会被合成为语音播报给他。\n"
+    "语音播报有成本：合成耗时 ≈ 1.3s + 0.045s/字，回复写 100 字用户就要多等 4 秒。\n"
+    "因此本次回答：\n"
+    "- 只回一到两句话，总共不超过 40 个字；\n"
+    "- 不要罗列清单、不要写公式、不要用 markdown 或表情符号；\n"
+    "- 不要复述用户刚说的话；\n"
+    "- 需要展开讲解时，先用一句话给结论，再问一句「要展开讲吗」，"
+    "他同意后你再详细展开。"
+)
+
+
 class SystemPromptPlugin(_BaseStudyPlugin):
     """组装 system prompt（harness/pipeline 的 PREPARE 职责）。
 
@@ -136,13 +161,34 @@ class SystemPromptPlugin(_BaseStudyPlugin):
     def on_hook(self, hook: HookPoint, ctx: Context) -> Context:
         if self._prompt_builder is None:
             return ctx
+        voice = bool(getattr(ctx, "is_asr_input", False))
         try:
-            prompt = self._prompt_builder.build(uid=int(ctx.user_id or 1))
+            if voice:
+                # 语音模式：去掉 17KB 技能说明，只留身份/人格/学习上下文
+                prompt = self._prompt_builder.build(
+                    uid=int(ctx.user_id or 1),
+                    only_tags=list(VOICE_PROMPT_TAGS))
+            else:
+                prompt = self._prompt_builder.build(uid=int(ctx.user_id or 1))
         except Exception:
             logger.warning("system prompt 组装失败（已跳过）", exc_info=True)
             return ctx
         if prompt:
             ctx.system_prompt = prompt
+        # prompt 体积（chars）—— 直接决定 model_invoke 的 provider 侧耗时
+        logger.info("system prompt 组装完成: %d 字 (asr=%s)",
+                    len(ctx.system_prompt or ""), bool(ctx.is_asr_input))
+        # 语音输入 → 追加紧凑技能索引 + "简短回答"指令（文本输入不受影响）
+        if voice:
+            idx = ""
+            try:
+                idx = self._prompt_builder.compact_skill_index()
+            except Exception:
+                idx = ""
+            if idx:
+                ctx.system_prompt += ("\n\n【可用能力（简表）】\n" + idx
+                                      + "\n（需要细节时再调用对应工具）")
+            ctx.system_prompt += ("\n\n" + VOICE_MODE_INSTRUCTION)
         return ctx
 
 
@@ -618,9 +664,11 @@ class TopicContextPlugin(_BaseStudyPlugin):
             cid = ctx.chat_id or 0
             message = ctx.extra.get("user_message", "") or ctx.message or ""
 
-            decision = topics.on_new_message(uid, cid, message,
-                                             round_idx=ctx.extra.get(
-                                                 "round_index", 0))
+            # 语音轮不跑 LLM judge：一次 judge 8~18s，而对讲机要的是即时回应。
+            decision = topics.on_new_message(
+                uid, cid, message,
+                round_idx=ctx.extra.get("round_index", 0),
+                allow_llm_judge=not getattr(ctx, "is_asr_input", False))
             ctx.extra["topic_decision"] = decision
             ctx.extra["topic_id"] = decision.get("topic_id")
 
@@ -681,6 +729,11 @@ class PersonalityFeedbackPlugin(_BaseStudyPlugin):
     def on_hook(self, hook: HookPoint, ctx: Context) -> Context:
         if self._personality is None:
             return ctx
+        # 语音轮（对讲机）**不做人格判定**：它要打一次 LLM，而 provider 会
+        # 串行排队 —— 后台调用排在用户下一轮的主回复前面，就能把回复拖到
+        # 80 秒（实测）。语音回复短、随意，人格判定的收益也最低。
+        if getattr(ctx, "is_asr_input", False):
+            return ctx
         # 人格判定要调 LLM（事件分类），**不阻塞回复**：
         # 回复内容不依赖它，下一轮才用到更新后的状态。
         # 同步跑会让每轮对话多花 2-4 秒。
@@ -689,8 +742,21 @@ class PersonalityFeedbackPlugin(_BaseStudyPlugin):
         reply = ctx.reply
 
         def _feedback():
+            # 捕获"这一轮"的人格判定客户端：后台线程要等用户空闲才发请求，
+            # 到那时调用方可能已把客户端换回去了 —— 显式带下来，语义才不漂。
+            judge = getattr(self._personality, "_judge", None)
+            captured = getattr(judge, "_chat", None) if judge is not None else None
+            # 等用户这一轮彻底结束再发起 —— 否则后台这次 LLM 调用会排在
+            # 用户**下一轮**的主回复调用前面（provider 串行排队），
+            # 把回复拖到 50~100 秒。实测踩过。
             try:
-                self._personality.analyze_interaction(uid, user_message, reply)
+                from apps.dsn_study.turn_gate import wait_for_idle
+                wait_for_idle()
+            except Exception:
+                pass
+            try:
+                self._personality.analyze_interaction(uid, user_message, reply,
+                                                      judge_chat=captured)
             except Exception:
                 # 日志流可能已关闭（进程退出 / 测试收尾）—— 再记一次日志
                 # 本身也会抛异常，必须兜住，否则线程异常会污染测试结果。

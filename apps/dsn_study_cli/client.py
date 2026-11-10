@@ -14,6 +14,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Optional
 
 import requests
@@ -202,8 +203,16 @@ class StudyClient:
     # ── SSE 流处理 ──
 
     def _stream_chat(self, path: str, body: dict) -> Optional[str]:
-        """发起 SSE 请求并逐事件处理，返回最终回复文本。"""
+        """发起 SSE 请求并逐事件处理，返回最终回复文本。
+
+        延迟埋点：t_first（首个事件）/ t_audio（音频就绪）。
+        服务端 ASR 路径是「LLM 全量 + TTS 全量 完成后才吐第一个事件」，
+        所以这两个时间戳基本等于「用户说完话 → 声音能播出来」的延迟。
+        """
         final_reply = ""
+        t0 = time.perf_counter()
+        t_first = None
+        t_audio = None
         try:
             r = self.session.post(f"{self.base}{path}", headers=self._headers(),
                                   json=body, stream=True,
@@ -215,10 +224,16 @@ class StudyClient:
                 print(f"（服务端错误 HTTP {r.status_code}）")
                 return None
             for event, data in iter_sse_lines(r):
-                etype = data.get("type", event)
-                if etype in ("status", "heartbeat", "progress"):
+                if t_first is None:
+                    t_first = time.perf_counter()
+                    logger.info("SSE 首包 %.3fs (path=%s)", t_first - t0, path)
+                # 服务端 ASR 路径发的是 {"status": "text_ready", ...}，
+                # 没有 type 键 —— 早先只认 type/event，导致文本回复被丢弃。
+                etype = data.get("type") or data.get("status") or event
+                if etype in ("heartbeat", "progress"):
                     continue
-                if etype in ("instant_reply", "main_reply", "reply"):
+                if etype in ("instant_reply", "main_reply", "reply",
+                             "text_ready"):
                     text = data.get("reply") or data.get("text") or ""
                     if text:
                         final_reply = text
@@ -226,14 +241,16 @@ class StudyClient:
                     cid = data.get("chat_id")
                     if cid:
                         self.chat_id = int(cid)
-                elif etype == "audio_b64" or "audio_b64" in data:
+                elif "audio_b64" in data:
                     audio = data.get("audio_b64")
-                    if audio and self.tts_queue is not None:
-                        self.tts_queue.put((final_reply or "", audio))
-                elif etype == "line":
-                    audio = data.get("audio_b64")
-                    if audio and self.tts_queue is not None:
-                        self.tts_queue.put((data.get("text", ""), audio))
+                    if audio:
+                        if t_audio is None:
+                            t_audio = time.perf_counter()
+                            logger.info("音频就绪 %.3fs (首包后 %.3fs)",
+                                        t_audio - t0, t_audio - t_first)
+                        if self.tts_queue is not None:
+                            self.tts_queue.put((final_reply or
+                                                data.get("text", ""), audio))
                 elif etype in ("tool_error", "error", "asr_error"):
                     err = data.get("error") or data.get("message") or ""
                     if err:

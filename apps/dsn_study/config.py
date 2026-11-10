@@ -92,6 +92,9 @@ class Config:
     MAX_CONCURRENT_LM_MODELS = int(_env("MAX_CONCURRENT_LM_MODELS", "1"))
     MODEL_LOAD_TIMEOUT = int(_env("MODEL_LOAD_TIMEOUT", "180"))
     MODEL_REQUEST_TIMEOUT = int(_env("MODEL_REQUEST_TIMEOUT", "300"))
+    # 语音轮的模型调用超时（秒）—— 对讲机要"快失败"：
+    # provider 偶尔会卡住几十秒，等下去用户只会以为设备坏了。
+    VOICE_MODEL_TIMEOUT = int(_env("VOICE_MODEL_TIMEOUT", "45"))
 
     # ── Token 消耗定价 (USD / 1M tokens) ──
     TOKEN_PRICE_FLASH_INPUT = float(_env("TOKEN_PRICE_FLASH_INPUT", "0.14"))
@@ -118,6 +121,15 @@ class Config:
     SUMMARY_CONTEXT_SIZE = max(0, int(_env("SUMMARY_CONTEXT_SIZE", "10")))
     SUMMARY_TEMPERATURE = min(2.0, max(0.0, float(_env("SUMMARY_TEMPERATURE", "0.1"))))
     SUMMARY_TIMEOUT = max(1, int(_env("SUMMARY_TIMEOUT", "60")))
+    # 话题 LLM judge 的超时（秒）。它在**对话热路径**上同步调用，
+    # 超时就走规则判定（judge 失败本来就有回退逻辑）。
+    TOPIC_JUDGE_TIMEOUT = max(1, int(_env("TOPIC_JUDGE_TIMEOUT", "8")))
+    # 话题摘要的输入长度上限（字符）。20 条长消息能到 18k token，
+    # provider 要 7s+ —— 必须封顶。
+    TOPIC_SUMMARY_INPUT_CHARS = max(200, int(
+        _env("TOPIC_SUMMARY_INPUT_CHARS", "3000")))
+    # 话题摘要的 LLM 超时（秒）。
+    TOPIC_SUMMARY_TIMEOUT = max(1, int(_env("TOPIC_SUMMARY_TIMEOUT", "20")))
 
     # ── 向量嵌入检索 ──
     MEMORY_EMBEDDING_DIMS = int(_env("MEMORY_EMBEDDING_DIMS", "768"))
@@ -382,6 +394,8 @@ class Config:
     MEMORY_TOTAL_DETAIL_CHARS = max(1, int(_env("MEMORY_TOTAL_DETAIL_CHARS", "16000")))
     MEMORY_EMBEDDING_ENABLED = _env("MEMORY_EMBEDDING_ENABLED", "false").lower() == "true"
     MEMORY_EMBEDDING_BASE_URL = _env("MEMORY_EMBEDDING_BASE_URL", "")   # 空 = OPENAI_API_BASE
+    # 嵌入服务独立密钥：本地 LMStudio 不需要；远程端点按需单独配
+    MEMORY_EMBEDDING_API_KEY = _env("MEMORY_EMBEDDING_API_KEY", "")
     MEMORY_EMBEDDING_MODEL = _env("MEMORY_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5@f16")
     MEMORY_EMBEDDING_WEIGHT = float(_env("MEMORY_EMBEDDING_WEIGHT", "0.6"))
     TOPIC_ENABLED = _env("TOPIC_ENABLED", "false").lower() == "true"   # 话题系统休眠

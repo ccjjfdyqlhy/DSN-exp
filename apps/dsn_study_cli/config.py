@@ -26,6 +26,9 @@ _DEFAULTS = {
     "display_name": "study-cli",
     "chat_id": 0,
     "mic_device_index": -1,
+    # 麦克风按**名字**选（子串匹配）——PipeWire 设备序号会随 USB 插拔漂移。
+    # 空字符串表示不按名字选，退回 mic_device_index。
+    "mic_device_name": "",
     # 显式钉住摄像头逻辑名 → cv2 设备索引（避免枚举顺序漂移）。
     # 例：{"doc": 2} 表示「文档摄像头」固定用 /dev/video2。
     "camera_map": {},

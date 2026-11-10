@@ -46,8 +46,22 @@ class LLMService:
         self._client = chat_client
 
     def send_message(self, prompt: str, **kwargs) -> str:
+        """发一条消息给模型。
+
+        ``kwargs`` 里可带 ``timeout=秒`` —— 之前**完全被忽略**，
+        于是话题 judge 这类"辅助判定"调用一旦遇上慢网关就会无限期挂着，
+        把整条对话管线拖死（实测一次 judge 挂掉，整轮对话超时无响应）。
+        """
         from infra.models import ChatMessage
-        resp = self._client.invoke([ChatMessage.user(prompt)])
+        timeout = kwargs.get("timeout")
+        max_retries = kwargs.get("max_retries")
+        try:
+            resp = self._client.invoke([ChatMessage.user(prompt)],
+                                       timeout=timeout,
+                                       max_retries=max_retries)
+        except TypeError:
+            # 客户端不支持 timeout 关键字 → 退回原调用方式
+            resp = self._client.invoke([ChatMessage.user(prompt)])
         return resp.content or ""
 
     def describe_image(self, image, prompt: str = "请详细描述这张图片的内容") -> str:

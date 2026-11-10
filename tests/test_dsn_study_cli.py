@@ -13,9 +13,11 @@
 import base64
 import io
 import json
+import logging
 import os
 import sys
 import threading
+import time
 import wave
 from pathlib import Path
 
@@ -260,3 +262,127 @@ def test_launcher_sync_files(live_server, tmp_path, monkeypatch):
     assert "StudyCliApp" in (target / "app.py").read_text(encoding="utf-8")
     # 二次同步无更新
     assert launcher.sync_files(base, token="") == []
+
+
+def test_launcher_deploy_root_points_at_repo_root():
+    """DEPLOY_ROOT 必须指向含 apps/dsn_study_cli/ 的部署根。
+
+    回归：launcher 曾从 apps/dsn/CLI/ 整份拷来，沿用 parents[2]；
+    迁到 apps/dsn_study_cli/（浅一层）后没同步下移，导致自更新把文件
+    写到部署根之外、exec 到错误位置的副本。本用例禁止再 monkeypatch。
+    """
+    from apps.dsn_study_cli import launcher
+
+    root = launcher.DEPLOY_ROOT
+    # 部署根下必须存在本 launcher 自身的相对路径
+    assert (root / "apps" / "dsn_study_cli" / "launcher.py").is_file(), (
+        f"DEPLOY_ROOT={root} 不是部署根 —— 自更新会写到仓库外")
+    # 不能越到部署根之外（dsn CLI 的 parents[2] 深度在迁居后就是错的）
+    assert root == Path(launcher.__file__).resolve().parent.parents[1]
+
+
+
+def test_logging_initialized_under_m_entrypoint(tmp_path, monkeypatch):
+    """main() 必须初始化日志 —— -m 入口下模块级那行永不成立。
+
+    回归：app.py 曾在模块级写 `setup_logging() if __name__ == "__main__"`，
+    但 `python -m apps.dsn_study_cli` 下 app.py 是被 import 的，该分支永不成立，
+    于是边缘设备上 logs/cli_*.log 一个都不会生成。
+    """
+    from apps.dsn_study_cli import app
+
+    calls = []
+    monkeypatch.setattr(app, "_init_logging", lambda: calls.append(1))
+    monkeypatch.setattr(app, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(app, "save_config", lambda cfg: None)
+
+    class _FakeApp:
+        def __init__(self, cfg, **kwargs):
+            self.cfg = cfg
+            self.kwargs = kwargs
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(app, "StudyCliApp", _FakeApp)
+
+    app.main(["--host", "127.0.0.1", "--port", "5000"])
+    assert calls, "main() 必须初始化日志，否则边缘设备无 cli_*.log"
+
+
+def test_logging_writes_file_under_logs_dir(tmp_path, monkeypatch):
+    """_init_logging() 应在 LOG_DIR 下生成 cli_*.log。"""
+    from apps.dsn_study_cli import app, env
+
+    monkeypatch.setattr(env, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(app, "log", None)
+    try:
+        app._init_logging()
+        assert list((tmp_path / "logs").glob("cli_*.log"))
+    finally:
+        for h in list(logging.getLogger().handlers):
+            logging.getLogger().removeHandler(h)
+        monkeypatch.setattr(app, "log", None)
+
+
+# ── TTS 播放 ────────────────────────────────────────────────
+
+def test_tts_player_consumes_queue():
+    """TtsPlayer 必须真的消费 tts_queue —— 此前队列无人取，语音合成完即丢。"""
+    import queue as _queue
+    from apps.dsn_study_cli import tts as tts_mod
+
+    q = _queue.Queue()
+    player = tts_mod.TtsPlayer(q)
+    played = []
+    player._spawn = lambda path: played.append(path) or True
+
+    b64 = __import__("base64").b64encode(tts_mod.make_tone_wav()).decode()
+    q.put(("你好", b64))
+    player.start()
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and not played:
+            time.sleep(0.05)
+    finally:
+        player.stop()
+    assert played, "TtsPlayer 没有消费队列"
+    assert q.empty(), "队列应被取空"
+
+
+def test_tts_player_interrupt_stops_playback():
+    """barge-in：interrupt() 要能掐掉正在播的进程。"""
+    import queue as _queue
+    from apps.dsn_study_cli import tts as tts_mod
+
+    player = tts_mod.TtsPlayer(_queue.Queue())
+    assert not player.is_playing
+
+
+def test_headless_is_default_mode():
+    """默认应为 headless（设备常常不接显示器，此时只有 Space 有意义）。"""
+    from apps.dsn_study_cli import app
+
+    parser = app.build_parser()
+    assert parser.parse_args([]).headless is True, "默认必须是 headless"
+    assert parser.parse_args(["--headless"]).headless is True
+    assert parser.parse_args(["--tui"]).headless is False, \
+        "--tui 应切回完整按键模式"
+
+
+def test_tts_queue_is_wired_to_player():
+    """app 必须把 client.tts_queue 接到播放器与异步任务轮询器上。"""
+    from apps.dsn_study_cli import app
+
+    cfg = {
+        "backend_host": "127.0.0.1", "port": 5000, "token": "",
+        "uid": 1, "display_name": "t", "chat_id": 0,
+        "mic_device_index": -1, "camera_map": {},
+    }
+    a = app.StudyCliApp(cfg, headless=True)
+    try:
+        assert a.tts._queue is a.client.tts_queue, "TTS 播放未接在 tts_queue 上"
+        assert a.async_poller._tts_queue is a.client.tts_queue, \
+            "异步任务轮询器未接 tts_queue，汇总语音会被丢掉"
+    finally:
+        a.tts.stop()

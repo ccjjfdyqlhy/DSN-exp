@@ -318,7 +318,26 @@ class OpenAICompatChat(ChatClientAdapter):
         temperature: float | None,
         max_tokens: int | None,
         stream: bool,
+        reasoning_effort: str | None = None,
+        extra_body: dict | None = None,
     ) -> dict:
+        """合成 llama-server / Strata 的 /v1/chat/completions 请求体。
+
+        ``reasoning_effort`` 与 ``extra_body`` 是**逐调用**的推理开关透传，
+        只在本调用显式给出时才写进请求体（默认不发，避免改变其它本地模型
+        的行为）：
+
+          * ``reasoning_effort``：llama.cpp 的 chat template 会读它
+            （Bonsai-2 的模板把 xhigh/medium/low 映射成思考指令；
+            传 ``"none"`` 可关思考）。走顶层字段。
+          * ``extra_body``：厂商私有字段的正规通道，原样合并进请求体顶层。
+            例如关掉 Qwen3/Bonsai 思考：
+            ``{"chat_template_kwargs": {"enable_thinking": False}}``。
+
+        为什么需要这条通道：Bonsai-2-27B 默认思考是开的（template 里
+        ``reasoning_effort`` 缺省为 ``xhigh``），关不掉时 TTFT 约 1.2~2.3s，
+        关掉后降到 0.18s —— 语音对讲场景差了整整一个数量级。
+        """
         msgs = self._normalize_system_messages(self._to_message_dicts(messages))
         payload: dict[str, Any] = {
             "messages": msgs,
@@ -330,6 +349,10 @@ class OpenAICompatChat(ChatClientAdapter):
             payload["model"] = self.model_name
         if tools:
             payload["tools"] = [{"type": "function", "function": t} for t in tools]
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
+        if extra_body:
+            payload.update(dict(extra_body))
 
         # ── 多模态终检：这是发往引擎的最后一站 ──
         # 在这里打日志可以直接回答「图片到底有没有上线」。
@@ -404,10 +427,13 @@ class OpenAICompatChat(ChatClientAdapter):
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
+        reasoning_effort: str | None = None,
+        extra_body: dict | None = None,
     ) -> ChatResponse:
         payload = self._build_payload(
             messages, tools,
             temperature=temperature, max_tokens=max_tokens, stream=False,
+            reasoning_effort=reasoning_effort, extra_body=extra_body,
         )
 
         # timeout 经参数传入 _do_http_request，不再临时改写共享实例的
@@ -474,6 +500,8 @@ class OpenAICompatChat(ChatClientAdapter):
             temperature=kwargs.get("temperature"),
             max_tokens=kwargs.get("max_tokens"),
             stream=True,
+            reasoning_effort=kwargs.get("reasoning_effort"),
+            extra_body=kwargs.get("extra_body"),
         )
 
         # 修复（严重）：流式请求此前完全不经过 ModelScheduler——没有排队、

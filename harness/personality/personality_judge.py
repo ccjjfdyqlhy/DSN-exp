@@ -114,10 +114,21 @@ class PersonalityJudge:
         emotional_triggers: str = "",
         relation_dynamics: str = "",
         conversation_history: str = "",
+        chat=None,
     ) -> PerceptionRecord:
+        """分类一轮交互。
+
+        ``chat`` —— 本轮使用的客户端。为 None 时用 self._chat。
+
+        为什么要这个参数：人格回写是**后台线程**，而且为了不跟用户下一轮
+        抢 provider 队列，会等到用户空闲才真正发起模型调用。等到那时
+        调用方可能已经把客户端换回去了（例如测试里的桩）。把"这一轮
+        该用的客户端"显式带下来，语义才不会漂。
+        """
         prev = dict(previous_mood or {"joy": 0.5, "sadness": 0.2, "anger": 0.1, "fear": 0.15})
 
-        if not self._chat:
+        chat = chat or self._chat
+        if not chat:
             logger.info("PersonalityJudge: 模型不可用，使用启发式分类")
             return self._heuristic_classify(user_message)
 
@@ -141,7 +152,7 @@ class PersonalityJudge:
                      interaction_count, previous_affinity)
 
         try:
-            raw = self._send_with_temp(self._chat, prompt, 0.3, 400)
+            raw = self._send_with_temp(chat, prompt, 0.3, 400)
             data = self._parse_json_response(raw)
             if "event_type" in data:
                 record = PerceptionRecord(

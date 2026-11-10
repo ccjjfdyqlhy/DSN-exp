@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from .agent import AgentLoop, AgentRunResult
 from .conversation import Conversation, ConversationManager
@@ -101,6 +101,52 @@ class AgentRuntime:
         self.memory.add(MemoryEntry(
             text=f"user: {message}\nassistant: {result.reply}"))
         return result
+
+    async def run_stream_with_tools(
+        self,
+        message: str,
+        *,
+        session_id: Optional[str] = None,
+        tool_names: Optional[list[str]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> AsyncGenerator[Any, None]:
+        """流式执行 + 工具循环（异步生成器）。
+
+        与 :meth:`run_with_tools` 语义等价，但走 :meth:`AgentLoop.run_stream`：
+        文本增量实时产出，**原生 tool call 在流中照常累积、执行、回喂**，
+        多轮工具循环完整保留。
+
+        产出 :class:`harness.agent.StreamEvent`（kind = round_start / delta /
+        reasoning / tool_call / tool_result / reply / done）。
+
+        会话历史在**流结束时**才写回 —— 生成器被提前关闭（客户端断开）时
+        不会写入半截回复。调用方若需要中途落库，自行监听 reply 事件。
+        """
+        conv = self.session(session_id)
+        conv.add_text("user", message)
+        loop = AgentLoop(self.chat_client, self.tools, max_steps=self.max_steps,
+                         adapter=self.adapter)
+        collected: list[str] = []
+        final_reply = ""
+        try:
+            async for event in loop.run_stream(
+                    conv.messages,
+                    tool_names=tool_names,
+                    system_prompt=(self.system_prompt
+                                   if system_prompt is None
+                                   else system_prompt)):
+                kind = getattr(event, "kind", "")
+                if kind == "delta" and event.content:
+                    collected.append(event.content)
+                elif kind in ("reply", "done") and getattr(event, "reply", ""):
+                    final_reply = event.reply
+                yield event
+        finally:
+            text = final_reply or "".join(collected)
+            if text:
+                conv.add_text("assistant", text)
+                self.memory.add(MemoryEntry(
+                    text=f"user: {message}\nassistant: {text}"))
 
     def run(self, message: str, *, session_id: Optional[str] = None,
             system_prompt: Optional[str] = None) -> str:

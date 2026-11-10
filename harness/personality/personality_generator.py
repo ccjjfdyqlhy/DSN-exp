@@ -54,17 +54,42 @@ PERSONALITY_PROMPT_TEMPLATE = """你是一个角色档案整理师。以下是�
 
 
 class PersonalityPromptGenerator:
-    def __init__(self, chat=None):
+    """人格提示词生成器（带缓存 + 后台生成）。
+
+    ⚠️ 后台生成会打一次 LLM。**它不能和用户当前这一轮抢同一个模型队列** ——
+    实测这样会把用户的回复拖到 50~100 秒。所以：
+
+    1. ``before_generate`` 钩子：生成前调用（由上层决定何时可以发请求，
+       例如"等用户说完话再生成"）。harness 不认识业务，只留钩子。
+    2. ``min_regen_interval``：两次重新生成之间的最小间隔。人格描述
+       不需要每轮都重新生成 —— 实测每轮都生成会白白多打一次 provider。
+    """
+
+    def __init__(self, chat=None, before_generate=None,
+                 min_regen_interval: float = 300.0):
         self._chat = chat
         self._cached_prompt: str = ""
         self._cache_valid = False
         self._generating = False
         self._gen_lock = threading.Lock()
+        #: 生成前的钩子（可阻塞）。返回 False 表示"现在别发"。
+        self._before_generate = before_generate
+        #: 两次重新生成的最小间隔（秒）
+        self._min_regen_interval = float(min_regen_interval)
+        self._last_gen_at = 0.0
         logger.info("PersonalityGenerator: 初始化 chat=%s", "available" if chat else "none")
 
     def set_chat(self, chat) -> None:
         self._chat = chat
         logger.info("PersonalityGenerator: 更新 chat 客户端")
+
+    def set_before_generate(self, fn) -> None:
+        """设置"生成前钩子"（可阻塞；返回 False 表示这次不生成）。
+
+        上层用它把后台生成**推迟到用户空闲时** —— 后台 LLM 调用和用户
+        当前这一轮抢同一个模型队列，会把回复拖到几十秒。
+        """
+        self._before_generate = fn
 
     @property
     def available(self) -> bool:
@@ -91,11 +116,27 @@ class PersonalityPromptGenerator:
         with self._gen_lock:
             if self._generating:
                 return
+            # 冷却：人格描述不必每轮重新生成
+            import time as _time
+            if (self._last_gen_at
+                    and _time.time() - self._last_gen_at < self._min_regen_interval):
+                return
             self._generating = True
 
         def _run():
             try:
+                # 生成前先等上层放行（通常是"等用户说完话"）
+                if self._before_generate is not None:
+                    try:
+                        if not self._before_generate():
+                            with self._gen_lock:
+                                self._generating = False
+                            return
+                    except Exception:   # noqa: BLE001
+                        pass
                 result = self._do_llm_generate(snapshot, user_message, conversation_tone)
+                import time as _time
+                self._last_gen_at = _time.time()
                 with self._gen_lock:
                     self._cached_prompt = result
                     self._cache_valid = True

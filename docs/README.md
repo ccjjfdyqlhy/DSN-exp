@@ -28,6 +28,7 @@ docs/testing.md          → 跑测试、看懂 12 个预存失败
 ```
 docs/infra.md            → 模型编排四层结构、资源池、策略
 docs/harness.md          → Agent 循环、工具、上下文、管线
+docs/skills.md           → 技能插件系统（写技能、依赖注入、校验）
 docs/configuration.md    → 配置从哪来、为什么不生效
 docs/sdk_guide.md        → 把框架当库嵌进别的项目
 docs/app-development.md  → 写一个新应用
@@ -41,6 +42,7 @@ docs/app-development.md  → 写一个新应用
 |---|---|---|
 | [architecture.md](architecture.md) | 三层结构、依赖方向、模块地图、一次请求的完整路径、全局单例清单、质量基线 | 任何时候先读这篇 |
 | [harness.md](harness.md) | AgentLoop 控制流与 9 种事件、AgentSpec、工具系统、18 个标准工具、上下文四段剪裁、8 个 HookPoint、**学习子系统（数据集构建/教师边界/分层判官/晋级回滚）** | 改 Agent 行为时 |
+| [skills.md](skills.md) | **技能插件系统**：目录布局、skill.yaml 写法、能力（capability）依赖注入、加载期校验、skill.env、运行时管理 API | 写技能 / 技能不生效时 |
 | [infra.md](infra.md) | orchestrator 四层结构、调度器算法、各 provider 客户端、资源池、policy、store、**finetune 训练子系统（契约/体检/GGUF 容错解析）、显存闸门 DeviceGate** | 改模型/资源/存储时 |
 | [apps.md](apps.md) | 7 个应用的定位与启动、dsn_ui 路由与对话四分支、dsn_study 技能表、dsn 子包速查 | 找功能在哪时 |
 | [app-development.md](app-development.md) | 三种装配路线、最小应用模板、写工具/技能/Web 应用、不要抄的地方 | 要加功能或写新应用时 |
@@ -50,6 +52,7 @@ docs/app-development.md  → 写一个新应用
 | [maintenance.md](maintenance.md) | 改代码前的落点判断、9 条不变式、按位置的检查表、提交前自检、仓库卫生 | **动代码前必读** |
 | [technical-debt.md](technical-debt.md) | P0/P1/P2 技术债、验证过的 bug、修复顺序、文档与仓库卫生 | 规划工作 / 排查怪现象时 |
 | [sdk_guide.md](sdk_guide.md) | 把 AICF 当 Python SDK 嵌入第三方项目 | 在别的项目里用框架时 |
+| [expansion/README.md](expansion/README.md) | 扩展计划组：环境勘察 / GGUF 微调底层扩展 / bonsai-27B 存在性应用 | 规划新能力时（**本地专用，不上 GitHub**） |
 
 ---
 

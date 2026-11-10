@@ -387,7 +387,9 @@ def asr_passthrough():
         )
 
     # ── 单模路径 (现有逻辑) ──
-    message = f"你听到用户那边传来的声音：{recognized_text}"
+    # 识别文本原样进对话，不加人工前缀（否则会污染 embedding / 话题判定 /
+    # 记忆落库 / 主模型全链路）。语音来源由 is_asr_input 标记承载。
+    message = recognized_text
 
     def generate():
         import asyncio

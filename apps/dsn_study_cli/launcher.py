@@ -20,7 +20,11 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 
 HERE = Path(__file__).resolve().parent
-DEPLOY_ROOT = HERE.parents[2]      # <部署根>/apps/dsn_study_cli/launcher.py
+# <部署根>/apps/dsn_study_cli/launcher.py → 部署根是 parents[1]。
+# 注意：dsn 侧 apps/dsn/CLI/launcher.py 深一层，用的是 parents[2]；
+# 本文件迁到 apps/dsn_study_cli/ 后必须同步下移一级，否则自更新会把文件
+# 同步到部署根之外（~/apps/…），且 exec 的是错误位置的副本。
+DEPLOY_ROOT = HERE.parents[1]
 
 UPDATE_TIMEOUT = 8
 DOWNLOAD_TIMEOUT = 60

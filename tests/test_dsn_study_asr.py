@@ -287,16 +287,25 @@ def test_asr_port_follows_base_url(monkeypatch):
 
 
 def test_asr_device_resolution(monkeypatch):
-    """ASR_DEVICE + ASR_GPU_ID → cuda:N。"""
+    """ASR_GPU_ID 只用来钉 CUDA_VISIBLE_DEVICES，**不进 --device**。
+
+    回归：原实现把物理卡号拼进 --device（cuda:1），而 launcher 同时用同一个
+    卡号设了 CUDA_VISIBLE_DEVICES=1 —— 子进程只暴露一张卡，进程内序号是 0，
+    再取 cuda:1 就 "CUDA error: invalid device ordinal"，模型根本加载不了。
+    """
     from apps.dsn_study.config import Config
     from apps.dsn_study.models import resource_setup as rs
 
     monkeypatch.setattr(Config, "ASR_DEVICE", "cuda", raising=False)
     monkeypatch.setattr(Config, "ASR_GPU_ID", "1", raising=False)
-    assert rs._asr_device() == "cuda:1"  # noqa: SLF001
+    assert rs._asr_device() == "cuda"  # noqa: SLF001
 
     monkeypatch.setattr(Config, "ASR_GPU_ID", "", raising=False)
     assert rs._asr_device() == "cuda"  # noqa: SLF001
+
+    # ASR_DEVICE 自带序号（且不钉卡）时原样透传
+    monkeypatch.setattr(Config, "ASR_DEVICE", "cuda:1", raising=False)
+    assert rs._asr_device() == "cuda:1"  # noqa: SLF001
 
 
 # ── 4. 路由契约 ──

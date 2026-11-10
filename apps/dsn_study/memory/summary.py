@@ -66,12 +66,28 @@ class LLMSummaryModel:
         return out or None
 
     def summarize_text(self, text: str, max_length: int = 100) -> Optional[str]:
-        """概括一段文本。"""
+        """概括一段文本。
+
+        输入长度必须封顶 + 调用必须有超时 —— 否则一段长对话的摘要会
+        变成 18k token 的请求，在 provider 上排到十几秒，而且**同步挡在
+        对话热路径上**（实测一次话题关闭让整轮对话等了 50 多秒）。
+        """
+        from apps.dsn_study.config import Config
+        limit = getattr(Config, "TOPIC_SUMMARY_INPUT_CHARS", 3000)
+        if text and len(text) > limit:
+            text = text[-limit:]      # 保留结尾（结论通常在最后）
+        timeout = getattr(Config, "TOPIC_SUMMARY_TIMEOUT", 20)
         prompt = (
             f"请用不超过 {max_length} 字概括以下内容，仅输出概括：\n\n{text}"
         )
         try:
-            out = self._check().send_message(prompt).strip()
+            client = self._check()
+            try:
+                out = client.send_message(
+                    prompt, timeout=timeout, max_retries=0).strip()
+            except TypeError:
+                # 老的 LLM 包装器不认 timeout/max_retries 关键字
+                out = client.send_message(prompt).strip()
         except Exception:
             try:
                 logger.exception("summarize_text 失败")

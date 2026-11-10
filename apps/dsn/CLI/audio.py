@@ -134,7 +134,13 @@ def _list_microphones() -> list[str]:
     if not HAS_PVRECORDER:
         return []
     try:
-        return list(PvRecorder.get_audio_devices())
+        # pvrecorder 1.2.7 的方法名是 get_available_devices()；
+        # 之前写的 get_audio_devices() 在这个版本上不存在，
+        # 会被 except 静默吞掉 → 麦克风按名字选永远选不中。
+        getter = getattr(PvRecorder, "get_available_devices", None)
+        if getter is None:
+            return []
+        return list(getter())
     except Exception:
         log.warning("麦克风枚举失败", exc_info=True)
         return []

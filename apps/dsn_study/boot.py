@@ -35,6 +35,7 @@ from infra.models import (
     OpenAICompatClient,
 )
 
+from apps.dsn_study.turn_gate import user_turn
 from apps.dsn_study.config import Config
 from apps.dsn_study.settings import bind_dsn_study_settings
 from apps.dsn_study.auth import LocalAuthManager
@@ -302,6 +303,31 @@ class StudyEngine:
         # 同一会话串行：防止并发请求把 run_with_tools 的"读历史→执行→写回"
         # 交错执行（轮次错乱），以及记忆轮次号重复分配。
         with self._chat_lock_for(session_key):
+            # 轮次闸门：标记"用户这一轮在进行中"。后台 LLM 调用（人格判定等）
+            # 会等这个闸门归零再发起，免得跟用户的下一轮抢 provider 队列
+            # —— 实测那样能把一次回复拖到 50~100 秒。
+            with user_turn():
+                # 语音轮用更短的模型超时（对讲机要快失败）
+                self._apply_voice_timeout(is_asr_input)
+                return self._chat_locked(session_key, message, user_id,
+                                         image, tts_enabled, is_asr_input)
+
+    def _apply_voice_timeout(self, is_asr_input: bool) -> None:
+        """语音轮把模型超时切短 —— provider 卡住时及时报错。"""
+        try:
+            client = getattr(self, "chat_client", None)
+            if client is None or not hasattr(client, "set_timeout"):
+                return
+            want = (getattr(Config, "VOICE_MODEL_TIMEOUT", 45)
+                    if is_asr_input
+                    else getattr(Config, "MODEL_REQUEST_TIMEOUT", 300))
+            if getattr(client, "_timeout", None) != want:
+                client.set_timeout(want)
+        except Exception:   # noqa: BLE001
+            logger.debug("切换模型超时失败（已跳过）", exc_info=True)
+
+    def _chat_locked(self, session_key, message, user_id, image,
+                     tts_enabled, is_asr_input) -> str:
             # 语义缓存读路径：命中直接返回，不进模型（组卷等贵请求收益最大）
             served = self._cache_serve(message)
             if served:
@@ -346,6 +372,12 @@ class StudyEngine:
             ctx.extra["round_index"] = self._next_round(ctx.chat_id)
             try:
                 ctx = self.pipeline_runner.run(ctx)
+                # 分钩子耗时（管线已采集，但此前没人落日志 —— 语音链路的
+                # 延迟排查全靠它：pre_filter / model_invoke / post_tts 各占多少）
+                timing = ctx.extra.get("_pipeline_timing") or {}
+                if timing:
+                    logger.info("管线耗时: %s", ", ".join(
+                        f"{k}={v}ms" for k, v in timing.items()))
                 reply = ctx.reply or ""
                 # POST_TTS 插件的产物（chat_audio 直接取，不再二次合成）
                 self._last_tts = (ctx.audio_b64, ctx.tts_error or "")
@@ -408,6 +440,262 @@ class StudyEngine:
             audio_b64, tts_error = self._synthesize(reply)
         return {"reply": reply, "audio_b64": audio_b64, "tts_error": tts_error}
 
+    # ── 流式对话 + 流式 TTS（方案 D）──
+
+    def chat_stream_audio(self, message: str, user_id: int = 1,
+                          session_id: Optional[str] = None,
+                          image: Optional[str] = None,
+                          is_asr_input: bool = False):
+        """流式对话：边生成边合成语音，按句 yield 事件。
+
+        **完整走 AgentLoop.run_stream**，因此原生 tool call 全程可用：
+        模型在流中请求工具 → 立刻执行 → 结果回喂 → 继续生成，
+        与 :meth:`chat` 的能力完全一致，只是把最终文本换成增量 + 逐句音频。
+
+        yield 的事件字典：
+
+          ``{"type": "text_delta", "text": ...}``            文本增量
+          ``{"type": "tool_call", "name": ..., "arguments": ...}``
+          ``{"type": "tool_result", "name": ..., "success": ...}``
+          ``{"type": "audio", "index": i, "text": ..., "audio_b64": ...}``
+          ``{"type": "error", "scope": "tts", "error": ...}``
+          ``{"type": "done", "reply": 完整文本, "tts_error": ...}``
+
+        实现要点：
+          * 模型事件在后台线程跑（AgentLoop 是 async，用常驻事件循环驱动），
+            主线程做分句 + TTS 派发 + 按序下发，两条流水线互不阻塞。
+          * 只把 ``delta`` 文本喂给 TTS；``tool_call``/``tool_result`` 不进语音
+            （否则用户会听到一串 JSON），但会转发给前端。
+          * 收尾（记忆落库 / 人格回写）复用 :meth:`_finish_stream_turn`。
+        """
+        import asyncio
+        import queue as _q
+
+        from apps.dsn_study.voice_stream import StreamingVoicePipeline
+
+        session_key = session_id or self.session_id
+        voice = self.voice
+
+        def _events():
+            with self._chat_lock_for(session_key):
+                with user_turn():
+                    self._apply_voice_timeout(is_asr_input)
+
+                    # ── 1) 组装 system prompt（复用管线 PREPARE 插件）──
+                    system_prompt, ctx = self._prepare_stream_ctx(
+                        message, user_id, session_key, image, is_asr_input)
+
+                    ev_queue: "_q.Queue" = _q.Queue()   # AgentLoop → 主线程
+                    STOP = object()
+
+                    def _loop_worker():
+                        """在独立线程里跑 AgentLoop.run_stream，事件塞队列。"""
+                        loop = asyncio.new_event_loop()
+                        try:
+                            asyncio.set_event_loop(loop)
+
+                            async def _drive():
+                                async for ev in self.agent.run_stream_with_tools(
+                                        message, session_id=session_key,
+                                        system_prompt=system_prompt):
+                                    ev_queue.put(ev)
+
+                            loop.run_until_complete(_drive())
+                        except Exception as e:   # noqa: BLE001
+                            logger.warning("流式 AgentLoop 失败: %s", e, exc_info=True)
+                            ev_queue.put({"__error__": str(e)})
+                        finally:
+                            ev_queue.put(STOP)
+                            try:
+                                loop.close()
+                            except Exception:
+                                pass
+
+                    threading.Thread(target=_loop_worker, daemon=True,
+                                     name="agent-stream").start()
+
+                    pipeline = StreamingVoicePipeline(voice) if voice else None
+                    reply_parts: list[str] = []
+                    tts_errors: list[str] = []
+
+                    # 文本增量 → TTS 的投喂队列（后台分句/合成）
+                    feed: "_q.Queue" = _q.Queue()
+                    seg_queue: "_q.Queue" = _q.Queue()
+                    SEG_STOP = object()
+
+                    def _tts_worker():
+                        try:
+                            for seg in pipeline.run(self._drain(feed)):
+                                seg_queue.put(seg)
+                        except Exception as e:   # noqa: BLE001
+                            seg_queue.put({"__error__": str(e)})
+                        finally:
+                            seg_queue.put(SEG_STOP)
+
+                    if pipeline is not None:
+                        threading.Thread(target=_tts_worker, daemon=True,
+                                         name="tts-stream").start()
+
+                    try:
+                        while True:
+                            try:
+                                ev = ev_queue.get(timeout=0.05)
+                            except _q.Empty:
+                                ev = None
+                            if ev is STOP:
+                                break
+                            if ev is None:
+                                # 无新事件：把已就绪的音频先吐出去
+                                pass
+                            elif isinstance(ev, dict):
+                                tts_errors.append(ev.get("__error__", ""))
+                            else:
+                                kind = getattr(ev, "kind", "")
+                                if kind == "delta" and ev.content:
+                                    reply_parts.append(ev.content)
+                                    yield {"type": "text_delta", "text": ev.content}
+                                    if pipeline is not None:
+                                        feed.put(ev.content)
+                                elif kind == "tool_call":
+                                    tc = ev.tool_call or {}
+                                    yield {"type": "tool_call",
+                                           "name": tc.get("name", ""),
+                                           "arguments": tc.get("arguments")}
+                                elif kind == "tool_result":
+                                    tr = ev.tool_result or {}
+                                    yield {"type": "tool_result",
+                                           "name": tr.get("name", ""),
+                                           "success": tr.get("success")}
+                                elif kind == "reply" and ev.reply:
+                                    # AgentLoop 的最终回复可能在 delta 之外还有内容，
+                                    # 只补未出现过的尾巴，避免重复念
+                                    tail = ev.reply
+                                    joined = "".join(reply_parts)
+                                    if tail and not joined.endswith(tail) and tail != joined:
+                                        if len(tail) > len(joined) and tail.startswith(joined):
+                                            extra = tail[len(joined):]
+                                        else:
+                                            extra = ""
+                                        if extra:
+                                            reply_parts.append(extra)
+                                            yield {"type": "text_delta", "text": extra}
+                                            if pipeline is not None:
+                                                feed.put(extra)
+
+                            # 把已就绪的音频按序吐出去
+                            while True:
+                                try:
+                                    item = seg_queue.get_nowait()
+                                except _q.Empty:
+                                    break
+                                if item is SEG_STOP:
+                                    break
+                                if isinstance(item, dict):
+                                    tts_errors.append(item.get("__error__", ""))
+                                    continue
+                                if item.audio_b64:
+                                    yield {"type": "audio", "index": item.index,
+                                           "text": item.text,
+                                           "audio_b64": item.audio_b64}
+                                elif item.error:
+                                    tts_errors.append(item.error)
+                                    yield {"type": "error", "scope": "tts",
+                                           "error": item.error}
+
+                        # 收尾：等 TTS 把剩余段合成完
+                        if pipeline is not None:
+                            feed.put(None)   # 哨兵：分句器输入结束
+                            while True:
+                                try:
+                                    item = seg_queue.get(timeout=30)
+                                except _q.Empty:
+                                    break
+                                if item is SEG_STOP:
+                                    break
+                                if isinstance(item, dict):
+                                    tts_errors.append(item.get("__error__", ""))
+                                    continue
+                                if item.audio_b64:
+                                    yield {"type": "audio", "index": item.index,
+                                           "text": item.text,
+                                           "audio_b64": item.audio_b64}
+                                elif item.error:
+                                    tts_errors.append(item.error)
+                                    yield {"type": "error", "scope": "tts",
+                                           "error": item.error}
+                    finally:
+                        if pipeline is not None:
+                            try:
+                                feed.put(None)
+                            except Exception:
+                                pass
+                            pipeline.close()
+
+                    reply = "".join(reply_parts)
+                    self._finish_stream_turn(ctx, reply, user_id)
+                    yield {"type": "done", "reply": reply,
+                           "tts_error": "; ".join(x for x in tts_errors if x) or ""}
+
+        return _events()
+
+    @staticmethod
+    def _drain(q):
+        """把队列内容转成生成器；None 作为结束哨兵。"""
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            yield item
+
+    def _prepare_stream_ctx(self, message, user_id, session_key, image,
+                            is_asr_input):
+        """复用管线插件组装 system prompt（不跑 MODEL_INVOKE）。"""
+        from harness.pipeline.base import Attachment, Context
+        ctx = Context(user_id=user_id, message=message,
+                      session_id=session_key,
+                      chat_id=self._chat_id_for(session_key),
+                      nickname="用户", tts_enabled=True,
+                      is_asr_input=bool(is_asr_input))
+        if image:
+            ctx.attachments.append(Attachment(
+                kind="image", data=image, mime="image/jpeg", name="chat-image"))
+        ctx.extra["user_message"] = message
+        ctx.extra["round_index"] = self._next_round(ctx.chat_id)
+        try:
+            system_prompt = self._run_prepare_hooks(ctx)
+        except Exception:
+            logger.warning("流式路径 prompt 组装失败（用兜底）", exc_info=True)
+            system_prompt = (self.prompt_builder.build()
+                             if self.prompt_builder is not None else "")
+        return system_prompt or "", ctx
+
+    def _run_prepare_hooks(self, ctx):
+        """只跑 PREPARE 阶段插件，拿到 system_prompt。"""
+        runner = self.pipeline_runner
+        if runner is None or runner._loop is None:
+            if self.prompt_builder is not None:
+                return self.prompt_builder.build(uid=int(ctx.user_id or 1))
+            return ""
+        import asyncio
+        from harness.pipeline.base import HookPoint
+        fut = asyncio.run_coroutine_threadsafe(
+            runner.pm.dispatch(HookPoint.PREPARE, ctx), runner._loop)
+        ctx = fut.result(timeout=30)
+        return ctx.system_prompt or ""
+
+    def _finish_stream_turn(self, ctx, reply, user_id):
+        """流结束后的收尾：记忆 + 缓存（历史由 AgentRuntime 自己写）。"""
+        try:
+            self._cache_write(user_id, ctx.message, reply)
+        except Exception:
+            pass
+        try:
+            if self.memory_system is not None and reply:
+                self.memory_system.record_turn(
+                    user_id, ctx.chat_id, ctx.message, reply)
+        except Exception:
+            logger.debug("流式路径记忆落库失败（已跳过）", exc_info=True)
+
     def __repr__(self):
         return (f"<StudyEngine tools={len(self.skill_registry.list_active_tools())} "
                 f"session={self.session_id}>")
@@ -460,6 +748,9 @@ def _make_chat(model_type: str):
         api_key=Config.OPENAI_API_KEY,
         base_url=Config.OPENAI_API_BASE,
         model=Config.MAIN_MODEL_NAME,
+        # 远端网关不接 timeout 时走 SDK 默认（600s）—— 一次挂起就能把
+        # 整轮对话拖成分钟级。这里接上 MODEL_REQUEST_TIMEOUT（默认 300s）。
+        timeout=getattr(Config, "MODEL_REQUEST_TIMEOUT", 300),
     )
 
 
@@ -722,7 +1013,7 @@ def create_application() -> Flask:
         if Config.MEMORY_EMBEDDING_ENABLED:
             embedding_client = OpenAIEmbeddingClient(
                 base_url=Config.MEMORY_EMBEDDING_BASE_URL or Config.OPENAI_API_BASE,
-                api_key=Config.OPENAI_API_KEY,
+                api_key=Config.MEMORY_EMBEDDING_API_KEY or Config.OPENAI_API_KEY,
                 model=Config.MEMORY_EMBEDDING_MODEL,
             )
         memory_system = MemorySystem(db_mgr, summary_model=summary_model,
@@ -915,6 +1206,12 @@ def create_application() -> Flask:
             )
             personality.init_tables()
             personality.enabled = True
+            # 人格提示词的后台生成**等用户说完话再做** —— 否则它会跟用户
+            # 当前这一轮抢 provider 队列，把回复拖到 50~100 秒。
+            try:
+                personality.set_before_generate(_wait_user_idle)
+            except Exception:   # noqa: BLE001
+                logger.debug("设置人格生成前置钩子失败（已跳过）", exc_info=True)
             runtime.register("personality", personality)
             logger.info("人格系统已就绪: cards_dir=%s default=%s",
                         cards_dir, os.path.basename(default_card))

@@ -204,8 +204,13 @@ class TopicManager:
     # ── 边界检测（on_new_message） ──
 
     def on_new_message(self, uid: int, chat_id: int, user_text: str,
-                       round_idx: int = 0) -> dict:
-        """新消息进来 → 决定 continue / new / reopen。"""
+                       round_idx: int = 0,
+                       allow_llm_judge: bool = True) -> dict:
+        """新消息进来 → 决定 continue / new / reopen。
+
+        ``allow_llm_judge=False`` 时只用规则判定，不发起 LLM 调用 ——
+        语音轮（对讲机）走这条：一次 judge 要 8~18s，而说话人只想要一句回答。
+        """
         with self._lock:
             st = self._state(uid, chat_id)
             now = time.time()
@@ -234,7 +239,8 @@ class TopicManager:
 
             decision = self._decide(cur, cur_sim, best_tid, best_sim,
                                     user_text, has_signal=query_vec is not None,
-                                    best_status=best_status)
+                                    best_status=best_status,
+                                    allow_llm_judge=allow_llm_judge)
             action = decision["action"]
 
             if action == "continue" and cur:
@@ -269,7 +275,8 @@ class TopicManager:
 
     def _decide(self, cur, cur_sim: float, best_tid, best_sim: float,
                 user_text: str, has_signal: bool = False,
-                best_status: str = "open") -> dict:
+                best_status: str = "open",
+                allow_llm_judge: bool = True) -> dict:
         """决策：continue / reopen / new（规则优先，可选 LLM judge）。
 
         对齐 dsn memory/topics.py 的规则骨架：
@@ -289,7 +296,7 @@ class TopicManager:
                           else _C.TOPIC_REOPEN_THRESHOLD)
 
         if cur is not None and (cur_sim >= continue_th or not has_signal):
-            if _C.TOPIC_JUDGE_ALWAYS and self._judge_wanted(user_text):
+            if _C.TOPIC_JUDGE_ALWAYS and self._judge_wanted(user_text, allow_llm_judge):
                 judged = self._judge(user_text, cur, cur_sim, best_tid, best_sim)
                 if judged:
                     return judged
@@ -298,7 +305,7 @@ class TopicManager:
                                else "无嵌入信号，默认延续")}
 
         if best_tid and best_sim >= reopen_th:
-            if self._judge_wanted(user_text):
+            if self._judge_wanted(user_text, allow_llm_judge):
                 judged = self._judge(user_text, cur, cur_sim, best_tid, best_sim)
                 if judged:
                     return judged
@@ -308,7 +315,7 @@ class TopicManager:
             return {"action": "new", "reason": "无进行中话题"}
 
         # 有嵌入信号、当前话题不像、也没有可 reopen 的历史话题
-        if self._judge_wanted(user_text):
+        if self._judge_wanted(user_text, allow_llm_judge):
             judged = self._judge(user_text, cur, cur_sim, best_tid, best_sim)
             if judged:
                 return judged
@@ -317,7 +324,10 @@ class TopicManager:
                     "reason": f"当前话题弱相似 {cur_sim:.2f}"}
         return {"action": "new", "reason": f"与当前话题不相似 ({cur_sim:.2f})"}
 
-    def _judge_wanted(self, user_text: str) -> bool:
+    def _judge_wanted(self, user_text: str,
+                      allow_llm_judge: bool = True) -> bool:
+        if not allow_llm_judge:
+            return False
         return bool(Config.TOPIC_JUDGE_ENABLED and self.judge_chat
                     and (user_text or "").strip())
 
@@ -331,7 +341,11 @@ class TopicManager:
                 f"候选话题标题：{self.store.get_topic(best_tid)['title'] if best_tid else '（无）'}\n"
                 f"用户消息：{user_text[:200]}\n"
                 '只输出 JSON：{"action": "continue|reopen|new"}')
-            raw = self.judge_chat.send_message(prompt)
+            # 短超时：judge 只是"话题归属"的启发式判定，失败有规则回退，
+            # 不值得让它把对话热路径堵住。
+            raw = self.judge_chat.send_message(
+                prompt, timeout=getattr(Config, "TOPIC_JUDGE_TIMEOUT", 8),
+                max_retries=0)      # 超时不重试 —— judge 只是启发式判定
             raw = raw[raw.find("{"): raw.rfind("}") + 1]
             import json as _json
             data = _json.loads(raw)
@@ -341,6 +355,35 @@ class TopicManager:
         except Exception:   # noqa: BLE001 - judge 失败回退规则
             logger.debug("话题 judge 失败（回退规则）", exc_info=True)
         return None
+
+    def _summarize_in_background(self, topic_id: str, transcript: str) -> None:
+        """后台线程做话题摘要，完成后回填 summary。
+
+        不占用对话热路径 —— 摘要是一次可能上万 token 的 LLM 调用，
+        同步做会让整轮对话等上几十秒。
+        """
+        def _work():
+            try:
+                text = self.summary_model.summarize_text(transcript) or ""
+            except Exception:   # noqa: BLE001
+                return
+            if not text:
+                return
+            try:
+                topic = self.store.get_topic(topic_id) or {}
+                if not topic:
+                    return
+                topic["summary"] = text[:int(Config.TOPIC_SUMMARY_CHARS)]
+                self.store.save_topic(topic)
+                logger.info("话题摘要已回填: %s", topic_id[:16])
+            except Exception:   # noqa: BLE001
+                logger.debug("话题摘要回填失败（已跳过）", exc_info=True)
+
+        try:
+            threading.Thread(target=_work, daemon=True,
+                             name="topic-summarize").start()
+        except Exception:   # noqa: BLE001
+            logger.debug("话题摘要线程启动失败（已跳过）", exc_info=True)
 
     def _embed(self, text: str) -> Optional[list]:
         if not self.embedding_client or not (text or "").strip():
@@ -422,15 +465,21 @@ class TopicManager:
             if not topic:
                 return False
             msgs = self.topic_messages(topic_id)
+            placeholder = f"讨论了关于【{topic['title']}】的内容，共 {len(msgs)} 条记录。"
             if not summary and self.summary_model is not None and msgs:
+                # 摘要**放后台**：它是一次可能上万 token 的 LLM 调用，
+                # 同步做会把整轮对话堵住（对讲机场景尤其致命）。
+                # 先用占位摘要顶上，摘要好了再回填。
                 try:
                     transcript = "\n".join(
                         f"[{m['role']}] {m['content']}" for m in msgs[-20:])
-                    summary = self.summary_model.summarize_text(transcript) or ""
                 except Exception:   # noqa: BLE001
-                    summary = ""
+                    transcript = ""
+                if transcript:
+                    self._summarize_in_background(topic_id, transcript)
+                summary = placeholder
             if not summary:
-                summary = f"讨论了关于【{topic['title']}】的内容，共 {len(msgs)} 条记录。"
+                summary = placeholder
             topic["status"] = "closed"
             topic["summary"] = summary[:int(Config.TOPIC_SUMMARY_CHARS)]
             topic["closed_at"] = time.time()

@@ -139,6 +139,31 @@ class StudyPromptBuilder:
             return FALLBACK_SYSTEM_PROMPT
         return prompt or FALLBACK_SYSTEM_PROMPT
 
+    def compact_skill_index(self, limit: int = 40) -> str:
+        """紧凑技能索引：一行一个（技能名 + 一句话说明）。
+
+        给语音模式用 —— 完整技能说明有 17KB，而模型只需要知道
+        "有哪些能力可用、需要时再调"。这一段通常只有 1KB 上下。
+        """
+        reg = self._skill_registry
+        if reg is None:
+            return ""
+        try:
+            skills = reg.list_skills() or []
+        except Exception:
+            logger.warning("技能索引生成失败（已跳过）", exc_info=True)
+            return ""
+        lines = []
+        for sk in skills[:limit]:
+            name = str(sk.get("name") or "")
+            if not name:
+                continue
+            desc = " ".join((sk.get("description") or "").split())
+            if len(desc) > 36:
+                desc = desc[:36] + "…"
+            lines.append(f"- {name}：{desc}" if desc else f"- {name}")
+        return "\n".join(lines)
+
     def summary(self) -> str:
         return self._engine.summary()
 

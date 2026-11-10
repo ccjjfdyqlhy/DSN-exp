@@ -85,11 +85,21 @@ def _tts_launch_spec() -> Optional[LaunchSpec]:
 
 
 def _asr_device() -> str:
-    """解析推理设备：ASR_DEVICE（cuda）+ ASR_GPU_ID → cuda:N。"""
+    """解析推理设备。
+
+    ASR_GPU_ID 的作用**只是** CUDA_VISIBLE_DEVICES（见下方 launcher 的
+    device=gpu_id，注释也写明"必须是物理卡号"）。子进程被钉到单卡之后，
+    进程内可见的序号是 0 —— 再把物理卡号拼进 --device（如 cuda:1），
+    就会 "CUDA error: invalid device ordinal"，模型根本加载不了。
+
+    所以：ASR_GPU_ID 有值 → --device 只给 "cuda"（进程内第 0 张就是那一张）；
+    ASR_GPU_ID 为空而 ASR_DEVICE 自带序号 → 原样透传（进程能看到全部卡）。
+    （TTS 侧一直是对的：TTS_GPU_ID 为空，--device 只传 "cuda"。）
+    """
     device = getattr(Config, "ASR_DEVICE", "cuda") or "cuda"
     gpu_id = (getattr(Config, "ASR_GPU_ID", "") or "").strip()
     if gpu_id and device.startswith("cuda") and ":" not in device:
-        device = "%s:%s" % (device, gpu_id)
+        device = "cuda"   # 卡号由 CUDA_VISIBLE_DEVICES 负责，此处不再带序号
     return device
 
 
