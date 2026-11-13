@@ -524,6 +524,77 @@ class ComplexityPlugin(_BaseStudyPlugin):
 
 
 # ══════════════════════════════════════════════════════════════
+# PRE_PROCESS —— System-1 决策（读用户状态）
+# ══════════════════════════════════════════════════════════════
+
+class DecisionStatePlugin(_BaseStudyPlugin):
+    """Read the user state (emotion and crisis) and hand the tone to the model.
+
+    The reason it exists: the tone of a text reply is written by the model
+    itself, while the tone of a **voice** reply is a synthesis parameter, and
+    "catch the emotion before talking about the task" is something the model
+    does not do consistently. The decision model returns the probability
+    distribution of one forward pass (measured at about 0.7s), and both the
+    emotion and the crisis come out of it as thresholdable signals.
+
+    Two rules:
+      1. **A decision is an extra, not the main path.** Without a signal
+         nothing happens and the conversation carries on.
+      2. **Do not ask every turn.** The emotion is read on voice turns only by
+         default (DECISION_PROBE_SCOPE), and the crisis check runs a keyword
+         pre-filter first, so the model is only asked when something looks
+         wrong.
+
+    The result lands in ctx.extra["decision"], where the TTS plugin picks it
+    up to adjust the speed.
+    """
+
+    name = "study_decision_state"
+    description = "System-1 decision: read the emotion and the crisis, produce a tone hint"
+    hooks = [HookPoint.PRE_PROCESS]
+    priority = 35
+
+    def __init__(self, probe=None):
+        #: probe(text, is_voice=...) -> StateProbe, the default is used when
+        #: this is None
+        self._probe = probe
+
+    def _resolve_probe(self):
+        if self._probe is not None:
+            return self._probe
+        from apps.dsn_study.models.decision_service import probe_state
+
+        return probe_state
+
+    def on_hook(self, hook: HookPoint, ctx: Context) -> Context:
+        try:
+            probe = self._resolve_probe()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("the decision service is unavailable, the state probe is skipped: %s", e)
+            return ctx
+
+        try:
+            state = probe(ctx.message or "", is_voice=bool(ctx.is_asr_input))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("the state probe failed, it is skipped: %s", e)
+            return ctx
+        if state is None:
+            return ctx
+
+        payload = state.to_dict() if hasattr(state, "to_dict") else state
+        try:
+            ctx.extra["decision"] = payload
+        except Exception:  # noqa: BLE001 - extra is a plain dict, this cannot fail
+            pass
+
+        hint = getattr(state, "tone_hint", "") or ""
+        if hint:
+            self._append_context(ctx, hint)
+            logger.debug("the decision tone hint: %s", hint[:40])
+        return ctx
+
+
+# ══════════════════════════════════════════════════════════════
 # MODEL_INVOKE —— 调模型
 # ══════════════════════════════════════════════════════════════
 
@@ -848,8 +919,24 @@ class TTSPlugin(_BaseStudyPlugin):
         # 只有需要音频的调用方才合成（chat() 走纯文本，chat_audio() 才要）
         if not ctx.tts_enabled:
             return ctx
+        # The emotion drives the tone: the state read by the decision model
+        # sets the speed, so the voice matches the mood. Without a signal (or
+        # when it is degraded) nothing is overridden and the behaviour is the
+        # same as before.
+        params_override = {}
         try:
+            from apps.dsn_study.voice import tone_params
+
+            params_override = tone_params(ctx.extra.get("decision"))
+        except Exception as exc:
+            logger.debug("the tone parameters failed, the default speed is used: %s", exc)
+        try:
+            audio_b64, error = self._voice.synthesize_b64(
+                ctx.reply, params_override=params_override)
+        except TypeError:
+            # An older or stubbed voice facade has no params_override argument
             audio_b64, error = self._voice.synthesize_b64(ctx.reply)
+        try:
             ctx.audio_b64 = audio_b64
             ctx.tts_error = error
         except Exception as exc:

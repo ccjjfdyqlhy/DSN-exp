@@ -420,6 +420,79 @@ class Config:
     # 服务日志落盘位置（空 = 不落盘）
     VLM_LOG_FILE = _env("VLM_LOG_FILE", "") or ".dsn/logs/vlm_server.log"
 
+    # -- the System-1 decision model (JEV-27B-VL) --
+    #
+    # The decision model answers with the probability distribution of a single
+    # forward pass instead of a piece of text: emotion, crisis, tool routing
+    # and the retrieval gate are all discrete judgements, they run an order of
+    # magnitude faster this way and carry a confidence that can be
+    # thresholded.
+    #
+    # VRAM reality: the Q4_K_M weights of JEV are 16.5G and fill **both
+    # cards** once loaded (measured 9.9G plus 9.9G). Sharing the machine with
+    # TTS (2.8G) leaves 1.4G on GPU0. It cannot run at the same time as
+    # VLM/Bonsai (12G), so there is a VRAM check before the start: when there
+    # is not enough room the decision is skipped (degraded, no crash).
+    #
+    # The lifecycle is the same as TTS, ASR and the VLM: start on demand, keep
+    # the lease alive, stop it after the idle timeout.
+    DECISION_ENABLED = _env("DECISION_ENABLED", "true").lower() == "true"
+    # AUTOSTART=true means the pool manages it (start on demand, reclaim when
+    # idle), false means adopt (connect to a service that is already running).
+    DECISION_AUTOSTART = _env("DECISION_AUTOSTART", "true").lower() == "true"
+    DECISION_HOST = _env("DECISION_HOST", "127.0.0.1")
+    # The port avoids Bonsai (8080), Strata (8081), the JEV chat model (8090),
+    # TTS (9880) and the OCR model (4503).
+    DECISION_PORT = int(_env("DECISION_PORT", "8092"))
+    DECISION_BASE_URL = _env("DECISION_BASE_URL", "") or f"http://{DECISION_HOST}:{DECISION_PORT}"
+    # The main model and the vision projector (empty means the JEV directory
+    # is scanned).
+    DECISION_MODEL_PATH = _env("DECISION_MODEL_PATH", "")
+    DECISION_MMPROJ_PATH = _env("DECISION_MMPROJ_PATH", "")
+    # The context stays small because a decision only needs the state and one
+    # question.
+    DECISION_CTX_SIZE = int(_env("DECISION_CTX_SIZE", "4096"))
+    # Fixed at 99: anything lower disables the fused GDN kernel and costs 7x
+    # speed, see infra/decision/jev.py.
+    DECISION_NGL = int(_env("DECISION_NGL", "99"))
+    # The dual card split gives the freer card more (GPU1 is emptier here).
+    DECISION_TENSOR_SPLIT = _env("DECISION_TENSOR_SPLIT", "8,12")
+    # The KV cache stays in memory instead of VRAM, the weights already fill
+    # both cards.
+    DECISION_NO_KV_OFFLOAD = _env("DECISION_NO_KV_OFFLOAD", "true").lower() == "true"
+    # The cold start loads 16.5G of weights, so it needs room.
+    DECISION_LOAD_TIMEOUT = int(_env("DECISION_LOAD_TIMEOUT", "900"))
+    # One decision is one forward pass (measured at about 0.7s), the timeout
+    # leaves room around it.
+    DECISION_REQUEST_TIMEOUT = int(_env("DECISION_REQUEST_TIMEOUT", "120"))
+    # Idle seconds before the model is stopped and the VRAM comes back.
+    DECISION_IDLE_TIMEOUT = int(_env("DECISION_IDLE_TIMEOUT", "900"))
+    # Whether it takes part in the idle reclaim, under the pool level switch
+    # resource_idle_shutdown_enabled.
+    DECISION_IDLE_SHUTDOWN = _env_bool("DECISION_IDLE_SHUTDOWN", "true")
+    DECISION_VRAM_ESTIMATE_MB = int(_env("DECISION_VRAM_ESTIMATE_MB", "20000"))
+    DECISION_LOG_FILE = _env("DECISION_LOG_FILE", "") or ".dsn/logs/decision_server.log"
+    # When the emotion is read: voice means only on voice turns (saves one
+    # forward pass), all means every turn, off disables it.
+    DECISION_PROBE_SCOPE = (_env("DECISION_PROBE_SCOPE", "voice") or "voice").lower()
+    # The emotion read, it drives the tone and the TTS speed.
+    DECISION_EMOTION_ENABLED = _env("DECISION_EMOTION_ENABLED", "true").lower() == "true"
+    # The crisis check (keyword pre-filter, then the model confirms).
+    DECISION_CRISIS_ENABLED = _env("DECISION_CRISIS_ENABLED", "true").lower() == "true"
+    # Whether the emotion drives the TTS speed, so the voice matches the mood.
+    DECISION_TONE_ENABLED = _env("DECISION_TONE_ENABLED", "true").lower() == "true"
+    # Warm it up in the background at startup, otherwise the first voice
+    # conversation waits for the cold start.
+    DECISION_WARMUP = _env("DECISION_WARMUP", "true").lower() == "true"
+    # The free VRAM needed to start the model. Without it the start is skipped,
+    # because squeezing in crashes the other services on the machine (the VLM
+    # at 12G, TTS at 2.8G).
+    # Measured: JEV takes about 15.7GB of VRAM on both cards (part of the 16.5G
+    # of weights stays in main memory), so 17G is the threshold that still
+    # starts.
+    DECISION_VRAM_REQUIRED_MB = int(_env("DECISION_VRAM_REQUIRED_MB", "17000"))
+
+    # ── 文档解析 ──
     TWO_MD_API = _env("TWO_MD_API", "http://localhost:8000")
 
     # ── 摄像头 ──

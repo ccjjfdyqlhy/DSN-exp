@@ -72,6 +72,7 @@ from apps.dsn_study.pipeline import (
     ExamSessionPlugin,
     DailyReportPlugin,
     ComplexityPlugin,
+    DecisionStatePlugin,
     ModelInvokePlugin,
     PlanCheckPlugin,
     MemoryRecordPlugin,
@@ -1681,6 +1682,25 @@ def create_application() -> Flask:
     except Exception as e:
         logger.warning("语音识别子系统初始化失败（语音输入不可用）: %s", e)
 
+    # -- the System-1 decision model (warm it up in the background) --
+    #
+    # The cold start of the decision model takes about 17s (it loads 16.5G of
+    # weights). Without the warmup the first voice conversation waits for it
+    # inside the pipeline, which is not acceptable for a walkie talkie style
+    # interaction. So the model is started in the background at startup, and
+    # the IdleReaper stops it again after DECISION_IDLE_TIMEOUT (the next
+    # request pays the cold start once more).
+    if getattr(Config, "DECISION_ENABLED", True) and getattr(
+            Config, "DECISION_WARMUP", True):
+        def _decision_warmup():
+            try:
+                from apps.dsn_study.models.decision_service import warmup_decision
+
+                warmup_decision()
+            except Exception as e:
+                logger.warning("the decision model warmup failed, it is ignored: %s", e)
+        threading.Thread(target=_decision_warmup, daemon=True,
+                         name="decision-warmup").start()
 
     # ── 对话期钩子（考试超时/交卷/<plan_check>/日终报告）──
     from apps.dsn_study.chat_hooks import StudyChatHooks
@@ -1707,6 +1727,7 @@ def create_application() -> Flask:
         ExamSessionPlugin(exam_engine=exam_engine),
         DailyReportPlugin(plan_engine=plan_engine),
         ComplexityPlugin(complexity_analyzer=complexity_analyzer),
+        DecisionStatePlugin(),
         ModelInvokePlugin(agent=agent),
         PlanCheckPlugin(plan_engine=plan_engine),
         MemoryRecordPlugin(memory_system=memory_system,
@@ -1746,6 +1767,7 @@ def create_application() -> Flask:
     from apps.dsn_study.api.checkin import checkin_bp, init_checkin_api
     from apps.dsn_study.api.studylog import studylog_bp, init_studylog_api
     from apps.dsn_study.api.voice import voice_bp, init_voice_api
+    from apps.dsn_study.api.decision import decision_bp, init_decision_api
     from apps.dsn_study.api.asr import asr_bp, init_asr_api
     from apps.dsn_study.api.obsidian import obsidian_bp, init_obsidian_api
     from apps.dsn_study.api.skills import skills_bp, init_skills_api
@@ -1774,6 +1796,7 @@ def create_application() -> Flask:
     init_checkin_api(checkin_store, auth)
     init_studylog_api(studylog, auth)
     init_voice_api(voice, auth)
+    init_decision_api(auth)
     init_asr_api(asr, auth, get_engine)
     init_obsidian_api(mcp_bridge, skill_registry, auth)
     init_skills_api(skill_manager, skill_registry, auth)
@@ -1793,6 +1816,7 @@ def create_application() -> Flask:
         "checkin": checkin_bp,
         "studylog": studylog_bp,
         "voice": voice_bp,
+        "decision": decision_bp,
         "asr": asr_bp,
         "obsidian": obsidian_bp,
         "skills": skills_bp,

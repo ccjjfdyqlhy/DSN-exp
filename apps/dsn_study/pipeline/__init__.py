@@ -10,6 +10,7 @@
 from .plugins import (
     AsrFilterPlugin,
     ComplexityPlugin,
+    DecisionStatePlugin,
     DailyReportPlugin,
     ExamSessionPlugin,
     MemoryRecordPlugin,
@@ -32,6 +33,7 @@ __all__ = [
     "ExamSessionPlugin",
     "DailyReportPlugin",
     "ComplexityPlugin",
+    "DecisionStatePlugin",
     "ModelInvokePlugin",
     "PlanCheckPlugin",
     "MemoryRecordPlugin",

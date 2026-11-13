@@ -35,6 +35,53 @@ _EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]+")
 
 
+#: Emotion label to the TTS speed factor.
+#:
+#: The mapping exists because the tone of a text reply is written by the
+#: model, while the tone of a voice reply is a **synthesis parameter**. Half of
+#: the difference between "ok" and "ok..." comes from the speed. Once the
+#: decision model reads the emotion, this adjusts the speed so the voice
+#: matches the mood.
+#:
+#: The range is deliberately small (8%): the speed is a hint about the emotion,
+#: not a performance. A larger range sounds mechanical, because the emotion in
+#: real speech comes mostly from pitch and pauses, not from the speed.
+EMOTION_SPEED: dict[str, float] = {
+    "平静": 1.0,
+    "开心": 1.06,
+    "惊讶": 1.05,
+    "生气": 1.08,
+    "焦虑": 1.04,
+    "低落": 0.94,
+    "疲惫": 0.92,
+}
+
+#: The speed during a crisis: slow down and steady, a fast voice is wrong here.
+CRISIS_SPEED = 0.90
+
+
+def tone_params(state: Optional[dict]) -> dict:
+    """Turn the state read by the decision model into TTS parameter overrides.
+
+    :param state: ctx.extra["decision"], see the StateProbe.to_dict method in
+        models/decision_service.py
+    :return: the overrides for GPT-SoVITS, empty when there is no signal
+    """
+    if not state or not isinstance(state, dict):
+        return {}
+    crisis = state.get("crisis") or {}
+    if isinstance(crisis, dict) and crisis.get("is_crisis"):
+        return {"speed_factor": CRISIS_SPEED}
+    emotion = state.get("emotion") or {}
+    if not isinstance(emotion, dict) or emotion.get("degraded"):
+        return {}
+    label = str(emotion.get("label") or "")
+    factor = EMOTION_SPEED.get(label)
+    if factor is None or abs(factor - 1.0) < 1e-6:
+        return {}
+    return {"speed_factor": factor}
+
+
 class VoiceService:
     """语音合成门面。"""
 
@@ -163,8 +210,14 @@ class VoiceService:
 
     # ── 合成 ──
 
-    def synthesize(self, text: str) -> Optional[bytes]:
-        """合成语音，返回音频字节；不可用或失败时返回 None。"""
+    def synthesize(self, text: str,
+                   params_override: Optional[dict] = None) -> Optional[bytes]:
+        """Synthesize the speech and return the audio bytes, or None.
+
+        :param params_override: overrides the same named parameters of the
+            profile (speed_factor for example), used for the per turn
+            adjustments such as emotion to tone.
+        """
         if not self.available:
             return None
         cleaned = self._clean_text(text)
@@ -176,6 +229,8 @@ class VoiceService:
             self._last_error = "无可用 TTS profile"
             return None
         params = profile.build_params(cleaned)
+        if params_override:
+            params.update(params_override)
 
         pool = self._pool or get_study_pool()
         try:
@@ -193,9 +248,10 @@ class VoiceService:
             logger.warning("TTS 合成异常: %s", e, exc_info=True)
             return None
 
-    def synthesize_b64(self, text: str) -> tuple[Optional[str], str]:
-        """合成并返回 (audio_b64, error)。error 为空串表示成功。"""
-        audio = self.synthesize(text)
+    def synthesize_b64(self, text: str,
+                       params_override: Optional[dict] = None) -> tuple[Optional[str], str]:
+        """Synthesize and return (audio_b64, error). An empty error means it worked."""
+        audio = self.synthesize(text, params_override=params_override)
         if audio is None:
             return None, self._last_error or (self._disabled_reason or "TTS 不可用")
         return base64.b64encode(audio).decode("ascii"), ""

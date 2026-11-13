@@ -45,6 +45,9 @@ TTS_RESOURCE = "tts"
 ASR_RESOURCE = "asr"
 #: VLM 资源名（本地 Bonsai llama-server，入库 OCR 用）
 VLM_RESOURCE = "vlm"
+#: The decision resource (the System-1 model, see
+#: infra.resources.decision_service)
+DECISION_RESOURCE = "decision"
 
 #: GPT-SoVITS 服务端目录与入口（与参考实现一致）
 TTS_SERVER_DIR = "/home/darkstar/TTS"
@@ -74,6 +77,7 @@ def _idle_timeout(kind: str) -> int:
     if not getattr(Config, "VOICE_IDLE_SHUTDOWN", False):
         return 0
     key = "TTS_IDLE_TIMEOUT" if kind == "tts" else "ASR_IDLE_TIMEOUT"
+    try:
         return max(0, int(getattr(Config, key, 0)))
     except (TypeError, ValueError):
         return 0
@@ -91,7 +95,28 @@ def _vlm_idle_timeout() -> int:
         return 0
     if not getattr(Config, "VLM_IDLE_SHUTDOWN", True):
         return 0
+    try:
         return max(0, int(getattr(Config, "VLM_IDLE_TIMEOUT", 900)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _decision_idle_timeout() -> int:
+    """The idle reclaim timeout of the decision model in seconds, 0 keeps it up.
+
+    Two switches apply: the pool level master switch and DECISION_IDLE_SHUTDOWN.
+    The decision model fills both cards (measured 9.9G plus 9.9G), so it takes
+    part in the reclaim by default (900s), otherwise it holds both cards and
+    squeezes out TTS and the other local models.
+    """
+    from apps.dsn_study.config import resource_idle_shutdown_enabled
+
+    if not resource_idle_shutdown_enabled():
+        return 0
+    if not getattr(Config, "DECISION_IDLE_SHUTDOWN", True):
+        return 0
+    try:
+        return max(0, int(getattr(Config, "DECISION_IDLE_TIMEOUT", 900)))
     except (TypeError, ValueError):
         return 0
 
@@ -110,6 +135,7 @@ def _with_asr_warmup(load_fn, base_url: str):
         ok = load_fn()
         if not ok:
             return False
+        try:
             from apps.dsn_study.models.asr_client import ASRClient
 
             timeout = float(getattr(Config, "ASR_LOAD_TIMEOUT", 600))
@@ -186,6 +212,7 @@ def _asr_port() -> str:
     （ASR_PORT 仅在 ASR_BASE_URL 未指定端口时作为兜底。）
     """
     base_url = getattr(Config, "ASR_BASE_URL", "") or ""
+    try:
         from urllib.parse import urlparse
         parsed = urlparse(base_url)
         if parsed.port:
@@ -261,6 +288,7 @@ def _build_asr(pool: ResourcePool) -> None:
                 "或设置 ASR_AUTOSTART=false 改为只接入既有服务。" % entry)
         if spec.mode is LaunchMode.CONDA and not conda_env_exists(
                 spec.conda_env, spec.conda_exe):
+            logger.warning(
                 "ASR conda 环境 %r 不存在（期望目录: %s）。启动时会报错；"
                 "请用 conda env list 确认，或设置 ASR_CONDA_ENV / "
                 "ASR_LAUNCH_MODE=command。conda=%s",
@@ -332,6 +360,7 @@ def _build_tts(pool: ResourcePool) -> None:
                 "或设置 TTS_AUTOSTART=false 改为只接入既有服务。" % entry)
         if spec.mode is LaunchMode.CONDA and not conda_env_exists(
             spec.conda_env, spec.conda_exe):
+            logger.warning(
                 "TTS conda 环境 %r 不存在（期望目录: %s）。启动时会报错；"
                 "请用 conda env list 确认，或设置 TTS_CONDA_ENV / "
                 "TTS_LAUNCH_MODE=command。conda=%s",
@@ -391,6 +420,24 @@ def _build_vlm(pool: ResourcePool) -> None:
     _state["vlm_launcher"] = get_vlm_launcher()
 
 
+def _build_decision(pool: ResourcePool) -> None:
+    """Register the System-1 decision model (JEV) in the resource pool.
+
+    It has the same shape as ASR, TTS and the VLM, but it is a **llama-server**
+    (not a python sidecar), so it uses the LlamaServerLauncher of infra. It
+    also starts **on demand**: registering does not start it, the first
+    decision does (a cold start of about 17s), and the idle timeout stops it
+    again and returns the VRAM.
+    """
+    from apps.dsn_study.models.decision_service import register_study_decision
+
+    if not getattr(Config, "DECISION_ENABLED", True):
+        logger.info("the decision model is disabled (DECISION_ENABLED=false), not registered")
+        return
+    register_study_decision(pool)
+
+
+def setup_study_resources(pool: Optional[ResourcePool] = None) -> ResourcePool:
     """创建（或复用）资源池并注册 TTS / ASR / VLM。幂等。"""
     with _lock:
         if pool is None:
@@ -403,19 +450,33 @@ def _build_vlm(pool: ResourcePool) -> None:
             )
             _state["pool"] = pool
         if TTS_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
+            try:
                 _build_tts(pool)
+            except Exception as e:
                 logger.warning("TTS 资源注册失败（语音合成将不可用）: %s", e)
         if ASR_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
+            try:
                 _build_asr(pool)
+            except Exception as e:
                 logger.warning("ASR 资源注册失败（语音输入将不可用）: %s", e)
         if VLM_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
+            try:
                 _build_vlm(pool)
+            except Exception as e:
+                logger.warning(
                     "VLM 资源注册失败（本地 OCR 将不可用）: %s", e)
+        if DECISION_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
+            try:
+                _build_decision(pool)
+            except Exception as e:
+                logger.warning(
+                    "the decision resource is not registered (System-1 is unavailable): %s", e)
 
         # ── 空闲自动关闭 ──
         # 回收器挂在池上且是单例：只要**池级总开关打开**且有资源设了空闲阈值
         # 就启用。语音资源的阈值由 VOICE_IDLE_SHUTDOWN 决定（见 _idle_timeout），
         # VLM 的阈值由 VLM_IDLE_SHUTDOWN 独立决定（见 _vlm_idle_timeout），
+        # the decision model works the same way (see _decision_idle_timeout).
         # 重复启动只会更新检查周期，不会起多个线程。
         from apps.dsn_study.config import resource_idle_shutdown_enabled
 
