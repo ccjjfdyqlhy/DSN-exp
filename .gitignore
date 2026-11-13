@@ -93,6 +93,7 @@ apps/dsn/model_profiles/onboarding_*.yaml
 
 /.reasonix/
 /.zcode/
+/.dsh-tool-vision/
 
 # ── pi 编程代理的本地状态（任务日志、会话缓存；不属于项目源码）──
 /.pi/
