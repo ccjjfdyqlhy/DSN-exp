@@ -85,7 +85,7 @@ SSE 流回浏览器
 | `orchestrator/` | 模型编排与契约 | `IChatClient` `ModelOrchestrator` `ModelScheduler` `LocalServerLauncher` |
 | `orchestrator/router.py` | 双轨制编排：本地引擎 + 远程 API | `ModelSourceType` `ModelSpec` |
 | `orchestrator/dynamic_router.py` | 端点可用性学习 | `DynamicRouter` `MonitorStore` |
-| `resources/` | 异构资源池（ASR/TTS） | `ResourcePool` `ResourceLease` `ResourceSpec` |
+| `resources/` | 异构资源池（ASR/TTS/VLM） | `ResourcePool` `ResourceLease` `ResourceSpec` |
 | `policy/` | 可插拔行为策略 | `ModelRouter` `TokenMeter` `TokenBudget` `DurationPredictor` `CacheWarmer` `RetryPolicy` |
 | `store/` | 持久化 | `SqliteStore` `SessionStore` `MigrationRunner` |
 | `tasks/` | 任务抽象与调度 | `Task` `TaskExecutorRegistry` `TaskScheduler` `AsyncTaskStore` |

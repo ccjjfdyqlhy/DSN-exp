@@ -147,7 +147,7 @@ with pool.acquire("tts") as lease:
 # 退出即归还；release() 幂等
 ```
 
-三种资源形态由三个启动器承载：
+四种资源形态由四个启动器承载：
 
 | 启动器 | 形态 | 说明 |
 |---|---|---|
@@ -155,9 +155,12 @@ with pool.acquire("tts") as lease:
 | `HTTPServiceLauncher`（adopt） | 既有 HTTP 服务 | **只探测、不拉起、不停进程** |
 | `HTTPServiceLauncher`（托管） | 子进程 | 用 `start_command` 拉起 |
 | `DockerServiceLauncher` | 容器 | 全程走 `docker` CLI，不复用 Popen 生命周期 |
+| `LlamaServerLauncher` | llama.cpp 子进程 | GGUF 模型；自带 mmproj / `LD_LIBRARY_PATH` / `/health` 探针（本地 VLM 用它） |
 
-> `ResourceKind` **只有 `ASR` 和 `TTS` 两个成员**（`pool.py:33`），注释明确写了
-> 「不得凭空发明成员」。LLM 由 orchestrator 管，不走资源池。
+> `ResourceKind` 目前有三个成员：`ASR` / `TTS` / `VLM`（`pool.py:36`）。
+> `VLM` 是本地 Bonsai llama-server —— 整卷入库的 OCR 走它，按需拉起、空闲回收。
+> 枚举只包含**已有真实资源在用**的成员，不预先发明。
+> LLM 仍由 orchestrator 管，不走资源池。
 
 ---
 
@@ -279,8 +282,8 @@ mgr.rollback("student")               # 生效 -> 上一个
 ### 5.4 显存闸门（`DeviceGate`）
 
 `DeviceGate` 在 `infra/orchestrator/scheduler.py` 里，**不新建** `device_pool.py`：
-`infra/resources/pool.py` 的 `ResourceKind` 只有 ASR/TTS 且明确禁止凭空发明成员，
-LLM 的显存由编排器管。
+资源池管的是 ASR/TTS/VLM 这类**推理服务进程**，训练作业要抢的是**同一批卡**，
+必须由同一个仲裁点裁决，否则两边各自以为卡是空的，最后 OOM。LLM 的显存由编排器管。
 
 规则：
 
