@@ -11,9 +11,10 @@
 #   profile 字段，并不关心被调度的是语言模型还是语音模型。ASR/TTS 与 LLM 在
 #   显存插槽这一维度上完全同构，因此换一个描述符外壳即可。
 #
-# 当前范围：仅 ASR（语音识别）与 TTS（语音合成）两类资源。
-#   ResourceKind 刻意只保留这两个成员；未来如需更多种类，在同一个枚举里扩展，
-#   但本模块不预先发明其它种类。
+# 当前范围：ASR（语音识别）、TTS（语音合成）、VLM（视觉多模态模型）三类资源。
+#   ResourceKind 只保留**已经有真实资源在用**的成员：前两个是语音服务，
+#   VLM 是本地 Bonsai llama-server（入库 OCR 用的多模态推理服务）。
+#   未来如需更多种类，在同一个枚举里扩展，但本模块不预先发明其它种类。
 
 from __future__ import annotations
 
@@ -23,9 +24,12 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Iterator, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
 from ..orchestrator.scheduler import ModelScheduler
+
+if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
+    from .idle import IdleReaper
 
 logger = logging.getLogger("ResourcePool")
 
@@ -33,11 +37,15 @@ logger = logging.getLogger("ResourcePool")
 class ResourceKind(str, Enum):
     """资源种类。
 
-    今天只有 ASR 与 TTS 两类（设计上允许后续扩展，但不得凭空发明成员）。
+    四类：ASR（语音识别）、TTS（语音合成）、VLM（视觉多模态模型）、
+    VLM 不是凭空发明的成员 —— 入库 OCR 用的本地 Bonsai llama-server
+    就是一个「按需拉起、用完可回收」的重量级 GPU 服务，与 ASR/TTS
+在资源池里的语义完全同构。
     """
 
     ASR = "asr"
     TTS = "tts"
+    VLM = "vlm"
 
 
 @dataclass
@@ -69,6 +77,10 @@ class ResourceSpec:
     endpoint: str = ""
     #: 显存占用预估（MB），仅用于展示与运维判断，不参与调度
     vram_estimate_mb: int = 0
+    #: 空闲自动关闭阈值（秒）。0 = 不做空闲回收。
+    #: 超过该时长无人使用（无租约、无排队）时，IdleReaper 会停掉资源释放显存；
+    #: 下次有请求时由调度器重新拉起。
+    idle_timeout: int = 0
     #: 各启动器/调用方自由使用的附加字段
     extra: dict = field(default_factory=dict)
 
@@ -149,7 +161,7 @@ class ResourceLease:
 
 
 class ResourcePool(ModelScheduler):
-    """ASR/TTS 资源池。
+    """ASR/TTS/VLM 资源池。
 
     继承 ModelScheduler，因此以下能力**原样复用、零重复实现**：
       * 每资源 FIFO 任务队列（use() 上下文管理器）
@@ -178,6 +190,11 @@ class ResourcePool(ModelScheduler):
         #: 这里只保存描述符（调度状态一律以基类为准，不重复存储）。
         self._specs: dict[str, ResourceSpec] = {}
         self._specs_lock = threading.RLock()
+        #: 正在被空闲回收的资源名。回收期间到达的请求必须等待，
+        #: 否则会撞上「正在被杀」的服务（详见 _ensure_loaded_for_task）。
+        self._reclaiming: set[str] = set()
+        #: 空闲回收器（未启用时为 None），见 infra.resources.idle.IdleReaper
+        self._idle_reaper = None
 
     # ── 注册 ──
 
@@ -216,6 +233,18 @@ class ResourcePool(ModelScheduler):
             orchestrated=spec.orchestrated,
             engine=engine,
         )
+        # ModelScheduler.register() 的 load_timeout / request_timeout 只从
+        # YAML profile 取值，不接受显式参数 —— 于是 ResourceSpec 上配的这两个
+        # 字段形同虚设。这里补写回 profile，否则「VLM 冷启动要等 10 分钟」
+        # 这类配置根本不会生效（实际会退回池的 default_request_timeout）。
+        if spec.load_timeout is not None or spec.request_timeout is not None:
+            with self._condition:
+                info = self._models.get(name)
+                if info is not None:
+                    if spec.load_timeout is not None:
+                        info.profile.load_timeout = spec.load_timeout
+                    if spec.request_timeout is not None:
+                        info.profile.request_timeout = spec.request_timeout
         logger.info(
             "注册资源: %s kind=%s priority=%d resident=%s immediate=%s base_url=%s",
             name, spec.kind.value, spec.priority, spec.resident, spec.immediate,
@@ -265,6 +294,13 @@ class ResourcePool(ModelScheduler):
             "managed": bool(spec.extra.get("managed", False)) if spec and isinstance(spec.extra, dict) else False,
             "adopt": bool(spec.extra.get("adopt", False)) if spec and isinstance(spec.extra, dict) else False,
             "engine": str(spec.extra.get("engine", "local")) if spec and isinstance(spec.extra, dict) else "local",
+            # ── 空闲回收相关 ──
+            # idle_timeout: 空闲多少秒后自动关闭（0 = 不回收）
+            "idle_timeout": int(spec.idle_timeout) if spec else 0,
+            # last_used: 最后一次被使用（加载成功或租约归还）的时刻
+            "last_used": float(st.get("last_used", 0.0)),
+            # idle_seconds: 已经闲置了多久
+            "idle_seconds": max(0.0, time.time() - float(st.get("last_used", 0.0))),
         }
 
     def list_resources(self, kind: ResourceKind | None = None) -> list[dict]:
@@ -421,6 +457,112 @@ class ResourcePool(ModelScheduler):
         self.mark_unloaded(name)
         logger.info("已停止资源: %s (ok=%s)", name, ok)
         return ok
+
+    # ── 空闲回收 ──
+
+    def reclaim_idle_resource(self, name: str) -> bool:
+        """空闲回收专用卸载：确认无人使用、无人排队后才真正停掉资源。
+
+        与 :meth:`stop_resource` 的区别有两点：
+
+        1. **不抢占**——有租约（refcount > 0）或有人排队时直接放弃，
+           返回 False。stop_resource 是「用户明确要求停止」的语义，
+           强制执行；空闲回收是后台策略，绝不能打断正在进行的请求。
+        2. **排他**——回收期间把资源名登记到 ``self._reclaiming``，
+           到达的请求会等待回收结束再重新加载（见 _ensure_loaded_for_task），
+           不会撞上「正在被杀」的服务。
+
+        回收完成后调用 mark_unloaded 同步调度器状态，因此**下次请求会
+        自动重新拉起资源**（resident 资源同样如此）。
+        """
+        with self._condition:
+            info = self._models.get(name)
+            if info is None:
+                return False
+            if not info.loaded:
+                # 本来就没加载，无需回收
+                return False
+            if info.refcount > 0 or info.queue:
+                logger.debug("资源 %s 正在被使用或排队，跳过空闲回收", name)
+                return False
+            unload_fn = info.unload_fn
+            self._reclaiming.add(name)
+
+        ok = False
+        try:
+            # 阻塞的停机动作必须放在锁外，否则整个调度器会被卡住
+            ok = bool(unload_fn())
+        except Exception:  # noqa: BLE001
+            logger.exception("空闲回收失败: %s", name)
+            ok = False
+        finally:
+            with self._condition:
+                self._reclaiming.discard(name)
+                self._condition.notify_all()
+
+        self.mark_unloaded(name)
+        logger.info("空闲回收完成: %s (ok=%s)", name, ok)
+        return ok
+
+    def enable_idle_shutdown(self, interval: float = 60.0) -> "IdleReaper":
+        """启用空闲自动关闭（幂等）。
+
+        只有在 :class:`ResourceSpec` 上设置了 ``idle_timeout > 0`` 的资源
+        才会被回收；其余资源不受影响。
+
+        :param interval: 后台检查周期（秒）。
+        """
+        if self._idle_reaper is None:
+            from .idle import IdleReaper
+
+            self._idle_reaper = IdleReaper(self, interval=interval)
+        else:
+            self._idle_reaper._interval = max(1.0, float(interval))
+        return self._idle_reaper.start()
+
+    def disable_idle_shutdown(self) -> None:
+        """停用空闲自动关闭（幂等）。"""
+        reaper = self._idle_reaper
+        self._idle_reaper = None
+        if reaper is not None:
+            reaper.stop()
+
+    def idle_status(self) -> dict:
+        """空闲回收状态：回收器运行状态 + 各资源的空闲情况。"""
+        reaper = self._idle_reaper
+        rows = [
+            {
+                "name": r["name"],
+                "loaded": r["loaded"],
+                "idle_timeout": r["idle_timeout"],
+                "idle_seconds": round(r["idle_seconds"], 1),
+                "managed": r["managed"],
+            }
+            for r in self.list_resources()
+        ]
+        return {
+            "enabled": reaper is not None,
+            "reaper": reaper.status() if reaper is not None else None,
+            "resources": rows,
+        }
+
+    def _ensure_loaded_for_task(self, info, task) -> None:
+        """加载前先等待可能正在进行的空闲回收结束。
+
+        基类实现在 resident 资源上会直接走 _do_load。若此刻另一个线程正在
+        空闲回收该资源（停机是秒级阻塞动作），这里直接加载会与停机动作
+        撞车 —— 请求要么打在正在被杀的服务上，要么把服务又拉起来，
+        造成「刚回收完又被拉起」的抖动。
+
+        因此这里先等回收结束；等完基类会看到 loaded=False 并正常重新加载。
+        """
+        name = getattr(info, "name", "")
+        if name and name in self._reclaiming:
+            logger.info("资源 %s 正在被空闲回收，等待回收完成后再加载", name)
+            with self._condition:
+                while name in self._reclaiming:
+                    self._condition.wait(0.2)
+        super()._ensure_loaded_for_task(info, task)
 
     # ── 便捷视图 ──
 

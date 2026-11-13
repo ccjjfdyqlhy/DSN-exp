@@ -123,8 +123,10 @@ class DeviceGate:
     """显存（GPU 设备）独占租约闸门。
 
     为什么放在编排器里，而不是新建 infra/resources/device_pool.py：
-      - infra/resources/pool.py 的 ResourceKind 只有 ASR / TTS 两种，且明确写了
-        「不得凭空发明成员」；LLM 的显存由编排器管（docs/infra.md:150-151）。
+      - infra/resources/pool.py 的 ResourceKind 覆盖 ASR / TTS / VLM 三类本地服务，
+        但它们的显存与「训练任务」不构成同一套仲裁（语音/视觉服务是常驻或按需的
+        推理进程，不是训练作业）；
+      - LLM 的显存由编排器管（docs/infra.md:150-151）。
       - 训练（infra/finetune）与推理（llama.cpp 服务）抢的是**同一批卡**，
         必须由同一个仲裁点裁决，否则两边各自以为卡是空的，最后 OOM。
 
@@ -522,6 +524,9 @@ class ModelScheduler:
                     "resident": info.profile.resident,
                     "immediate": info.profile.immediate,
                     "orchestrated": info.profile.orchestrated,
+                    # 最后一次「被使用」的时刻（加载成功或租约归还时刷新）。
+                    # 空闲回收（infra.resources.IdleReaper）据此判断资源闲置了多久。
+                    "last_used": info.last_used,
                 }
                 for name, info in self._models.items()
             }

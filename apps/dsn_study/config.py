@@ -25,6 +25,24 @@ def _env(key: str, default: str = "", required: bool = False) -> str:
 def _env_bool(key: str, default: str = "false") -> bool:
     return str(_env(key, default)).lower() in ("1", "true", "yes", "on")
 
+
+def resource_idle_shutdown_enabled() -> bool:
+    """资源池的**空闲回收总开关**（运行时求值）。
+
+    规则：
+      * 显式配置 RESOURCE_IDLE_SHUTDOWN → 以它为准；
+      * 否则跟随语音开关 VOICE_IDLE_SHUTDOWN（向后兼容旧配置 ——
+        这项开关原本只管语音资源，现在扩到整个资源池）。
+
+    为什么是函数而不是类属性：测试会 monkeypatch Config.VOICE_IDLE_SHUTDOWN，
+    若在类定义时就把「跟随关系」算死，运行时再改就失灵了。
+    """
+    raw = str(_env("RESOURCE_IDLE_SHUTDOWN", "")).strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    return bool(getattr(Config, "VOICE_IDLE_SHUTDOWN", False))
+
+
 class Config:
     # ═══════════════════════════════════════════════════════════════════════
     # 第一层: 必需配置 — 不填系统无法运行
@@ -147,7 +165,6 @@ class Config:
     TOPIC_JUDGE_ENABLED = _env("TOPIC_JUDGE_ENABLED", "true").lower() == "true"
     TOPIC_JUDGE_ALWAYS = _env("TOPIC_JUDGE_ALWAYS", "false").lower() == "true"
     TOPIC_CANDIDATE_K = max(1, int(_env("TOPIC_CANDIDATE_K", "3")))
-
     # ── 人格系统 V3 ──
     PERSONALITY_V3_ENABLED = _env("PERSONALITY_V3_ENABLED", "true").lower() == "true"
     PERSONALITY_V3_OVERRIDE_V2 = _env("PERSONALITY_V3_OVERRIDE_V2", "true").lower() == "true"
@@ -276,6 +293,30 @@ class Config:
     # 分钟级并占用显存，交给运维显式预热或首次合成时按需拉起更稳妥。
     TTS_WARMUP = _env("TTS_WARMUP", "false").lower() == "true"
 
+    # ── 语音计算资源空闲自动关闭 ──
+    # TTS/ASR 是重量级常驻进程（合计约 3.8GB 显存），挂进 infra 资源池后
+    # resident=True 意味着**永远不会被调度器驱逐** —— 不配这项，显存就一直占着。
+    # 启用后：闲置超过阈值 → 资源池停掉服务释放显存；下次有请求时由调度器
+    # 重新拉起（首次请求需等待模型加载，属预期代价）。
+    #
+    # 注意：本开关只对**托管模式**（池自己拉起/停掉进程）生效。
+    # adopt 模式（只接入外部服务）池没有停服能力，回收无从谈起。
+    VOICE_IDLE_SHUTDOWN = _env("VOICE_IDLE_SHUTDOWN", "false").lower() == "true"
+    # 池级空闲回收总开关（覆盖语音 + 视觉）。留空则跟随 VOICE_IDLE_SHUTDOWN，
+    # 详见模块级函数 resource_idle_shutdown_enabled()。
+    # RESOURCE_IDLE_SHUTDOWN=true
+    # 统一空闲阈值（秒），默认 3600 = 1 小时
+    VOICE_IDLE_TIMEOUT = max(0, int(_env("VOICE_IDLE_TIMEOUT", "3600")))
+    # 单资源覆盖：留空跟随统一值；显式设为 0 表示该资源不参与空闲回收
+    TTS_IDLE_TIMEOUT = int(_env("TTS_IDLE_TIMEOUT", "") or VOICE_IDLE_TIMEOUT)
+    ASR_IDLE_TIMEOUT = int(_env("ASR_IDLE_TIMEOUT", "") or VOICE_IDLE_TIMEOUT)
+    # 后台检查周期（秒）：太小徒增 CPU 占用，太大则回收时机不准
+    VOICE_IDLE_CHECK_INTERVAL = max(5, int(_env("VOICE_IDLE_CHECK_INTERVAL", "60")))
+    # 池拉起 ASR sidecar 后是否自动预热模型（把模型加载进显存）。
+    # ASR 模型是**懒加载**的（首次识别才加载），不预热则冷启动后首个请求很慢。
+    # 原先由 systemd 单元的 ExecStartPost 负责，改为池托管后需在此显式补上。
+    ASR_WARMUP_ON_LOAD = _env("ASR_WARMUP_ON_LOAD", "true").lower() == "true"
+
     # ═══════════════════════════════════════════════════════════════════════
     # 第六层: 视觉系统
     # ═══════════════════════════════════════════════════════════════════════
@@ -313,6 +354,78 @@ class Config:
     OCR_MODEL = _env("OCR_MODEL", "deepseek-ocr")
     OCR_BASE_URL = _env("OCR_BASE_URL", "http://localhost:4502")
     OCR_UNLOAD_AFTER_USE = _env("OCR_UNLOAD_AFTER_USE", "true").lower() == "true"
+
+    # -- the System-1 decision model (JEV-27B-VL) --
+    #
+    # The decision model answers with the probability distribution of a single
+    # forward pass instead of a piece of text: emotion, crisis, tool routing
+    # and the retrieval gate are all discrete judgements, they run an order of
+    # magnitude faster this way and carry a confidence that can be
+    # thresholded.
+    #
+    # VRAM reality: the Q4_K_M weights of JEV are 16.5G and fill **both
+    # cards** once loaded (measured 9.9G plus 9.9G). Sharing the machine with
+    # TTS (2.8G) leaves 1.4G on GPU0. It cannot run at the same time as
+    # VLM/Bonsai (12G), so there is a VRAM check before the start: when there
+    # is not enough room the decision is skipped (degraded, no crash).
+    #
+    # The lifecycle is the same as TTS, ASR and the VLM: start on demand, keep
+    # the lease alive, stop it after the idle timeout.
+    DECISION_ENABLED = _env("DECISION_ENABLED", "true").lower() == "true"
+    # AUTOSTART=true means the pool manages it (start on demand, reclaim when
+    # idle), false means adopt (connect to a service that is already running).
+    DECISION_AUTOSTART = _env("DECISION_AUTOSTART", "true").lower() == "true"
+    DECISION_HOST = _env("DECISION_HOST", "127.0.0.1")
+    # The port avoids Bonsai (8080), Strata (8081), the JEV chat model (8090),
+    # TTS (9880) and the OCR model (4503).
+    DECISION_PORT = int(_env("DECISION_PORT", "8092"))
+    DECISION_BASE_URL = _env("DECISION_BASE_URL", "") or f"http://{DECISION_HOST}:{DECISION_PORT}"
+    # The main model and the vision projector (empty means the JEV directory
+    # is scanned).
+    DECISION_MODEL_PATH = _env("DECISION_MODEL_PATH", "")
+    DECISION_MMPROJ_PATH = _env("DECISION_MMPROJ_PATH", "")
+    # The context stays small because a decision only needs the state and one
+    # question.
+    DECISION_CTX_SIZE = int(_env("DECISION_CTX_SIZE", "4096"))
+    # Fixed at 99: anything lower disables the fused GDN kernel and costs 7x
+    # speed, see infra/decision/jev.py.
+    DECISION_NGL = int(_env("DECISION_NGL", "99"))
+    # The dual card split gives the freer card more (GPU1 is emptier here).
+    DECISION_TENSOR_SPLIT = _env("DECISION_TENSOR_SPLIT", "8,12")
+    # The KV cache stays in memory instead of VRAM, the weights already fill
+    # both cards.
+    DECISION_NO_KV_OFFLOAD = _env("DECISION_NO_KV_OFFLOAD", "true").lower() == "true"
+    # The cold start loads 16.5G of weights, so it needs room.
+    DECISION_LOAD_TIMEOUT = int(_env("DECISION_LOAD_TIMEOUT", "900"))
+    # One decision is one forward pass (measured at about 0.7s), the timeout
+    # leaves room around it.
+    DECISION_REQUEST_TIMEOUT = int(_env("DECISION_REQUEST_TIMEOUT", "120"))
+    # Idle seconds before the model is stopped and the VRAM comes back.
+    DECISION_IDLE_TIMEOUT = int(_env("DECISION_IDLE_TIMEOUT", "900"))
+    # Whether it takes part in the idle reclaim, under the pool level switch
+    # resource_idle_shutdown_enabled.
+    DECISION_IDLE_SHUTDOWN = _env_bool("DECISION_IDLE_SHUTDOWN", "true")
+    DECISION_VRAM_ESTIMATE_MB = int(_env("DECISION_VRAM_ESTIMATE_MB", "20000"))
+    DECISION_LOG_FILE = _env("DECISION_LOG_FILE", "") or ".dsn/logs/decision_server.log"
+    # When the emotion is read: voice means only on voice turns (saves one
+    # forward pass), all means every turn, off disables it.
+    DECISION_PROBE_SCOPE = (_env("DECISION_PROBE_SCOPE", "voice") or "voice").lower()
+    # The emotion read, it drives the tone and the TTS speed.
+    DECISION_EMOTION_ENABLED = _env("DECISION_EMOTION_ENABLED", "true").lower() == "true"
+    # The crisis check (keyword pre-filter, then the model confirms).
+    DECISION_CRISIS_ENABLED = _env("DECISION_CRISIS_ENABLED", "true").lower() == "true"
+    # Whether the emotion drives the TTS speed, so the voice matches the mood.
+    DECISION_TONE_ENABLED = _env("DECISION_TONE_ENABLED", "true").lower() == "true"
+    # Warm it up in the background at startup, otherwise the first voice
+    # conversation waits for the cold start.
+    DECISION_WARMUP = _env("DECISION_WARMUP", "true").lower() == "true"
+    # The free VRAM needed to start the model. Without it the start is skipped,
+    # because squeezing in crashes the other services on the machine (the VLM
+    # at 12G, TTS at 2.8G).
+    # Measured: JEV takes about 15.7GB of VRAM on both cards (part of the 16.5G
+    # of weights stays in main memory), so 17G is the threshold that still
+    # starts.
+    DECISION_VRAM_REQUIRED_MB = int(_env("DECISION_VRAM_REQUIRED_MB", "17000"))
 
     # ── 文档解析 ──
     TWO_MD_API = _env("TWO_MD_API", "http://localhost:8000")
@@ -403,7 +516,6 @@ class Config:
     # ── 语义缓存（拦截重复贵请求；需 MEMORY_EMBEDDING_ENABLED 才有 L2/语义命中） ──
 
     # ── Agent 循环 ──
-    AGENT_MAX_STEPS = max(1, int(_env("AGENT_MAX_STEPS", "10")))
     AGENT_TOKEN_BUDGET = max(1, int(_env("AGENT_TOKEN_BUDGET", "1000000")))
     AGENT_TIMEOUT_SECONDS = max(1.0, float(_env("AGENT_TIMEOUT_SECONDS", "120")))
 

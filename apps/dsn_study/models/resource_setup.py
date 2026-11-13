@@ -1,5 +1,5 @@
 # apps/dsn_study/models/resource_setup.py
-# 把 dsn_study 的语音资源（TTS）注册进 **infra 资源池**（infra.resources.ResourcePool）。
+# 把 dsn_study 的本地资源（TTS / ASR / VLM）注册进 **infra 资源池**（infra.resources.ResourcePool）。
 #
 # 设计要点：
 #   * 资源调度完全交给 infra —— 资源池继承 ModelScheduler，自带 FIFO 队列、
@@ -11,6 +11,9 @@
 #   * TTS 是重量级长驻服务（加载 GPT+SoVITS 权重，分钟级），故 resident=True：
 #     绝不能 immediate，否则每次合成都会把整个服务卸载重拉。
 #   * TTS_AUTOSTART=false → adopt 模式：只接入既有服务，绝不拉起/杀进程。
+#   * VLM（本地 Bonsai llama-server）是**按需拉起**的：第一次 OCR 时才启动，
+#     闲置超过 VLM_IDLE_TIMEOUT 自动停掉释放约 12GB 显存。
+#     实现细节见 apps/dsn_study/models/vlm_service.py。
 
 from __future__ import annotations
 
@@ -40,13 +43,84 @@ logger = logging.getLogger("StudyResources")
 TTS_RESOURCE = "tts"
 #: ASR 资源名（FunASR 旁路服务，进程外）
 ASR_RESOURCE = "asr"
+#: VLM 资源名（本地 Bonsai llama-server，入库 OCR 用）
+VLM_RESOURCE = "vlm"
 
 #: GPT-SoVITS 服务端目录与入口（与参考实现一致）
 TTS_SERVER_DIR = "/home/darkstar/TTS"
 TTS_SERVER_ENTRY = "api.py"
 
 _lock = threading.RLock()
-_state: dict = {"pool": None, "tts_launcher": None, "asr_launcher": None}
+_state: dict = {"pool": None, "tts_launcher": None, "asr_launcher": None,
+                "vlm_launcher": None}
+
+
+def _idle_timeout(kind: str) -> int:
+    """解析某类语音资源的空闲回收阈值（秒）；0 = 不参与回收。
+
+    规则：
+      * 池级总开关（RESOURCE_IDLE_SHUTDOWN / 跟随 VOICE_IDLE_SHUTDOWN）关闭
+        → 一律 0（谁都不回收）；
+      * 语音级开关 VOICE_IDLE_SHUTDOWN 关闭 → 语音资源一律 0；
+      * 否则取该资源的独立阈值（TTS_IDLE_TIMEOUT / ASR_IDLE_TIMEOUT），
+        未单独配置时跟随统一阈值 VOICE_IDLE_TIMEOUT；
+      * 显式设为 0 表示该资源常驻（不回收），可与总开关组合出
+        「TTS 回收、ASR 常驻」这类组合。
+    """
+    from apps.dsn_study.config import resource_idle_shutdown_enabled
+
+    if not resource_idle_shutdown_enabled():
+        return 0
+    if not getattr(Config, "VOICE_IDLE_SHUTDOWN", False):
+        return 0
+    key = "TTS_IDLE_TIMEOUT" if kind == "tts" else "ASR_IDLE_TIMEOUT"
+        return max(0, int(getattr(Config, key, 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _vlm_idle_timeout() -> int:
+    """本地 VLM 的空闲回收阈值（秒）；0 = 常驻不回收。
+
+    受两级开关约束：池级总开关 + VLM 自己的 VLM_IDLE_SHUTDOWN。
+    VLM 常驻约 12GB 显存，默认参与回收（900s）。
+    """
+    from apps.dsn_study.config import resource_idle_shutdown_enabled
+
+    if not resource_idle_shutdown_enabled():
+        return 0
+    if not getattr(Config, "VLM_IDLE_SHUTDOWN", True):
+        return 0
+        return max(0, int(getattr(Config, "VLM_IDLE_TIMEOUT", 900)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _with_asr_warmup(load_fn, base_url: str):
+    """包装 ASR 的 load_fn：sidecar 拉起后补一次模型预热。
+
+    FunASR 模型是**懒加载**的：sidecar 进程起来了、/health 也返回 200，
+    但权重直到第一次识别才真正读进显存（/health 里的 loaded 仍是 false）。
+    原先这步由 systemd 单元的 ExecStartPost 负责；改为池托管后必须在这里
+    补上，否则冷启动后的首个识别请求要独自承担全部加载耗时。
+
+    预热失败不阻断加载：服务本身已就绪，模型会在首次识别时懒加载。
+    """
+    def _load() -> bool:
+        ok = load_fn()
+        if not ok:
+            return False
+            from apps.dsn_study.models.asr_client import ASRClient
+
+            timeout = float(getattr(Config, "ASR_LOAD_TIMEOUT", 600))
+            client = ASRClient(base_url, timeout=timeout)
+            loaded = client.warmup(timeout=timeout)
+            logger.info("ASR 拉起后预热模型: %s", "已加载" if loaded else "未加载")
+        except Exception:  # noqa: BLE001 - 预热失败不影响服务可用性
+            logger.exception("ASR 拉起后预热失败（服务仍可用，将懒加载）")
+        return True
+
+    return _load
 
 
 def _tts_launch_spec() -> Optional[LaunchSpec]:
@@ -112,7 +186,6 @@ def _asr_port() -> str:
     （ASR_PORT 仅在 ASR_BASE_URL 未指定端口时作为兜底。）
     """
     base_url = getattr(Config, "ASR_BASE_URL", "") or ""
-    try:
         from urllib.parse import urlparse
         parsed = urlparse(base_url)
         if parsed.port:
@@ -188,7 +261,6 @@ def _build_asr(pool: ResourcePool) -> None:
                 "或设置 ASR_AUTOSTART=false 改为只接入既有服务。" % entry)
         if spec.mode is LaunchMode.CONDA and not conda_env_exists(
                 spec.conda_env, spec.conda_exe):
-            logger.warning(
                 "ASR conda 环境 %r 不存在（期望目录: %s）。启动时会报错；"
                 "请用 conda env list 确认，或设置 ASR_CONDA_ENV / "
                 "ASR_LAUNCH_MODE=command。conda=%s",
@@ -198,6 +270,8 @@ def _build_asr(pool: ResourcePool) -> None:
 
     load_fn, unload_fn = launcher.create_scheduler_hooks(
         load_timeout=int(getattr(Config, "ASR_LOAD_TIMEOUT", 600)))
+    if getattr(Config, "ASR_WARMUP_ON_LOAD", True):
+        load_fn = _with_asr_warmup(load_fn, base_url)
     pool.register_resource(
         ASR_RESOURCE,
         ResourceSpec(
@@ -211,6 +285,7 @@ def _build_asr(pool: ResourcePool) -> None:
             resident=True,
             immediate=False,
             vram_estimate_mb=1500,
+            idle_timeout=_idle_timeout("asr"),
             extra={
                 "engine": "sidecar",
                 "managed": managed,
@@ -257,7 +332,6 @@ def _build_tts(pool: ResourcePool) -> None:
                 "或设置 TTS_AUTOSTART=false 改为只接入既有服务。" % entry)
         if spec.mode is LaunchMode.CONDA and not conda_env_exists(
             spec.conda_env, spec.conda_exe):
-            logger.warning(
                 "TTS conda 环境 %r 不存在（期望目录: %s）。启动时会报错；"
                 "请用 conda env list 确认，或设置 TTS_CONDA_ENV / "
                 "TTS_LAUNCH_MODE=command。conda=%s",
@@ -280,6 +354,7 @@ def _build_tts(pool: ResourcePool) -> None:
             resident=True,
             immediate=False,
             vram_estimate_mb=2048,
+            idle_timeout=_idle_timeout("tts"),
             extra={
                 "engine": "local",
                 "managed": managed,
@@ -295,8 +370,28 @@ def _build_tts(pool: ResourcePool) -> None:
                 spec.mode.value if managed else "adopt")
 
 
-def setup_study_resources(pool: Optional[ResourcePool] = None) -> ResourcePool:
-    """创建（或复用）资源池并注册 TTS。幂等。"""
+def _build_vlm(pool: ResourcePool) -> None:
+    """把本地 VLM（Bonsai llama-server）注册进资源池。
+
+    与 ASR/TTS 同构，但有两个不同点：
+      * 它是 **llama-server**（不是 python sidecar），因此用 infra 的
+        LlamaServerLauncher 而不是 HTTPServiceLauncher —— 前者自带
+        mmproj / LD_LIBRARY_PATH / /health 探针等 llama.cpp 专属处理。
+      * 它是**按需**的：注册时不启动，第一次取租约时才拉起（约 40s 冷启动）。
+    """
+    from apps.dsn_study.models.vlm_service import (
+        get_vlm_launcher,
+        register_vlm_resource,
+    )
+
+    if not getattr(Config, "VLM_ENABLED", True):
+        logger.info("VLM 已禁用（VLM_ENABLED=false），跳过注册")
+        return
+    register_vlm_resource(pool)
+    _state["vlm_launcher"] = get_vlm_launcher()
+
+
+    """创建（或复用）资源池并注册 TTS / ASR / VLM。幂等。"""
     with _lock:
         if pool is None:
             pool = _state.get("pool")
@@ -308,15 +403,37 @@ def setup_study_resources(pool: Optional[ResourcePool] = None) -> ResourcePool:
             )
             _state["pool"] = pool
         if TTS_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
-            try:
                 _build_tts(pool)
-            except Exception as e:
                 logger.warning("TTS 资源注册失败（语音合成将不可用）: %s", e)
         if ASR_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
-            try:
                 _build_asr(pool)
-            except Exception as e:
                 logger.warning("ASR 资源注册失败（语音输入将不可用）: %s", e)
+        if VLM_RESOURCE not in [r.get("name") for r in pool.list_resources()]:
+                _build_vlm(pool)
+                    "VLM 资源注册失败（本地 OCR 将不可用）: %s", e)
+
+        # ── 空闲自动关闭 ──
+        # 回收器挂在池上且是单例：只要**池级总开关打开**且有资源设了空闲阈值
+        # 就启用。语音资源的阈值由 VOICE_IDLE_SHUTDOWN 决定（见 _idle_timeout），
+        # VLM 的阈值由 VLM_IDLE_SHUTDOWN 独立决定（见 _vlm_idle_timeout），
+        # 重复启动只会更新检查周期，不会起多个线程。
+        from apps.dsn_study.config import resource_idle_shutdown_enabled
+
+        if resource_idle_shutdown_enabled():
+            targets = []
+            for row in pool.list_resources():
+                spec = pool.get_spec(row.get("name"))
+                if spec is not None and int(spec.idle_timeout or 0) > 0:
+                    targets.append("%s=%ss" % (row.get("name"), spec.idle_timeout))
+            if targets:
+                interval = float(getattr(Config, "VOICE_IDLE_CHECK_INTERVAL", 60))
+                pool.enable_idle_shutdown(interval=interval)
+                logger.info(
+                    "空闲自动关闭已启用：%s（检查周期 %ss）", ", ".join(targets), interval)
+            else:
+                logger.info("空闲自动关闭已开启，但没有资源设置空闲阈值，保持常驻")
+        else:
+            logger.info("资源池空闲自动关闭总开关关闭，所有资源保持常驻")
         return pool
 
 
@@ -333,3 +450,8 @@ def get_tts_launcher():
 def get_asr_launcher():
     """返回 ASR launcher（用于显式 start/stop）。"""
     return _state.get("asr_launcher")
+
+
+def get_vlm_launcher():
+    """返回 VLM（llama-server）launcher（用于显式 start/stop）。"""
+    return _state.get("vlm_launcher")

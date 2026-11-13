@@ -22,6 +22,10 @@
 #       400 {"error": "Invalid base64"}
 #       500 {"error": "ASR processing failed"}
 #
+#   POST /api/asr/stop
+#       停止 ASR sidecar 进程（释放显存），并同步资源池状态
+#       200 {"stopped": true} / 503 {"error": "资源池未初始化"}
+#
 # 与参考实现的两点差异：
 #   * 模型在独立 conda 环境的 sidecar 里（宿主 python 无 torch/funasr）；
 #     路由层只负责取字节 → 归一化 → 调 ASRService。
@@ -119,6 +123,26 @@ def asr_recognize():
         return jsonify({"error": "ASR processing failed"}), 500
 
     return jsonify({"text": text})
+
+
+@asr_bp.route("/api/asr/stop", methods=["POST"])
+def asr_stop():
+    """停止 ASR sidecar 进程（释放显存）。
+
+    与 /api/voice/stop 同构：走资源池的 stop_resource，让「停进程」与
+    「调度器状态同步」一步完成。
+
+    为什么不用 kill：资源池把 ASR 登记为已加载，直接杀进程的话池状态会失真
+    （仍认为服务在线），下次识别请求会打到已死的进程上直接 500，
+    而不会像空闲回收那样自动重新拉起。
+    """
+    from apps.dsn_study.models.resource_setup import ASR_RESOURCE, get_study_pool
+
+    pool = get_study_pool()
+    if pool is None:
+        return jsonify({"error": "资源池未初始化"}), 503
+    ok = pool.stop_resource(ASR_RESOURCE)
+    return jsonify({"stopped": bool(ok)}), 200
 
 
 @asr_bp.route("/api/asr/passthrough", methods=["POST"])

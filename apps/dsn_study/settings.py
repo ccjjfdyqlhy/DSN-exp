@@ -43,7 +43,9 @@ def bind_dsn_study_settings(settings: Settings) -> Settings:
     _bind(model, "llamacpp_base_url", "LLAMACPP_BASE_URL", "http://127.0.0.1:8080")
     _bind(model, "llamacpp_model_path", "LLAMACPP_MODEL_PATH", "")
     _bind(model, "max_history", "MODEL_MAX_HISTORY", 12, _INT)
-    _bind(model, "agent_max_steps", "AGENT_MAX_STEPS", 15, _INT)
+    # 0 = 不限自主执行轮数（由模型自己决定何时收尾），与 config.py 的
+    # AGENT_MAX_STEPS 默认值保持一致 —— 两处默认值冲突过（这里曾是 15）。
+    _bind(model, "agent_max_steps", "AGENT_MAX_STEPS", 0, _INT)
     _bind(model, "toolbox_enabled", "TOOLBOX_ENABLED", True, _BOOL)
 
     # ── 记忆 ──
@@ -77,6 +79,13 @@ def bind_dsn_study_settings(settings: Settings) -> Settings:
     _bind(voice, "tts_server_dir", "TTS_SERVER_DIR", "/home/darkstar/TTS")
     _bind(voice, "tts_port", "TTS_PORT", 9880, _INT)
     _bind(voice, "tts_warmup", "TTS_WARMUP", True, _BOOL)
+    # 语音计算资源空闲自动关闭（闲置超阈值 → 停服务释放显存，下次请求再拉起）
+    _bind(voice, "voice_idle_shutdown", "VOICE_IDLE_SHUTDOWN", False, _BOOL)
+    _bind(voice, "voice_idle_timeout", "VOICE_IDLE_TIMEOUT", 3600, _INT)
+    _bind(voice, "tts_idle_timeout", "TTS_IDLE_TIMEOUT", 3600, _INT)
+    _bind(voice, "asr_idle_timeout", "ASR_IDLE_TIMEOUT", 3600, _INT)
+    _bind(voice, "voice_idle_check_interval", "VOICE_IDLE_CHECK_INTERVAL", 60, _INT)
+    _bind(voice, "asr_warmup_on_load", "ASR_WARMUP_ON_LOAD", True, _BOOL)
 
     # ── 陪伴（人格 / 世界） ──
     companion = settings.namespace("companion")
