@@ -130,6 +130,19 @@ python -m apps.dsn_ui.server --host 0.0.0.0 --port 8888 --slots 2
 `/v1/decide/capabilities` 会先用 `/props` 校验 model_path 身份，再真发一次探针请求；
 因为所有本地 llama.cpp 默认都占 8080，不校验就会打到别的模型上。
 
+**The implementation moved down into the base** (this module is only the routing layer):
+
+| layer | module | what it does |
+|---|---|---|
+| infra | `infra/decision/client.py` | transport: the logprobs channel to llama-server |
+| infra | `infra/decision/jev.py` | the discovery and the launch configuration of JEV-27B-VL |
+| infra | `infra/resources/decision_service.py` | managed as a **peripheral resource** (start on demand, reclaim when idle) |
+| harness | `harness/decisions/core.py` | semantics: prompt construction, reading the distribution, confidence |
+| harness | `harness/decisions/use_cases.py` | use cases: emotion, crisis, tool routing, the retrieval gate |
+| apps | `apps/dsn_ui/system1_api.py` | routing: the HTTP contract |
+| apps | `apps/dsn_study/models/decision_service.py` | the app side: state probe and tone mapping |
+
+See [decision.md](decision.md).
 
 ### 2.8 数据与凭据
 
