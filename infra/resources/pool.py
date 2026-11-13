@@ -11,9 +11,11 @@
 #   profile 字段，并不关心被调度的是语言模型还是语音模型。ASR/TTS 与 LLM 在
 #   显存插槽这一维度上完全同构，因此换一个描述符外壳即可。
 #
-# 当前范围：ASR（语音识别）、TTS（语音合成）、VLM（视觉多模态模型）三类资源。
+# 当前范围：ASR（语音识别）、TTS（语音合成）、VLM（视觉多模态模型）、
+# DECISION（System-1 决策模型）四类资源。
 #   ResourceKind 只保留**已经有真实资源在用**的成员：前两个是语音服务，
 #   VLM 是本地 Bonsai llama-server（入库 OCR 用的多模态推理服务）。
+#   the decision model is the llama-server that carries the System-1 head.
 #   未来如需更多种类，在同一个枚举里扩展，但本模块不预先发明其它种类。
 
 from __future__ import annotations
@@ -38,14 +40,23 @@ class ResourceKind(str, Enum):
     """资源种类。
 
     四类：ASR（语音识别）、TTS（语音合成）、VLM（视觉多模态模型）、
+    DECISION（System-1 决策模型）。
     VLM 不是凭空发明的成员 —— 入库 OCR 用的本地 Bonsai llama-server
     就是一个「按需拉起、用完可回收」的重量级 GPU 服务，与 ASR/TTS
-在资源池里的语义完全同构。
+    在资源池里的语义完全同构。DECISION 同理：JEV-27B-VL 的决策头
+    跑在自己的 llama-server 上，显存占用与 VLM 同一量级。
     """
 
     ASR = "asr"
     TTS = "tts"
     VLM = "vlm"
+    #: The decision model (System-1). The decision head of a dual-system
+    #: hybrid model such as JEV-27B-VL: one forward pass returns an answer
+    #: with a probability and generates no text. It is a **heavy local
+    #: service** (a llama-server with weights of several GB) and has the same
+    #: shape as the VLM: start on demand, keep the lease alive, reclaim it
+    #: when idle. It is listed here because it really is in use.
+    DECISION = "decision"
 
 
 @dataclass
