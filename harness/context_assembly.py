@@ -164,12 +164,18 @@ class SegmentedContextAssembler:
             _room = budget.memo_chars - used_memo
             if len(seg.content) > _room:
                 if _room > len(budget.truncate_marker) and seg.truncatable:
-                    # 留出标注空间后截断保留，避免整段丢弃丢失上下文
+                    # 留出标注空间后截断保留，避免整段丢弃丢失上下文。
+                    # ⚠️ 必须用 replace() 生成**新对象**：直接赋值会就地改写调用方
+                    # 传入的段（同一对象二次 plan() 结果会不同）——
+                    # 这正是下面 verbatim 分支早就修好、而 memo 分支漏掉的 bug。
                     keep = _room - len(budget.truncate_marker)
-                    seg.content = seg.content[:keep].rstrip() + budget.truncate_marker
-                    used_memo += len(seg.content)
-                    plan.kept.append(seg)
-                    plan.truncated.append(seg)
+                    clipped = replace(
+                        seg,
+                        content=seg.content[:keep].rstrip() + budget.truncate_marker,
+                    )
+                    used_memo += len(clipped.content)
+                    plan.kept.append(clipped)
+                    plan.truncated.append(clipped)
                 else:
                     plan.dropped.append(seg)
                 continue
