@@ -1,6 +1,6 @@
 name: gaokzx
 display_name: "高考在线抓取"
-description: "从 gaokzx.com 搜索、解析并下载试题与答案图片。"
+description: "从 gaokzx.com 搜索、解析、下载试题与答案图片，并**快速判定**题/答分界（二分+并行+缩图+缓存，比逐页判定快一个数量级）。"
 version: "1.0.0"
 author: "system"
 source: "builtin"
@@ -92,6 +92,58 @@ tools:
           max_images:
             type: integer
             description: "最多下载几张，0=不限"
+            required: false
+
+  - name: download_bundle
+    display_name: "批量下载试卷"
+    description: "并发下载多套卷子的试题图与答案图（科目之间并行，单科内部按站点限速）。"
+    module: "tools.gaokzx_tools"
+    class: "GaokzxTool"
+    methods:
+      - name: download_bundle
+        description: "并发下载多套卷子的图片"
+        parameters:
+          papers:
+            type: array
+            description: "[{\"subject\": \"语文\", \"paper_id\": 161613}, ...]"
+            required: true
+            items:
+              type: object
+          user_id:
+            type: integer
+            description: "用户 id，默认 1"
+            required: false
+          concurrency:
+            type: integer
+            description: "科目级并发度，默认 4"
+            required: false
+
+  - name: classify_papers
+    display_name: "判定题答分界"
+    description: "判定每套卷子哪一页开始是答案（**快速**：二分定位 + 科目并行 + 缩图 + 缓存，比逐页判定快一个数量级）。"
+    module: "tools.gaokzx_tools"
+    class: "GaokzxTool"
+    methods:
+      - name: classify_papers
+        description: "判定多套卷子的试题/答案分界"
+        parameters:
+          papers:
+            type: array
+            description: "[{\"subject\": \"语文\", \"paper_id\": 161613}, ...]"
+            required: true
+            items:
+              type: object
+          use_vision:
+            type: boolean
+            description: "false = 用位置启发式（快但不准，仅调试）"
+            required: false
+          cache_path:
+            type: string
+            description: "判定缓存路径（JSON），重复处理直接命中"
+            required: false
+          concurrency:
+            type: integer
+            description: "科目级并发度，默认 6"
             required: false
 
 activation:

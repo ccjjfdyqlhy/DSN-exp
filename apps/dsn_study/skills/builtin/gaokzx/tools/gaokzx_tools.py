@@ -378,6 +378,167 @@ class GaokzxTool:
             logger.exception("find_answer_paper 失败")
             return {"success": False, "error": f"查找答案文章失败: {e}"}
 
+    # ══════════════════════════════════════════════════════════════
+    # 批量：并发下载 + 快速分界判定
+    # ══════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def create() -> "GaokzxTool":
+        """造一个**带工作区**的工具实例。
+
+        不带工作区时图片会落到临时目录（``/tmp/dsn_gaokzx/...``），
+        与 app 的工作区脱节 —— 脚本/工具直接调用时务必用这个工厂方法。
+        """
+        tool = GaokzxTool()
+        try:
+            from apps.dsn_study.config import Config
+            from apps.dsn_study.workspace import WorkspaceManager
+            tool._workspace = WorkspaceManager(Config.WORKSPACE_DIR)
+        except Exception as e:
+            logger.warning("工作区不可用（图片将落到临时目录）: %s", e)
+        return tool
+
+    def download_bundle(self, papers: list, user_id: int = 1,
+                        concurrency: int = 4) -> dict:
+        """并发下载多套卷子的图片。
+
+        :param papers: [{"subject": "语文", "paper_id": 161613}, ...]
+        :param concurrency: 科目级并发度（默认 4，克制一点别把站点打挂）
+        :return: {success, results: [{subject, paper_id, question, answer, dir}], ...}
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        items = []
+        for entry in papers or []:
+            if isinstance(entry, dict):
+                subject = str(entry.get("subject") or entry.get("name") or "")
+                pid = entry.get("paper_id") or entry.get("id") or 0
+            else:
+                subject, pid = "", entry
+            pid = int(pid or 0)
+            if not pid:
+                continue
+            items.append((subject, pid))
+        if not items:
+            return {"success": False, "error": "没有可下载的卷子"}
+
+        results = []
+
+        def _one(subject, pid):
+            q = self.download_images(pid, kind="question", user_id=user_id)
+            a = self.download_images(pid, kind="answer", user_id=user_id)
+            return {"subject": subject, "paper_id": pid,
+                    "question": {"ok": q.get("success"),
+                                 "saved": len(q.get("saved") or []),
+                                 "failed": len(q.get("failed") or []),
+                                 "dir": q.get("dir")},
+                    "answer": {"ok": a.get("success"),
+                               "saved": len(a.get("saved") or []),
+                               "failed": len(a.get("failed") or []),
+                               "dir": a.get("dir")},
+                    "note": q.get("note") or a.get("note") or ""}
+
+        with ThreadPoolExecutor(max_workers=min(max(1, concurrency), len(items))) as ex:
+            futs = [ex.submit(_one, subj, pid) for subj, pid in items]
+            for fut in futs:
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    logger.warning("下载失败: %s", exc)
+        return {"success": True, "results": results,
+                "total_images": sum((r["question"]["saved"] + r["answer"]["saved"])
+                                    for r in results)}
+
+    def classify_papers(self, papers: list, user_id: int = 1,
+                        use_vision: bool = True, cache_path: str = None,
+                        concurrency: int = 6, max_inflight: int = 3,
+                        workers: int = 4) -> dict:
+        """判定每套卷子的「试题 / 答案」分界。
+
+        比逐页判定快得多：
+          * 二分定位分界（O(log n) 次模型调用）
+          * 科目级并行
+          * 送模型前缩图 + 只要一个字的输出
+          * 按图片内容哈希缓存，重复处理直接命中
+
+        :param papers: [{"subject": "语文", "paper_id": 161613}, ...]
+        :param use_vision: False = 不调模型，用站点自带的位置启发式（快但不准）
+        :param cache_path: 判定缓存路径
+        :return: {success, results: [{subject, paper_id, boundary, mode, ...}]}
+        """
+        from .page_classifier import PageClassifier
+
+        items = []
+        for entry in papers or []:
+            if isinstance(entry, dict):
+                subject = str(entry.get("subject") or entry.get("name") or "")
+                pid = int(entry.get("paper_id") or entry.get("id") or 0)
+            else:
+                subject, pid = "", int(entry or 0)
+            if pid:
+                items.append((subject, pid))
+        if not items:
+            return {"success": False, "error": "没有待判定的卷子"}
+
+        paths: dict[str, list[str]] = {}
+        for subject, pid in items:
+            out_dir, _ = self._target_dir(user_id, pid)
+            # ⚠️ **必须按文档顺序**排：question_* 在前、answer_* 在后。
+            # 直接 sorted(glob) 会把 answer_* 排到前面（字母序），
+            # 于是二分拿到的是**乱序**页面 → 分界点算出来是错的。
+            q = sorted(str(p) for p in out_dir.glob("question_*.jpg"))
+            a = sorted(str(p) for p in out_dir.glob("answer_*.jpg"))
+            files = q + a
+            if files:
+                paths[f"{subject}|{pid}"] = files
+
+        if not use_vision:
+            # 位置启发式（站点侧同款逻辑）：只快，不准
+            out = []
+            for subject, pid in items:
+                key = f"{subject}|{pid}"
+                files = paths.get(key, [])
+                n = len(files)
+                boundary = int(n * 0.6) if n else 0
+                out.append({"subject": subject, "paper_id": pid,
+                            "total_pages": n, "boundary": boundary,
+                            "mode": "heuristic", "monotone": True})
+            return {"success": True, "results": out, "stats": {"模型调用": 0}}
+
+        ask_fn = self._vision_ask()
+        if ask_fn is None:
+            return {"success": False,
+                    "error": "视觉模型不可用（无法判定题/答分界）"}
+
+        clf = PageClassifier(ask_fn, concurrency=concurrency,
+                             cache_path=cache_path,
+                             max_inflight=max_inflight, workers=workers)
+        res = clf.classify_bundle(paths)
+        out = []
+        for subject, pid in items:
+            key = f"{subject}|{pid}"
+            r = res.get(key) or {}
+            files = paths.get(key, [])
+            out.append({"subject": subject, "paper_id": pid,
+                        "total_pages": len(files),
+                        "boundary": r.get("boundary", 0),
+                        "mode": r.get("mode", "?"),
+                        "monotone": r.get("monotone", True)})
+        return {"success": True, "results": out, "stats": clf.stats()}
+
+    def _vision_ask(self):
+        """视觉判定入口（app 的 VisionModel）。拿不到就返回 None。"""
+        try:
+            from apps.dsn_study.models.clients import VisionModel
+            # 超时给短一点：厂商侧排队时快失败好过卡 120 秒
+            vm = VisionModel(timeout=30)
+
+            def _ask(data_url: str, prompt: str) -> str:
+                return vm.ask(data_url, prompt, max_tokens=8, temperature=0.0)
+            return _ask
+        except Exception as exc:
+            logger.warning("视觉模型不可用: %s", exc)
+            return None
+
     def download_images(self, paper_id: int, kind: str = "question",
                         user_id: int = 0, max_images: int = 0) -> dict:
         """下载文章里的试题图 / 答案图到工作区。

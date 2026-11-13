@@ -14,6 +14,7 @@
 | `dsn_study` | 10.0k | `python main.py --app dsn_study` | 5000 | Flask + FlaskGateway | ✅ 4 个 bundle | **Web 应用的正规范例** |
 | `densechat` | 3.0k | `python -m apps.densechat` | 8080 | FastAPI + WebSocket | ❌ | WebUI 复刻，第二个完整产品 |
 | `emotion_exp` | 836 | `python -m apps.emotion_exp` | — | 无（REPL） | ✅ 手写 | 人格 + 情绪组合范例，**零配置可跑** |
+| `harness_lab` | 2271 | `python -m apps.harness_lab` | — | 无（CLI） | ❌ | **记忆与人格验证台**，离线可跑，产出验证报告 |
 | `coding_agent` | 186 | `python -m apps.coding_agent` | — | 无（REPL） | 经 AgentRuntime | **最小可读范例** |
 | `text_agent` | 106 | 无入口（库） | — | 无 | ✅ 手写 | 最小模板 |
 
@@ -48,7 +49,7 @@ python -m apps.dsn_ui.server --host 0.0.0.0 --port 8888 --slots 2
 
 ```
 1. DSNUIEngine          （内部持有 ModelOrchestrator 单例）
-2. 外周资源池 ASR/TTS   失败置 None，不阻塞启动
+2. 外周资源池 ASR/TTS/VLM  失败置 None，不阻塞启动
 3. Orchestrator 状态监听 → SSE 广播
 4. ThoughtCacheService  ⚠️ 必须在 start() 前 set_emitter，否则首个事件丢失
 5. lifespan            每 60s 清理流会话；退出时 shutdown
@@ -127,7 +128,8 @@ python -m apps.dsn_ui.server --host 0.0.0.0 --port 8888 --slots 2
 读首 token 的概率分布，再取出选项 token 的概率并归一化。
 
 `/v1/decide/capabilities` 会先用 `/props` 校验 model_path 身份，再真发一次探针请求；
-因为所有本地 llama.cpp 默认都占 8080，不校验就会打到别人的模型上。
+因为所有本地 llama.cpp 默认都占 8080，不校验就会打到别的模型上。
+
 
 ### 2.8 数据与凭据
 
@@ -357,3 +359,43 @@ python -m apps.densechat --host 0.0.0.0 --port 8080 --project .
 2. **`dsn_ui` 完全不参与 Runtime/AppBundle 体系**，却直接 import `harness.agent.loop` 等内部件。
 3. **四个平行的「Agent 门面」**：`AgentRuntime` / `DSNUIAgentCoordinator` /
    `StudyEngine` / `EmotionExpAgent`。它们的职责高度重叠但各写各的。
+
+---
+
+## 七、`apps/harness_lab` —— 记忆与人格验证台
+
+> 定位：**不是产品，是验证台**。回答「harness 现有的记忆与人格系统，
+> 是否真的按预期工作」。
+
+| 项 | 说明 |
+|---|---|
+| 入口 | `python -m apps.harness_lab`（默认离线、无需凭据、1~2 秒跑完 56 项检查） |
+| 覆盖 | `harness/personality`（PEV3 十四模块）、`harness/memory`（契约 + 向量原语）、`harness/context_assembly`（预算剪裁） |
+| 方法 | 预设 10 个**人格演化方向**（连续表扬 / 连续冲突 / 情绪宣泄 / 奖惩交替 / 长期消失 / 越界 / 空白卡演化 / 蒸馏保真度 / 记忆累积 / 上下文预算），每条对应 PEV3 里一条明确机制 |
+| 关键手法 | 桩客户端**如实遵守 `max_tokens`** → 离线复现线上的截断类故障；`--no-truncate` 作对照组把根因锁死 |
+| 产出 | `.dsn/harness_lab/report.md` + `report.json`（每条失败附证据） |
+| 测试 | `tests/test_harness_lab.py`：每条检查一项用例，已知缺陷标 `xfail(strict=True)` |
+
+当前基线（2026-11-11）：**60/60 通过**。最初跑出 51/56，5 项失败全部指向 harness
+的真实缺陷（蒸馏产物因 `max_tokens` 截断而全空、证据只存内存导致重启失忆、
+`plan()` 就地改写入参、兜底串串味、缓存不分用户），当天全部修掉，
+并把每条改成"必须持续通过"的回归项。详见 `apps/harness_lab/README.md`。
+
+---
+
+## 八、dsn_study 的两个内核（2026-11-11 重建）
+
+> 背景与决策见 `apps/dsn_study/REFACTOR_PLAN.md`（含实施记录 §14）。
+
+| 包 | 职责 | 关键设计 |
+|---|---|---|
+| `apps/dsn_study/context/` | 长上下文内核：学习状态 / 长期事实 / 会话摘要 / 最近对话 → 统一预算 → 一条文本进 system prompt | 6 模块单向依赖；全局硬预算**含 tail**；截断保留**尾部**；禁止静默丢中段；纯函数不改入参；每轮产出 `ContextTrace` |
+| `apps/dsn_study/persona/` | 人格薄层：规则信号（零 LLM）+ 提示词呈现（≤800 字）+ API 形状 | 复用**已修好的** PEV3 底座；判定默认走关键词规则（不与主回复抢 provider 队列）；卡片进版本库 |
+| `apps/dsn_study/gating.py` | 运行时可求值的开关层 | 改文件即生效，不用重启；优先级 env > 文件 > 默认；求值失败回退默认 |
+
+关键修复（同一批）：会话 id 跨进程稳定（`session_chat_ids` 表）、contextvars 残留、
+流式路径补跑 PRE_PROCESS、`<plan_check>` 不再外泄到用户可见文本与 TTS、
+角色卡从被 `.gitignore` 忽略的目录迁进版本库。
+
+回归：上下文内核 28 条 + 人格内核 51 条 + 端到端接线 8 条单测；
+全仓 `pytest tests/` 1227 passed，失败项与改动前**完全一致**（均为环境问题）。

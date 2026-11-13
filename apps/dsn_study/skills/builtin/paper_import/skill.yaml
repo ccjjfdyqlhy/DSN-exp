@@ -1,0 +1,195 @@
+name: paper_import
+display_name: "整卷入库"
+description: "把一套试卷（试卷+答案）下载、OCR、判定题答分界、抽题并入库题库，一条龙完成；也能把**多套卷子**快速合成一份可打印的合卷 PDF（prepare_bundle，默认不打印）。"
+version: "1.0.0"
+author: "system"
+source: "builtin"
+enabled: true
+status: "active"
+prompt_category: "skills"
+prompt_priority: 73
+
+tools:
+  - name: import_paper
+    display_name: "整卷导入题库"
+    description: "下载并处理一整套试卷：OCR 识别、判定试题/答案分界、逐页抽取题目、可选回填答案、写入题库，并生成试卷/答案 PDF。AI 只需要调这一个工具就能把一整套卷子变成题库里的题目。"
+    module: "tools.paper_import_tools"
+    class: "PaperImportTool"
+    methods:
+      - name: import_paper
+        description: "整卷 → 题库。传 paper_id 或 keyword 之一即可。"
+        parameters:
+          paper_id:
+            type: integer
+            description: "试卷 id（gaokzx 文章 id）；传 0 表示用 keyword 搜索"
+            required: false
+            default: 0
+          keyword:
+            type: string
+            description: "搜索关键词，如「2026 高三 物理 期中」；paper_id=0 时必填"
+            required: false
+            default: ""
+          subject:
+            type: string
+            description: "学科代码：physics / math / chemistry / english / chinese / biology"
+            required: false
+            default: "physics"
+          max_pages:
+            type: integer
+            description: "最多处理多少页试题（OCR 成本随页数线性增长）"
+            required: false
+            default: 12
+          answer_pages:
+            type: integer
+            description: "额外 OCR 多少页答案页用于回填答案（0 = 不对答案）"
+            required: false
+            default: 0
+          dry_run:
+            type: boolean
+            description: "只抽题不入库，先看效果时用 true"
+            required: false
+            default: false
+          make_pdf:
+            type: boolean
+            description: "是否同时生成试卷/答案 PDF"
+            required: false
+            default: true
+          user_id:
+            type: integer
+            description: "用户 id"
+            required: false
+            default: 1
+
+  - name: prepare_bundle
+    display_name: "准备合卷 PDF"
+    description: "多套卷子 → 一份可打印的合卷：并发下载 → 快速判定题/答分界 → 拆成试题/答案两份 → 合成 A4 PDF（**默认不打印**）。"
+    module: "tools.paper_import_tools"
+    class: "PaperImportTool"
+    methods:
+      - name: prepare_bundle
+        description: "准备合卷 PDF（不打印）"
+        parameters:
+          papers:
+            type: array
+            description: "[{\"subject\": \"语文\", \"paper_id\": 161613}, ...]"
+            required: true
+            items:
+              type: object
+          out_dir:
+            type: string
+            description: "输出目录；留空用 .dsn/papers/bundle"
+            required: false
+          make_pdf:
+            type: boolean
+            description: "是否合成 PDF，默认 true"
+            required: false
+          use_vision:
+            type: boolean
+            description: "false = 用位置启发式判定（快但不准）"
+            required: false
+          concurrency:
+            type: integer
+            description: "下载并发度，默认 4"
+            required: false
+          title_prefix:
+            type: string
+            description: "合卷标题前缀（用于文件名与分隔页）"
+            required: false
+          separator_pages:
+            type: boolean
+            description: "每科前插入分隔标题页，默认 true"
+            required: false
+          print_pdf:
+            type: boolean
+            description: "**默认 false** —— 准备完不送印"
+            required: false
+
+  - name: print_paper
+    display_name: "打印试卷 PDF"
+    description: "打印已生成的试卷 PDF，自动处理 CUPS 对家目录的权限限制。"
+    module: "tools.paper_import_tools"
+    class: "PaperImportTool"
+    methods:
+      - name: print_paper
+        description: "送印一份 PDF。"
+        parameters:
+          pdf_path:
+            type: string
+            description: "PDF 文件路径"
+            required: true
+          printer_name:
+            type: string
+            description: "打印机名；留空用系统默认"
+            required: false
+            default: ""
+          page_range:
+            type: string
+            description: "页码范围，如 \"1\" / \"1-3\"；留空打印全部"
+            required: false
+            default: ""
+          copies:
+            type: integer
+            description: "份数"
+            required: false
+            default: 1
+
+  - name: print_duplex
+    display_name: "手动双面打印"
+    description: "单面打印机的双面流程：phase='first' 打印正面（奇数页）并返回翻纸指引，用户翻好插回后 phase='second' 打印背面（偶数页）。"
+    module: "tools.paper_import_tools"
+    class: "PaperImportTool"
+    methods:
+      - name: print_duplex
+        description: "手动双面打印的一步。first=正面，second=背面。"
+        parameters:
+          pdf_path:
+            type: string
+            description: "PDF 文件路径"
+            required: true
+          phase:
+            type: string
+            description: "first=打印正面（奇数页）并提示翻纸；second=打印背面（偶数页）"
+            required: false
+            default: "first"
+          printer_name:
+            type: string
+            description: "打印机名；留空用系统默认"
+            required: false
+            default: ""
+          copies:
+            type: integer
+            description: "份数"
+            required: false
+            default: 1
+          reverse_back:
+            type: boolean
+            description: "背面页序反转。出纸顺序与正面相反时置 true，否则背面会配错纸"
+            required: false
+            default: false
+
+  - name: pending_flip
+    display_name: "待翻面作业"
+    description: "查看当前正等着「翻面打印背面」的打印作业。"
+    module: "tools.paper_import_tools"
+    class: "PaperImportTool"
+    methods:
+      - name: pending_flip
+        description: "列出等待翻面的作业。"
+        parameters: {}
+
+  - name: vlm_status
+    display_name: "本地视觉模型状态"
+    description: "查看入库 OCR 用的本地视觉模型（Bonsai）状态：是否启用、是否按需托管、当前是否已加载、用的是哪个模型与投影器。OCR 报错或特别慢时先用它排查。"
+    module: "tools.paper_import_tools"
+    class: "PaperImportTool"
+    methods:
+      - name: vlm_status
+        description: "查询本地 VLM 状态。"
+        parameters: {}
+
+activation:
+  keywords: ["试卷", "整卷", "导入题库", "期中考", "真题", "一套卷", "paper"]
+  auto_activate: false
+
+dependencies: [question_store, llm, workspace]
+tags: [paper, import, question, gaokao, ocr, vlm]

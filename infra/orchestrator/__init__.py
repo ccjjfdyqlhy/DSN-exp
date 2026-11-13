@@ -43,6 +43,15 @@ from .strata import (
 )
 from .openai import OpenAICompatClient
 from .anthropic import AnthropicCompatClient
+# Bonsai（PrismML）本地模型资源的自动发现（目录/二进制/模型/投影器）
+from .bonsai import (
+    BonsaiModel,
+    bonsai_status,
+    find_bonsai_binary,
+    pick_multimodal_model,
+    resolve_demo_dir,
+    scan_bonsai_models,
+)
 from .router import (
     ModelSourceType,
     ModelSpec,
@@ -90,6 +99,13 @@ __all__ = [
     "LlamaServerLauncher",
     "LlamaCppChat",
     "LlamaCppEmbeddingClient",
+    # Bonsai 本地模型自动发现
+    "BonsaiModel",
+    "bonsai_status",
+    "find_bonsai_binary",
+    "pick_multimodal_model",
+    "resolve_demo_dir",
+    "scan_bonsai_models",
     # 本地 Strata 推理引擎支持（run config JSON + serve/server.py）
     "StrataEngineConfig",
     "StrataServerLauncher",
