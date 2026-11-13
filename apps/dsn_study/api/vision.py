@@ -136,20 +136,56 @@ class VisionCoordinator:
         except Exception:
             logger.warning("摄像头台账持久化失败: %s", name, exc_info=True)
 
+    def _delete_camera_row(self, name: str) -> None:
+        """从持久层删除一行台账（失败不影响内存台账）。"""
+        if self._db is None:
+            return
+        try:
+            conn = self._db._get_connection()
+            conn.execute("DELETE FROM vision_cameras WHERE logical_name = ?",
+                         (name,))
+            conn.commit()
+        except Exception:
+            logger.warning("摄像头台账删除失败: %s", name, exc_info=True)
+
     def register_cameras(self, cameras: list[dict]) -> None:
-        """客户端枚举上报摄像头: [{logical_name, index, name, backend}]。"""
+        """客户端枚举上报摄像头: [{logical_name, index, name, backend}]。
+
+        **按物理设备对账**：同一个 device_index 只允许存在一个逻辑名。
+        客户端早期没有 camera_map 时按 cam0/cam1 命名，后来改成
+        desk/doc，两套名字会在台账里并存 —— 表现就是「两台摄像头被
+        登记了两次」（服务端列出来四台，实际只有两台）。
+
+        规则：客户端上报的名字是**当前真实命名**，同 index 的旧名字
+        直接摘掉；旧名字上的备注迁移到新名字（备注描述的是这台物理
+        设备，不该随名字一起丢）。
+        """
         with self._camera_lock:
             for c in cameras:
                 name = c.get("logical_name", "")
                 if not name:
                     continue
+                index = c.get("index")
                 entry = self._cameras.setdefault(
                     name, {"index": None, "note": "", "last_seen": time.time()})
+                # 同一物理设备被别的逻辑名占着 → 摘掉旧名（备注迁移）
+                if index is not None:
+                    for old_name in [n for n, e in self._cameras.items()
+                                     if n != name and e.get("index") == index]:
+                        old_entry = self._cameras.pop(old_name, None)
+                        self._delete_camera_row(old_name)
+                        logger.info("摄像头 %s（设备 %s）被 %s 取代，已摘除",
+                                    old_name, index, name)
+                        # 备注描述的是**这台物理设备**，不该随名字一起丢
+                        if (old_entry and not entry.get("note")
+                                and old_entry.get("note")):
+                            entry["note"] = old_entry["note"]
                 entry["index"] = c.get("index", entry.get("index"))
                 entry["last_seen"] = time.time()
                 self._persist_camera(name, entry)
-        logger.info("已登记 %d 个摄像头: %s",
-                    len(cameras), [c.get("logical_name") for c in cameras])
+        logger.info("已登记 %d 个摄像头: %s（台账共 %d 台）",
+                    len(cameras), [c.get("logical_name") for c in cameras],
+                    len(self._cameras))
 
     def list_cameras(self) -> list[dict]:
         """列出全部摄像头（study 无远程 webcam 管理器，只有本地物理摄像头）。"""

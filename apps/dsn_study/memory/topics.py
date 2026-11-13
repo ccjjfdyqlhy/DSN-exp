@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -41,6 +42,33 @@ from harness.context_assembly import (
 from apps.dsn_study.config import Config
 
 logger = logging.getLogger("StudyTopics")
+
+#: 旧版关话题时写死的占位摘要（「与【X】相关的过往探讨」）。
+#: 这句话**不含任何上下文**，却被当作 [话题回顾] 注入 system prompt ——
+#: 结果就是主AI 每次都带着一条固定不变的假记忆（"找物理卷子"那条）。
+#: 识别出来是为了：(a) 组装时跳过；(b) 迁移脚本回填成有信息量的摘要。
+PLACEHOLDER_SUMMARY_RE = re.compile(r"^与【.*?】相关的过往探讨$")
+
+
+def lexical_similarity(a: str, b: str) -> float:
+    """字符 bigram 的 Jaccard 相似度（0~1）。
+
+    为什么需要它：嵌入服务（LMStudio:4501）没起时，话题系统**没有任何
+    语义信号** → 判定逻辑退化成「永远延续当前话题」→ 会话被卡死在一个
+    话题里，用户怎么换话题都推不下去。词面相似度不需要模型、不需要网络，
+    中文短句上够用（同一话题的续问通常会复用关键词）。
+
+    只作**兜底**：有嵌入信号时仍以向量相似度为准。
+    """
+    a = re.sub(r"\s+", "", a or "")
+    b = re.sub(r"\s+", "", b or "")
+    if len(a) < 2 or len(b) < 2:
+        return 1.0 if a and a == b else 0.0
+    ga = {a[i:i + 2] for i in range(len(a) - 1)}
+    gb = {b[i:i + 2] for i in range(len(b) - 1)}
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
 
 _MIGRATIONS = [
     Migration("001_study_topics", lambda c: c.executescript(
@@ -220,14 +248,15 @@ class TopicManager:
                 if st["current_topic_id"] else None
             if cur and cur["status"] == "open" \
                     and now - cur["last_active_at"] > self.idle_timeout:
-                self.close_topic(uid, chat_id, cur["topic_id"],
-                                 summary=f"与【{cur['title']}】相关的过往探讨")
+                # 不传 summary → close_topic 用话题原文提炼（有信息量）
+                self.close_topic(uid, chat_id, cur["topic_id"])
                 st["active_pins"].clear()
                 cur = None
 
             # 2) 语义打分：本会话的候选话题
             query_vec = self._embed(user_text) if self.embedding_client else None
-            candidates = self._score_candidates(uid, chat_id, cur, query_vec)
+            candidates = self._score_candidates(uid, chat_id, cur, query_vec,
+                                                user_text)
             cur_sim = candidates.get(cur["topic_id"], 0.0) if cur else 0.0
             best_tid, best_sim, best_status = None, 0.0, "open"
             for tid, sim in sorted(candidates.items(), key=lambda kv: -kv[1]):
@@ -248,8 +277,7 @@ class TopicManager:
             elif action == "reopen" and best_tid:
                 # 关当前 → 重开目标 → 切换
                 if cur and cur["status"] == "open":
-                    self.close_topic(uid, chat_id, cur["topic_id"],
-                                     summary=f"与【{cur['title']}】相关的过往探讨")
+                    self.close_topic(uid, chat_id, cur["topic_id"])
                 self.reopen_topic(best_tid)
                 st["current_topic_id"] = best_tid
                 st["active_pins"].clear()
@@ -286,14 +314,51 @@ class TopicManager:
         reopen 门槛按候选状态区分（dsn 的 ACTIVATION 语义）：
           **closed（已归档）话题重开走 TOPIC_ACTIVATION_THRESHOLD**（默认更高，
           归档话题复活要求更强的相似依据），open 候选仍走 TOPIC_REOPEN_THRESHOLD。
-        **无嵌入信号时退化为"延续当前"**（时间边界负责切分）——
-        没有任何相似度依据就按消息开新话题，会把会话碎成片。
+        **无嵌入信号时用词面相似度兜底**（见 `lexical_similarity`）：
+        嵌入服务（LMStudio:4501）没起时，若还「一律延续当前话题」，
+        会话会被卡死在一个话题里 —— 用户换个话题问也还是老上下文。
+        词面阈值比向量阈值低（中文 bigram 更严），单独配置。
         """
         from apps.dsn_study.config import Config as _C
         continue_th = float(_C.TOPIC_CONTINUE_THRESHOLD)
         reopen_th = float(_C.TOPIC_ACTIVATION_THRESHOLD
                           if best_status == "closed"
                           else _C.TOPIC_REOPEN_THRESHOLD)
+
+        # ── 无嵌入信号：词面兜底分支（必须在下面的 continue 分支之前）──
+        if not has_signal and _C.TOPIC_LEXICAL_ENABLED:
+            if _C.TOPIC_JUDGE_ALWAYS and self._judge_wanted(user_text, allow_llm_judge):
+                judged = self._judge(user_text, cur, cur_sim, best_tid, best_sim)
+                if judged:
+                    return judged
+            lex_continue = float(_C.TOPIC_LEXICAL_CONTINUE_THRESHOLD)
+            lex_new = float(_C.TOPIC_LEXICAL_NEW_THRESHOLD)
+            lex_reopen = float(_C.TOPIC_LEXICAL_REOPEN_THRESHOLD)
+            text = (user_text or "").strip()
+
+            # 短句（"好的"/"打印"/"下一题"）信息量不足，不足以支撑切话题。
+            # 语音场景一大半是这种短句 —— 按它们切话题会把会话碎成片。
+            if len(text) < int(_C.TOPIC_LEXICAL_MIN_CHARS):
+                if cur is None:
+                    return {"action": "new", "reason": "无进行中话题"}
+                return {"action": "continue",
+                        "reason": f"短句（{len(text)} 字），不足以判定边界"}
+
+            if cur is not None:
+                if cur_sim >= lex_continue:
+                    return {"action": "continue",
+                            "reason": f"词面相似 {cur_sim:.2f}（无嵌入信号）"}
+                if cur_sim <= lex_new:
+                    return {"action": "new",
+                            "reason": f"与当前话题词面无关 ({cur_sim:.2f}，无嵌入信号)"}
+                # 中间地带：证据不足 → 保守延续（宁可同一话题，也别碎成片）
+                return {"action": "continue",
+                        "reason": f"词面证据不足 ({cur_sim:.2f})，保守延续"}
+
+            if best_tid and best_sim >= lex_reopen:
+                return {"action": "reopen",
+                        "reason": f"词面相似历史话题 {best_sim:.2f}（无嵌入信号）"}
+            return {"action": "new", "reason": "无进行中话题"}
 
         if cur is not None and (cur_sim >= continue_th or not has_signal):
             if _C.TOPIC_JUDGE_ALWAYS and self._judge_wanted(user_text, allow_llm_judge):
@@ -385,6 +450,30 @@ class TopicManager:
         except Exception:   # noqa: BLE001
             logger.debug("话题摘要线程启动失败（已跳过）", exc_info=True)
 
+    @staticmethod
+    def _content_summary(msgs: list[dict], limit: int = 400) -> str:
+        """从话题原文里提炼一段**有信息量**的摘要（不依赖 LLM）。
+
+        旧实现在关话题时写死「与【X】相关的过往探讨」—— 不含任何事实，
+        注入到 system prompt 后只是一条占位噪声。现在改成：
+        取该话题的第一条用户发言 + 最后一条助手发言（截断），
+        至少让「这个话题聊过什么」是真的。
+
+        后台的 LLM 摘要（`_summarize_in_background`）算好后仍会覆盖它。
+        """
+        users = [str(m.get("content") or "").strip() for m in msgs
+                 if m.get("role") == "user" and str(m.get("content") or "").strip()]
+        asst = [str(m.get("content") or "").strip() for m in msgs
+                if m.get("role") == "assistant" and str(m.get("content") or "").strip()]
+        parts: list[str] = []
+        if users:
+            parts.append("用户：" + users[0][:120])
+        if asst:
+            parts.append("助手：" + asst[-1][:limit])
+        if not parts:
+            return ""
+        return "\n".join(parts)
+
     def _embed(self, text: str) -> Optional[list]:
         if not self.embedding_client or not (text or "").strip():
             return None
@@ -394,12 +483,18 @@ class TopicManager:
             return None
 
     def _score_candidates(self, uid: int, chat_id: int, cur,
-                          query_vec) -> dict[str, float]:
+                          query_vec, user_text: str = "") -> dict[str, float]:
         """候选话题相似度：本会话全部话题（open + closed —— closed 是
-        reopen 的候选）+ 跨会话 open/pinned 话题。"""
+        reopen 的候选）+ 跨会话 open/pinned 话题。
+
+        没有嵌入向量时（嵌入服务没起/熔断中）→ **词面相似度兜底**，
+        否则判定层拿不到任何相似度依据，会话会卡在一个话题里。
+        """
         scores: dict[str, float] = {}
         if not query_vec:
-            return scores
+            if not (user_text or "").strip():
+                return scores
+            return self._score_candidates_lexical(uid, chat_id, user_text)
         seen = set()
         for scope_chat in (chat_id, None):
             for t in self.store.list_topics(uid, scope_chat, status=None):
@@ -415,6 +510,35 @@ class TopicManager:
             if scope_chat == chat_id and len(scores) >= Config.TOPIC_CANDIDATE_K:
                 break
         return scores
+
+    def _score_candidates_lexical(self, uid: int, chat_id: int,
+                                  user_text: str) -> dict[str, float]:
+        """词面相似度打分（嵌入服务不可用时的兜底）。"""
+        scores: dict[str, float] = {}
+        seen: set[str] = set()
+        for scope_chat in (chat_id, None):
+            for t in self.store.list_topics(uid, scope_chat, status=None):
+                if t["topic_id"] in seen:
+                    continue
+                seen.add(t["topic_id"])
+                scores[t["topic_id"]] = self._topic_lexical_score(
+                    t["topic_id"], t.get("title") or "", user_text)
+            if scope_chat == chat_id and len(scores) >= Config.TOPIC_CANDIDATE_K:
+                break
+        return scores
+
+    def _topic_lexical_score(self, topic_id: str, title: str,
+                             user_text: str) -> float:
+        """新消息与某话题的词面相似度（标题 + 最近几条用户发言取最大）。"""
+        if not (user_text or "").strip():
+            return 0.0
+        best = lexical_similarity(user_text, title or "")
+        users = [str(m.get("content") or "")
+                 for m in self.topic_messages(topic_id)
+                 if m.get("role") == "user"]
+        for text in reversed(users[-4:]):
+            best = max(best, lexical_similarity(user_text, text))
+        return best
 
     # ── 轮次记录 ──
 
@@ -465,7 +589,9 @@ class TopicManager:
             if not topic:
                 return False
             msgs = self.topic_messages(topic_id)
-            placeholder = f"讨论了关于【{topic['title']}】的内容，共 {len(msgs)} 条记录。"
+            # 兜底摘要：优先用话题原文提炼（**有信息量**），
+            # 而不是「与【X】相关的过往探讨」这种零信息占位串。
+            placeholder = self._content_summary(msgs)
             if not summary and self.summary_model is not None and msgs:
                 # 摘要**放后台**：它是一次可能上万 token 的 LLM 调用，
                 # 同步做会把整轮对话堵住（对讲机场景尤其致命）。
@@ -558,12 +684,16 @@ class TopicManager:
             # 1) 关闭话题摘要（本会话，最近优先，预算内全给）
             closed = self.store.list_topics(uid, chat_id, status="closed")
             for t in closed[:8]:
-                if t.get("summary"):
-                    segments.append(ContextSegment(
-                        kind=SEG_SUMMARY, content=t["summary"],
-                        priority=PRIORITY_SUMMARY,
-                        label=f"[话题回顾 · {t['title']}]",
-                        truncatable=True, meta={"topic_id": t["topic_id"]}))
+                summary = (t.get("summary") or "").strip()
+                # 旧版占位摘要（零信息）不进上下文 —— 它只会让主AI 抱着
+                # 一条固定不变的假记忆。空摘要同理。
+                if not summary or PLACEHOLDER_SUMMARY_RE.match(summary):
+                    continue
+                segments.append(ContextSegment(
+                    kind=SEG_SUMMARY, content=summary,
+                    priority=PRIORITY_SUMMARY,
+                    label=f"[话题回顾 · {t['title']}]",
+                    truncatable=True, meta={"topic_id": t["topic_id"]}))
 
             # 2) 其它 open / pinned 话题原文（非当前；pinned 优先）
             actives = [t for t in self.store.list_topics(uid, chat_id,

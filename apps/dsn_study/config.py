@@ -165,6 +165,23 @@ class Config:
     TOPIC_JUDGE_ENABLED = _env("TOPIC_JUDGE_ENABLED", "true").lower() == "true"
     TOPIC_JUDGE_ALWAYS = _env("TOPIC_JUDGE_ALWAYS", "false").lower() == "true"
     TOPIC_CANDIDATE_K = max(1, int(_env("TOPIC_CANDIDATE_K", "3")))
+    # ── 无嵌入信号时的词面兜底 ──
+    # 嵌入服务（LMStudio:4501）没起时，话题判定拿不到任何语义信号；
+    # 若此时「一律延续当前话题」，会话会被卡死在一个话题里推不下去。
+    # 词面相似度（字符 bigram）不需要模型/网络，中文短句够用。
+    TOPIC_LEXICAL_ENABLED = _env_bool("TOPIC_LEXICAL_ENABLED", "true")
+    # 词面阈值比向量阈值低（bigram 更严）—— 同一话题的续问通常复用关键词。
+    # 三个阈值构成一条带：≥CONTINUE 延续；≤NEW 换话题；中间地带证据不足，保守延续。
+    TOPIC_LEXICAL_CONTINUE_THRESHOLD = float(
+        _env("TOPIC_LEXICAL_CONTINUE_THRESHOLD", "0.28"))
+    TOPIC_LEXICAL_NEW_THRESHOLD = float(
+        _env("TOPIC_LEXICAL_NEW_THRESHOLD", "0.10"))
+    TOPIC_LEXICAL_REOPEN_THRESHOLD = float(
+        _env("TOPIC_LEXICAL_REOPEN_THRESHOLD", "0.33"))
+    # 短于此字数的消息不参与切话题判定（"好的"/"打印"这类没有信息量）
+    TOPIC_LEXICAL_MIN_CHARS = int(_env("TOPIC_LEXICAL_MIN_CHARS", "6"))
+
+    # ── 人格系统 V3 ──
     PERSONALITY_V3_ENABLED = _env("PERSONALITY_V3_ENABLED", "true").lower() == "true"
     PERSONALITY_V3_OVERRIDE_V2 = _env("PERSONALITY_V3_OVERRIDE_V2", "true").lower() == "true"
     PERSONALITY_MODEL_NAME = _env("PERSONALITY_MODEL_NAME", "google/gemma-3-4b")

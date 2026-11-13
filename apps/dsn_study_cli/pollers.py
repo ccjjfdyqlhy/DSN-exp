@@ -115,7 +115,9 @@ class HeartbeatPoller:
             frames = camera.capture_all_cameras(self._cfg)
         else:
             data_url = camera.capture_frame(camera_name or None, self._cfg)
-            frames = [{"logical_name": camera_name or "cam0",
+            # 标签用**真实**逻辑名（默认摄像头可能是 desk，不是 cam0）
+            frames = [{"logical_name": camera.resolve_camera_name(
+                           camera_name or None, self._cfg),
                        "image_data": data_url or ""}]
         body = {"request_id": vr["request_id"], "frames": frames}
         if not any(f.get("image_data") for f in frames):

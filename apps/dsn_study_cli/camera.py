@@ -177,6 +177,24 @@ def resolve_camera(camera, cfg: dict | None = None) -> int:
     return (list(camera_map.values()) or [default_id])[0]
 
 
+def resolve_camera_name(camera=None, cfg: dict | None = None) -> str:
+    """给定逻辑名（或默认摄像头），返回它**真正的**逻辑名。
+
+    「不指定摄像头」的帧以前一律标成 "cam0" —— 可台账里根本没有 cam0
+    （客户端现在用 desk/doc 命名），这个假标签会让模型以为多了一台
+    摄像头，也让人对不上台账。
+    """
+    name = str(camera or "").strip()
+    if name and name not in ("all", "all_cameras", "default"):
+        if name in get_camera_map(cfg) or name in _CAMERA_NAME_TO_INDEX:
+            return name
+    device_id = resolve_camera(camera, cfg)
+    for d in _CAMERA_LIST:
+        if d["index"] == device_id:
+            return str(d.get("logical_name") or name)
+    return name or "cam0"
+
+
 def capture_frame(camera=None, cfg: dict | None = None,
                   use_cache: bool = True) -> str | None:
     """抓一帧 → JPEG q75 → base64 data URL。失败返回 None。"""
