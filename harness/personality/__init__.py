@@ -21,6 +21,7 @@ from .state_manager import V3StateManager
 from .persistence import V3Persistence
 from .events import (
     PerceptionRecord,
+    EVENT_NEUTRAL,
     affinity_level as _shared_affinity_level,
     AFFINITY_THRESHOLDS as _AFFINITY_THRESHOLDS,
 )
@@ -443,7 +444,11 @@ class PersonalitySystemV3:
 
         logger.debug("V3: 生成性格提示词 uid=%d card_id=%s interactions=%d affinity=%.0f",
                      uid, snapshot.card_id, snapshot.total_interactions, snapshot.affinity_value)
-        result = self._generator.generate(snapshot)
+        # 缓存按 (用户, 卡, 关系阶段) 分桶：同一张卡下不同用户的亲密度/情绪不同，
+        # 共用一份缓存会把 A 的人格描述发给 B（多用户场景的串人格）。
+        level = self._affinity_level(snapshot.affinity_value).get("level", 1)
+        cache_key = f"{snapshot.card_id}|{uid}|L{level}"
+        result = self._generator.generate(snapshot, cache_key=cache_key)
         logger.debug("V3: 性格提示词已生成 uid=%d len=%d", uid, len(result))
         return result
 
@@ -508,7 +513,55 @@ class PersonalitySystemV3:
             conversation_history=context_header,
         )
 
-        # 2. 确定性动力学引擎推演情绪/亲密度
+        # 2~5：确定性部分（动力学 / 证据 / 审计 / 落库 / 固化）
+        return self._apply_perception(uid, snapshot, perception, context_header)
+
+    def classify_heuristic(self, user_message: str) -> PerceptionRecord:
+        """无 LLM 的启发式分类（关键词 → 事件）。
+
+        给"规则信号 + 启发式兜底"的调用方用：**不触网**，但保证每一轮
+        都有事件分类 —— 否则没有信号的那一轮，人格状态就不会推进
+        （交互计数不增、亲密度不动）。
+        """
+        try:
+            return self._judge._heuristic_classify(user_message or "")
+        except Exception as e:   # noqa: BLE001
+            logger.warning("启发式分类失败（回退 neutral）: %s", e)
+            return PerceptionRecord(event_type=EVENT_NEUTRAL)
+
+    def apply_event(self, uid: int, perception: PerceptionRecord,
+                    conversation_history: str = "") -> MoodUpdateResult | None:
+        """把一条**已经确定好的**语义事件推进为状态变化（**不含 LLM 判定**）。
+
+        与 :meth:`analyze_interaction` 的唯一区别：省掉 ``judge.classify``
+        这一步 —— 语义判定由调用方给。
+
+        为什么需要它：LLM 判定要排 provider 队列，实测会把用户的下一轮主回复
+        拖到 50~100 秒；而"这一轮用户是在表扬还是在抱怨"这类信号，
+        用规则就能判得足够准（见 ``apps/dsn_study/persona/signals.py``）。
+        判定之外的每一步（动力学 / 证据 / 审计 / 落库 / 固化）完全一致。
+
+        :param perception: 已确定的语义事件（event_type 必须在
+            ``harness.personality.events.EVENT_TYPES`` 里）
+        """
+        if not self._enabled:
+            logger.debug("V3: apply_event 跳过 (enabled=False)")
+            return None
+        self.ensure_user_bound(uid)
+        snapshot = self._state_manager.get_current_snapshot(uid)
+        if not snapshot:
+            logger.warning("V3: apply_event 无快照 uid=%d", uid)
+            return None
+        return self._apply_perception(uid, snapshot, perception, conversation_history)
+
+    def _apply_perception(self, uid: int, snapshot: DynamicSnapshot,
+                          perception: PerceptionRecord,
+                          conversation_history: str = "") -> MoodUpdateResult:
+        """确定性部分：事件 → 情绪/亲密度 → 证据 → 审计 → 落库 → 固化。"""
+        prev_mood = snapshot.mood_state
+        prev_affinity = snapshot.affinity_value
+        interactions = snapshot.total_interactions
+
         card = self.get_card(snapshot.card_id)
         trait_b3 = None
         baseline = None

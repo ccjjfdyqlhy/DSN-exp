@@ -109,6 +109,13 @@ test-results/
 debug-storybook.log
 
 *character_cards*
+
+# ── dsn_study 人格卡片（2026-11-11 重构）──
+# 卡片本身**进版本库**（persona/cards/*.yaml），
+# 但蒸馏产物与备份是**派生物**，不入库。
+apps/dsn_study/persona/cards/*.distilled.json
+apps/dsn_study/persona/cards/backups/
+apps/dsn_study/persona/cards/_legacy/
 apps/dsn_ui/logs
 apps/dsn_ui/data
 # ── 测试副作用产物（2026-10）──

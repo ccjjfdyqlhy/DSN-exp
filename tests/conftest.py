@@ -58,6 +58,35 @@ def pytest_configure(config):
     #  batch 技能找不到 TaskManager → "TaskManager 未注入"。）
     os.environ.setdefault("TASK_MANAGER_ENABLED", "true")
 
+    # ── dsn_study 数据落盘位置：**必须在这里定死**（2026-11-10 事故修复）──
+    #
+    # 事故现象：跑测试把题目写进了正在跑的线上题库 .dsn/study_question_bank.db，
+    # 908 题里 906 题是 "组卷测试题0~5" / "1+1=?" / "超时测试题" 这类垃圾。
+    #
+    # 根因（两层叠加）：
+    #   1. apps/dsn_study/config.py 的 Config 是**类属性**，_env() 在**模块导入
+    #      那一刻**求值 → 环境变量只被快照一次；
+    #   2. 各测试文件在**自己 fixture 里**才 os.environ["QUESTION_BANK_DB_PATH"]=...，
+    #      而 pytest 收集阶段会先 import 全部测试模块 —— 只要有一个模块在导入期
+    #      间接拉起了 apps.dsn_study.config（asr/topics/voice_stream 都会），
+    #      Config 就已经被冻结成**默认值 .dsn/study_question_bank.db**；
+    #      后面 fixture 里再 setenv 全部无效，create_application() 直接开了线上库。
+    #      实测：单跑 test_dsn_study_boot.py 正常（那时 Config 还没被 import），
+    #      但「asr + boot」两个文件一起跑就写到线上库 —— 纯属文件执行顺序。
+    #
+    # 为什么放在 pytest_configure：它比任何测试模块的 import 都早，在这里 setenv，
+    # Config 首次求值时拿到的就是临时路径。
+    # 用 setdefault：允许外部（CI / 手动）显式指定自己的库。
+    _study_tmp = tempfile.mkdtemp(prefix="dsn_study_env_")
+    os.environ.setdefault(
+        "QUESTION_BANK_DB_PATH", str(Path(_study_tmp) / "study_question_bank.db"))
+    # 话题库也由 Config 在导入期快照，同样钉死，避免污染 .dsn/topics.db。
+    os.environ.setdefault("TOPIC_DB_PATH", str(Path(_study_tmp) / "topics.db"))
+    # 学习跟踪库（TRACKING 目录由 boot 从题库库目录推导，这里一并给绝对路径）。
+    os.environ.setdefault("TRACKING_DB_PATH", str(Path(_study_tmp) / "tracking.db"))
+    # 日志：别往仓库 logs/ 里写测试流量。
+    os.environ.setdefault("LOG_DIR", str(Path(_study_tmp) / "logs"))
+
 
 @pytest.fixture(autouse=True)
 def _isolate_repo_state(monkeypatch):

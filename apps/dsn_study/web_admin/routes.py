@@ -419,30 +419,73 @@ def memory_topic_action(topic_id: str, action: str):
 
 # ── 人格（harness PEV3） ──
 
+def _persona_facade():
+    """人格门面：优先用 PEV3 形状的兼容层，退回底座本身。"""
+    engine = EN()
+    if engine is None:
+        return None
+    return getattr(engine, "persona_compat", None) or engine.personality
+
+
 @admin_bp.route("/persona/list", methods=["GET"])
 def persona_list():
-    engine = EN()
-    if engine is None or engine.personality is None:
+    facade = _persona_facade()
+    if facade is None:
         return jsonify({"success": True, "cards": [],
                         "note": "人格系统未启用"})
-    cards = engine.personality.list_cards()
+    cards = facade.list_cards()
     return jsonify({"success": True, "cards": cards})
 
 
 @admin_bp.route("/persona/status/<card_id>", methods=["GET"])
 def persona_status(card_id: str):
+    facade = _persona_facade()
     engine = EN()
-    if engine is None or engine.personality is None:
+    if facade is None or engine is None:
         return jsonify({"success": False, "error": "人格系统未启用"}), 503
     uid = request.args.get("uid", 1)
-    snapshot = engine.personality.get_personality_status(int(uid))
-    card = engine.personality.get_card(card_id)
+    snapshot = facade.get_personality_status(int(uid))
+    card = engine.personality.get_card(card_id) if engine.personality else None
     return jsonify({
         "success": True,
         "card_id": card_id,
         "card": card.to_dict() if card and hasattr(card, "to_dict") else str(card),
         "snapshot": snapshot,
     })
+
+
+# ── 运行时开关（Feature Gate）──
+
+@admin_bp.route("/flags", methods=["GET"])
+def feature_flags():
+    """当前生效的运行时开关。
+
+    与 `/config` 的区别：`/config` 读的是 **import 期快照**（改 .env 要重启），
+    这里读的是**运行时求值**的开关层（`apps/dsn_study/gating.py`）——
+    改完立刻生效，用于新旧实现之间的灰度与回滚。
+    """
+    from apps.dsn_study import gating
+    try:
+        return jsonify({"success": True, "flags": gating.snapshot(),
+                        "file": str(gating.FLAGS_FILE)})
+    except Exception as e:   # noqa: BLE001
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/flags", methods=["POST"])
+def feature_flags_set():
+    """写运行时开关（立刻生效，无需重启）。"""
+    from apps.dsn_study import gating
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    value = data.get("value")
+    if not name:
+        return jsonify({"success": False, "error": "缺少 name"}), 400
+    ok = gating.set_flag(str(name), "" if value is None else str(value))
+    if not ok:
+        return jsonify({"success": False, "error": "写入失败"}), 500
+    return jsonify({"success": True, "name": name, "value": value,
+                    "flags": gating.snapshot()})
 
 
 # ── 配置（只读 + 明确不支持写入） ──

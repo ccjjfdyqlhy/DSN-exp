@@ -126,6 +126,12 @@ class AsrFilterPlugin(_BaseStudyPlugin):
 #: 完整技能说明仍然可以通过紧凑索引里的技能名触发。
 VOICE_PROMPT_TAGS = ("core", "personality", "context")
 
+#: 语音轮的「短回复」指令 —— **默认不启用**（Config.VOICE_SHORT_REPLY=false）。
+#:
+#: 它存在的唯一理由是 TTS 延迟（≈1.3s + 0.045s/字）：回复写 100 字，
+#: 用户就要多等 4 秒。但它同时把主AI 钉死在「只回一两句话」——
+#: 讲题讲不开、推导被压成一句话，正是「只能短回复」的来源。
+#: 所以现在默认关掉，需要「快答」时再用配置打开。
 VOICE_MODE_INSTRUCTION = (
     "【语音对话模式 —— 本条覆盖上面「步骤该展开就展开」的通用要求】\n"
     "用户是用**说的**在跟你交流，你的回答会被合成为语音播报给他。\n"
@@ -162,14 +168,20 @@ class SystemPromptPlugin(_BaseStudyPlugin):
         if self._prompt_builder is None:
             return ctx
         voice = bool(getattr(ctx, "is_asr_input", False))
+        uid = int(ctx.user_id or 1)
+        # 学习上下文由 boot 在**请求线程**算好后随 ctx 传进来。
+        # 不能靠 contextvars：管线跑在自己的常驻事件循环线程里，
+        # contextvars 不跨线程继承 —— 靠它传上下文等于永远传不到
+        # （这就是「主AI 没有上下文」的根因之一）。
+        context = ctx.extra.get("learning_context")
         try:
             if voice:
                 # 语音模式：去掉 17KB 技能说明，只留身份/人格/学习上下文
                 prompt = self._prompt_builder.build(
-                    uid=int(ctx.user_id or 1),
+                    uid=uid, context=context,
                     only_tags=list(VOICE_PROMPT_TAGS))
             else:
-                prompt = self._prompt_builder.build(uid=int(ctx.user_id or 1))
+                prompt = self._prompt_builder.build(uid=uid, context=context)
         except Exception:
             logger.warning("system prompt 组装失败（已跳过）", exc_info=True)
             return ctx
@@ -188,7 +200,10 @@ class SystemPromptPlugin(_BaseStudyPlugin):
             if idx:
                 ctx.system_prompt += ("\n\n【可用能力（简表）】\n" + idx
                                       + "\n（需要细节时再调用对应工具）")
-            ctx.system_prompt += ("\n\n" + VOICE_MODE_INSTRUCTION)
+            # 短回复限制是**可选**的（默认关）：开了才注入 40 字上限，
+            # 否则语音轮也能完整展开讲解。
+            if getattr(Config, "VOICE_SHORT_REPLY", False):
+                ctx.system_prompt += ("\n\n" + VOICE_MODE_INSTRUCTION)
         return ctx
 
 
@@ -601,8 +616,10 @@ class MemoryRecordPlugin(_BaseStudyPlugin):
     hooks = [HookPoint.POST_PROCESS]
     priority = 60
 
-    def __init__(self, memory_system=None):
+    def __init__(self, memory_system=None, context_store=None):
         self._memory_system = memory_system
+        #: 新上下文内核的存储（把这一轮写进 context_turns，供 tail 来源读取）
+        self._context_store = context_store
 
     def on_hook(self, hook: HookPoint, ctx: Context) -> Context:
         if self._memory_system is None:
@@ -618,6 +635,21 @@ class MemoryRecordPlugin(_BaseStudyPlugin):
                                                ctx.extra.get("user_message", ""),
                                                ctx.reply)
             ctx.reply = self._memory_system.handle_tags(uid, cid, ctx.reply)
+            # 新上下文内核：原始轮次落 context_turns（"最近对话"由它承载）
+            if self._context_store is not None:
+                try:
+                    from apps.dsn_study.context import TurnContext
+                    turn = TurnContext(
+                        uid=uid,
+                        session_id=str(ctx.session_id or ""),
+                        message=ctx.extra.get("user_message", ""),
+                        round_index=ridx,
+                        chat_id=cid,
+                    )
+                    self._context_store.record_turn(
+                        turn, ctx.extra.get("user_message", ""), ctx.reply or "")
+                except Exception:
+                    logger.warning("轮次写入上下文内核失败（已跳过）", exc_info=True)
             # 话题库：本轮原文归档进当前话题（POST_PROCESS 时话题已由
             # TopicContextPlugin 决定 —— 不新建，只记录）
             if Config.TOPIC_ENABLED:
@@ -671,6 +703,11 @@ class TopicContextPlugin(_BaseStudyPlugin):
                 allow_llm_judge=not getattr(ctx, "is_asr_input", False))
             ctx.extra["topic_decision"] = decision
             ctx.extra["topic_id"] = decision.get("topic_id")
+            # 话题边界判定落日志：会话「推不下去 / 换话题没反应」时，
+            # 先看这一行（是 continue 还是 new、依据是什么）。
+            logger.info("话题判定: %s（%s）→ %s",
+                        decision.get("action"), decision.get("reason", ""),
+                        decision.get("topic_title") or decision.get("topic_id"))
 
             # 话题上下文 → 合并进 system prompt（单条 system 语义，
             # 与 {user_context} 等插槽并列）。SEG_TAIL 保底随块注入。
@@ -723,23 +760,37 @@ class PersonalityFeedbackPlugin(_BaseStudyPlugin):
     hooks = [HookPoint.POST_PROCESS]
     priority = 70
 
-    def __init__(self, personality=None):
+    def __init__(self, personality=None, persona_engine=None):
         self._personality = personality
+        self._persona_engine = persona_engine
 
     def on_hook(self, hook: HookPoint, ctx: Context) -> Context:
-        if self._personality is None:
+        if self._personality is None and self._persona_engine is None:
             return ctx
         # 语音轮（对讲机）**不做人格判定**：它要打一次 LLM，而 provider 会
         # 串行排队 —— 后台调用排在用户下一轮的主回复前面，就能把回复拖到
         # 80 秒（实测）。语音回复短、随意，人格判定的收益也最低。
         if getattr(ctx, "is_asr_input", False):
             return ctx
-        # 人格判定要调 LLM（事件分类），**不阻塞回复**：
-        # 回复内容不依赖它，下一轮才用到更新后的状态。
-        # 同步跑会让每轮对话多花 2-4 秒。
         uid = int(ctx.user_id or 1)
         user_message = ctx.extra.get("user_message", "")
         reply = ctx.reply
+
+        # ── 规则路径（默认）──
+        # 事件判定走关键词规则，**零 LLM、零排队**，纯本地计算 →
+        # 可以同步跑：状态立刻可见，回复不受任何影响。
+        engine = self._persona_engine
+        if engine is not None and not engine.use_llm_judge:
+            try:
+                engine.feedback(uid, user_message, reply)
+            except Exception:
+                logger.warning("人格回写失败（已跳过）", exc_info=True)
+            return ctx
+
+        # ── LLM 路径（可选）──
+        # 人格判定要调 LLM（事件分类），**不阻塞回复**：
+        # 回复内容不依赖它，下一轮才用到更新后的状态。
+        # 同步跑会让每轮对话多花 2-4 秒。
 
         def _feedback():
             # 捕获"这一轮"的人格判定客户端：后台线程要等用户空闲才发请求，

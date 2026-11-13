@@ -68,8 +68,8 @@ class PersonalityPromptGenerator:
     def __init__(self, chat=None, before_generate=None,
                  min_regen_interval: float = 300.0):
         self._chat = chat
-        self._cached_prompt: str = ""
-        self._cache_valid = False
+        #: 按 (用户, 卡, 关系阶段) 分桶的提示词缓存
+        self._cache: dict[str, str] = {}
         self._generating = False
         self._gen_lock = threading.Lock()
         #: 生成前的钩子（可阻塞）。返回 False 表示"现在别发"。
@@ -96,23 +96,33 @@ class PersonalityPromptGenerator:
         return self._chat is not None
 
     def generate(self, snapshot: DynamicSnapshot, user_message: str = "",
-                 conversation_tone: str = "中性") -> str:
-        if self._cache_valid and self._cached_prompt:
-            return self._cached_prompt
+                 conversation_tone: str = "中性",
+                 cache_key: str | None = None) -> str:
+        # 缓存**按 (用户, 卡, 关系阶段) 分桶**：同一张卡下不同用户的亲密度与
+        # 情绪不同，共用一份缓存会把 A 的人格描述发给 B。
+        cache_key = cache_key or snapshot.card_id
+        with self._gen_lock:
+            cached = self._cache.get(cache_key)
+        if cached:
+            return cached
 
         if not self._chat:
             return self._fallback(snapshot)
 
         # 首次调用：立即返回 fallback，后台触发 LLM 生成
         fallback = self._fallback(snapshot)
-        self._trigger_async_generation(snapshot, user_message, conversation_tone)
+        self._trigger_async_generation(snapshot, user_message, conversation_tone, cache_key)
         return fallback
 
-    def invalidate_cache(self):
+    def invalidate_cache(self, cache_key: str | None = None):
         with self._gen_lock:
-            self._cache_valid = False
+            if cache_key is None:
+                self._cache.clear()
+            else:
+                self._cache.pop(cache_key, None)
 
-    def _trigger_async_generation(self, snapshot, user_message, conversation_tone):
+    def _trigger_async_generation(self, snapshot, user_message, conversation_tone,
+                                  cache_key: str = ""):
         with self._gen_lock:
             if self._generating:
                 return
@@ -138,8 +148,7 @@ class PersonalityPromptGenerator:
                 import time as _time
                 self._last_gen_at = _time.time()
                 with self._gen_lock:
-                    self._cached_prompt = result
-                    self._cache_valid = True
+                    self._cache[cache_key or snapshot.card_id] = result
                     self._generating = False
                 logger.info("PersonalityGenerator: 异步生成完成 len=%d", len(result))
             except Exception as e:
@@ -305,7 +314,11 @@ class PersonalityPromptGenerator:
         return f"## 角色设定\n{raw}"
 
 
+#: 无快照时的兜底串。
+#:
+#: ⚠️ 这里曾经硬编码了另一个应用的人格（"你是 EXA，一个运行在用户本地电脑上的
+#: AI 同事"），而本兜底串会被注入到**任何**应用的 system prompt 里 ——
+#: dsn_study 偶尔会把"你是 EXA"讲给用户听。
+#: 现在它只描述**行为准则**，不描述任何具体角色身份：具体身份由角色卡决定。
 DEFAULT_FALLBACK_PROMPT = """## 角色设定
-你是 EXA，一个运行在用户本地电脑上的 AI 同事。
-你的性格：直接、实事求是、偶尔调侃。回复尽量简短精炼。
-当前状态：平静，与用户保持正常的同事关系。"""
+（角色档案暂不可用，先按下列准则表现：直接、实事求是、不编造；该给结论就给结论，步骤该展开就展开。）"""

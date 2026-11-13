@@ -87,7 +87,6 @@ def bind_dsn_study_settings(settings: Settings) -> Settings:
     _bind(voice, "voice_idle_check_interval", "VOICE_IDLE_CHECK_INTERVAL", 60, _INT)
     _bind(voice, "asr_warmup_on_load", "ASR_WARMUP_ON_LOAD", True, _BOOL)
 
-    # ── 陪伴（人格 / 世界） ──
     companion = settings.namespace("companion")
     _bind(companion, "personality_v3_enabled", "PERSONALITY_V3_ENABLED", True, _BOOL)
     _bind(companion, "world_enabled", "WORLD_ENABLED", True, _BOOL)

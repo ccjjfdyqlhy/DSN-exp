@@ -49,6 +49,8 @@ class EvidenceAccumulator:
         self._counts: dict[str, dict[str, int]] = {}
         self._pending: dict[str, int] = {}
         self._lock = threading.Lock()
+        #: 载入用的独立锁 —— self._lock 不可重入，加载路径不能持有它
+        self._load_lock = threading.RLock()
 
     # === 持久化 ===
 
@@ -66,9 +68,17 @@ class EvidenceAccumulator:
                     mu_json TEXT NOT NULL DEFAULT '{}',
                     sigma_json TEXT NOT NULL DEFAULT '{}',
                     counts_json TEXT NOT NULL DEFAULT '{}',
+                    pending INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )
             """)
+            # 旧库补列：pending 之前只在内存里，重启即丢
+            cols = [r[1] for r in conn.execute(
+                "PRAGMA table_info(personality_evidence)").fetchall()]
+            if "pending" not in cols:
+                conn.execute(
+                    "ALTER TABLE personality_evidence "
+                    "ADD COLUMN pending INTEGER NOT NULL DEFAULT 0")
             conn.commit()
         except Exception as e:
             logger.error("创建证据表失败: %s", e)
@@ -79,15 +89,21 @@ class EvidenceAccumulator:
         try:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT mu_json, sigma_json, counts_json FROM personality_evidence WHERE card_id = ?",
+                "SELECT mu_json, sigma_json, counts_json, pending "
+                "FROM personality_evidence WHERE card_id = ?",
                 (card_id,),
             ).fetchone()
             if not row:
                 return None
+            try:
+                pending = int(row["pending"] or 0)
+            except (TypeError, ValueError):
+                pending = 0
             return {
                 "mu": json.loads(row["mu_json"]),
                 "sigma": json.loads(row["sigma_json"]),
                 "counts": json.loads(row["counts_json"]),
+                "pending": pending,
             }
         except Exception as e:
             logger.error("加载证据失败 card=%s: %s", card_id, e)
@@ -105,16 +121,19 @@ class EvidenceAccumulator:
         try:
             conn = self._get_conn()
             conn.execute(
-                """INSERT INTO personality_evidence (card_id, mu_json, sigma_json, counts_json, updated_at)
-                   VALUES (?, ?, ?, ?, datetime('now'))
+                """INSERT INTO personality_evidence
+                   (card_id, mu_json, sigma_json, counts_json, pending, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))
                    ON CONFLICT(card_id) DO UPDATE SET
                        mu_json = excluded.mu_json,
                        sigma_json = excluded.sigma_json,
                        counts_json = excluded.counts_json,
+                       pending = excluded.pending,
                        updated_at = datetime('now')""",
                 (card_id, json.dumps(mu, ensure_ascii=False),
                  json.dumps(sigma, ensure_ascii=False),
-                 json.dumps(counts, ensure_ascii=False)),
+                 json.dumps(counts, ensure_ascii=False),
+                 int(self._pending.get(card_id, 0))),
             )
             conn.commit()
         except Exception as e:
@@ -122,16 +141,41 @@ class EvidenceAccumulator:
 
     # === 证据累积 ===
 
+    def _ensure_loaded(self, card_id: str) -> None:
+        """确保该卡的证据状态已在内存里；否则从 DB 载入。
+
+        ⚠️ 这是"重启即失忆"的修复点：mu / sigma / counts / pending **全部**
+        曾经只存在于内存，进程重启后：
+          * get_mu() 返回空 → API 报告的证据量恒为 0；
+          * _pending 归零 → CONSOLIDATE_EVERY=50 的固化门槛永远达不到，
+            蒸馏产物自蒸馏那天起一次都没被回写过。
+        现在这四样都以 DB 为真源，内存只是读缓存。
+        """
+        if card_id in self._mu:
+            return
+        with self._load_lock:
+            if card_id in self._mu:
+                return
+            stored = self.load_card(card_id)
+            if not stored or not stored.get("mu"):
+                return
+            self._mu[card_id] = stored.get("mu") or {}
+            self._sigma[card_id] = stored.get("sigma") or {}
+            self._counts[card_id] = stored.get("counts") or {}
+            self._pending[card_id] = int(stored.get("pending") or 0)
+            logger.info("EvidenceAccumulator: 从 DB 恢复证据状态 card=%s "
+                        "dims=%d pending=%d", card_id, len(self._mu[card_id]),
+                        self._pending[card_id])
+
     def seed(self, card_id: str, base_vector: dict[str, float]) -> None:
         """以蒸馏产物的 indicator_vector 作为演化起点（若尚未有历史）。"""
         with self._lock:
             if card_id in self._mu:
                 return
-            stored = self.load_card(card_id)
-            if stored and stored.get("mu"):
-                self._mu[card_id] = stored["mu"]
-                self._sigma[card_id] = stored.get("sigma", {})
-                self._counts[card_id] = stored.get("counts", {})
+        # 先从 DB 恢复：已有演化结果时，不能用基线向量覆盖它
+        self._ensure_loaded(card_id)
+        with self._lock:
+            if card_id in self._mu:
                 return
             mu = {tid: float(base_vector.get(tid, 0.5)) for tid in TRAIT_IDS}
             self._mu[card_id] = mu
@@ -170,24 +214,47 @@ class EvidenceAccumulator:
         logger.debug("EvidenceAccumulator: card=%s %s(n=%d) 已累积",
                      card_id, list(evidence.keys()), counts.get(next(iter(evidence), ""), 0))
 
+    def _persist_pending(self, card_id: str) -> None:
+        """把固化计数单独写回 DB（不覆盖 mu/sigma/counts）。"""
+        if self._db is None:
+            return
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE personality_evidence SET pending=? WHERE card_id=?",
+                (int(self._pending.get(card_id, 0)), card_id))
+            conn.commit()
+        except Exception as e:
+            logger.error("持久化固化计数失败 card=%s: %s", card_id, e)
+
     # === 查询 ===
 
     def get_mu(self, card_id: str) -> dict[str, float]:
+        self._ensure_loaded(card_id)
         with self._lock:
             return dict(self._mu.get(card_id, {}))
 
     def get_plasticity(self, card_id: str) -> dict[str, float]:
         """每维可塑系数 α，越高代表该维仍易受新经历影响。"""
+        self._ensure_loaded(card_id)
         with self._lock:
             counts = self._counts.get(card_id, {})
         return {tid: 1.0 / (1.0 + counts.get(tid, 0) / PLASTICITY_TAU) for tid in TRAIT_IDS}
 
     def get_total(self, card_id: str) -> int:
+        self._ensure_loaded(card_id)
         with self._lock:
             counts = self._counts.get(card_id, {})
         return sum(counts.values())
 
+    def get_pending(self, card_id: str) -> int:
+        """距离下一次固化还差多少条证据。"""
+        self._ensure_loaded(card_id)
+        with self._lock:
+            return int(self._pending.get(card_id, 0))
+
     def should_consolidate(self, card_id: str) -> bool:
+        self._ensure_loaded(card_id)
         with self._lock:
             return self._pending.get(card_id, 0) >= CONSOLIDATE_EVERY
 
@@ -231,6 +298,7 @@ class EvidenceAccumulator:
                     path.write_text(json.dumps(base_data, ensure_ascii=False, indent=2), encoding="utf-8")
                     with self._lock:
                         self._pending[card_id] = 0
+                    self._persist_pending(card_id)
                     logger.info("EvidenceAccumulator: 自动创建并 consolidate 演化产物 card=%s", card_id)
                     return base_data["indicator_vector"]
                 except Exception as e:
@@ -248,6 +316,7 @@ class EvidenceAccumulator:
 
             with self._lock:
                 self._pending[card_id] = 0
+            self._persist_pending(card_id)
             logger.info("EvidenceAccumulator: 人格演化已 consolidate card=%s dims=%d", card_id, len(merged))
             return merged
         except Exception as e:

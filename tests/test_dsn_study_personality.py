@@ -30,10 +30,16 @@ def study_app(tmp_path_factory):
 # ── 角色卡 ──
 
 def test_study_tutor_card_exists_and_validates():
-    """学习导师角色卡必须存在且通过 PEV3 校验。"""
+    """学习导师角色卡必须存在且通过 PEV3 校验。
+
+    ⚠️ 位置变更（2026-11-11 重构）：``apps/dsn_study/character_cards/`` →
+    ``apps/dsn_study/persona/cards/``。原因：旧目录被 ``.gitignore`` 忽略
+    （``.gitignore:81-83,111``），意味着"小舟"这张卡**只存在于某一台机器上**；
+    新目录是版本化的，卡进了 git。旧目录已归档到 ``persona/cards/_legacy/``。
+    """
     from harness.personality.character_card import CharacterCard
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "apps", "dsn_study", "character_cards", "study_tutor.yaml")
+                        "apps", "dsn_study", "persona", "cards", "study_tutor.yaml")
     assert os.path.isfile(path), "缺少学习导师角色卡: %s" % path
     card = CharacterCard.from_yaml_file(path)
     assert not card.validate(), card.validate()
@@ -47,13 +53,17 @@ def test_study_cards_dir_is_not_dsns():
 
     harness/personality 的 _find_default_cards_dir() 会去找
     apps/dsn/character_cards —— 那是 EXA「AI 同事」卡，不是学习导师。
+
+    ⚠️ 断言改写（2026-11-11 重构）：卡片目录从 ``character_cards/`` 迁到了
+    ``persona/cards/``（旧目录被 .gitignore 忽略，卡进不了版本库），
+    所以这里改为断言**新目录**并且仍然要求显式指定默认卡。
     """
     from apps.dsn_study.config import Config
     assert getattr(Config, "PERSONALITY_ENABLED", False) is True
     from apps.dsn_study import boot
     import inspect
     src = inspect.getsource(boot.create_application)
-    assert "character_cards" in src
+    assert '"persona", "cards"' in src, "必须显式指定 study 自己的卡片目录"
     assert "PERSONALITY_DEFAULT_CARD" in src
 
 

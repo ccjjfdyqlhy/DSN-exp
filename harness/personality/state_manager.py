@@ -160,6 +160,10 @@ class V3StateManager:
             uid, card_id, interactions, new_affinity, new_mood,
             last_interaction_ts=datetime.now(timezone.utc).isoformat(),
         )
+        # **立即落库**：V3Persistence 的缓冲（3 条 / 5 秒）在进程退出时会丢，
+        # 而生产路径从未调用 flush() —— 实测重启后亲密度与交互计数会回退。
+        # 一轮对话本来就要打一次模型，落一次库的成本可以忽略，耐久性不能。
+        self._persistence.force_flush()
         self._invalidate_snapshot(uid)
         logger.debug("V3StateManager: on_interaction uid=%d interactions=%d affinity=%.1f",
                      uid, interactions, new_affinity)

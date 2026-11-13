@@ -56,7 +56,19 @@ class MemorySystem:
         db,
         summary_model=None,
         embedding_client=None,
+        summary_sink=None,
+        memo_sink=None,
     ):
+        #: 可选的转写口：(uid, chat_id, round, text) -> None
+        #:
+        #: 用途：新的上下文内核（apps/dsn_study/context/）把 `context_facts`
+        #: 当作**唯一真源**，而记忆表 `memory_v2` 是旧路径的落点。
+        #: 两者写的是同一份内容 —— 由这里的 sink **同步转写**过去，
+        #: 免得"新系统读不到旧系统写的数据"。
+        #: sink 失败不影响记忆主流程（只丢一份副本）。
+        self.summary_sink = summary_sink
+        #: 可选的转写口：(uid, chat_id, text) -> None
+        self.memo_sink = memo_sink
         self.db = db
         self.summary_model = summary_model or LLMSummaryModel()
         self._ec = embedding_client
@@ -222,6 +234,13 @@ class MemorySystem:
                 )
                 memory_id = cursor.lastrowid
                 conn.commit()
+
+            # 转写给上下文内核的事实表（同一份摘要，不重复调模型）
+            if self.summary_sink is not None:
+                try:
+                    self.summary_sink(user_id, chat_id, round_idx, summary)
+                except Exception:
+                    logger.warning("摘要转写失败（已跳过）", exc_info=True)
 
             if self._embedding_enabled:
                 self._embed_raw_round(user_id, chat_id, round_idx, user_msg, assistant_reply)
@@ -756,6 +775,12 @@ class MemorySystem:
                 (user_id, chat_id, encrypted),
             )
             conn.commit()
+        # 转写给上下文内核的事实表
+        if self.memo_sink is not None:
+            try:
+                self.memo_sink(user_id, chat_id, text)
+            except Exception:
+                logger.warning("备忘转写失败（已跳过）", exc_info=True)
         return cursor.lastrowid
 
     # get all memos for a user

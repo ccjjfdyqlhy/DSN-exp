@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import uuid
 from logging.handlers import RotatingFileHandler
@@ -36,6 +37,27 @@ from infra.models import (
 )
 
 from apps.dsn_study.turn_gate import user_turn
+from apps.dsn_study import gating
+
+#: <plan_check> 标签（模型用来回写计划任务）
+_PLAN_CHECK_BLOCK_RE = re.compile(r"<plan_check>.*?</plan_check>",
+                                   re.DOTALL | re.IGNORECASE)
+
+
+def _clean_plan_check(text: str) -> str:
+    """去掉回复里的 ``<plan_check>...</plan_check>``。
+
+    未闭合的标签（流式里标签可能跨多个 delta 到达）会把标签及其后的内容
+    一并扣住 —— 调用方对**累积文本**反复调用本函数，再只发出新增的干净部分，
+    标签就永远不会漏进用户可见文本或 TTS。
+    """
+    if not text:
+        return ""
+    out = _PLAN_CHECK_BLOCK_RE.sub("", text)
+    idx = out.lower().find("<plan_check>")
+    if idx >= 0:
+        out = out[:idx]
+    return out
 from apps.dsn_study.config import Config
 from apps.dsn_study.settings import bind_dsn_study_settings
 from apps.dsn_study.auth import LocalAuthManager
@@ -60,6 +82,24 @@ from harness.pipeline.base import Context
 
 logger = logging.getLogger("boot")
 
+
+def _text_similarity(a: str, b: str) -> float:
+    """字符 bigram 的 Jaccard 相似度（0~1）。
+
+    用来判断两条记忆是不是**同一件事**（脚本化测试会反复记同一问，
+    按前 40 字做 key 去不掉 —— 措辞不同但内容一样）。
+    """
+    import re as _re
+    a = _re.sub(r"\s+", "", a or "")
+    b = _re.sub(r"\s+", "", b or "")
+    if len(a) < 2 or len(b) < 2:
+        return 1.0 if a and a == b else 0.0
+    ga = {a[i:i + 2] for i in range(len(a) - 1)}
+    gb = {b[i:i + 2] for i in range(len(b) - 1)}
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
+
 DEFAULT_SYSTEM_PROMPT = (
     "你是一名专业的AI学习助手，擅长解题、组卷、模拟考试、错题归纳、学习计划管理"
     "与知识图谱梳理。请用清晰明了的中文回答。"
@@ -79,6 +119,7 @@ class StudyEngine:
                  chat_hooks=None, complexity_analyzer=None,
                  studylog=None, checkin_store=None, voice=None,
                  prompt_builder=None, personality=None,
+                 context_kernel=None, persona_engine=None,
                  pipeline_runner=None, vision_coordinator=None):
         self.agent = agent
         self.chat_client = chat_client
@@ -131,6 +172,10 @@ class StudyEngine:
         self.prompt_builder = prompt_builder
         #: 人格系统（阶段 2，harness/personality PEV3）；None = 无性格运行
         self.personality = personality
+        #: dsn_study 侧的人格薄层（规则信号 + 提示词呈现）；None = 退回底座
+        self.persona_engine = persona_engine
+        #: 上下文内核（v2）：学习状态 / 事实 / 摘要 / 最近对话的统一装配
+        self.context_kernel = context_kernel
         #: 对话管线（阶段 3，harness/pipeline）；None = 走直连模型兜底
         self.pipeline_runner = pipeline_runner
         #: 视觉感知协调器（阶段 5）；None = 无摄像头链路
@@ -188,7 +233,12 @@ class StudyEngine:
         return "\n".join(f"(系统上下文·仅供你参考，不要复述) {b}" for b in blocks)
 
     def _memory_preamble(self, user_id: int) -> str:
-        """长期备忘注入（memo 全量 + 最近经验记忆摘要）。"""
+        """长期备忘注入（memo 全量 + 最近经验记忆摘要）。
+
+        「过往记忆」按**内容去重**：同一轮问答被重复记好几遍时（脚本化
+        测试或反复追问），只留一条 —— 否则 system prompt 里会出现五行
+        几乎一样的记忆，既占位置又干扰模型。
+        """
         if self.memory_system is None:
             return ""
         try:
@@ -197,10 +247,60 @@ class StudyEngine:
         except Exception:
             return ""
         lines = [f"[备忘] {m['content']}" for m in memos[-10:]]
-        lines += [f"[过往记忆] {e['content']}" for e in exps[-5:]]
+        # 过往记忆：从最新往回挑 5 条**内容不同**的
+        # （脚本化测试会把同一问反复记好几遍，措辞略有差异 ——
+        #  按前 40 字做 key 去不掉，得按内容相似度判重。
+        #  否则这 5 条会全是同一件事，模型每轮都围着它转。）
+        picked: list[str] = []
+        for e in reversed(exps):
+            content = (e.get("content") or "").strip()
+            if not content:
+                continue
+            # 0.40：同一件事的不同措辞相似度 0.37~0.83，不同事情最高 0.33
+            if any(_text_similarity(content, c) >= 0.40 for c in picked):
+                continue
+            picked.append(content)
+            if len(picked) >= 5:
+                break
+        lines += [f"[过往记忆] {c}" for c in reversed(picked)]
         if not lines:
             return ""
         return "\n".join(f"(系统上下文·仅供你参考，不要复述) {b}" for b in lines)
+
+    def _learning_context(self, user_id: int, session_key: str = "",
+                          message: str = "", round_index: int = 0) -> str:
+        """本轮学习上下文（今日计划 / 到期复习 / 错题本 / 长期事实 / 最近对话）。
+
+        v2：走**上下文内核** —— 统一预算、统一裁剪、统一格式，
+        一条路径产出全部动态上下文。
+
+        单独抽出来是因为它有两个消费方：
+          * 管线路径 —— 经 ctx.extra["learning_context"] 传给
+            SystemPromptPlugin（管线在自己的事件循环线程里跑，
+            contextvars 传不过去）；
+          * 兜底路径 —— 直连模型前 begin_turn() 写进 contextvars。
+
+        必须在**请求线程**算：下面几个 store 都按线程取连接。
+        """
+        kernel = getattr(self, "context_kernel", None)
+        if kernel is not None:
+            try:
+                from apps.dsn_study.context import TurnContext
+                turn = TurnContext(
+                    uid=int(user_id or 1),
+                    session_id=session_key or "default",
+                    message=message or "",
+                    round_index=int(round_index or 0),
+                    chat_id=self._chat_id_for(session_key) if session_key else 0,
+                )
+                trace = kernel.build(turn)
+                return kernel.render(trace)
+            except Exception:
+                logger.warning("上下文内核组装失败（退回旧路径）", exc_info=True)
+        # 旧路径（context_engine=v1，或内核不可用）
+        return "\n\n".join(
+            b for b in (self._memory_preamble(user_id),
+                        self._build_preamble(user_id)) if b)
 
     def _complexity_preamble(self, message: str) -> str:
         """复杂问题提示 — 引导 AI 走 create_reasoner 深入推理。"""
@@ -220,10 +320,48 @@ class StudyEngine:
     # ── 会话标识（记忆表用整数 chat_id） ──
 
     def _chat_id_for(self, session_key: str) -> int:
+        """会话 → 整数 chat_id（记忆表按它分区）。
+
+        ⚠️ 旧实现是 ``len(self._session_ids) + 1`` —— **进程重启后会复用**：
+        新进程的第一个会话又拿到 chat_id=1，于是上个进程的会话记忆被当成
+        本会话的（`chat_rounds` 被 INSERT OR REPLACE 覆盖、`memory_v2` 的
+        摘要无限重复累积）。
+
+        现在映射持久化到 ``session_chat_ids`` 表：重启后同一个会话仍然是
+        同一个 id，老数据（chat_id=1..N）也原样保留。
+        """
         cid = self._session_ids.get(session_key)
+        if cid is not None:
+            return cid
+        db = getattr(self, "db_mgr", None)
+        if db is not None:
+            try:
+                conn = db._get_connection()
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS session_chat_ids ("
+                    "session_key TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, "
+                    "created_at TEXT DEFAULT (datetime('now')))")
+                row = conn.execute(
+                    "SELECT chat_id FROM session_chat_ids WHERE session_key = ?",
+                    (session_key,)).fetchone()
+                if row:
+                    cid = int(row[0])
+                else:
+                    mx = conn.execute(
+                        "SELECT COALESCE(MAX(chat_id), 0) FROM session_chat_ids"
+                    ).fetchone()[0]
+                    cid = int(mx or 0) + 1
+                    conn.execute(
+                        "INSERT OR REPLACE INTO session_chat_ids "
+                        "(session_key, chat_id) VALUES (?, ?)",
+                        (session_key, cid))
+                conn.commit()
+            except Exception:
+                logger.warning("会话 id 持久化失败（退回进程内计数）", exc_info=True)
+                cid = None
         if cid is None:
             cid = len(self._session_ids) + 1
-            self._session_ids[session_key] = cid
+        self._session_ids[session_key] = cid
         return cid
 
     def _next_round(self, chat_id: int) -> int:
@@ -346,9 +484,19 @@ class StudyEngine:
             # 学习上下文（计划 / 到期复习 / 错题本 / 备忘）→ 进 system prompt 的
             # {user_context} 插槽（阶段 1）。它描述的是「当前学习状态」而非用户
             # 说的话，放 system 侧语义更准，因此走 system 插槽而不是塞进 user 轮。
-            learning_context = "\n\n".join(
-                b for b in (self._memory_preamble(user_id),
-                            self._build_preamble(user_id)) if b)
+            # 轮次号先算出来：上下文内核要用它（同一会话的轮次必须连贯）
+            chat_id = self._chat_id_for(session_key)
+            round_index = self._next_round(chat_id)
+            learning_context = self._learning_context(
+                user_id, session_key=session_key, message=message,
+                round_index=round_index)
+            # 同一份上下文也写进 contextvars：兜底路径（管线挂了直连模型）
+            # 与同线程内的 build() 调用都能拿到。
+            if self.prompt_builder is not None:
+                try:
+                    self.prompt_builder.begin_turn(user_id, learning_context)
+                except Exception:
+                    logger.warning("学习上下文写入失败（已跳过）", exc_info=True)
 
             # ── 对话管线（阶段 3）──
             # 能力全部挂在 harness/pipeline 的钩子上：
@@ -359,7 +507,7 @@ class StudyEngine:
             #   POST_TTS     语音合成
             ctx = Context(user_id=user_id, message=message,
                           session_id=session_key, image_data=image,
-                          chat_id=self._chat_id_for(session_key),
+                          chat_id=chat_id,
                           nickname="用户", tts_enabled=bool(tts_enabled),
                           is_asr_input=bool(is_asr_input))
             # 附件通道（阶段 5.6）：图片走 Attachment(kind="image")，
@@ -369,7 +517,9 @@ class StudyEngine:
                 ctx.attachments.append(Attachment(
                     kind="image", data=image, mime="image/jpeg", name="chat-image"))
             ctx.extra["user_message"] = message
-            ctx.extra["round_index"] = self._next_round(ctx.chat_id)
+            ctx.extra["round_index"] = round_index
+            # 学习上下文 → 管线（SystemPromptPlugin 渲染 {user_context}）
+            ctx.extra["learning_context"] = learning_context
             try:
                 ctx = self.pipeline_runner.run(ctx)
                 # 分钩子耗时（管线已采集，但此前没人落日志 —— 语音链路的
@@ -398,9 +548,15 @@ class StudyEngine:
                         self.prompt_builder.begin_turn(user_id, learning_context)
                     result = self.agent.run_with_tools(
                         message, session_id=session_key,
-                        system_prompt=(self.prompt_builder.build()
-                                       if self.prompt_builder is not None
-                                       else None))
+                        # ⚠️ 必须显式传 uid / context：无参 build() 会去读
+                        # contextvars 里的"当前轮"，而管线跑在**线程池**里 ——
+                        # run_in_executor 不复制 contextvars，线程又是复用的，
+                        # 于是这里可能读到**上一轮别的用户**残留的上下文。
+                        system_prompt=(self.prompt_builder.build(
+                            uid=int(user_id or 1),
+                            context=learning_context)
+                            if self.prompt_builder is not None
+                            else None))
                     reply = result.reply or ""
                 except Exception:
                     logger.warning("直连模型兜底也失败", exc_info=True)
@@ -495,8 +651,10 @@ class StudyEngine:
                             asyncio.set_event_loop(loop)
 
                             async def _drive():
+                                # 传 ctx.message（已注入上下文块），不是原始 message ——
+                                # 与非流式路径（ModelInvokePlugin）保持一致
                                 async for ev in self.agent.run_stream_with_tools(
-                                        message, session_id=session_key,
+                                        ctx.message, session_id=session_key,
                                         system_prompt=system_prompt):
                                     ev_queue.put(ev)
 
@@ -517,6 +675,9 @@ class StudyEngine:
                     pipeline = StreamingVoicePipeline(voice) if voice else None
                     reply_parts: list[str] = []
                     tts_errors: list[str] = []
+                    # 累积原文 / 累积清洗后文本（用于剔除 <plan_check> 标签）
+                    raw_accum = ""
+                    clean_accum = ""
 
                     # 文本增量 → TTS 的投喂队列（后台分句/合成）
                     feed: "_q.Queue" = _q.Queue()
@@ -552,10 +713,15 @@ class StudyEngine:
                             else:
                                 kind = getattr(ev, "kind", "")
                                 if kind == "delta" and ev.content:
-                                    reply_parts.append(ev.content)
-                                    yield {"type": "text_delta", "text": ev.content}
-                                    if pipeline is not None:
-                                        feed.put(ev.content)
+                                    raw_accum += ev.content
+                                    cleaned = _clean_plan_check(raw_accum)
+                                    emit = cleaned[len(clean_accum):]
+                                    clean_accum = cleaned
+                                    if emit:
+                                        reply_parts.append(emit)
+                                        yield {"type": "text_delta", "text": emit}
+                                        if pipeline is not None:
+                                            feed.put(emit)
                                 elif kind == "tool_call":
                                     tc = ev.tool_call or {}
                                     yield {"type": "tool_call",
@@ -570,17 +736,22 @@ class StudyEngine:
                                     # AgentLoop 的最终回复可能在 delta 之外还有内容，
                                     # 只补未出现过的尾巴，避免重复念
                                     tail = ev.reply
-                                    joined = "".join(reply_parts)
+                                    joined = clean_accum
                                     if tail and not joined.endswith(tail) and tail != joined:
                                         if len(tail) > len(joined) and tail.startswith(joined):
                                             extra = tail[len(joined):]
                                         else:
                                             extra = ""
                                         if extra:
-                                            reply_parts.append(extra)
-                                            yield {"type": "text_delta", "text": extra}
-                                            if pipeline is not None:
-                                                feed.put(extra)
+                                            raw_accum += extra
+                                            cleaned = _clean_plan_check(raw_accum)
+                                            emit = cleaned[len(clean_accum):]
+                                            clean_accum = cleaned
+                                            if emit:
+                                                reply_parts.append(emit)
+                                                yield {"type": "text_delta", "text": emit}
+                                                if pipeline is not None:
+                                                    feed.put(emit)
 
                             # 把已就绪的音频按序吐出去
                             while True:
@@ -661,12 +832,31 @@ class StudyEngine:
                 kind="image", data=image, mime="image/jpeg", name="chat-image"))
         ctx.extra["user_message"] = message
         ctx.extra["round_index"] = self._next_round(ctx.chat_id)
+        # 学习上下文（流式路径此前完全没有 → 主AI 同样「没有上下文」）
+        learning_context = self._learning_context(
+            int(user_id or 1), session_key=session_key, message=message,
+            round_index=int(ctx.extra.get("round_index") or 0))
+        ctx.extra["learning_context"] = learning_context
+        if self.prompt_builder is not None:
+            try:
+                self.prompt_builder.begin_turn(user_id, learning_context)
+            except Exception:
+                logger.warning("学习上下文写入失败（已跳过）", exc_info=True)
         try:
             system_prompt = self._run_prepare_hooks(ctx)
         except Exception:
             logger.warning("流式路径 prompt 组装失败（用兜底）", exc_info=True)
-            system_prompt = (self.prompt_builder.build()
-                             if self.prompt_builder is not None else "")
+            system_prompt = (self.prompt_builder.build(
+                uid=int(user_id or 1),
+                context=ctx.extra.get("learning_context"))
+                if self.prompt_builder is not None else "")
+        # PRE_PROCESS（视觉 / 考试 / 日终报告 / 复杂度）也要跑 ——
+        # 否则**流式路径拿不到这些上下文块**，与非流式路径行为不一致
+        # （此前流式只跑 PREPARE，这些块在流式里全部丢失）。
+        try:
+            ctx = self._run_pre_process_hooks(ctx)
+        except Exception:
+            logger.warning("流式路径上下文块注入失败（已跳过）", exc_info=True)
         return system_prompt or "", ctx
 
     def _run_prepare_hooks(self, ctx):
@@ -674,7 +864,10 @@ class StudyEngine:
         runner = self.pipeline_runner
         if runner is None or runner._loop is None:
             if self.prompt_builder is not None:
-                return self.prompt_builder.build(uid=int(ctx.user_id or 1))
+                # 管线没起来 → 直接组装（同样要把学习上下文带上）
+                return self.prompt_builder.build(
+                    uid=int(ctx.user_id or 1),
+                    context=ctx.extra.get("learning_context"))
             return ""
         import asyncio
         from harness.pipeline.base import HookPoint
@@ -684,17 +877,77 @@ class StudyEngine:
         return ctx.system_prompt or ""
 
     def _finish_stream_turn(self, ctx, reply, user_id):
-        """流结束后的收尾：记忆 + 缓存（历史由 AgentRuntime 自己写）。"""
+        """流结束后的收尾：记忆落库 + 缓存（历史由 AgentRuntime 自己写）。
+
+        ⚠️ **这里必须补跑 POST_PROCESS**。
+        流式链路（CLI 语音走 /api/asr/passthrough → chat_stream_audio）
+        绕过了管线的 MODEL_INVOKE，POST_PROCESS 因此从不执行 ——
+        MemoryRecordPlugin 不跑 ⇒ chat_rounds / 经验摘要 / 话题原文**全都不写**。
+        症状是「每次对话都像第一次」：话题块是空的，而 TopicContextPlugin
+        每轮又把 agent 的对话历史裁掉（-2 条，指望话题块承载上下文），
+        于是模型每轮都从零开始，会话永远推不下去。
+
+        （旧实现在这里调 `memory_system.record_turn(...)` —— 那个方法
+        **根本不存在**（只有 `record_round`），异常被 debug 日志吞掉，
+        所以语音链路的记忆一直是断的。）
+        """
         try:
-            self._cache_write(user_id, ctx.message, reply)
+            # 用**原始**用户消息做缓存键：ctx.message 可能已被注入上下文块，
+            # 用它会让流式与非流式的缓存键不一致（命中率掉一半）。
+            original = ctx.extra.get("user_message") or ctx.message
+            self._cache_write(user_id, original, reply)
         except Exception:
             pass
+        ctx.reply = reply or ""
         try:
-            if self.memory_system is not None and reply:
-                self.memory_system.record_turn(
-                    user_id, ctx.chat_id, ctx.message, reply)
+            self._run_post_process_hooks(ctx)
         except Exception:
-            logger.debug("流式路径记忆落库失败（已跳过）", exc_info=True)
+            logger.warning("流式路径后处理失败（已跳过）", exc_info=True)
+
+    def _run_pre_process_hooks(self, ctx):
+        """跑 PRE_PROCESS 阶段的插件（视觉 / 考试 / 日终报告 / 复杂度）。
+
+        这些插件把上下文块**前插到用户消息**里，因此流式路径必须跑它们，
+        并且要把处理后的 ``ctx.message`` 交给模型 —— 否则模型看不到这些块。
+        """
+        runner = self.pipeline_runner
+        if runner is None or runner._loop is None:
+            return ctx
+        import asyncio
+        from harness.pipeline.base import HookPoint
+        fut = asyncio.run_coroutine_threadsafe(
+            runner.pm.dispatch(HookPoint.PRE_PROCESS, ctx), runner._loop)
+        return fut.result(timeout=30)
+
+    def _run_post_process_hooks(self, ctx):
+        """跑 POST_PROCESS 阶段的插件（记忆落库 / 计划回写 / 人格回写）。"""
+        runner = self.pipeline_runner
+        if runner is None or runner._loop is None:
+            self._record_turn_fallback(ctx)
+            return None
+        import asyncio
+        from harness.pipeline.base import HookPoint
+        fut = asyncio.run_coroutine_threadsafe(
+            runner.pm.dispatch(HookPoint.POST_PROCESS, ctx), runner._loop)
+        return fut.result(timeout=60)
+
+    def _record_turn_fallback(self, ctx):
+        """管线没起来时的记忆落库兜底（与 MemoryRecordPlugin 同一套语义）。"""
+        ms = self.memory_system
+        if ms is None:
+            return
+        uid = int(ctx.user_id or 1)
+        cid = ctx.chat_id or 0
+        ridx = ctx.extra.get("round_index", 0)
+        user_msg = ctx.extra.get("user_message", "") or ctx.message or ""
+        reply = ctx.reply or ""
+        ms.record_round(uid, cid, ridx, user_msg, reply)
+        ms.summarize_turn(uid, cid, ridx, user_msg, reply)
+        ms.handle_tags(uid, cid, reply)
+        if Config.TOPIC_ENABLED:
+            topics = getattr(ms, "_topics", None)
+            if topics is not None:
+                topics.record_turn(uid, cid, user_msg, reply, round_idx=ridx)
 
     def __repr__(self):
         return (f"<StudyEngine tools={len(self.skill_registry.list_active_tools())} "
@@ -1069,6 +1322,67 @@ def create_application() -> Flask:
             logger.warning("语义缓存系统初始化失败（已跳过）", exc_info=True)
             cache_engine = None
 
+    # ── 上下文内核（v2）──
+    # 一条装配路径：学习状态 / 长期事实 / 会话摘要 / 最近对话 → 预算内裁剪
+    # → 一段文本 → 进 system prompt 的 {user_context} 插槽。
+    # 旧实现散落在 boot 的四个 preamble 方法里，且有 6 条并行路径；
+    # 现在全部收口到这里（开关 context_engine 可退回旧路径）。
+    context_store = None
+    context_kernel = None
+    if str(gating.flag("context_engine", "v2")).lower() == "v2":
+        try:
+            from apps.dsn_study.context import (
+                ContextBudget, ContextKernel, ContextStore,
+                MemoSource, StudyStateSource, SummarySource, TailSource,
+            )
+            # 一次性把旧记忆（memory_v2 的备忘/摘要、chat_rounds 的轮次）
+            # 迁进新表 —— 幂等，没有旧数据时是空操作。
+            try:
+                from apps.dsn_study.scripts.migrate_context_v2 import (
+                    migrate, needs_migration,
+                )
+                db_path = getattr(db_mgr, "db_path", None)
+                if db_path and needs_migration(db_path):
+                    logger.info("迁移旧记忆到上下文内核表: %s", db_path)
+                    migrate(db_path, apply=True)
+            except Exception:
+                logger.warning("旧记忆迁移失败（已跳过）", exc_info=True)
+
+            context_store = ContextStore(db_mgr)
+            context_store.init_tables()
+            context_kernel = ContextKernel(
+                store=context_store,
+                sources=[
+                    StudyStateSource(plan_engine=plan_engine,
+                                     graph_store=graph_store,
+                                     question_store=question_store),
+                    MemoSource(context_store),
+                    SummarySource(context_store),
+                    TailSource(context_store,
+                               rounds=int(getattr(Config, "TOPIC_TAIL_ROUNDS", 3))),
+                ],
+                budget=ContextBudget(
+                    total_chars=int(getattr(Config, "CONTEXT_TOTAL_CHARS", 6000)),
+                    tail_chars=int(getattr(Config, "CONTEXT_TAIL_CHARS", 2000)),
+                ),
+            )
+            runtime.register("context_kernel", context_kernel)
+            # 记忆系统的**转写口**：同一份摘要/备忘同步进 context_facts，
+            # 新系统读 context_facts、旧系统读 memory_v2 —— 一份内容两处落点。
+            if memory_system is not None:
+                memory_system.summary_sink = (
+                    lambda u, c, r, text: context_store.add_fact(
+                        u, "session", "summary", text, source="llm_summary",
+                        ref_id="summary:%s:%s" % (c, r)))
+                memory_system.memo_sink = (
+                    lambda u, c, text: context_store.add_fact(
+                        u, "user", "memo", text, source="user",
+                        ref_id="memo:%s:%s" % (c, abs(hash(text)) % (10 ** 12))))
+            logger.info("上下文内核已就绪（context_engine=v2）")
+        except Exception:
+            logger.warning("上下文内核初始化失败（退回旧路径）", exc_info=True)
+            context_kernel = None
+
     try:
         template_manager.init_builtin_templates()
         if not template_manager.has_subjects():
@@ -1188,11 +1502,18 @@ def create_application() -> Flask:
     # harness/personality 的 _find_default_cards_dir() 会去找 apps/dsn/character_cards
     # —— 那是 dsn 的 EXA（AI 同事）卡，study 要的是学习导师卡。
     personality = None
+    persona_engine = None
+    persona_compat = None
     if getattr(Config, "PERSONALITY_ENABLED", True):
         try:
             from harness.personality import PersonalitySystemV3
+            from apps.dsn_study.persona import PersonaCompat, PersonaEngine
+            # 角色卡目录：新的 **版本化** 目录（进 git）。
+            # 旧位置 apps/dsn_study/character_cards/ 被 .gitignore 忽略 ——
+            # 那意味着「小舟」这张卡只存在于某一台机器上。已归档到
+            # persona/cards/_legacy/（含退化产物与备份）。
             cards_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "character_cards")
+                                     "persona", "cards")
             default_card = os.path.join(
                 cards_dir,
                 getattr(Config, "PERSONALITY_DEFAULT_CARD", "study_tutor.yaml"))
@@ -1206,6 +1527,15 @@ def create_application() -> Flask:
             )
             personality.init_tables()
             personality.enabled = True
+            # dsn_study 侧的人格薄层：规则信号 + 提示词呈现 + API 形状。
+            # 人格回写默认走**规则判定**（零 LLM、零排队）——
+            # LLM 判定要抢 provider 队列，实测会把主回复拖到 50~100 秒。
+            persona_engine = PersonaEngine(
+                personality,
+                use_llm_judge=bool(gating.enabled("persona_llm_judge", False)),
+            )
+            persona_compat = PersonaCompat(persona_engine, personality)
+            runtime.register("persona_engine", persona_engine)
             # 人格提示词的后台生成**等用户说完话再做** —— 否则它会跟用户
             # 当前这一轮抢 provider 队列，把回复拖到 50~100 秒。
             try:
@@ -1213,8 +1543,9 @@ def create_application() -> Flask:
             except Exception:   # noqa: BLE001
                 logger.debug("设置人格生成前置钩子失败（已跳过）", exc_info=True)
             runtime.register("personality", personality)
-            logger.info("人格系统已就绪: cards_dir=%s default=%s",
-                        cards_dir, os.path.basename(default_card))
+            logger.info("人格系统已就绪: cards_dir=%s default=%s llm_judge=%s",
+                        cards_dir, os.path.basename(default_card),
+                        persona_engine.use_llm_judge)
 
             # 预热（后台线程）：
             #   * ensure_user_bound —— 绑定默认角色卡，否则没有状态；
@@ -1225,7 +1556,9 @@ def create_application() -> Flask:
             def _warm_personality():
                 try:
                     personality.ensure_user_bound(1)
-                    personality.generate_personality_prompt(1)
+                    if persona_engine.use_llm_judge:
+                        # 只有走 LLM 判定时才需要预热提示词（首调返回兜底串）
+                        personality.generate_personality_prompt(1)
                     personality.warmup_distillation()
                 except Exception:
                     logger.warning("人格预热失败（已忽略）", exc_info=True)
@@ -1235,14 +1568,20 @@ def create_application() -> Flask:
         except Exception:
             logger.warning("人格系统初始化失败（将无性格运行）", exc_info=True)
             personality = None
+            persona_engine = None
+            persona_compat = None
 
     # ── Agent（技能工具桥接 + 提示词聚合） ──
     # system prompt 片段化组装（阶段 1）：身份 + 人格 + 学习上下文 + 技能指令。
     # 逐轮重建 → 禁用技能后其指令文本立即消失（旧的 boot 时拼死字符串做不到）。
     prompt_builder = StudyPromptBuilder(skill_registry=skill_registry)
-    if personality is not None:
-        # 人格提示词按 uid 取（PEV3 的状态按用户存），
-        # 且首调返回兜底串 + 后台生成 LLM 版 —— 故预热一次，避免首轮没有性格。
+    if persona_engine is not None:
+        # 人格提示词按 uid 取（状态按用户存）；呈现规则：档案正文 + 关系阶段
+        # + 偏离基线的特质，≤800 字。任何异常都降级为空，绝不拖垮对话。
+        prompt_builder.set_personality_provider(
+            lambda uid: persona_engine.prompt_block(uid))
+    elif personality is not None:
+        # 人格薄层不可用 → 退回底座自带的生成器（仍然有兜底串）
         prompt_builder.set_personality_provider(
             lambda uid: personality.generate_personality_prompt(uid))
     system_prompt = prompt_builder.build()
@@ -1252,6 +1591,8 @@ def create_application() -> Flask:
         name="dsn-study-agent",
         system_prompt=system_prompt,
         max_steps=int(Config.AGENT_MAX_STEPS),
+        max_seconds=(float(Config.AGENT_MAX_SECONDS)
+                     if float(Config.AGENT_MAX_SECONDS) > 0 else None),
         # 原生 function calling 优先；模型只吐 XML 时自动降级到 <tool> 标签协议
         adapter=SkillTagToolCallAdapter(),
     )
@@ -1340,6 +1681,7 @@ def create_application() -> Flask:
     except Exception as e:
         logger.warning("语音识别子系统初始化失败（语音输入不可用）: %s", e)
 
+
     # ── 对话期钩子（考试超时/交卷/<plan_check>/日终报告）──
     from apps.dsn_study.chat_hooks import StudyChatHooks
     chat_hooks = StudyChatHooks(exam_engine=exam_engine,
@@ -1367,8 +1709,10 @@ def create_application() -> Flask:
         ComplexityPlugin(complexity_analyzer=complexity_analyzer),
         ModelInvokePlugin(agent=agent),
         PlanCheckPlugin(plan_engine=plan_engine),
-        MemoryRecordPlugin(memory_system=memory_system),
-        PersonalityFeedbackPlugin(personality=personality),
+        MemoryRecordPlugin(memory_system=memory_system,
+                           context_store=context_store),
+        PersonalityFeedbackPlugin(personality=personality,
+                                  persona_engine=persona_engine),
         TTSPlugin(voice=voice),
     ])
     pipeline_runner.start()
@@ -1381,8 +1725,11 @@ def create_application() -> Flask:
         skill_registry=skill_registry, skill_manager=skill_manager,
         workspace=workspace, chat_hooks=chat_hooks, voice=voice,
         prompt_builder=prompt_builder, personality=personality,
+        context_kernel=context_kernel, persona_engine=persona_engine,
         pipeline_runner=pipeline_runner, **c,
     )
+    #: PEV3 形状的人格门面（API / 面板用；对外契约不变）
+    engine.persona_compat = persona_compat
     runtime.register("engine", engine)
     flask_app.config["ENGINE"] = engine
 
@@ -1430,7 +1777,8 @@ def create_application() -> Flask:
     init_asr_api(asr, auth, get_engine)
     init_obsidian_api(mcp_bridge, skill_registry, auth)
     init_skills_api(skill_manager, skill_registry, auth)
-    init_personality_api(personality, auth)
+    # 注入 PEV3 形状的兼容门面（路由、状态码、错误体全部不变）
+    init_personality_api(persona_compat or personality, auth)
 
     blueprints = {
         "scan": scan_bp,

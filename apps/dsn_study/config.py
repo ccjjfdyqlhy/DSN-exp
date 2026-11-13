@@ -251,6 +251,15 @@ class Config:
     TTS_PROBE_BACKOFF_MAX = max(TTS_PROBE_BACKOFF_BASE, float(_env("TTS_PROBE_BACKOFF_MAX", "8.0")))
     TTS_FAST_FIRST_LINE = _env("TTS_FAST_FIRST_LINE", "true").lower() == "true"
 
+    # ── 语音轮回复长度 ──
+    # 语音播报耗时 ≈ 1.3s + 0.045s/字，所以语音轮历史上强制「只回一到两句、
+    # 不超过 40 字」。代价是**主AI 在语音场景里只能短回复** —— 讲题讲不开、
+    # 展开推导被压成一句话。
+    # 现在默认**不限制**（要完整回答就让它写全）；只有在明确要「快答」
+    # 的场景（对讲机随手一问）才把开关打开。
+    VOICE_SHORT_REPLY = _env_bool("VOICE_SHORT_REPLY", "false")
+
+    # ── TTS 文本预处理 ──
     TTS_PROCESS_ENABLED = _env("TTS_PROCESS_ENABLED", "true").lower() == "true"
     TTS_PROCESS_MODEL = _env("TTS_PROCESS_MODEL", None) or _env("MEMORY_MODEL", "google/gemma-3-4b")
     TTS_PROCESS_MAX_TOKENS = int(_env("TTS_PROCESS_MAX_TOKENS", "1024"))
@@ -482,6 +491,10 @@ class Config:
     # ── 语义缓存（拦截重复贵请求；需 MEMORY_EMBEDDING_ENABLED 才有 L2/语义命中） ──
 
     # ── Agent 循环 ──
+    # AGENT_MAX_STEPS: 0 = 不限制自主执行轮数（由模型自己决定何时收尾）；
+    # >0 = 硬上限，超过即触发收束轮。墙钟预算 AGENT_MAX_SECONDS 是不限轮数时的兜底。
+    AGENT_MAX_STEPS = max(0, int(_env("AGENT_MAX_STEPS", "0")))
+    AGENT_MAX_SECONDS = max(0.0, float(_env("AGENT_MAX_SECONDS", "1800")))
     AGENT_TOKEN_BUDGET = max(1, int(_env("AGENT_TOKEN_BUDGET", "1000000")))
     AGENT_TIMEOUT_SECONDS = max(1.0, float(_env("AGENT_TIMEOUT_SECONDS", "120")))
 

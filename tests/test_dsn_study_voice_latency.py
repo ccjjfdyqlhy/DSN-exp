@@ -54,8 +54,13 @@ def test_asr_device_passes_through_explicit_ordinal(monkeypatch):
 # ── 语音模式的 system prompt ──────────────────────────────────
 
 def test_voice_mode_uses_light_prompt(monkeypatch):
-    """语音轮要用轻量 prompt：不含 17KB 技能说明。"""
+    """语音轮要用轻量 prompt：不含 17KB 技能说明。
+
+    「短回复指令（40 字上限）」现在是**可选**的（Config.VOICE_SHORT_REPLY）：
+    默认关闭 —— 它会把主AI 钉死在「只回一两句话」，讲题都讲不开。
+    """
     from harness.pipeline.base import Context, HookPoint
+    from apps.dsn_study.config import Config
     from apps.dsn_study.pipeline import plugins
     from apps.dsn_study.prompts.builder import StudyPromptBuilder
 
@@ -69,9 +74,17 @@ def test_voice_mode_uses_light_prompt(monkeypatch):
                         is_asr_input=False)
     out2 = p.on_hook(HookPoint.PREPARE, text_out)
 
-    assert "语音对话模式" in (out.system_prompt or ""), "语音轮缺简短回答指令"
+    # 默认：语音轮**不**注入 40 字上限（主AI 可以完整回答）
+    assert "语音对话模式" not in (out.system_prompt or ""), \
+        "语音轮不该被强制压成短回复"
     assert "语音对话模式" not in (out2.system_prompt or ""), \
         "文本轮不该被塞语音指令"
+
+    # 开关打开时：短回复指令回来（要「快答」的场景用）
+    monkeypatch.setattr(Config, "VOICE_SHORT_REPLY", True, raising=False)
+    out3 = p.on_hook(HookPoint.PREPARE, voice)
+    assert "语音对话模式" in (out3.system_prompt or ""), \
+        "开关打开后语音轮应有短回复指令"
 
 
 def test_voice_prompt_tags_exclude_skills():

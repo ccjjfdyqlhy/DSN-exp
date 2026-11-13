@@ -39,7 +39,9 @@ def test_dsn_settings_namespaces():
     s = bind_dsn_settings(Settings())
     assert "voice" in s.namespaces()
     assert s.namespace("voice").tts_enabled in (True, False)
-    assert s.namespace("model").agent_max_steps >= 1
+    # agent_max_steps：0 = 不限自主执行轮数（由模型自己收尾），>0 = 硬上限。
+    # 不能断言 >= 1 —— 「不限轮数」是当前的有意设计。
+    assert s.namespace("model").agent_max_steps >= 0
 
 
 def test_dsn_bundles_registry_and_routes():

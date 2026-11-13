@@ -99,14 +99,23 @@ class StudyPromptBuilder:
             return ""
 
     def _render_context(self) -> str:
+        """渲染 {user_context} 插槽。
+
+        **显式传入的本轮上下文优先**：boot 在请求线程算好「今日计划 / 到期
+        复习 / 错题本 / 长期备忘」后随管线 ctx 传进来（contextvars 不跨
+        线程继承，见 build() 的说明），不能被提供器覆盖。
+        只有在没拿到显式上下文时，才回退到提供器（阶段 7 的弹性上下文）。
+        """
         uid, ctx = self._turn()
+        if ctx:
+            return ctx
         if self._context_provider is None:
-            return ctx or ""
+            return ""
         try:
             return self._context_provider(uid) or ""
         except Exception:
             logger.warning("学习上下文生成失败（已跳过）", exc_info=True)
-            return ctx or ""
+            return ""
 
     # ── 对外 ──
 
@@ -127,9 +136,17 @@ class StudyPromptBuilder:
         ``only_tags`` —— 只要某些标签的片段（例：只要 core+personality，
         给「扫题批次总结」那条轻量管线用，不必带 17KB 技能指令）。
         ``uid`` / ``context`` —— 直接指定本轮上下文（不写 contextvars）。
+
+        ⚠️ ``context=None`` 的语义是「本轮没带上下文」，**不是「清空上下文」**。
+        旧实现把两者混为一谈（``context or ""``），于是 ``build(uid=1)``
+        会把 ``begin_turn()`` 写进去的学习上下文清成空串 ——
+        「主AI 没有上下文」的直接根因。
         """
         if uid is not None or context is not None:
-            _TURN.set((int(uid or 1), context or ""))
+            cur_uid, cur_ctx = self._turn()
+            new_uid = int(uid) if uid is not None else cur_uid
+            new_ctx = cur_ctx if context is None else (context or "")
+            _TURN.set((new_uid, new_ctx))
         try:
             prompt = self._engine.build_system_prompt(
                 only_tags=only_tags, exclude_titles=exclude_titles)

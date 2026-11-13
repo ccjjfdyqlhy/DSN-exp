@@ -35,12 +35,15 @@ class AgentRuntime:
         name: str = "agent",
         system_prompt: str = "",
         max_steps: int = 8,
+        max_seconds: Optional[float] = None,
         adapter: Optional[Any] = None,
     ):
         self.chat_client = chat_client
         self.embedding_client = embedding_client
         self.system_prompt = system_prompt
         self.max_steps = max_steps
+        # 墙钟预算（秒）：max_steps<=0（不限轮数）时的兜底
+        self.max_seconds = max_seconds
         # 工具调用协议适配器（None → harness 默认的原生 function calling）。
         # 应用可注入自定义适配器（如 dsn_study 的 <tool> 标签降级适配器）。
         self.adapter = adapter
@@ -91,7 +94,7 @@ class AgentRuntime:
         conv = self.session(session_id)
         conv.add_text("user", message)
         loop = AgentLoop(self.chat_client, self.tools, max_steps=self.max_steps,
-                         adapter=self.adapter)
+                         max_seconds=self.max_seconds, adapter=self.adapter)
         result = loop.run(conv.messages,
                           system_prompt=(self.system_prompt
                                          if system_prompt is None
@@ -125,7 +128,7 @@ class AgentRuntime:
         conv = self.session(session_id)
         conv.add_text("user", message)
         loop = AgentLoop(self.chat_client, self.tools, max_steps=self.max_steps,
-                         adapter=self.adapter)
+                         max_seconds=self.max_seconds, adapter=self.adapter)
         collected: list[str] = []
         final_reply = ""
         try:

@@ -15,6 +15,29 @@ from .traits import ALL_DIMENSIONS, TRAIT_IDS
 logger = logging.getLogger("DistillationEngine")
 
 
+class DistillationError(RuntimeError):
+    """蒸馏产物不可用（解析失败 / 结构不完整）。
+
+    ⚠️ 之前这里的行为是 **静默返回 {}**：解析失败只留一条 warning，
+    于是"pass2/pass3 什么都没产出"被当成"这个角色就是这样"，
+    线上那份 50 维全 0.5、四个结构化字段全空的产物就是这么来的。
+    现在：**要么产出结构完整的产物，要么明确抛错**，绝不含糊过去。
+    """
+
+
+#: 各 pass 的输出预算（token）。
+#:
+#: 原值 3000 是线上事故的根源：pass2 的提示词要求 5 条行为模式 + 5 条言语模式
+#: + 情绪模型 + 关系模型（≥4 阶段）+ 8 大类性格叙事，实测需要 ~6000 字符；
+#: pass3 要求 50 个维度各带一句中文理由，实测需要 ~5700 字符。
+#: 3000 的预算会把 JSON 截断在半截 → 解析失败 → 产物全空。
+DISTILL_PASS1_MAX_TOKENS = 4000
+DISTILL_PASS2_MAX_TOKENS = 8000
+DISTILL_PASS3_MAX_TOKENS = 8000
+#: 首次失败后的重试预算（再给一次机会，仍然不行就抛错）
+DISTILL_RETRY_MAX_TOKENS = 16000
+
+
 PASS1_GLOBAL_UNDERSTANDING = """你是一个角色发展分析师。请仔细阅读以下所有材料，然后写一段更新后的角色全貌描述。
 
 重要原则：每一个经历条目（包括歌词、文章、对话记录等）都是角色真实遇到过的东西。你需要根据这些内容来发展角色的故事、气质和世界观。不要仅仅复述材料——要根据角色已有的性格基调，想象这些经历如何塑造、改变或深化了角色的内心世界。
@@ -289,7 +312,8 @@ class DistillationEngine:
             corpus_text=corpus_text or "（无）",
             user_notes=user_notes or "（无）",
         )
-        return self._call_model(prompt, model_name, temperature=0.4, max_tokens=2500,
+        return self._call_model(prompt, model_name, temperature=0.4,
+                                max_tokens=DISTILL_PASS1_MAX_TOKENS,
                                 pass_name="pass1", card_id=card_id)
 
     def _pass2_feature_extraction(self, foundation: str, materials_summary: str, model_name: str,
@@ -298,9 +322,46 @@ class DistillationEngine:
             foundation=foundation,
             materials_summary=materials_summary[:4000],
         )
-        raw = self._call_model(prompt, model_name, temperature=0.3, max_tokens=3000,
+        raw = self._call_model(prompt, model_name, temperature=0.3,
+                               max_tokens=DISTILL_PASS2_MAX_TOKENS,
                                pass_name="pass2", card_id=card_id)
-        return self._parse_json_response(raw)
+        try:
+            features = self._parse_json_response(raw)
+            self._validate_features(features)
+            return features
+        except DistillationError as exc:
+            logger.warning("pass2 产物不可用（%s），用更大预算重试一次", exc)
+
+        raw = self._call_model(prompt, model_name, temperature=0.3,
+                               max_tokens=DISTILL_RETRY_MAX_TOKENS,
+                               pass_name="pass2_retry", card_id=card_id)
+        features = self._parse_json_response(raw)
+        self._validate_features(features)
+        return features
+
+    @staticmethod
+    def _validate_features(features) -> None:
+        """校验 pass2 的结构完整性 —— 不完整就是失败，不接受"空产物"。"""
+        if not isinstance(features, dict):
+            raise DistillationError(f"pass2 产物不是对象: {type(features).__name__}")
+        problems: list[str] = []
+        for key, minimum in (("behavioral_patterns", 5), ("speech_patterns", 5)):
+            items = features.get(key)
+            got = len(items) if isinstance(items, list) else 0
+            if got < minimum:
+                problems.append(f"{key} 需要 ≥{minimum} 条，实得 {got}")
+        for key in ("emotional_model", "relational_model"):
+            if not features.get(key):
+                problems.append(f"{key} 为空")
+        stages = (features.get("relational_model") or {}).get("stages") or []
+        if len(stages) < 4:
+            problems.append(f"relational_model.stages 需要 ≥4 段，实得 {len(stages)}")
+        narrative = features.get("trait_narrative")
+        got = len(narrative) if isinstance(narrative, dict) else 0
+        if got < 8:
+            problems.append(f"trait_narrative 需要 ≥8 个大类，实得 {got}")
+        if problems:
+            raise DistillationError("；".join(problems))
 
     def _pass3_quantization(self, foundation: str, features_text: str,
                              dimensions_text: str, manual_text: str, model_name: str,
@@ -311,28 +372,51 @@ class DistillationEngine:
             dimensions_text=dimensions_text,
             manual_overrides_text=manual_text,
         )
-        raw = self._call_model(prompt, model_name, temperature=0.2, max_tokens=3000,
+        raw = self._call_model(prompt, model_name, temperature=0.2,
+                               max_tokens=DISTILL_PASS3_MAX_TOKENS,
                                pass_name="pass3", card_id=card_id)
+        try:
+            items = self._parse_json_response(raw)
+            vec, missing = self._items_to_vector(items)
+            if missing:
+                raise DistillationError(
+                    f"pass3 缺少 {len(missing)} 个维度：{missing[:5]}")
+            return vec
+        except DistillationError as exc:
+            logger.warning("pass3 产物不可用（%s），用更大预算重试一次", exc)
+
+        raw = self._call_model(prompt, model_name, temperature=0.2,
+                               max_tokens=DISTILL_RETRY_MAX_TOKENS,
+                               pass_name="pass3_retry", card_id=card_id)
         items = self._parse_json_response(raw)
+        vec, missing = self._items_to_vector(items)
+        if missing:
+            raise DistillationError(
+                f"pass3 重试后仍缺少 {len(missing)} 个维度：{missing[:5]}")
+        return vec
+
+    @staticmethod
+    def _items_to_vector(items) -> tuple[dict[str, float], list[str]]:
+        """把 pass3 的数组转成 50 维向量。
+
+        返回 (向量, 缺失维度列表)。**不再静默把缺失维度补成 0.5** ——
+        补 0.5 等于宣称"这个角色在这一维上恰好是中庸"，而真相是
+        "模型没输出这一维"。两者的区别，正是线上那份全 0.5 产物的来源。
+        """
         if isinstance(items, dict):
             items = [items]
-
-        vec = {}
-        for item in items if isinstance(items, list) else []:
-            tid = item.get("id", "")
-            if tid in TRAIT_IDS:
+        vec: dict[str, float] = {}
+        for item in (items if isinstance(items, list) else []):
+            if not isinstance(item, dict):
+                continue
+            tid = str(item.get("id", ""))
+            if tid in TRAIT_IDS and tid not in vec:
                 try:
-                    val = float(item.get("value", 0.5))
-                    vec[tid] = max(0.0, min(1.0, val))
+                    vec[tid] = max(0.0, min(1.0, float(item.get("value", 0.5))))
                 except (ValueError, TypeError):
-                    vec[tid] = 0.5
-
-        # 补全缺失维度
-        for tid in TRAIT_IDS:
-            if tid not in vec:
-                vec[tid] = 0.5
-
-        return vec
+                    continue
+        missing = [tid for tid in TRAIT_IDS if tid not in vec]
+        return vec, missing
 
     def _apply_manual_overrides(self, vec: dict[str, float], overrides: dict[str, float]) -> dict[str, float]:
         for tid, val in overrides.items():
@@ -392,5 +476,6 @@ class DistillationEngine:
         except json.JSONDecodeError:
             pass
 
-        logger.warning("蒸馏响应 JSON 解析失败，返回空字典。原始响应前300字符: %s", raw[:300])
-        return {}
+        logger.error("蒸馏响应 JSON 解析失败。原始响应前 300 字符: %s", raw[:300])
+        raise DistillationError(
+            f"蒸馏响应不是合法 JSON（长度 {len(raw)}，可能是被 max_tokens 截断）")

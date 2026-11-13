@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable, Optional
 
@@ -147,6 +148,7 @@ class AgentLoop:
         *,
         max_steps: int = 8,
         max_output_chars: int = 6000,
+        max_seconds: Optional[float] = None,
         on_progress: Optional[Callable[[int, int, list[str]], None]] = None,
         on_tool_error: Optional[Callable[[str, str], None]] = None,
         toolbox: Optional[Any] = None,
@@ -158,6 +160,9 @@ class AgentLoop:
         self.adapter = adapter or NativeToolCallAdapter()
         self.max_steps = max_steps
         self.max_output_chars = max_output_chars
+        # 墙钟预算（秒）：max_steps<=0（不限轮数）时的兜底，防止工具调用死循环。
+        # None = 不限。<=0 视为不限。
+        self.max_seconds = max_seconds if (max_seconds and max_seconds > 0) else None
         self.on_progress = on_progress
         self.on_tool_error = on_tool_error
         # 两阶段工具激活策略（ToolboxManager 或同构对象；None = 不启用）
@@ -207,7 +212,17 @@ class AgentLoop:
 
         # max_steps <= 0 表示不限制执行步数
         step = 0
+        deadline = (time.monotonic() + self.max_seconds) if self.max_seconds else None
         while self.max_steps <= 0 or step < self.max_steps:
+            if deadline is not None and time.monotonic() > deadline:
+                hit_max = True
+                logger.warning(
+                    "AgentLoop 触发墙钟预算 %.0fs，提前收束（已执行 %d 轮）",
+                    self.max_seconds, step)
+                final_reply = (
+                    "…[已达到时间预算上限，提前收束。已执行 "
+                    f"{step} 轮工具调用，可发送「继续」以恢复执行。]")
+                break
             if self.on_progress:
                 self.on_progress(step, self.max_steps, [])
 
