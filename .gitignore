@@ -136,3 +136,7 @@ MagicMock/
 tests/test_dsn_existence*
 apps/dsn_existence/**
 local/**
+
+# 构建产物（发布时临时生成，不入库）
+dist/
+build/

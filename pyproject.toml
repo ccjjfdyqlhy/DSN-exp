@@ -5,15 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aicf"
 version = "0.5.0"
-description = "AICF — Agent Infrastructure Cybernetics Framework"
+description = "AICF - Agent Infrastructure Cybernetics Framework: a scenario-agnostic agent engine (turn loop, tools, sqlite sessions, sub-agent collaboration)"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Jeffery Darkstar", email = "ccjjfdyqlhy@outlook.com" }]
+keywords = ["agent", "llm", "tools", "sessions", "subagents", "framework"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "openai>=1.0.0",
     "requests>=2.28.0",
     "PyYAML>=6.0",
     "python-dotenv>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ccjjfdyqlhy/DSN-exp"
+Repository = "https://github.com/ccjjfdyqlhy/DSN-exp"
+Issues = "https://github.com/ccjjfdyqlhy/DSN-exp/issues"
 
 [project.optional-dependencies]
 full = [
@@ -28,6 +49,10 @@ full = [
 ]
 # 外部 MCP 工具源桥接（harness/tools/mcp.py，延迟导入，可选）
 mcp = ["mcp>=1.2.0"]
+# anthropic 线（infra/orchestrator/anthropic.py，延迟导入，可选）
+anthropic = ["anthropic>=1.0.0"]
+# SOCKS 代理穿透（infra/net.py，httpx 需要 socksio extra）
+socks = ["httpx[socks]>=0.24"]
 
 [tool.setuptools.packages.find]
 include = ["harness", "harness.*", "infra", "infra.*"]
