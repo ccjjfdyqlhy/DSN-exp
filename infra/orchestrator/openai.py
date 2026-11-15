@@ -383,7 +383,8 @@ class OpenAICompatClient(ChatClientAdapter):
                     url = image
                 if not url:
                     continue
-                parts.append({"type": "input_image", "image_url": url})
+                parts.append({"type": "input_image", "image_url": url,
+                              "detail": "auto"})
             else:
                 # 未知块：能当文本就当文本，总比把非法形状塞给网关强
                 text = part.get("text")

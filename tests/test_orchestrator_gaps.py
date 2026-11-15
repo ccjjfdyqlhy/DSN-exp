@@ -298,7 +298,8 @@ def test_responses_converter_maps_file_carrying_image_parts():
     parts = OpenAICompatClient._responses_content_parts(
         [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,xx'}}],
         'user')
-    assert parts == [{'type': 'input_image', 'image_url': 'data:image/png;base64,xx'}]
+    assert parts == [{'type': 'input_image',
+                      'image_url': 'data:image/png;base64,xx', 'detail': 'auto'}]
 
 
 def test_anthropic_converter_maps_file_carrying_image_parts():
