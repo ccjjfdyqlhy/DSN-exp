@@ -350,6 +350,10 @@ class OpenAICompatClient(ChatClientAdapter):
           Responses：{"type": "input_image", "image_url": <url>}   ← image_url 是**字符串**
         原样透传 → 网关 400（"Invalid type for 'input_image'"）。
         文本块同理：对话协议的 {"type": "text"} → input_text（助手消息用 output_text）。
+
+        图片引用也可以携带 **file_id**（Files API 预上传）而不是 url：
+          对话协议约定：{"type": "image_url", "image_url": {"file_id": <id>}}
+          Responses：{"type": "input_image", "file_id": <id>, "detail": "auto"}
         """
         text_type = "output_text" if role == "assistant" else "input_text"
         parts: list[dict] = []
@@ -366,9 +370,17 @@ class OpenAICompatClient(ChatClientAdapter):
                 parts.append({"type": ptype if ptype != "text" else text_type,
                               "text": text})
             elif ptype in ("image_url", "input_image"):
-                url = part.get("image_url", "")
-                if isinstance(url, dict):
-                    url = url.get("url", "")
+                image = part.get("image_url", "")
+                if isinstance(image, dict):
+                    file_id = image.get("file_id", "")
+                    if file_id:
+                        # Files API 预上传的图：按 id 引用，请求体里不带 base64
+                        parts.append({"type": "input_image", "file_id": file_id,
+                                      "detail": "auto"})
+                        continue
+                    url = image.get("url", "")
+                else:
+                    url = image
                 if not url:
                     continue
                 parts.append({"type": "input_image", "image_url": url})
