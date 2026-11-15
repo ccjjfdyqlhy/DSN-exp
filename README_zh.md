@@ -12,8 +12,9 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Local First](https://img.shields.io/badge/local--first-100%25-8A2BE2?style=for-the-badge)
 ![Tests](https://img.shields.io/badge/tests-634%20passed-2ea44f?style=for-the-badge)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)
 
-**框架代号 AICF**（Agent Infrastructure Cybernetics Framework）· 内部实验性项目 · 无公开许可证
+**框架代号 AICF**（Agent Infrastructure Cybernetics Framework）· 内部实验性项目 · Apache-2.0
 
 ---
 
