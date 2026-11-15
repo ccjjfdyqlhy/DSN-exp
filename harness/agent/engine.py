@@ -28,7 +28,7 @@ from ..conversation import (
     COMPACTION_SYSTEM, ManagedConversation, StablePrefix, canonical_json,
     repair_messages, stream_compact,
 )
-from ..images import MARKER_RE
+from ..images import MARKER_RE, image_marker
 from ..tools.context import ToolContext, pop_context, push_context
 from ..tools.registry import ManagedToolRegistry
 from ..transcript import (
@@ -111,6 +111,8 @@ class ConversationEngine:
         # sub-agent tool allowlist: None means every registered tool
         self._allowed_tools = allowed_tools
         self.agent_name = agent_name
+        # set at the end of every turn, before the interrupt flag is cleared
+        self.last_turn_interrupted = False
         # set by an AgentManager (harness.agent.collab); None = no collaboration
         self.collab: Any | None = None
 
@@ -178,6 +180,9 @@ class ConversationEngine:
                 self.sink.emit('error', {'text': str(error)})
             finally:
                 self._set_status('idle')
+                # snapshot before clearing: a manager running the turn reads
+                # this afterwards (engine._interrupt is reset for the next one)
+                self.last_turn_interrupted = self._interrupt.is_set()
                 self._interrupt.clear()
 
     # ── control plane ───────────────────────────────────────
@@ -710,8 +715,9 @@ class ConversationEngine:
             results.append({'tool_call_id': call_id,
                             'role': 'tool', 'content': normalized})
             for match in MARKER_RE.findall(normalized):
-                if match not in image_markers:
-                    image_markers.append(match)
+                reference = image_marker(match)
+                if reference not in image_markers:
+                    image_markers.append(reference)
 
         # stage the assistant tool_calls + one tool message per result, exactly
         # the shapes every wire adapter understands
