@@ -662,7 +662,7 @@ class StudyEngine:
                             loop.run_until_complete(_drive())
                         except Exception as e:   # noqa: BLE001
                             logger.warning("流式 AgentLoop 失败: %s", e, exc_info=True)
-                            ev_queue.put({"__error__": str(e)})
+                            ev_queue.put({"__error__": "流式对话处理失败（详见日志）"})
                         finally:
                             ev_queue.put(STOP)
                             try:
@@ -690,7 +690,8 @@ class StudyEngine:
                             for seg in pipeline.run(self._drain(feed)):
                                 seg_queue.put(seg)
                         except Exception as e:   # noqa: BLE001
-                            seg_queue.put({"__error__": str(e)})
+                            logger.warning("流式 TTS 分句失败: %s", e, exc_info=True)
+                            seg_queue.put({"__error__": "流式语音合成失败（详见日志）"})
                         finally:
                             seg_queue.put(SEG_STOP)
 

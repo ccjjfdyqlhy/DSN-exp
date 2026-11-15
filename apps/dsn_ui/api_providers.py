@@ -259,8 +259,8 @@ class APIProviderStore:
 
         if needs_migration:
             logger.warning(
-                "检测到 %s 中的请求配置/凭据尚未加密入库，正在迁移到 %s ...",
-                self.path.name, self.secrets_db_path.name,
+                "检测到 %s 中的请求配置/凭据尚未加密入库，正在迁移到加密密文库 ...",
+                self.path.name,
             )
             try:
                 self.save(out)

@@ -328,5 +328,6 @@ def decision_service_status(pool=None) -> dict:
     try:
         info.update(decision_status(p))
     except Exception as e:
-        info["error"] = str(e)
+        logger.warning("decision status 读取失败: %s", e, exc_info=True)
+        info["error"] = "决策服务状态读取失败（详见日志）"
     return info

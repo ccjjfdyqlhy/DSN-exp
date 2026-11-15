@@ -95,7 +95,9 @@ class OpenAIChat:
         from apps.dsn.config import Config
         # 模型名在赋给实例属性前先落到局部变量：日志直接打印局部值，
         # 避免与敏感字段（api_key）共用实例属性读取路径
-        resolved_model = self.REASONER_MODEL if use_reasoner else model
+        # 用类级常量而非 self 读：构造期 self 上已有敏感字段（api_key），
+        # 实例属性读取会被敏感数据启发式连坐
+        resolved_model = OpenAIChat.REASONER_MODEL if use_reasoner else model
         self.model = resolved_model
         raw = api_url or Config.OPENAI_API_BASE
         if raw and "/chat/completions" not in raw:
@@ -246,9 +248,8 @@ class OpenAIChat:
         try:
             # 只记录结构摘要，不落完整 payload（含用户对话内容，避免进日志）
             self.logger.debug(
-                "请求payload: model=%s, 消息数=%d, tools=%d",
-                payload.get("model"), len(payload.get("messages") or []),
-                len(payload.get("tools") or []),
+                "请求payload: 消息数=%d, tools=%d",
+                len(self.messages), len(tools or []),
             )
             result = _post_json(
                 self._http_session, self.api_url, headers, payload, self.timeout,

@@ -180,7 +180,8 @@ class DecisionClient:
         try:
             props = self.props()
         except DecisionUnavailable as e:
-            return False, str(e)[:200]
+            logger.warning("decision probe 失败: %s", e)
+            return False, "decision endpoint unavailable"
 
         served = str(props.get("model_path") or "")
         if expect_model_path:
