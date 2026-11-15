@@ -336,21 +336,94 @@ class OpenAICompatClient(ChatClientAdapter):
         )
 
     @staticmethod
+    def _responses_content_parts(content: Any, role: str) -> list[dict]:
+        """把 OpenAI **对话协议**的 content parts 转成 Responses 协议的内容块。
+
+        两种协议的图片块形状不一样，不能原样透传：
+          对话协议：{"type": "image_url", "image_url": {"url": <url>}}
+          Responses：{"type": "input_image", "image_url": <url>}   ← image_url 是**字符串**
+        原样透传 → 网关 400（"Invalid type for 'input_image'"）。
+        文本块同理：对话协议的 {"type": "text"} → input_text（助手消息用 output_text）。
+        """
+        text_type = "output_text" if role == "assistant" else "input_text"
+        parts: list[dict] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append({"type": text_type, "text": part})
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type", "")
+            if ptype in ("text", "input_text", "output_text"):
+                text = part.get("text", "")
+                # 已经是 Responses 形状的（input_text/output_text）保持原样
+                parts.append({"type": ptype if ptype != "text" else text_type,
+                              "text": text})
+            elif ptype in ("image_url", "input_image"):
+                url = part.get("image_url", "")
+                if isinstance(url, dict):
+                    url = url.get("url", "")
+                if not url:
+                    continue
+                parts.append({"type": "input_image", "image_url": url})
+            else:
+                # 未知块：能当文本就当文本，总比把非法形状塞给网关强
+                text = part.get("text")
+                if text is None:
+                    continue
+                parts.append({"type": text_type, "text": text})
+        return parts
+
+    @staticmethod
     def _messages_to_responses_input(messages: list[Any]) -> list[dict]:
         """把 ChatMessage 列表转成 Responses API 的 input items。"""
         items: list[dict] = []
         for m in messages:
             if isinstance(m, dict):
-                items.append(m)
+                # dict 消息：只有 content 是 parts 列表时才需要重写图片块；
+                # 纯文本（content 是字符串）原样透传 —— 主路径行为不变。
+                content = m.get("content")
+                if isinstance(content, (list, tuple)):
+                    item = dict(m)
+                    item["content"] = OpenAICompatClient._responses_content_parts(
+                        content, str(m.get("role", "user")))
+                    items.append(item)
+                else:
+                    items.append(m)
                 continue
             role = getattr(m, "role", "")
             content = getattr(m, "content", "") or ""
+            parts = None
+            if isinstance(content, (list, tuple)):
+                # 多模态消息：content 是**内容块列表**。
+                # 过去整个列表被塞进 {"type":"input_text","text": <list>} ——
+                # text 必须是字符串，形状非法，网关直接 400；而且图片块被
+                # 丢掉，模型根本看不见图。现在按 Responses 协议逐块转换。
+                if role == "tool":
+                    # 工具输出在 Responses 协议里是**字符串**，不是内容块列表
+                    items.append({
+                        "type": "function_call_output",
+                        "call_id": getattr(m, "tool_call_id", "") or "",
+                        "output": "\n".join(
+                            str(p.get("text", "")) for p in content
+                            if isinstance(p, dict)),
+                    })
+                    continue
+                if role not in ("system", "user", "assistant"):
+                    continue
+                parts = OpenAICompatClient._responses_content_parts(content, role)
             if role == "system":
-                items.append({"role": "system", "content": [{"type": "input_text", "text": content}]})
+                items.append({"role": "system",
+                              "content": parts if parts is not None
+                              else [{"type": "input_text", "text": content}]})
             elif role == "user":
-                items.append({"role": "user", "content": [{"type": "input_text", "text": content}]})
+                items.append({"role": "user",
+                              "content": parts if parts is not None
+                              else [{"type": "input_text", "text": content}]})
             elif role == "assistant":
-                items.append({"role": "assistant", "content": [{"type": "output_text", "text": content}]})
+                items.append({"role": "assistant",
+                              "content": parts if parts is not None
+                              else [{"type": "output_text", "text": content}]})
                 for tc in (getattr(m, "tool_calls", None) or []):
                     fn = tc.get("function", {}) if isinstance(tc, dict) else {}
                     items.append({
