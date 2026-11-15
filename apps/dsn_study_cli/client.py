@@ -65,6 +65,13 @@ class StudyClient:
         self.async_poller = None
         #: 由 app 回填：TTS 播放队列（(text, audio_b64)）
         self.tts_queue: "queue.Queue" = queue.Queue()
+        # ── barge-in（流式打断）──
+        #: 对话代次：cancel_stream() 时 +1。旧流里后续到达的文本/音频
+        #: 与新输入混在一起的话就是「打断后旧回复还在继续播」——
+        #: 每轮 _stream_chat 记住进入时的代次，之后代次不符即整轮作废。
+        self._epoch = 0
+        self._resp_lock = threading.Lock()
+        self._active_resp = None   # 正在消费的流式 Response（barge-in 时 close）
 
     # ── 认证 ──
 
@@ -200,6 +207,29 @@ class StudyClient:
     def is_sending(self) -> bool:
         return self._is_sending.is_set()
 
+    def cancel_stream(self):
+        """barge-in：掐断正在进行的 SSE 对话流（播报打断时调用）。
+
+        做两件事：
+
+        1. 代次 +1 —— 旧流里**之后**到达的文本/音频一律作废
+           （不再入队、不再打印）。clear_queue 只能丢已经排进队列的段，
+           拦不住还在网络上的；服务端流式合成是逐句推的，打断后剩余
+           句子还会源源不断涌来，只有代次能把它们全部判废。
+        2. close() 底层连接 —— 发送线程立刻从旧流里脱身（新录完的音频
+           不用排在旧流后面等），服务端的流式生成器也会随断连被关闭，
+           剩余句子的合成随之终止（GeneratorExit → pipeline.close()）。
+        """
+        self._epoch += 1
+        with self._resp_lock:
+            resp = self._active_resp
+        if resp is None:
+            return
+        try:
+            resp.close()
+        except Exception:   # noqa: BLE001 - 连接可能已断，无所谓
+            pass
+
     # ── SSE 流处理 ──
 
     def _stream_chat(self, path: str, body: dict) -> Optional[str]:
@@ -208,11 +238,18 @@ class StudyClient:
         延迟埋点：t_first（首个事件）/ t_audio（音频就绪）。
         服务端 ASR 路径是「LLM 全量 + TTS 全量 完成后才吐第一个事件」，
         所以这两个时间戳基本等于「用户说完话 → 声音能播出来」的延迟。
+
+        barge-in：``cancel_stream()`` 会把代次 +1 并 close() 底层连接。
+        本方法记住进入时的代次（my_epoch），每个事件先对代次：
+          * 不匹配 → 停止消费，剩余文本/音频全部作废；
+          * close() 引发的读异常按「正常打断」处理，不当作连接错误。
         """
         final_reply = ""
+        my_epoch = self._epoch
         t0 = time.perf_counter()
         t_first = None
         t_audio = None
+        r = None
         try:
             r = self.session.post(f"{self.base}{path}", headers=self._headers(),
                                   json=body, stream=True,
@@ -223,7 +260,15 @@ class StudyClient:
             if r.status_code >= 400:
                 print(f"（服务端错误 HTTP {r.status_code}）")
                 return None
+            with self._resp_lock:
+                self._active_resp = r
+            if self._epoch != my_epoch:
+                # 还没开始读就被打断 —— 直接收摊，不消费任何事件
+                return None
             for event, data in iter_sse_lines(r):
+                if self._epoch != my_epoch:
+                    logger.info("本轮对话已被打断，丢弃剩余回复/音频")
+                    break
                 if t_first is None:
                     t_first = time.perf_counter()
                     logger.info("SSE 首包 %.3fs (path=%s)", t_first - t0, path)
@@ -248,7 +293,9 @@ class StudyClient:
                             t_audio = time.perf_counter()
                             logger.info("音频就绪 %.3fs (首包后 %.3fs)",
                                         t_audio - t0, t_audio - t_first)
-                        if self.tts_queue is not None:
+                        # 入队前再对一次代次 —— 拦住「校验后、入队前」
+                        # 恰好被打断的窄竞态
+                        if self._epoch == my_epoch and self.tts_queue is not None:
                             self.tts_queue.put((final_reply or
                                                 data.get("text", ""), audio))
                 elif etype in ("tool_error", "error", "asr_error"):
@@ -260,5 +307,19 @@ class StudyClient:
         except requests.exceptions.Timeout:
             print("（服务端响应超时）")
         except Exception as e:   # noqa: BLE001
-            print(f"（连接失败: {e}）")
+            if self._epoch != my_epoch:
+                # close() 掐断连接必然伴随一个读异常 —— 这是打断的
+                # 正常路径，不是故障
+                logger.info("SSE 已被 barge-in 关闭，旧流终止")
+            else:
+                print(f"（连接失败: {e}）")
+        finally:
+            if r is not None:
+                with self._resp_lock:
+                    if self._active_resp is r:
+                        self._active_resp = None
+                try:
+                    r.close()
+                except Exception:   # noqa: BLE001
+                    pass
         return final_reply or None

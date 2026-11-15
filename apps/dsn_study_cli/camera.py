@@ -26,6 +26,19 @@ ENUM_TIMEOUT = 5.0            # 枚举整体超时（秒）
 ENUM_MAX_PROBE = 8            # 最多探测 /dev/video0..7
 _FRAME_CACHE_MAX_AGE = 3.0    # 帧缓存有效期（秒）
 
+# ── 抓帧分辨率 ─────────────────────────────────────────────────────
+# UVC 摄像头不设分辨率时跑在固件默认档（本机实测 800x600）。文档拍摄
+# 要读的是印刷汉字：800x600 下纸面只占画面 ~35%，每字高 ~8px，
+# VLM 只能认出题号和选项字母，**汉字正文每次请求都编出不同内容**
+# （实测同一张图两次 OCR 结果互相矛盾）。分辨率拉到 1600x1200 后，
+# 同一张图两次 OCR 完全一致且语义正确。
+#
+# 只能用 **4:3 档**：摄像头传感器是 4:3，设成 1920x1080(16:9) 会裁掉
+# 上下，纸面上下边缘的内容直接消失（实测 top 区域像素差 34 vs 4:3 的 5）。
+DEFAULT_CAPTURE_WIDTH = 1600
+DEFAULT_CAPTURE_HEIGHT = 1200
+WARMUP_FRAMES = 3            # 丢弃的预热帧数（曝光/白平衡要几帧才收敛）
+
 _CAMERA_LOCK = threading.Lock()
 _CAMERA_SCAN_LOCK = threading.Lock()
 _CAMERA_SCAN_DONE = False
@@ -65,6 +78,52 @@ def get_camera_map(cfg: dict | None = None) -> dict[str, int]:
     if isinstance(cm, dict):
         return {str(k): int(v) for k, v in cm.items() if str(v).isdigit()}
     return {}
+
+
+def get_capture_size(cfg: dict | None = None) -> tuple[int, int]:
+    """抓帧分辨率 (宽, 高)。配置缺失/非法 → 4:3 默认档。"""
+
+    def _num(key: str, default: int) -> int:
+        try:
+            v = int((cfg or {}).get(key) or default)
+        except (TypeError, ValueError):
+            return default
+        return v if v > 0 else default
+
+    return (_num("capture_width", DEFAULT_CAPTURE_WIDTH),
+            _num("capture_height", DEFAULT_CAPTURE_HEIGHT))
+
+
+def _read_frame(device_id: int, backend, width: int, height: int):
+    """打开设备 → 设分辨率 → 丢预热帧 → 读一帧。返回 (ok, frame)。
+
+    预热帧必须丢：UVC 摄像头刚打开时自动曝光/白平衡还没收敛，
+    第一帧普遍偏暗偏色，读到的字会糊。
+    """
+    import cv2
+    cap = None
+    try:
+        cap = (cv2.VideoCapture(device_id, backend)
+               if backend is not None else cv2.VideoCapture(device_id))
+        if not cap.isOpened():
+            return False, None
+        if width and height:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        frame = None
+        for _ in range(WARMUP_FRAMES + 1):
+            ok, img = cap.read()
+            if ok and img is not None:
+                frame = img
+        return (frame is not None), frame
+    except Exception:   # noqa: BLE001
+        return False, None
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:   # noqa: BLE001
+                pass
 
 
 def _scan_devices() -> list[dict]:
@@ -158,6 +217,23 @@ def _lock_for(device_id: int) -> threading.Lock:
         return lock
 
 
+def _default_device(camera_map: dict[str, int], default_id: int) -> int:
+    """「不指定摄像头」时到底用哪一台。
+
+    旧实现取 ``list(camera_map.values())[0]`` —— 那是**配置字典的顺序**，
+    不是「哪台真能打开」。camera_map 里留着一个过期条目（本机实测
+    ``doc→2``，而设备上根本没有 index 2）时，
+    ``capture_frame("doc")`` 和 ``capture_frame(None)`` 两级回退会同时
+    打不开 —— 扫题拍照直接失败。现在优先用**枚举到并验证过可打开**的
+    第一台，其次才退到 camera_map，最后退到环境变量默认值。
+    """
+    if _CAMERA_NAME_TO_INDEX:
+        return next(iter(_CAMERA_NAME_TO_INDEX.values()))
+    if camera_map:
+        return min(camera_map.values())
+    return default_id
+
+
 def resolve_camera(camera, cfg: dict | None = None) -> int:
     """解析逻辑名 → cv2 设备索引。None/""/default → 首台（映射优先）。"""
     if not HAS_CAMERA:
@@ -166,7 +242,7 @@ def resolve_camera(camera, cfg: dict | None = None) -> int:
     camera_map = get_camera_map(cfg)
     default_id = int(os.environ.get("STUDY_CAMERA_DEVICE_ID", "0"))
     if camera in (None, "", "all", "all_cameras", "default"):
-        return (list(camera_map.values()) or [default_id])[0]
+        return _default_device(camera_map, default_id)
     name = str(camera)
     if name in camera_map:
         return camera_map[name]
@@ -174,7 +250,7 @@ def resolve_camera(camera, cfg: dict | None = None) -> int:
         return _CAMERA_NAME_TO_INDEX[name]
     if name.isdigit():
         return int(name)
-    return (list(camera_map.values()) or [default_id])[0]
+    return _default_device(camera_map, default_id)
 
 
 def resolve_camera_name(camera=None, cfg: dict | None = None) -> str:
@@ -197,7 +273,12 @@ def resolve_camera_name(camera=None, cfg: dict | None = None) -> str:
 
 def capture_frame(camera=None, cfg: dict | None = None,
                   use_cache: bool = True) -> str | None:
-    """抓一帧 → JPEG q75 → base64 data URL。失败返回 None。"""
+    """抓一帧 → JPEG q75 → base64 data URL。失败返回 None。
+
+    分辨率由 get_capture_size() 决定（默认 1600x1200，4:3）。
+    解析出的设备打不开时（配置过期 / 设备掉线）自动回退到枚举到的
+    其它可用设备，而不是直接失败。
+    """
     if not HAS_CAMERA:
         return None
     import cv2
@@ -209,6 +290,7 @@ def capture_frame(camera=None, cfg: dict | None = None,
         cached = _FRAME_CACHE.get(device_id)
         if cached and _time.time() - cached[0] < _FRAME_CACHE_MAX_AGE:
             return cached[1]
+    width, height = get_capture_size(cfg)
     with _lock_for(device_id):
         try:
             backend = None
@@ -216,10 +298,19 @@ def capture_frame(camera=None, cfg: dict | None = None,
                 if d["index"] == device_id:
                     backend = d.get("backend")
                     break
-            cap = (cv2.VideoCapture(device_id, backend)
-                   if backend is not None else cv2.VideoCapture(device_id))
-            ok, frame = cap.read()
-            cap.release()
+            ok, frame = _read_frame(device_id, backend, width, height)
+            if not ok:
+                # 解析出的索引打不开 → 退回枚举到的其它可用设备
+                for d in _CAMERA_LIST:
+                    if d["index"] == device_id:
+                        continue
+                    ok2, frame2 = _read_frame(d["index"], d.get("backend"),
+                                              width, height)
+                    if ok2:
+                        logger.warning("摄像头 %s 打不开，已回退到 %s",
+                                       device_id, d["index"])
+                        device_id, frame, ok = d["index"], frame2, True
+                        break
             if not ok or frame is None:
                 return None
             ok2, buf = cv2.imencode(".jpg", frame,

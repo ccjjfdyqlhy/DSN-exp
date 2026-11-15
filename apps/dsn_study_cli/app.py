@@ -58,7 +58,8 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 HELP_HEADLESS = """
 ════════ dsn_study CLI（headless）════════
-  Space   按一下开始录音，静音自动停止 → ASR → 对话 → 语音回复
+  Space   按一下开始录音（播报/合成中按下会先打断语音），
+          静音自动停止 → ASR → 对话 → 语音回复
   q       退出
   其他键  忽略（headless 下无屏可看）
 ════════════════════════════════════════
@@ -66,7 +67,7 @@ HELP_HEADLESS = """
 
 HELP = """
 ════════════════ dsn_study CLI ════════════════
-  Space(长按)  录音 → ASR → 对话
+  Space(长按)  录音 → ASR → 对话（播报中按下先打断语音）
   s            选文档摄像头（VLM 自动判定哪台对文档）
   c            拍一张（进当前批次）
   f            结束批次 → 后台提取入库 → 汇总播报
@@ -277,21 +278,33 @@ class StudyCliApp:
         print("…")
         self.client.send_text(raw, image_data=image_data)
 
+    def _barge_in(self):
+        """掐掉一切语音活动：正在播的段、队列里待播的段、服务端还在进行的流式合成。
+
+        流式 TTS 是逐句推的 —— 「上一句播完、下一句在合成」的间隙
+        is_playing 是 False，但 SSE 流还开着，剩余句子会源源不断涌来。
+        所以除了掐播放器（cancel_all：当前段 + 队列），还必须
+        cancel_stream() 把旧对话流整个作废，否则打断不彻底。
+        """
+        if self.tts.is_playing or self.client.is_sending:
+            log.info("barge-in：掐掉正在播报/合成的语音")
+        self.tts.cancel_all()
+        self.client.cancel_stream()
+
     def toggle_recording(self):
         """按一下开始录音，静音自动停；再按一下立即停并发送。
 
-        barge-in：若 AI 正在播报，先掐掉语音再开始录 —— 否则会把
-        TTS 的声音一起录进去（自激），且用户说的话根本听不清。
+        barge-in：按下「开始录音」就先掐掉一切语音活动 —— 不止是正在
+        播的这句，还包括队列里的剩余段和服务端仍在流式合成的句子
+        （见 :meth:`_barge_in`）。否则流式 TTS 的下一段会在录音期间
+        继续播出来（自激），且用户说的话根本听不清。
         """
         if self.recorder.is_recording:
             self.recorder.stop_and_send()
             self._say("（停止录音，识别中…）")
             return
 
-        if self.tts.is_playing:
-            log.info("barge-in：掐掉正在播报的语音")
-            self.tts.interrupt()
-            self.tts.clear_queue()
+        self._barge_in()
 
         self._say("（开始录音，静音自动停；再按一次立即停）")
         if not self.recorder.start():

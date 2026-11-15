@@ -181,6 +181,10 @@ class TtsPlayer:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._interrupt = threading.Event()   # barge-in：只掐当前这段
+        # barge-in 代次：每次打断 +1。段在「出队 → 开播」之间被卡着的
+        # 原子竞态用代次兜住 —— clear_queue 只能丢还在队列里的，
+        # 已出队未开播的段只有代次检查能拦住。
+        self._cancel_gen = 0
         self._proc: subprocess.Popen | None = None
         self._playing = threading.Event()
         self._backend: str = _pick_backend()
@@ -203,9 +207,21 @@ class TtsPlayer:
         self._kill_proc()
 
     def interrupt(self):
-        """barge-in：掐掉当前正在播的这一段（队列里剩余的保留）。"""
+        """barge-in：掐掉当前正在播的这一段。
+
+        队列里剩余的段**保留**（旧语义）；要连队列一起丢用 :meth:`cancel_all`。
+        """
+        self._cancel_gen += 1   # 已出队但还没开播的段一并作废
         self._interrupt.set()
         self._kill_proc()
+
+    def cancel_all(self):
+        """完整 barge-in：当前段 + 队列里剩余段全部作废。
+
+        「按空格说话」走这个 —— 用户要开口，旧回复一个字都不该再出声。
+        """
+        self.interrupt()
+        self.clear_queue()
 
     def clear_queue(self):
         """清空待播队列（barge-in 时用：用户要说话就别再念旧回复了）。"""
@@ -235,7 +251,10 @@ class TtsPlayer:
                 break
             try:
                 text, b64 = item
-                self._play_one(text or "", b64 or "")
+                # 代次在出队时取 —— 若出队后发生过 barge-in，
+                # _play_one 里的代次检查会把这段丢掉
+                self._play_one(text or "", b64 or "",
+                               gen=self._cancel_gen)
             except Exception:   # noqa: BLE001 - 单段失败不能拖垮线程
                 logger.warning("TTS 播放失败", exc_info=True)
             finally:
@@ -244,7 +263,7 @@ class TtsPlayer:
                 except Exception:   # noqa: BLE001
                     pass
 
-    def _play_one(self, text: str, b64: str):
+    def _play_one(self, text: str, b64: str, gen: int | None = None):
         if not b64:
             return
         try:
@@ -256,6 +275,10 @@ class TtsPlayer:
             return
 
         self._interrupt.clear()
+        if gen is not None and gen != self._cancel_gen:
+            # 出队之后、开播之前发生了 barge-in —— 这段作废，不出声
+            logger.info("TTS 段已被打断丢弃: %r", (text or "")[:20])
+            return
         self._playing.set()
         t0 = time.perf_counter()
         if self._on_play_state:

@@ -386,3 +386,172 @@ def test_tts_queue_is_wired_to_player():
             "异步任务轮询器未接 tts_queue，汇总语音会被丢掉"
     finally:
         a.tts.stop()
+
+
+# ── 流式 TTS barge-in（按空格打断播报/合成） ────────────────
+
+def test_tts_player_cancel_all_drops_pending_segments():
+    """cancel_all 要把「正在播的段 + 队列里剩余段」全部作废。
+
+    流式 TTS 是逐句推的：打断时队列里往往还压着好几段，
+    只掐当前段的话，剩余段会在录音期间继续播出来（自激）。
+    """
+    import queue as _queue
+    from apps.dsn_study_cli import tts as tts_mod
+
+    q = _queue.Queue()
+    player = tts_mod.TtsPlayer(q)
+    started = threading.Event()
+    release = threading.Event()
+    spawned = []
+
+    def _spawn(path):
+        spawned.append(path)
+        started.set()
+        release.wait(3)          # 模拟第一段正在播放
+        return True
+
+    player._spawn = _spawn
+    b64 = base64.b64encode(tts_mod.make_tone_wav()).decode()
+    q.put(("第一段", b64))
+    q.put(("第二段", b64))
+    player.start()
+    try:
+        assert started.wait(3), "第一段没开始播"
+        player.cancel_all()      # 此时第二段还压在队列里
+        release.set()
+        deadline = time.time() + 2
+        while time.time() < deadline and len(spawned) > 1:
+            time.sleep(0.05)
+    finally:
+        player.stop()
+    assert len(spawned) == 1, \
+        f"打断后队列里的段还在播（spawned={len(spawned)}）"
+    assert q.empty(), "cancel_all 后队列应被清空"
+
+
+def test_tts_player_stale_generation_segment_dropped():
+    """「已出队但还没开播」的段，在 barge-in 后开播时必须被代次检查拦下。
+
+    clear_queue 只能丢还在队列里的 —— 已出队未开播的窗口只有
+    代次检查能兜住，否则打断瞬间偶尔会漏出一段声音。
+    """
+    import queue as _queue
+    from apps.dsn_study_cli import tts as tts_mod
+
+    player = tts_mod.TtsPlayer(_queue.Queue())
+    spawned = []
+    player._spawn = lambda path: spawned.append(path) or True
+    b64 = base64.b64encode(tts_mod.make_tone_wav()).decode()
+
+    stale_gen = player._cancel_gen   # 模拟出队时刻的代次
+    player.cancel_all()              # 出队之后、开播之前被打断
+    player._play_one("旧回复", b64, gen=stale_gen)
+
+    assert not player.is_playing, "代次不符的段不该开播"
+    assert not spawned, "代次不符的段不该送进播放后端"
+    # 新代次的段（新一轮回复）照常播放
+    player._play_one("新回复", b64, gen=player._cancel_gen)
+    assert len(spawned) == 1, "新代次的段应正常播放"
+    player.stop()
+
+
+class _EndlessSSE:
+    """cancel_stream 之前一直推 line 音频事件的假 SSE 响应。"""
+
+    status_code = 200
+
+    def __init__(self):
+        self.closed = threading.Event()
+        self.count = 0
+
+    def iter_lines(self, decode_unicode=True):
+        while not self.closed.is_set():
+            self.count += 1
+            yield "data: " + json.dumps({
+                "status": "line", "index": self.count,
+                "audio_b64": "anVua19hdWRpbw=="})
+            time.sleep(0.001)
+
+    def close(self):
+        self.closed.set()
+
+
+class _FakeSession:
+    def __init__(self, resp):
+        self._resp = resp
+
+    def post(self, *args, **kwargs):
+        return self._resp
+
+
+def test_client_cancel_stream_stops_old_audio():
+    """barge-in 后：旧 SSE 流被关闭、代次不符的音频不再入队。
+
+    这是「流式 TTS 打断不彻底」的核心场景 —— clear_queue 只能丢
+    已入队的段，服务端还在逐句推的后续音频必须靠 close + 代次拦住。
+    """
+    from apps.dsn_study_cli.client import StudyClient
+
+    resp = _EndlessSSE()
+    c = StudyClient("http://test")
+    c.session = _FakeSession(resp)
+
+    t = threading.Thread(target=lambda: c._stream_chat("/api/asr/passthrough",
+                                                       {}), daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and c.tts_queue.qsize() < 3:
+            time.sleep(0.02)
+        assert c.tts_queue.qsize() >= 1, "假流没产出音频"
+
+        c.cancel_stream()        # barge-in
+        t.join(5)
+        assert not t.is_alive(), "打断后 _stream_chat 应立刻返回"
+        assert resp.closed.is_set(), "旧流的底层连接应被 close()"
+
+        size_after = c.tts_queue.qsize()
+        time.sleep(0.2)
+        assert c.tts_queue.qsize() == size_after, \
+            "打断后旧流的音频不应再入队"
+    finally:
+        resp.closed.set()
+        c.cancel_stream()
+
+
+def test_toggle_recording_barges_in_during_streaming(monkeypatch):
+    """播报/合成进行中按空格：完整 barge-in（播放器 + 对话流）后开始录音。
+
+    旧实现只在 is_playing 时打断 —— 流式 TTS 在「句与句之间」
+    is_playing 是 False，按空格啥也不打断，剩余语音照播。
+    """
+    from apps.dsn_study_cli import app as app_mod
+
+    cfg = {
+        "backend_host": "127.0.0.1", "port": 5000, "token": "",
+        "uid": 1, "display_name": "t", "chat_id": 0,
+        "mic_device_index": -1, "camera_map": {},
+    }
+    a = app_mod.StudyCliApp(cfg, headless=True)
+    try:
+        calls = []
+        a.tts.cancel_all = lambda: calls.append("cancel_all")
+        a.client.cancel_stream = lambda: calls.append("cancel_stream")
+        a.recorder.start = lambda: True
+        a.cue.beep = lambda **k: False
+        monkeypatch.setattr(a, "_say", lambda text: None)
+
+        # 场景 1：服务端还在流式合成（is_sending=True，但没在播）
+        a.client._is_sending.set()
+        a.toggle_recording()
+        assert "cancel_all" in calls and "cancel_stream" in calls, \
+            "合成中按空格必须同时掐播放器与对话流"
+        a.client._is_sending.clear()
+
+        # 场景 2：什么都没在播 —— 打断动作也应执行（幂等，清残留）
+        calls.clear()
+        a.toggle_recording()
+        assert "cancel_all" in calls and "cancel_stream" in calls
+    finally:
+        a.tts.stop()
