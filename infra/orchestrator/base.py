@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Optional, Protocol, runtime_checkable
@@ -290,6 +291,47 @@ def resolve_effort(configured: str, available: Iterable[str]) -> str:
     return ranked[0]
 
 
+def effort_stream_params(
+    wire: str,
+    *,
+    effort: str = "medium",
+    reasoning_style: str = "effort",
+    reasoning_efforts: Iterable[str] = (),
+    reasoning: bool = False,
+    force: bool = False,
+    prompt_cache_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Translate a user effort dial into per-wire stream kwargs.
+
+    The dial is provider-neutral; each wire takes reasoning params in its own
+    shape (chat: ``reasoning_effort``; responses: ``reasoning={effort,summary}``;
+    anthropic: ``effort``, which the client maps onto a thinking budget).
+    When the model has reasoning off and nothing forces it on, no reasoning
+    key is produced.  ``prompt_cache_key`` only applies to the responses wire.
+
+    Args:
+        wire: 'chat' | 'responses' | 'anthropic'.
+        reasoning_style: 'none' | 'effort' | 'toggle' (chat wire only).
+        reasoning: whether the model does reasoning at all.
+        force: request reasoning even if the model metadata says no.
+    """
+    kwargs: dict[str, Any] = {}
+    if reasoning or force:
+        resolved = resolve_effort(effort, reasoning_efforts)
+        if wire == "anthropic":
+            kwargs["effort"] = resolved
+        elif wire == "responses":
+            kwargs["reasoning"] = {"effort": resolved, "summary": "auto"}
+        else:
+            if reasoning_style in ("effort", "none"):
+                kwargs["reasoning_effort"] = resolved
+            if reasoning_style == "toggle":
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+    if prompt_cache_key and wire == "responses":
+        kwargs["prompt_cache_key"] = prompt_cache_key
+    return kwargs
+
+
 async def retrying_stream(
     client: Any,
     messages: list[Any],
@@ -332,6 +374,9 @@ async def retrying_stream(
     for attempt in range(max(1, attempts)):
         emitted = False
         gen = client.stream(messages, tools, **kwargs)
+        if inspect.iscoroutine(gen):
+            # tolerate async factories: they return a coroutine, not a stream
+            gen = await gen
         while True:
             try:
                 item = await gen.__anext__()

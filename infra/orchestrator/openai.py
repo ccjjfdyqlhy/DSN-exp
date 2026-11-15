@@ -490,6 +490,9 @@ class OpenAICompatClient(ChatClientAdapter):
             "user", "max_tokens", "max_completion_tokens", "stream_options",
             # 推理档位：仅当调用方显式传入才会出现在请求体里（老网关不受影响）
             "reasoning_effort",
+            # SDK 级参数：把厂商私有字段合并进请求体（如 toggle 式思考开关），
+            # 不会作为独立字段出现在 wire 上
+            "extra_body",
         }
         for key, value in kwargs.items():
             if value is not None and key in _STANDARD_STREAM_PARAMS:

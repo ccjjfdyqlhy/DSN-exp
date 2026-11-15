@@ -39,6 +39,35 @@ def test_resolve_effort_no_options_returns_configured():
     assert resolve_effort('medium', None) == 'medium'
 
 
+# ── effort_stream_params ─────────────────────────────────────────────
+
+def test_effort_params_per_wire():
+    from infra.orchestrator.base import effort_stream_params
+    common = dict(reasoning=True, reasoning_efforts=('low', 'medium', 'high'))
+    assert effort_stream_params('chat', effort='high', **common) \
+        == {'reasoning_effort': 'high'}
+    assert effort_stream_params('responses', effort='high', **common) \
+        == {'reasoning': {'effort': 'high', 'summary': 'auto'}}
+    assert effort_stream_params('anthropic', effort='high', **common) \
+        == {'effort': 'high'}
+
+
+def test_effort_params_toggle_and_cache_key():
+    from infra.orchestrator.base import effort_stream_params
+    params = effort_stream_params(
+        'chat', effort='medium', reasoning_style='toggle', reasoning_efforts=(),
+        reasoning=True)
+    assert params == {'extra_body': {'thinking': {'type': 'enabled'}}}
+    # the cache key only applies to the responses wire
+    assert effort_stream_params('chat', effort='medium', reasoning=False,
+                                prompt_cache_key='sha256:x') == {}
+    assert effort_stream_params('responses', effort='medium', reasoning=False,
+                                prompt_cache_key='sha256:x') \
+        == {'prompt_cache_key': 'sha256:x'}
+    # reasoning off and not forced: no reasoning keys at all
+    assert effort_stream_params('chat', effort='high', reasoning=False) == {}
+
+
 # ── retrying_stream ──────────────────────────────────────────────────
 
 class _Fail(Exception):
