@@ -226,7 +226,7 @@ class AgentManager:
             engine.submit(message)
             while engine.busy() or not engine._work.empty():
                 await asyncio.sleep(0.02)
-            record.status = (INTERRUPTED if engine._interrupt.is_set()
+            record.status = (INTERRUPTED if engine.last_turn_interrupted
                              else COMPLETED)
             record.final_message = _tail_text(engine, limit=4_000) or '(no response)'
         except Exception as error:    # noqa: BLE001 - a child failing is a report
