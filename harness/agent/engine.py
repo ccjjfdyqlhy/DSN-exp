@@ -340,28 +340,42 @@ class ConversationEngine:
         self.sink.emit('session_cleared', {})
 
     def rewind(self, turn: int) -> str:
+        """Drop the given transcript turn and everything after it.
+
+        Transcript turn ids survive compaction, but the retained history
+        starts later.  Align the oldest retained user message with the suffix
+        of transcript turns instead of assuming ``turn - 1``.  Returns the
+        dropped user text (a compaction summary prefix is stripped).
+        """
         self._require_idle('rewind')
-        payload = self.payload()
-        dropped_text = ''
-        starts = self._store.turn_starts(payload.messages)
-        if 1 <= turn <= len(starts):
-            cut = starts[turn - 1]
-            dropped = payload.messages[cut:]
-            for message in dropped:
-                if message.get('role') == 'user':
-                    content = message.get('content') or ''
-                    if not str(content).startswith('<'):
-                        dropped_text = str(content)
-                        break
-        else:
-            cut = len(payload.messages)
-        payload.messages = payload.messages[:cut]
-        payload.items = [item for item in payload.items if item.turn < turn]
-        payload.turn = max(0, turn - 1)
-        self.apply_payload(payload)
+        with self._lock:
+            from ..transcript import SessionStore
+            starts = SessionStore.turn_starts(self.conversation.committed)
+            turn_ids = sorted({item.turn for item in self.items
+                               if item.kind == 'user' and item.turn > 0})
+            index = len(starts) - sum(1 for value in turn_ids if value >= turn)
+            if index < 0:
+                # The requested turn was archived by compaction; roll back to
+                # the oldest retained turn instead of wiping the context.
+                index = 0
+            text = ''
+            if 0 <= index < len(starts):
+                cut = starts[index]
+                message = self.conversation.committed[cut]
+                text = str(message.get('content') or '')
+                marker = '</conversation_summary>'
+                if text.startswith('<conversation_summary>') and marker in text:
+                    text = text.split(marker, 1)[1].lstrip('\n')
+                del self.conversation.committed[cut:]
+            else:
+                self.conversation.committed.clear()
+            self.conversation.draft.clear()
+            self.conversation.invalidate()
+            self.items[:] = [item for item in self.items if item.turn < turn]
+            self.turn = max(0, turn - 1)
         self.sink.emit('session_rewound', {'turn': turn})
         self.save_active()
-        return dropped_text
+        return text
 
     def fork(self, name: str = '') -> str:
         self._require_idle('fork')

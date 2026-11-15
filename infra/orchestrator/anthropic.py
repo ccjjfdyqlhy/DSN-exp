@@ -223,7 +223,7 @@ class AnthropicCompatClient(ChatClientAdapter):
 
             out.append({"role": role, "content": str(content or "")})
 
-        return "\n\n".join(p for p in system_parts if p), out
+        return "\n\n".join(p for p in system_parts if p), _merge_alternating(out)
 
     @staticmethod
     def _tools_to_anthropic(tools: Optional[list[dict]]) -> list[dict]:
@@ -238,8 +238,6 @@ class AnthropicCompatClient(ChatClientAdapter):
                 "input_schema": t.get("parameters") or {"type": "object", "properties": {}},
             })
         return out
-
-    # ── 非流式 ──
 
     def invoke(
         self,
@@ -397,5 +395,40 @@ class AnthropicCompatClient(ChatClientAdapter):
                 elif etype == "message_stop":
                     break
         # 终态事件：max_tokens 截断透出为 'length'，让上层区分截断与正常收尾
+
+        # 终态事件：max_tokens 截断透出为 'length'，让上层区分截断与正常收尾
         yield {"finish": "length" if stop_reason == "max_tokens"
                else (stop_reason or "stop")}
+
+
+def _merge_alternating(messages: list[dict]) -> list[dict]:
+    """Merge consecutive same-role messages; the API requires alternation.
+
+    Tool results arrive as their own user entries and injected blocks
+    (<subagent_updates> and friends) arrive as user messages too, so a
+    tool round ends with two adjacent user messages.  Merging keeps the
+    tool_result blocks first inside the combined user message (the API
+    requires them at the front) and joins text blocks in order.
+    """
+    merged: list[dict] = []
+    for entry in messages:
+        if (merged and merged[-1].get("role") == entry.get("role")
+                and entry.get("role") in ("user", "assistant")):
+            previous = merged[-1]["content"]
+            current = entry["content"]
+            prev_blocks = (previous if isinstance(previous, list) else
+                           ([{"type": "text", "text": previous}]
+                            if previous else []))
+            cur_blocks = (current if isinstance(current, list) else
+                          ([{"type": "text", "text": current}]
+                           if current else []))
+            tool_results = [b for b in cur_blocks
+                            if isinstance(b, dict)
+                            and b.get("type") == "tool_result"]
+            others = [b for b in cur_blocks
+                      if not (isinstance(b, dict)
+                              and b.get("type") == "tool_result")]
+            merged[-1]["content"] = tool_results + prev_blocks + others
+            continue
+        merged.append(entry)
+    return merged
