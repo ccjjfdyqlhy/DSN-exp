@@ -31,6 +31,15 @@ git clone https://github.com/ccjjfdyqlhy/DSN-exp.git && cd DSN-exp && python3 in
 > 没有 GPU？没关系。没有本地模型？没关系。
 > 甚至暂时没有 API Key，也能先启动，看看界面长什么样。
 
+只想把引擎当库用？不用克隆仓库：
+
+```bash
+pip install aicf-core
+```
+
+装完即得 `harness` 和 `infra`——轮次引擎、工具、SQLite 会话与子代理协作，
+任何项目直接 import。
+
 ---
 
 ## ✨ 它能帮你做什么

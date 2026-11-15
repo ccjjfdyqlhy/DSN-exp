@@ -31,6 +31,15 @@ The installer creates a virtualenv, installs dependencies, checks the repo, walk
 > No GPU? Fine. No local model? Fine.
 > No API key yet? You can still start it and look around.
 
+Only want the engine as a library? No clone needed:
+
+```bash
+pip install aicf-core
+```
+
+That gives you `harness` and `infra` — the turn engine, tools, sqlite
+sessions and sub-agent collaboration — importable from any project.
+
 ---
 
 ## ✨ What it does for you
