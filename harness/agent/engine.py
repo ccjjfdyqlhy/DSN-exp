@@ -72,6 +72,7 @@ class EngineSnapshot:
     session_name: str = ''
     session_title: str = ''
     queued: int = 0
+    agents: list[dict[str, Any]] | None = None
 
 
 class ConversationEngine:
@@ -96,7 +97,9 @@ class ConversationEngine:
                  system_provider: Callable[[], str] | None = None,
                  cwd: str = '',
                  model: ModelInfo | None = None,
-                 config: EngineConfig | None = None) -> None:
+                 config: EngineConfig | None = None,
+                 allowed_tools: set[str] | None = None,
+                 agent_name: str = 'root') -> None:
         self._client = client
         self._registry = registry
         self._store = store or SessionStore()
@@ -105,6 +108,11 @@ class ConversationEngine:
         self._cwd = cwd
         self.config = config or EngineConfig()
         self._model = model or ModelInfo()
+        # sub-agent tool allowlist: None means every registered tool
+        self._allowed_tools = allowed_tools
+        self.agent_name = agent_name
+        # set by an AgentManager (harness.agent.collab); None = no collaboration
+        self.collab: Any | None = None
 
         # Control-plane methods are loop-affine: call them from the event
         # loop thread (or via loop.call_soon_threadsafe).  A thread+queue
@@ -223,6 +231,11 @@ class ConversationEngine:
     def drain(self, limit: int = 2_000) -> list[tuple[str, dict[str, Any]]]:
         return self.sink.drain(limit)
 
+    def agents_snapshot(self) -> list[dict[str, Any]] | None:
+        if self.collab is None:
+            return None
+        return self.collab.agents_snapshot()
+
     def snapshot(self) -> EngineSnapshot:
         with self._lock:
             return EngineSnapshot(
@@ -236,6 +249,7 @@ class ConversationEngine:
                 session_name=self.session_name,
                 session_title=self.session_title,
                 queued=self._work.qsize(),
+                agents=self.agents_snapshot(),
             )
 
     # ── transcript ──────────────────────────────────────────
@@ -372,16 +386,32 @@ class ConversationEngine:
         self.status = status
         self.sink.emit('status', {'status': status, **extra})
 
+    def _stage_collab_mailbox(self) -> None:
+        """Pump collaboration events and stage this engine's mailbox."""
+        if self.collab is None:
+            return
+        for kind, payload in self.collab.drain_events():
+            self.sink.emit(kind, payload)
+        updates = self.collab.consume_mailbox(self)
+        if updates:
+            self.conversation.stage(*_stage_mailbox(updates))
+            self.add_notice(f'Received {len(updates)} sub-agent update(s).')
+
     def _current_system(self) -> str:
         if self._system_provider is None:
             return ''
         return self._system_provider()
 
+    def system_prompt(self) -> str:
+        """The current system prompt (what the next request would carry)."""
+        return self._current_system()
+
     def _fresh_prefix(self) -> StablePrefix:
         return StablePrefix.create(
             provider=self._model.provider, endpoint=self._model.endpoint,
             model=self._model.id, system=self._current_system(),
-            tools=self._registry.build_schema(vision=self._model.vision),
+            tools=self._registry.build_schema(names=self._allowed_tools,
+                                              vision=self._model.vision),
             wire=self._model.wire)
 
     def _refresh_prefix(self, force: bool = False) -> None:
@@ -415,7 +445,8 @@ class ConversationEngine:
         self._interrupt.clear()
 
         context = ToolContext(cwd=self._cwd or '.',
-                              interrupt=self._interrupt, agent='root')
+                              interrupt=self._interrupt,
+                              agent=self.agent_name)
         context_token = push_context(context)
         committed = False
         try:
@@ -423,6 +454,7 @@ class ConversationEngine:
             while True:
                 if self._stop or self._interrupt.is_set():
                     break
+                self._stage_collab_mailbox()
                 self._refresh_prefix()
                 budget = self._budget()
                 if (self.config.context.auto_compact
@@ -639,7 +671,7 @@ class ConversationEngine:
 
             context = ToolContext(cwd=self._cwd or '.',
                                   interrupt=self._interrupt,
-                                  live_sink=live_sink, agent='root')
+                                  live_sink=live_sink, agent=self.agent_name)
             # asyncio.to_thread copies the current contextvars into the
             # worker thread, so the tool sees the ToolContext pushed here.
             context_token = push_context(context)
