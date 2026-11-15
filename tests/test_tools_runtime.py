@@ -205,6 +205,7 @@ def test_shell_write_needs_running_process(shell):
 def test_session_shell_tool_dispatch():
     tool = session_shell_tool(name='bash')
     assert tool.name == 'bash'
+    assert isinstance(tool, AnnotatedTool)    # registry metadata comes along
     result = tool.run(sub='execute', command='echo via-tool')
     assert result.success is True
     assert 'via-tool' in str(result.output)

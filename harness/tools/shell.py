@@ -22,6 +22,7 @@ from typing import Callable
 
 from .base import Tool
 from .context import ToolContext, current_context, resolve_path
+from .registry import AnnotatedTool
 
 _MAX_OUTPUT_LINES = 5_000
 _DEFAULT_TIMEOUT = 48.0
@@ -92,10 +93,13 @@ def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
 class ShellSessions:
     """Owns one shell session per worker thread and reaps them on shutdown."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, metadata_tag: str = 'shell_tool_metadata') -> None:
         self._local = threading.local()
         self._sessions: weakref.WeakSet[ShellSession] = weakref.WeakSet()
         self._lock = threading.RLock()
+        # the timeout / interrupt marker is wrapped in this tag; applications
+        # that have UI conventions around a specific tag can rename it
+        self._metadata_tag = metadata_tag
 
     def session(self) -> ShellSession:
         session = getattr(self._local, 'session', None)
@@ -203,10 +207,10 @@ class ShellSessions:
         thread.join(timeout=1)
         if timed_out:
             session.output.append(
-                '<shell_tool_metadata>command execution timed out</shell_tool_metadata>')
+                f'<{self._metadata_tag}>command execution timed out</{self._metadata_tag}>')
         if interrupted:
             session.output.append(
-                '<shell_tool_metadata>command interrupted</shell_tool_metadata>')
+                f'<{self._metadata_tag}>command interrupted</{self._metadata_tag}>')
         if proc.poll() is not None:
             _close_process_pipes(proc)
             if session.proc is proc:
@@ -244,17 +248,18 @@ class ShellSessions:
         return 'Process terminated'
 
 
-_SHELL_DESCRIPTION = (
-    'Persistent shell session with sub-commands:\n'
-    + ('- Platform: Windows cmd.exe. Use cd/dir, or invoke powershell '
-       '-NoProfile -Command explicitly; do not use Unix pwd/ls.\n'
-       if os.name == 'nt' else '- Platform: POSIX shell.\n')
-    + '- execute: run a command (kills the previous one). Default timeout 48s; '
-      'a timeout is reported with <shell_tool_metadata>.\n'
-    + '- read: incremental output since the last read.\n'
-    + '- write: send input to stdin (a newline is appended).\n'
-    + '- terminate: kill the running process.'
-)
+def _shell_description(metadata_tag: str) -> str:
+    return (
+        'Persistent shell session with sub-commands:\n'
+        + ('- Platform: Windows cmd.exe. Use cd/dir, or invoke powershell '
+           '-NoProfile -Command explicitly; do not use Unix pwd/ls.\n'
+           if os.name == 'nt' else '- Platform: POSIX shell.\n')
+        + f'- execute: run a command (kills the previous one). Default timeout 48s; '
+          f'a timeout is reported with <{metadata_tag}>.\n'
+        + '- read: incremental output since the last read.\n'
+        + '- write: send input to stdin (a newline is appended).\n'
+        + '- terminate: kill the running process.'
+    )
 
 _SHELL_PARAMETERS = {
     'type': 'object',
@@ -270,7 +275,8 @@ _SHELL_PARAMETERS = {
 
 
 def session_shell_tool(name: str = 'shell', *,
-                       sessions: ShellSessions | None = None) -> Tool:
+                       sessions: ShellSessions | None = None,
+                       metadata_tag: str = 'shell_tool_metadata') -> Tool:
     """Build the sub-command shell Tool bound to a ShellSessions owner.
 
     Args:
@@ -278,12 +284,14 @@ def session_shell_tool(name: str = 'shell', *,
         sessions: the session owner; one instance is created per tool when
             omitted.  Share one instance to let several tool names (or a
             root tool and its sub-agents) drive the same per-thread shells.
+        metadata_tag: tag wrapping timeout / interrupt markers in the output.
 
     Returns:
-        A Tool whose handler resolves cwd / interrupt / live_sink from the
-        running turn's ToolContext.
+        An AnnotatedTool whose handler resolves cwd / interrupt / live_sink
+        from the running turn's ToolContext.
     """
-    owner = sessions if sessions is not None else ShellSessions()
+    owner = sessions if sessions is not None else ShellSessions(
+        metadata_tag=metadata_tag)
 
     def handler(**params):
         sub = str(params.get('sub', 'execute'))
@@ -299,5 +307,5 @@ def session_shell_tool(name: str = 'shell', *,
             return owner.terminate()
         return f'Error: unknown shell sub-command: {sub}'
 
-    return Tool(name=name, description=_SHELL_DESCRIPTION,
-                parameters=_SHELL_PARAMETERS, handler=handler)
+    return AnnotatedTool(name=name, description=_shell_description(metadata_tag),
+                         parameters=_SHELL_PARAMETERS, handler=handler)
