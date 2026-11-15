@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Optional, Protocol, runtime_checkable
 
@@ -134,6 +136,18 @@ class ChatMessage:
         return cls(role="system", content=content)
 
     @classmethod
+    def from_dict(cls, raw: dict) -> "ChatMessage":
+        """Rebuild a message from the plain dict shape (inverse of to_dict)."""
+        return cls(
+            role=str(raw.get("role", "user")),
+            content=raw.get("content", ""),
+            name=raw.get("name"),
+            tool_calls=list(raw.get("tool_calls") or []),
+            tool_call_id=raw.get("tool_call_id"),
+            reasoning_content=raw.get("reasoning_content"),
+        )
+
+    @classmethod
     def user(cls, content: str) -> "ChatMessage":
         return cls(role="user", content=content)
 
@@ -243,3 +257,100 @@ class ChatClientAdapter:
             else:
                 raise TypeError(f"无法归一化消息类型: {type(m).__name__}")
         return out
+
+
+# ── reasoning effort ─────────────────────────────────────────────────
+# A user-level effort dial clamped onto the set a model actually exposes.
+# One shared mapping: the clients below apply it at the wire boundary
+# instead of growing per-client copies.
+
+_EFFORT_RANK: dict[str, int] = {
+    "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6,
+}
+_EFFORT_ALIASES: dict[str, tuple[str, ...]] = {
+    "xhigh": ("xhigh", "high", "max"),
+    "ultra": ("ultra", "max", "xhigh"),
+    "max": ("max", "xhigh", "high"),
+}
+
+
+def resolve_effort(configured: str, available: Iterable[str]) -> str:
+    """Clamp the user's effort to a value the model actually exposes."""
+    options = [str(item).lower() for item in (available or ()) if item]
+    configured = (configured or "medium").lower()
+    if not options:
+        return configured
+    if configured in options:
+        return configured
+    for alias in _EFFORT_ALIASES.get(configured, ()):    # dial one step down
+        if alias in options:
+            return alias
+    rank = _EFFORT_RANK.get(configured, 2)
+    ranked = sorted(options, key=lambda item: abs(_EFFORT_RANK.get(item, 2) - rank))
+    return ranked[0]
+
+
+async def retrying_stream(
+    client: Any,
+    messages: list[Any],
+    tools: Optional[list[dict]] = None,
+    *,
+    attempts: int = 3,
+    sleep: Optional[Callable[[float], Awaitable[None]]] = None,
+    retryable: Optional[Callable[[Exception], bool]] = None,
+    **kwargs: Any,
+) -> AsyncIterator[Any]:
+    """Drive ``client.stream`` with stream-creation retry.
+
+    Only the creation phase is retried: the first item that reaches the
+    caller marks the stream as emitted, and any failure after that is
+    raised as-is because the consumer may already have acted on earlier
+    chunks.  Each retry yields ``{"retry": {...}}`` first; existing
+    consumers read only the dict keys they know, so the event is inert
+    for them and new consumers can surface it.
+
+    Args:
+        client: any IChatClient.
+        attempts: total tries, inclusive of the first one.
+        sleep: awaitable delay, defaults to asyncio.sleep; tests inject a
+            collector here to avoid real backoff.
+        retryable: predicate over the exception; default retries anything
+            whose HTTP status is not 400 (a malformed request will not
+            fix itself on a second try).
+
+    Yields:
+        Whatever ``client.stream`` yields, plus ``{"retry": ...}`` events.
+    """
+    if sleep is None:
+        sleep = asyncio.sleep
+    if retryable is None:
+        def retryable(error: Exception) -> bool:
+            status = getattr(error, "status_code", 0) or getattr(error, "status", 0)
+            return status != 400
+
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        emitted = False
+        gen = client.stream(messages, tools, **kwargs)
+        while True:
+            try:
+                item = await gen.__anext__()
+            except StopAsyncIteration:
+                return
+            except Exception as error:
+                if emitted or not retryable(error) or attempt == attempts - 1:
+                    raise
+                last_error = error
+                wait = 2 ** attempt
+                yield {"retry": {"error": str(error)[:160],
+                                 "attempt": attempt + 1, "delay": wait}}
+                await sleep(wait)
+                try:    # the dead generator holds an HTTP response
+                    await gen.aclose()
+                except Exception:
+                    pass
+                break   # recreate the generator on the next attempt
+            emitted = True
+            yield item
+    if last_error is not None:
+        raise last_error
