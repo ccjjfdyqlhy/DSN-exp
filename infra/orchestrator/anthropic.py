@@ -189,7 +189,17 @@ class AnthropicCompatClient(ChatClientAdapter):
                     if ptype == "text":
                         blocks.append({"type": "text", "text": p.get("text", "")})
                     elif ptype == "image_url":
-                        url = (p.get("image_url") or {}).get("url", "")
+                        image = p.get("image_url") or {}
+                        # Files API 预上传的图：按 id 引用（对话协议约定
+                        # {"image_url": {"file_id": ...}}，与 responses 转换器一致）
+                        if image.get("file_id"):
+                            blocks.append({
+                                "type": "image",
+                                "source": {"type": "file",
+                                           "file_id": image["file_id"]},
+                            })
+                            continue
+                        url = image.get("url", "")
                         if url.startswith("data:"):
                             # data:<media>;base64,<payload>
                             try:

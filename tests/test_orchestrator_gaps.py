@@ -287,6 +287,35 @@ def test_openai_client_accepts_http_client():
     asyncio.run(async_injected.aclose())
 
 
+def test_responses_converter_maps_file_carrying_image_parts():
+    parts = OpenAICompatClient._responses_content_parts(
+        [{'type': 'text', 'text': 'look'},
+         {'type': 'image_url', 'image_url': {'file_id': 'file-9'}}], 'user')
+    assert parts[0] == {'type': 'input_text', 'text': 'look'}
+    assert parts[1] == {'type': 'input_image', 'file_id': 'file-9',
+                        'detail': 'auto'}
+    # plain url parts keep the existing shape
+    parts = OpenAICompatClient._responses_content_parts(
+        [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,xx'}}],
+        'user')
+    assert parts == [{'type': 'input_image', 'image_url': 'data:image/png;base64,xx'}]
+
+
+def test_anthropic_converter_maps_file_carrying_image_parts():
+    from infra.orchestrator.anthropic import AnthropicCompatClient
+    system, msgs = AnthropicCompatClient._split_system([
+        {'role': 'user', 'content': [
+            {'type': 'text', 'text': 'look'},
+            {'type': 'image_url', 'image_url': {'file_id': 'file-7'}},
+            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,xx'}},
+        ]},
+    ])
+    blocks = msgs[0]['content']
+    assert blocks[1] == {'type': 'image',
+                         'source': {'type': 'file', 'file_id': 'file-7'}}
+    assert blocks[2]['source']['type'] == 'base64'
+
+
 # ── anthropic effort budget ──────────────────────────────────────────
 
 def test_effort_thinking_budget_table():
