@@ -424,8 +424,8 @@ def dead_model_profiles() -> list[tuple[str, str]]:
             text = yml.read_text(encoding="utf-8")
         except OSError:
             continue
-        for key in ("model_path", "binary_path", "mmproj_path"):
-            match = re.search(rf"^\s*{key}\s*:\s*(\S+)\s*$", text, re.MULTILINE)
+        for field_name in ("model_path", "binary_path", "mmproj_path"):
+            match = re.search(rf"^\s*{field_name}\s*:\s*(\S+)\s*$", text, re.MULTILINE)
             if not match:
                 continue
             raw = match.group(1).strip().strip('"\'')
@@ -433,7 +433,7 @@ def dead_model_profiles() -> list[tuple[str, str]]:
                 continue
             expanded = Path(os.path.expanduser(os.path.expandvars(raw)))
             if not expanded.exists():
-                dead.append((yml.name, f"{key}={raw}"))
+                dead.append((yml.name, f"{field_name}={raw}"))
     return dead
 
 

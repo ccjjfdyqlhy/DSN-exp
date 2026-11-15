@@ -41,6 +41,7 @@ import logging
 
 from flask import Blueprint, Response, current_app, g, jsonify, request
 
+
 logger = logging.getLogger("ASRAPI")
 
 asr_bp = Blueprint("asr_api", __name__)
@@ -281,7 +282,7 @@ def asr_passthrough():
                                 "text": reply, "audio_b64": audio})
         except Exception as e:  # noqa: BLE001
             logger.exception("语音上行对话处理失败")
-            yield _sse({"status": "tool_error", "tool": "chat", "error": str(e)})
+            yield _sse({"status": "tool_error", "tool": "chat", "error": "语音对话处理失败"})
         finally:
             if tts_err:
                 yield _sse({"status": "tool_error", "tool": "tts",

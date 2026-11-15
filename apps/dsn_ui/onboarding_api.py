@@ -45,6 +45,7 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+
 logger = logging.getLogger("DSNUIServer")
 
 #: 从文件名里识别量化等级（Q4_K_M / IQ1_M / F16 ...），仅用于展示。
@@ -339,7 +340,7 @@ def _register_local_model(eng: Any, body: dict) -> Any:
         try:
             cfg = LlamaServerConfig.from_dict(body)
         except (TypeError, ValueError) as e:
-            return _bad(f"llama.cpp 参数非法: {e}")
+            return _bad("llama.cpp 参数非法")
 
         model_path = _expand(cfg.model_path)
         if not model_path:
@@ -366,7 +367,7 @@ def _register_local_model(eng: Any, body: dict) -> Any:
         try:
             cfg = StrataEngineConfig.from_dict(body)
         except (TypeError, ValueError) as e:
-            return _bad(f"Strata 参数非法: {e}")
+            return _bad("Strata 参数非法")
         if not (cfg.config_path or cfg.server_script):
             return _bad("Strata 需要 config_path（run config JSON）或 server_script")
         if not (1 <= int(cfg.port) <= 65535):
@@ -381,7 +382,7 @@ def _register_local_model(eng: Any, body: dict) -> Any:
     except Exception as e:  # noqa: BLE001
         logger.exception("注册本地模型失败: %s", name)
         _unregister(orchestrator, name)
-        return _bad(f"注册模型失败: {e}", 500)
+        return _bad("注册模型失败", 500)
 
     # ── 持久化（失败则回滚，避免"重启后消失"的假成功）──
     profile_path: Optional[Path] = None
@@ -399,7 +400,7 @@ def _register_local_model(eng: Any, body: dict) -> Any:
                 profile_path.unlink()
             except OSError:
                 pass
-        return _bad(f"模型已注册但持久化失败，已回滚: {e}", 500)
+        return _bad("模型已注册但持久化失败，已回滚", 500)
 
     spec = orchestrator.get_model_spec(name)
     if spec is None:
@@ -644,7 +645,7 @@ def _run_test_chat(
         return {
             "ok": False, "status": "error", "url": url, "model": model,
             "elapsed_ms": elapsed, "http_status": None,
-            "error": f"无法连接 {url}: {e}",
+            "error": f"无法连接 {url}",
         }
 
     elapsed = round((time.perf_counter() - started) * 1000, 1)
@@ -663,7 +664,7 @@ def _run_test_chat(
         return {
             "ok": False, "status": "error", "url": url, "model": model,
             "elapsed_ms": elapsed, "http_status": resp.status_code,
-            "error": f"响应不是预期的 chat completion 结构: {e}",
+            "error": "响应不是预期的 chat completion 结构",
         }
 
     return {
@@ -786,7 +787,8 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
                     extra_headers=dict(body.get("extra_headers") or {}),
                 )
             except Exception as e:  # noqa: BLE001
-                discovery_error = str(e)
+                # 原因会回给前端，只保留异常类名；细节进日志
+                discovery_error = "模型发现失败"
                 logger.warning("模型发现失败（不阻断保存）: %s", e)
                 if not _as_bool(body.get("allow_empty_models"), False):
                     # 除非调用方明确接受空模型列表，否则把可读原因回给前端，
@@ -824,7 +826,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             eng_obj.reload_api_providers()
         except Exception as e:  # noqa: BLE001
             logger.exception("保存 API provider 失败")
-            return _bad(f"保存 API provider 失败: {e}", 500)
+            return _bad("保存 API provider 失败", 500)
 
         names = [
             discovered_model_name(record.get("label") or label, str(m))

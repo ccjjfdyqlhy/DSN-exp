@@ -10,6 +10,7 @@ import logging
 
 from flask import Blueprint, jsonify, request, g
 
+
 logger = logging.getLogger("ObsidianAPI")
 
 obsidian_bp = Blueprint("obsidian_api", __name__)
@@ -81,5 +82,5 @@ def obsidian_index():
             subject=subject, limit=limit, overwrite=overwrite))
     except Exception as e:
         logger.warning("Obsidian 索引失败: %s", e, exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Obsidian 索引失败"}), 500
     return jsonify(result)

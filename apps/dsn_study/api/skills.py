@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request, g
+
+from infra.webutil import realpath_under, root_prefix
 
 logger = logging.getLogger("SkillsAPI")
 
@@ -81,6 +84,26 @@ def list_skills():
     return jsonify(payload)
 
 
+def _allowed_skill_roots() -> list:
+    """运行时安装技能允许的根目录：已配置的技能扫描目录 + 环境变量扩展。
+
+    技能安装会把 tools/*.py 导入进程（任意代码执行），因此不允许把任意
+    请求提供的路径直接喂给安装器；默认只接受启动时扫描的那些技能目录，
+    开发者可用 DSN_SKILL_INSTALL_ROOT 显式放开额外目录。
+    """
+    roots: list = []
+    if _manager is not None:
+        for d in _manager.diagnostics().get("skill_dirs") or []:
+            try:
+                roots.append(Path(d).resolve())
+            except OSError:
+                continue
+    extra = os.environ.get("DSN_SKILL_INSTALL_ROOT", "")
+    if extra:
+        roots.append(Path(extra).expanduser().resolve())
+    return roots
+
+
 @skills_bp.route("/api/skills/install", methods=["POST"])
 def install_skill():
     """运行时安装一个技能（从目录）。不需要重启。"""
@@ -90,12 +113,23 @@ def install_skill():
     skill_dir = (data.get("skill_dir") or data.get("dir") or "").strip()
     if not skill_dir:
         return jsonify({"error": "缺少 skill_dir 参数"}), 400
-    skill_dir = os.path.abspath(os.path.expanduser(skill_dir))
-    if not os.path.isdir(skill_dir):
-        return jsonify({"error": f"目录不存在: {skill_dir}"}), 400
+    # 防路径注入：请求提供的目录必须落在允许的技能根目录内。realpath 展开
+    # ../ 与符号链接后做前缀守卫（带分隔符结尾，兄弟目录同样拒绝），
+    # 后续文件操作与安装只使用守卫后的 resolved_dir。
+    resolved_dir = None
+    for root in _allowed_skill_roots():
+        cand = realpath_under(root, skill_dir)
+        if cand.startswith(root_prefix(root)):
+            resolved_dir = cand
+            break
+    if resolved_dir is None:
+        return jsonify({"error": "仅允许安装已配置技能目录内的技能"
+                                    "（可用 DSN_SKILL_INSTALL_ROOT 扩展）"}), 403
+    if not os.path.isdir(resolved_dir):
+        return jsonify({"error": "目录不存在"}), 400
 
-    ok = _manager.install(skill_dir)
-    return jsonify({"success": bool(ok), "skill_dir": skill_dir,
+    ok = _manager.install(resolved_dir)
+    return jsonify({"success": bool(ok), "skill_dir": resolved_dir,
                     "skills": [s["name"] for s in _manager.list_skills()]}), \
         (200 if ok else 400)
 

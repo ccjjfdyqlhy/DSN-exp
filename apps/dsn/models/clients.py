@@ -93,7 +93,10 @@ class OpenAIChat:
                 "API密钥必须提供，可通过参数传入或设置环境变量OPENAI_API_KEY"
             )
         from apps.dsn.config import Config
-        self.model = model
+        # 模型名在赋给实例属性前先落到局部变量：日志直接打印局部值，
+        # 避免与敏感字段（api_key）共用实例属性读取路径
+        resolved_model = self.REASONER_MODEL if use_reasoner else model
+        self.model = resolved_model
         raw = api_url or Config.OPENAI_API_BASE
         if raw and "/chat/completions" not in raw:
             self.api_url = f"{raw.rstrip('/')}/chat/completions"
@@ -117,10 +120,7 @@ class OpenAIChat:
             self.logger = logging.getLogger(self.__class__.__name__)
             self.logger.setLevel(logging.INFO)
 
-        if use_reasoner:
-            self.model = self.REASONER_MODEL
-
-        self.logger.info("OpenAIChat客户端初始化完成，模型：%s", self.model)
+        self.logger.info("OpenAIChat客户端初始化完成，模型：%s", resolved_model)
 
     def send_message(self, message: str, tools: list[dict] = None,
                      tool_choice: str = "auto",
@@ -244,7 +244,12 @@ class OpenAIChat:
             payload.update(body)
 
         try:
-            self.logger.debug("请求payload: %s", json.dumps(payload, ensure_ascii=False)[:500])
+            # 只记录结构摘要，不落完整 payload（含用户对话内容，避免进日志）
+            self.logger.debug(
+                "请求payload: model=%s, 消息数=%d, tools=%d",
+                payload.get("model"), len(payload.get("messages") or []),
+                len(payload.get("tools") or []),
+            )
             result = _post_json(
                 self._http_session, self.api_url, headers, payload, self.timeout,
             )

@@ -12,6 +12,7 @@ from .character_card import CharacterCard
 from .distillation_engine import DistilledTraits
 from .dynamic_synthesizer import DynamicSynthesizer, DynamicSnapshot, DEFAULT_MOOD
 from .persistence import V3Persistence
+from infra.webutil import valid_id, realpath_under, root_prefix
 
 logger = logging.getLogger("V3StateManager")
 
@@ -246,11 +247,20 @@ class V3StateManager:
         return self._get_distillation(card_id)
 
     def _load_card(self, card_id: str) -> CharacterCard | None:
+        if not valid_id(card_id):
+            logger.debug("V3StateManager: card_id 非法，拒绝读取: %r", card_id)
+            return None
         if card_id in self._card_cache:
             return self._card_cache[card_id]
-        yaml_path = self._cards_dir / f"{card_id}.yaml"
-        if not yaml_path.exists():
-            logger.debug("V3StateManager: 角色卡文件不存在 card_id=%s path=%s", card_id, yaml_path)
+        # 防路径穿越：realpath 展开 ../ 与符号链接后做前缀守卫，
+        # 确认目标文件确实落在角色卡目录内再读取
+        yaml_file = realpath_under(self._cards_dir, f"{card_id}.yaml")
+        if not yaml_file.startswith(root_prefix(self._cards_dir)):
+            logger.debug("V3StateManager: card_id 越出角色卡目录，拒绝读取: %r", card_id)
+            return None
+        yaml_path = Path(yaml_file)
+        if not yaml_path.is_file():
+            logger.debug("V3StateManager: 角色卡文件不存在 card_id=%s path=%s", card_id, yaml_file)
             return None
         try:
             card = CharacterCard.from_yaml_file(yaml_path)
@@ -262,10 +272,18 @@ class V3StateManager:
         return card
 
     def _get_distillation(self, card_id: str) -> DistilledTraits | None:
+        if not valid_id(card_id):
+            logger.debug("V3StateManager: card_id 非法，拒绝读取蒸馏产物: %r", card_id)
+            return None
         if card_id in self._distillation_cache:
             return self._distillation_cache[card_id]
-        json_path = self._cards_dir / f"{card_id}.distilled.json"
-        if not json_path.exists():
+        # 防路径穿越：同 _load_card，先展开再做前缀守卫
+        json_file = realpath_under(self._cards_dir, f"{card_id}.distilled.json")
+        if not json_file.startswith(root_prefix(self._cards_dir)):
+            logger.debug("V3StateManager: card_id 越出角色卡目录，拒绝读取蒸馏产物: %r", card_id)
+            return None
+        json_path = Path(json_file)
+        if not json_path.is_file():
             logger.debug("V3StateManager: 无蒸馏产物 card_id=%s", card_id)
             return None
         try:

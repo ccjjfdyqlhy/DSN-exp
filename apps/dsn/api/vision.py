@@ -33,6 +33,7 @@ from typing import Optional
 
 from flask import Blueprint, request, jsonify, g
 
+
 logger = logging.getLogger("Vision")
 
 vision_bp = Blueprint("vision_api", __name__)
@@ -460,7 +461,7 @@ def vision_observation():
         result = svc.ingest_observation(image_data, ts, user_id=uid, camera=camera)
     except Exception as e:
         logger.error("ingest_observation 失败: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "观测帧接收失败"}), 500
 
     return jsonify(result)
 
@@ -484,7 +485,7 @@ def vision_stream_frame():
         n = stream_service.ingest_frames(frames)
     except Exception as e:
         logger.error("接收监控流帧失败: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "接收监控流帧失败"}), 500
     return jsonify({"success": True, "accepted": n})
 
 

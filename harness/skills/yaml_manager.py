@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional, Protocol
 
@@ -129,8 +130,9 @@ class SkillManager:
             skill = self.loader.load(str(skill_dir))
         except Exception as e:
             logger.error("加载技能失败 %s: %s", skill_dir, e)
+            # issues 会经 diagnostics() 回给 REST，异常细节只进日志
             self._issues.append({"skill": skill_dir.name, "level": "error",
-                                 "message": f"加载技能失败: {e}"})
+                                 "message": "加载技能失败（详见服务端日志）"})
             return False
         if not skill:
             return False
@@ -145,7 +147,7 @@ class SkillManager:
             except Exception as e:
                 logger.error("注册技能失败 %s: %s", skill.name, e)
                 self._issues.append({"skill": skill.name, "level": "error",
-                                     "message": f"注册技能失败: {e}"})
+                                     "message": "注册技能失败（详见服务端日志）"})
                 return False
             issues = getattr(report, "issues", None)
             if issues:
@@ -188,16 +190,33 @@ class SkillManager:
 
     def install(self, skill_dir: str) -> bool:
         """运行时安装一个技能（从目录）。不需要重启应用。"""
-        path = Path(skill_dir)
-        if not (path / "skill.yaml").exists():
-            logger.error("不是技能目录（缺 skill.yaml）: %s", path)
+        # 防路径注入（兜底层）：安装目录必须落在已配置的技能扫描目录内
+        #（与 API 层白名单一致；这里挡住绕过 API 的直接调用）。技能安装
+        # 会把 tools/*.py 导入进程，不能信任任意路径。realpath 展开 ../
+        # 与符号链接后做前缀守卫（带分隔符结尾，兄弟目录同样拒绝），
+        # 后续加载只使用守卫后的 resolved。
+        resolved = os.path.realpath(str(skill_dir))
+        roots = [os.path.realpath(str(d)) for d in self._skill_dirs]
+        extra = os.environ.get("DSN_SKILL_INSTALL_ROOT", "")
+        if extra:
+            roots.append(os.path.realpath(os.path.expanduser(extra)))
+        allowed = False
+        for root in roots:
+            if resolved.startswith(root.rstrip(os.sep) + os.sep):
+                allowed = True
+                break
+        if not allowed:
+            logger.error("拒绝安装：技能目录不在已配置的技能目录内 %s", resolved)
+            return False
+        if not os.path.isfile(os.path.join(resolved, "skill.yaml")):
+            logger.error("不是技能目录（缺 skill.yaml）: %s", resolved)
             return False
         try:
-            skill = self.loader.load(str(path))
+            skill = self.loader.load(resolved)
         except Exception as e:
-            logger.error("安装技能失败 %s: %s", path, e)
-            self._issues.append({"skill": path.name, "level": "error",
-                                 "message": f"安装技能失败: {e}"})
+            logger.error("安装技能失败 %s: %s", resolved, e)
+            self._issues.append({"skill": Path(resolved).name, "level": "error",
+                                 "message": "安装技能失败（详见服务端日志）"})
             return False
         if not skill:
             return False

@@ -32,7 +32,16 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _WHITESPACE_RE = re.compile(r"\s+")
 _EMOJI_RE = re.compile(
-    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]+")
+    # 按 Unicode 官方区块逐段列出，避免过大的范围误伤非 emoji 符号：
+    "["
+    "\U0001F300-\U0001F5FF"    # Misc. Symbols and Pictographs
+    "\U0001F600-\U0001F64F"    # Emoticons
+    "\U0001F680-\U0001F6FF"    # Transport and Map Symbols
+    "\U0001F900-\U0001F9FF"    # Supplemental Symbols and Pictographs
+    "\U0001FA70-\U0001FAFF"    # Symbols and Pictographs Extended-A
+    "\U00002600-\U000027BF"    # Misc. Symbols + Dingbats
+    "\U0001F1E6-\U0001F1FF"    # Regional Indicator Symbols
+    "]+")
 
 
 #: Emotion label to the TTS speed factor.
@@ -109,7 +118,8 @@ class VoiceService:
             pool = setup_study_resources()
         except Exception as e:
             svc = cls()
-            svc._disabled_reason = "资源池初始化失败: %s" % e
+            # disabled_reason 会经 /api/voice/* 回给前端，只带异常类名
+            svc._disabled_reason = "资源池初始化失败"
             logger.warning("TTS 资源池初始化失败（语音合成不可用）: %s", e)
             return svc
 
@@ -204,7 +214,7 @@ class VoiceService:
             logger.info("TTS 预热: %s", "已就绪" if ok else "未就绪")
             return bool(ok)
         except Exception as e:
-            self._last_error = str(e)
+            self._last_error = "TTS 预热失败"
             logger.warning("TTS 预热失败: %s", e)
             return False
 
@@ -240,11 +250,11 @@ class VoiceService:
                     return self._client.synthesize(params, profile.architecture)
             return self._client.synthesize(params, profile.architecture)
         except TTSRequestError as e:
-            self._last_error = str(e)
+            self._last_error = "TTS 合成失败"
             logger.warning("TTS 合成失败: %s", e)
             return None
         except Exception as e:
-            self._last_error = str(e)
+            self._last_error = "TTS 合成失败"
             logger.warning("TTS 合成异常: %s", e, exc_info=True)
             return None
 
@@ -289,10 +299,10 @@ class VoiceService:
                 yield from self._client.synthesize_stream(
                     params, profile.architecture)
         except TTSRequestError as e:
-            self._last_error = str(e)
+            self._last_error = "TTS 流式合成失败"
             logger.warning("TTS 流式合成失败: %s", e)
         except Exception as e:
-            self._last_error = str(e)
+            self._last_error = "TTS 流式合成失败"
             logger.warning("TTS 流式合成异常: %s", e, exc_info=True)
 
     def stream_available(self) -> bool:

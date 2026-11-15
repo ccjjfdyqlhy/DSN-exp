@@ -31,6 +31,8 @@ from typing import Optional
 
 from flask import Blueprint, request, jsonify, g
 
+from infra.webutil import filename_component, root_prefix
+
 logger = logging.getLogger("StudyVision")
 
 vision_bp = Blueprint("vision_api", __name__)
@@ -433,8 +435,6 @@ def _require_auth():
 
 # ── 落盘 ──
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_\-]")
-
 
 def _save_observation_image(image_data: str, uid: int,
                             logical_name: str = "") -> str:
@@ -457,8 +457,16 @@ def _save_observation_image(image_data: str, uid: int,
             base_dir = os.path.join("workspace", f"user_{uid}", "vision")
             os.makedirs(base_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
-        cam = _SAFE_NAME_RE.sub("", logical_name or "cam")[:16] or "cam"
-        path = os.path.join(str(base_dir), f"vision_{cam}_{ts}_{uuid.uuid4().hex[:6]}.{ext}")
+        # 文件名片段只保留安全字符，防止请求提供的摄像头名注入路径成分
+        cam = filename_component(logical_name, fallback="cam", limit=16)
+        # 防路径穿越：realpath 展开后做前缀守卫，确认落盘点在工作区 vision 目录内
+        prefix = root_prefix(base_dir)
+        candidate = os.path.join(str(base_dir),
+                                 f"vision_{cam}_{ts}_{uuid.uuid4().hex[:6]}.{ext}")
+        path = os.path.realpath(candidate)
+        if not path.startswith(prefix):
+            logger.warning("观测帧路径越出工作区，拒绝落盘: camera=%r", logical_name)
+            return ""
         with open(path, "wb") as f:
             f.write(raw)
         return path
@@ -496,7 +504,7 @@ def vision_observation():
         path = _save_observation_image(image_data, uid, camera)
     except Exception as e:
         logger.error("observation 落盘失败: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "观测帧接收失败"}), 500
 
     return jsonify({
         "success": True,
@@ -525,7 +533,7 @@ def vision_stream_frame():
         n = stream_hub.ingest_frames(frames)
     except Exception as e:
         logger.error("接收监控流帧失败: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "观测帧接收失败"}), 500
     return jsonify({"success": True, "accepted": n})
 
 

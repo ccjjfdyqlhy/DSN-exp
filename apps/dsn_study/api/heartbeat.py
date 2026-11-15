@@ -21,6 +21,7 @@ from datetime import datetime
 
 from flask import Blueprint, request, jsonify, g
 
+
 from apps.dsn_study.api.alarm import check_and_trigger as check_alarms
 
 logger = logging.getLogger("Heartbeat")
@@ -240,7 +241,8 @@ def _synthesize(reply: str) -> tuple:
         return voice.synthesize_b64(reply)
     except Exception as e:
         logger.warning("提醒语音合成失败（已降级为纯文本）: %s", e)
-        return None, str(e)
+        # tts_error 会随心跳响应回给前端，只透出异常类名（防内部信息泄露）
+        return None, "语音合成失败"
 
 
 def _engine_chat_safe(prompt: str, uid: int) -> str:

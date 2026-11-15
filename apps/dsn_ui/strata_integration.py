@@ -195,7 +195,9 @@ def strata_status(root: Path | str | None = None) -> dict:
                 "run_script_preview": cfg.run_script_text(),
             })
         except Exception as e:  # noqa: BLE001
-            out.append({"name": run.name, "config_path": run.config_path, "error": str(e)})
+            # 该 dict 会经 /api/integration/strata 回给前端，只带异常类名
+            out.append({"name": run.name, "config_path": run.config_path,
+                        "error": "run config 解析失败"})
 
     return {
         "strata_dir": str(base),

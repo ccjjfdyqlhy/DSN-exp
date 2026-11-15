@@ -6,7 +6,9 @@ import os
 import sys
 import argparse
 from pathlib import Path
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, send_file
+
+from infra.webutil import realpath_under, root_prefix
 
 HERE = Path(__file__).resolve().parent
 
@@ -22,10 +24,15 @@ def index():
 
 @app.route("/<path:filename>")
 def static_files(filename):
-    file_path = HERE / "static" / filename
-    if file_path.is_file():
-        return send_from_directory(str(HERE / "static"), filename)
-    return send_from_directory(str(HERE / "static"), "index.html")
+    # 防路径穿越：URL 路径必须落在 static 目录内（realpath 展开 ../ 与
+    # 符号链接后做前缀守卫），越界回退到 SPA 入口。
+    static_root = HERE / "static"
+    candidate = realpath_under(static_root, filename)
+    if not candidate.startswith(root_prefix(static_root)):
+        candidate = None
+    if candidate and os.path.isfile(candidate):
+        return send_file(candidate)
+    return send_from_directory(str(static_root), "index.html")
 
 def main():
     parser = argparse.ArgumentParser(description="Psychoscope 客户端服务器")

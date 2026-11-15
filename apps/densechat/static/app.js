@@ -1066,7 +1066,7 @@ function updateSubTask(title, success, elapsed, tools) {
   const icon = item.querySelector('.sub-task-icon');
   if (icon) icon.textContent = success ? '✓' : '✗';
   item.style.color = success ? 'var(--green)' : 'var(--red)';
-  item.innerHTML = `<span class="sub-task-icon">${success ? '✓' : '✗'}</span> ${escapeHtml(title)} <span style="font-size:10px;color:var(--text-muted)">${elapsed}s · ${tools} tools</span>`;
+  item.innerHTML = `<span class="sub-task-icon">${success ? '✓' : '✗'}</span> ${escapeHtml(title)} <span style="font-size:10px;color:var(--text-muted)">${escapeHtml(elapsed)}s · ${escapeHtml(tools)} tools</span>`;
 }
 
 function appendCommandOutput(text) {
@@ -1105,18 +1105,19 @@ function appendSummary(data) {
   if (data.usage_supported === false) {
     summaryEl.innerHTML = `
       <span title="Usage not available">Usage not supported</span>
-      <span title="Elapsed">${data.elapsed}s</span>
+      <span title="Elapsed">${escapeHtml(data.elapsed)}s</span>
       ${balanceHtml}
     `;
   } else {
+    // 服务端数值统一经 escapeHtml 再插入，防 XSS
     summaryEl.innerHTML = `
-      <span title="Input tokens">↑ ${fmt(data.input_tokens)} in</span>
-      <span title="Output tokens">↓ ${fmt(data.output_tokens)} out</span>
-      <span title="Cache hit">cache ${fmt(data.cache_hit)}/${data.cache_pct}%</span>
-      <span title="Cost">¥${data.cost}</span>
-      <span title="Context usage">ctx ${data.ctx_pct}%</span>
-      <span title="Output usage">out ${data.out_pct}%</span>
-      <span title="Elapsed">${data.elapsed}s</span>
+      <span title="Input tokens">↑ ${escapeHtml(fmt(data.input_tokens))} in</span>
+      <span title="Output tokens">↓ ${escapeHtml(fmt(data.output_tokens))} out</span>
+      <span title="Cache hit">cache ${escapeHtml(fmt(data.cache_hit))}/${escapeHtml(data.cache_pct)}%</span>
+      <span title="Cost">¥${escapeHtml(data.cost)}</span>
+      <span title="Context usage">ctx ${escapeHtml(data.ctx_pct)}%</span>
+      <span title="Output usage">out ${escapeHtml(data.out_pct)}%</span>
+      <span title="Elapsed">${escapeHtml(data.elapsed)}s</span>
       ${balanceHtml}
     `;
   }
@@ -1519,7 +1520,12 @@ function bindProfileSlider() {
   });
 }
 
-function _genId() { return 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6); }
+function _genId() {
+  // 会话 ID 关联本地存储与后端会话，用 CSPRNG 生成（Math.random 可预测）
+  const buf = new Uint32Array(2);
+  crypto.getRandomValues(buf);
+  return 'sess_' + Date.now() + '_' + Array.from(buf, n => n.toString(36)).join('');
+}
 
 function saveSessionToList() {
   const preview = getChatPreview();
@@ -2213,22 +2219,38 @@ async function wsBrowserRender() {
   }
   const dirs = (d.dirs || []).filter(x => !x.name.startsWith('.'));
   const parent = path === '/' ? null : path.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+  // 路径经 data-* 属性 + addEventListener 传递，不再拼进 onclick 字符串
+  //（此前手工转义单引号属于不完整的净化，反斜杠/属性边界都能绕过）
   div.innerHTML = `
     <div class="workspace-picker">
       <h3>在服务器上选择工作区目录</h3>
       <div class="ws-browser-path">${escapeHtml(path)}</div>
       <div class="ws-browser-buttons">
-        <button onclick="wsBrowserPick()">选择当前目录为工作区</button>
-        ${parent ? `<button onclick="wsBrowserNav('${parent.replace(/'/g, "\\'")}')">↑ 上级</button>` : ''}
+        <button data-ws-action="pick">选择当前目录为工作区</button>
+        ${parent ? `<button data-ws-action="nav" data-path="${escapeHtml(parent)}">↑ 上级</button>` : ''}
       </div>
       <div class="ws-browser-list">
         ${dirs.length ? dirs.map(x => {
           const full = path.replace(/\/+$/, '') + '/' + x.name;
-          return `<button onclick="wsBrowserNav('${full.replace(/'/g, "\\'")}')">📁 ${escapeHtml(x.name)}</button>`;
+          return `<button data-ws-action="nav" data-path="${escapeHtml(full)}">📁 ${escapeHtml(x.name)}</button>`;
         }).join('') : '<div style="color:var(--text-muted)">（空目录）</div>'}
       </div>
-      <button onclick="document.getElementById('workspaceServerBrowser').remove(); _wsBrowser.el=null;">取消</button>
+      <button data-ws-action="close">取消</button>
     </div>`;
+  div.querySelectorAll('[data-ws-action]').forEach(btn => {
+    const action = btn.dataset.wsAction;
+    if (action === 'nav') {
+      btn.addEventListener('click', () => wsBrowserNav(btn.dataset.path));
+    } else if (action === 'pick') {
+      btn.addEventListener('click', () => wsBrowserPick());
+    } else if (action === 'close') {
+      btn.addEventListener('click', () => {
+        const el = document.getElementById('workspaceServerBrowser');
+        if (el) el.remove();
+        _wsBrowser.el = null;
+      });
+    }
+  });
 }
 window.wsBrowserNav = async function(path) {
   _wsBrowser.path = path;
@@ -2959,8 +2981,10 @@ const TRACE_META = {
 function recordTrace(data) {
   if (!data || !data.event) return;
   if (data.event === 'turn_start') {
+    const _tid = new Uint32Array(1);
+    crypto.getRandomValues(_tid);
     _traceTurns.push({
-      id: 'turn-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      id: 'turn-' + Date.now() + '-' + _tid[0].toString(36),
       label: getLastUserPreview() || '(请求)',
       startedAt: Date.now(),
       events: [],

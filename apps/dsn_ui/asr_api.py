@@ -26,6 +26,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+
 logger = logging.getLogger("DSNUIServer")
 
 
@@ -73,7 +74,8 @@ def register_asr_routes(app: FastAPI) -> None:
         except Exception as e:  # noqa: BLE001
             logger.exception("初始化 ASR 资源池失败")
             return JSONResponse(
-                status_code=503, content={"error": f"ASR 资源池初始化失败: {e}"}
+                status_code=503,
+                content={"error": "ASR 资源池初始化失败"},
             )
 
         if pool is None or pool.get_spec("asr") is None:
@@ -88,7 +90,10 @@ def register_asr_routes(app: FastAPI) -> None:
             loaded = await asyncio.to_thread(pool.ensure_running, "asr", timeout=timeout)
         except Exception as e:  # noqa: BLE001
             logger.exception("加载 ASR 资源失败")
-            return JSONResponse(status_code=503, content={"error": f"ASR 加载失败: {e}"})
+            return JSONResponse(
+                status_code=503,
+                content={"error": "ASR 加载失败"},
+            )
         if not loaded:
             return JSONResponse(status_code=503, content={"error": "ASR 加载失败或超时"})
 
@@ -112,7 +117,8 @@ def register_asr_routes(app: FastAPI) -> None:
         except Exception as e:  # noqa: BLE001
             logger.exception("ASR 识别失败")
             return JSONResponse(
-                status_code=503, content={"error": f"ASR processing failed: {e}"}
+                status_code=503,
+                content={"error": "ASR 识别失败"},
             )
 
         return {"text": text}
