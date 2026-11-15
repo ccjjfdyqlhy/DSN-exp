@@ -341,7 +341,9 @@ class APIManager:
                 backup_api_key=backup_api_key,
             )
         self.save()
-        logger.info("API 账号已添加: %s (%s, priority=%d)", name, base_url, priority)
+        # 只记录账号名与优先级（base_url 来自请求体，与密钥同批解包，
+        # 为避免敏感数据告警不入日志；具体取值可在账号管理接口查看）
+        logger.info("API 账号已添加: %s (priority=%d)", name, priority)
         return True, f"账号 '{name}' 已添加 (priority={priority})"
 
     def _is_main(self, name: str) -> bool:
@@ -382,6 +384,11 @@ class APIManager:
                     lines.append(f"{k}={val}\n")
             with open(env_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
+            try:
+                # .env 含 API 密钥，收紧为仅属主可读写
+                os.chmod(env_path, 0o600)
+            except OSError:
+                pass
             logger.info("已将 main 账号变更同步到 .env")
         except Exception as e:
             logger.error("同步 main 到 .env 失败: %s", e)

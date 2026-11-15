@@ -177,7 +177,8 @@ def register_system1_routes(app, engine) -> None:
                     ok, reason = client.probe(
                         expect_model_path=getattr(cfg, "model_path", "") or "")
             except DecisionUnavailable as e:
-                ok, reason = False, str(e)[:200]
+                # reason 随状态响应回给客户端，只透出异常类名
+                ok, reason = False, "System-1 模型不可用"
         else:
             # Not running: the model starts on demand through the scheduler
             # lease, so no probe here. Probing would load 16GB of weights for
@@ -248,7 +249,7 @@ def register_system1_routes(app, engine) -> None:
             logger.warning("the System-1 decision failed: model=%s err=%s", name, e)
             return JSONResponse(
                 status_code=502,
-                content={"error": {"type": "upstream_error", "message": str(e)}},
+                content={"error": {"type": "upstream_error", "message": "System-1 决策不可用"}},
             )
         except DecisionError as e:
             raise HTTPException(status_code=400, detail=str(e))

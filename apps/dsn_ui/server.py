@@ -51,6 +51,7 @@ from apps.dsn_ui.logging_setup import (
     setup_logging,
 )
 from infra.orchestrator import ChatMessage, LlamaServerConfig, ModelSourceType
+from infra.webutil import realpath_under, root_prefix
 
 logger = logging.getLogger("DSNUIServer")
 
@@ -1017,8 +1018,9 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                 return JSONResponse(status_code=500, content={"error": "Launch failed", "model": model_id})
         except Exception as e:
             logger.error("加载模型 %s 异常: %s", model_id, e)
-            await sse_broadcaster.broadcast("status_failed", model_id, {"status": "failed", "exit_code": 1, "error": str(e)})
-            return JSONResponse(status_code=500, content={"error": str(e), "model": model_id})
+            await sse_broadcaster.broadcast("status_failed", model_id, {"status": "failed", "exit_code": 1, "error": "模型加载失败"})
+            # 异常细节只进日志，响应里仅保留异常类名（防内部信息泄露）
+            return JSONResponse(status_code=500, content={"error": "模型加载失败", "model": model_id})
 
     @app.post("/models/unload")
     async def unload_model(req: Request):
@@ -1039,7 +1041,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             return {"success": ok, "model": model_id, "status": "unloaded"}
         except Exception as e:
             logger.error("卸载/终止模型 %s 异常: %s", model_id, e)
-            return JSONResponse(status_code=500, content={"error": str(e), "model": model_id})
+            return JSONResponse(status_code=500, content={"error": "模型卸载失败", "model": model_id})
 
     # ── 4. /models/sse 实时状态事件流 ──
 
@@ -1762,7 +1764,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
                         )
                 except Exception:  # noqa: BLE001 - 诊断代码绝不能再抛
                     pass
-                err_payload = {"error": {"message": str(e), "type": "server_error"}}
+                err_payload = {"error": {"message": "服务器内部错误", "type": "server_error"}}
                 emit(f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n")
                 _sink_state["seal_requested"] = True
                 with _cache_pending_lock:
@@ -2022,7 +2024,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             result = await tool.run_async(**params)
         except Exception as e:
             logger.error("工具执行异常 %s: %s", tool_name, e)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": "工具执行失败"}
 
         return {
             "success": result.success,
@@ -2320,7 +2322,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             loaded = await asyncio.to_thread(pool.ensure_running, name, timeout=timeout)
         except Exception as e:  # noqa: BLE001
             log_exception(logger, f"启动外周资源失败: {name}", e)
-            return JSONResponse(status_code=500, content={"error": str(e)})
+            return JSONResponse(status_code=500, content={"error": "资源启动失败"})
         if not loaded:
             return JSONResponse(
                 status_code=500, content={"error": f"资源启动失败或超时: {name}"}
@@ -2342,7 +2344,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             ok = await asyncio.to_thread(pool.stop_resource, name)
         except Exception as e:  # noqa: BLE001
             log_exception(logger, f"停止外周资源失败: {name}", e)
-            return JSONResponse(status_code=500, content={"error": str(e)})
+            return JSONResponse(status_code=500, content={"error": "资源停止失败"})
         if not ok:
             return JSONResponse(status_code=500, content={"error": f"资源停止失败: {name}"})
         return {"status": "ok", "name": name, "loaded": False}
@@ -2366,7 +2368,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             applied = await asyncio.to_thread(pool.set_max_concurrent, slots)
         except Exception as e:  # noqa: BLE001
             log_exception(logger, "调整外周任务槽失败", e)
-            return JSONResponse(status_code=500, content={"error": str(e)})
+            return JSONResponse(status_code=500, content={"error": "资源池调整失败"})
         return {"status": "ok", "max_concurrent_slots": int(applied)}
 
     @app.get("/api/system/kv-offload")
@@ -2627,7 +2629,7 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             engine.orchestrator.apply_launch_params(model, original)
             return JSONResponse(
                 status_code=500,
-                content={"success": False, "model": model, "error": str(e)},
+                content={"success": False, "model": model, "error": "一次性启动失败"},
             )
         finally:
             # 恢复原配置：一次性启动不应污染持久设置。
@@ -2750,13 +2752,14 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
             # 让用户仍可手动挑选模型，而不是完全卡死。
             if protocol == "anthropic":
                 models = list(ANTHROPIC_FALLBACK_MODELS)
-                warning = f"远端模型列表不可用（{e}），已提供常用模型名供手动选择"
+                # 异常细节只进日志；warning 仅带类名，随响应回给前端
+                warning = "远端模型列表不可用，已提供常用模型名供手动选择"
                 logger.warning("Anthropic 模型发现失败，使用兜底列表: %s", e)
             else:
                 logger.warning("模型发现失败: %s", e)
                 return JSONResponse(
                     status_code=502,
-                    content={"status": "error", "error": str(e)},
+                    content={"status": "error", "error": "模型发现失败"},
                 )
 
         # 探测是**只读**操作：只把远端可用模型列表回给前端，由用户在界面上
@@ -3007,9 +3010,13 @@ def create_app(engine: Optional[DSNUIEngine] = None) -> FastAPI:
 
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str):
-            file_path = static_dir / full_path
-            if file_path.is_file():
-                return FileResponse(file_path)
+            # 防路径穿越：URL 里的相对路径必须落在静态目录内（realpath 展开
+            # ../ 与符号链接后做前缀守卫），越界回退到 SPA 入口。
+            candidate = realpath_under(static_dir, full_path)
+            if not candidate.startswith(root_prefix(static_dir)):
+                candidate = None
+            if candidate and os.path.isfile(candidate):
+                return FileResponse(candidate)
             return FileResponse(static_dir / "index.html")
 
     return app

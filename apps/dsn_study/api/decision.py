@@ -21,6 +21,7 @@ import threading
 
 from flask import Blueprint, jsonify, request, g
 
+
 logger = logging.getLogger("DecisionAPI")
 
 decision_bp = Blueprint("decision_api", __name__)
@@ -60,7 +61,7 @@ def decision_status():
         info = ds.decision_service_status()
     except Exception as e:
         logger.warning("cannot read the decision status: %s", e)
-        return jsonify({"error": str(e)}), 200
+        return jsonify({"error": "决策服务暂不可用"}), 200
     return jsonify(info)
 
 
@@ -80,7 +81,7 @@ def decision_probe():
         state = ds.probe_state(text, is_voice=is_voice)
     except Exception as e:
         logger.warning("the state probe failed: %s", e)
-        return jsonify({"degraded": True, "reason": str(e)}), 200
+        return jsonify({"degraded": True, "reason": "决策服务暂不可用"}), 200
     return jsonify(state.to_dict()), 200
 
 
@@ -98,7 +99,7 @@ def decision_classify():
         label = ds.classify_question(text, [str(x) for x in labels])
     except Exception as e:
         logger.warning("the classification failed: %s", e)
-        return jsonify({"degraded": True, "reason": str(e)}), 200
+        return jsonify({"degraded": True, "reason": "决策服务暂不可用"}), 200
     if label is None:
         return jsonify({"degraded": True, "reason": "the decision service is not available"}), 200
     return jsonify({"label": label}), 200
@@ -116,7 +117,7 @@ def decision_retrieval():
         out = ds.needs_retrieval(question, context)
     except Exception as e:
         logger.warning("the retrieval gate failed: %s", e)
-        return jsonify({"degraded": True, "reason": str(e)}), 200
+        return jsonify({"degraded": True, "reason": "决策服务暂不可用"}), 200
     if out is None:
         return jsonify({"degraded": True, "reason": "the decision service is not available"}), 200
     return jsonify(out.to_dict()), 200

@@ -11,6 +11,7 @@ import logging
 
 from flask import Blueprint, jsonify, request, g
 
+
 logger = logging.getLogger("PersonalityAPI")
 
 personality_bp = Blueprint("personality_api", __name__)
@@ -50,7 +51,7 @@ def personality_status():
         return jsonify(_personality.get_personality_status(_uid()))
     except Exception as exc:
         logger.warning("人格状态查询失败", exc_info=True)
-        return jsonify({"error": "查询失败: %s" % exc}), 500
+        return jsonify({"error": "查询失败"}), 500
 
 
 @personality_bp.route("/api/personality/current", methods=["GET"])
@@ -62,7 +63,7 @@ def personality_current():
         return jsonify(_personality.get_personality_full(_uid()))
     except Exception as exc:
         logger.warning("人格全量查询失败", exc_info=True)
-        return jsonify({"error": "查询失败: %s" % exc}), 500
+        return jsonify({"error": "查询失败"}), 500
 
 
 @personality_bp.route("/api/personality/list", methods=["GET"])
@@ -74,7 +75,7 @@ def personality_list():
         return jsonify({"cards": _personality.list_cards()})
     except Exception as exc:
         logger.warning("角色卡清单查询失败", exc_info=True)
-        return jsonify({"error": "查询失败: %s" % exc}), 500
+        return jsonify({"error": "查询失败"}), 500
 
 
 @personality_bp.route("/api/personality/switch", methods=["POST"])
@@ -91,7 +92,7 @@ def personality_switch():
         return jsonify({"success": bool(ok), "card_id": card_id})
     except Exception as exc:
         logger.warning("角色卡切换失败", exc_info=True)
-        return jsonify({"error": "切换失败: %s" % exc}), 500
+        return jsonify({"error": "切换失败"}), 500
 
 
 @personality_bp.route("/api/personality/prompt", methods=["GET"])
@@ -104,4 +105,4 @@ def personality_prompt():
         return jsonify({"prompt": text or ""})
     except Exception as exc:
         logger.warning("人格提示词生成失败", exc_info=True)
-        return jsonify({"error": "生成失败: %s" % exc}), 500
+        return jsonify({"error": "生成失败"}), 500

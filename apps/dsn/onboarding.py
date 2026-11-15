@@ -57,6 +57,11 @@ def _env_write(key: str, value: str) -> None:
         lines.append(f"{key}={value}\n")
     with open(ENV_PATH, "w", encoding="utf-8") as f:
         f.writelines(lines)
+    try:
+        # .env 可能包含 API 密钥，收紧为仅属主可读写
+        os.chmod(ENV_PATH, 0o600)
+    except OSError:
+        pass
 
 
 def _env_read(key: str) -> str:

@@ -16,6 +16,7 @@ import logging
 
 from flask import Blueprint, Response, g, jsonify, request
 
+
 logger = logging.getLogger("ChatStream")
 
 chat_stream_bp = Blueprint("chat_stream_api", __name__)
@@ -115,7 +116,7 @@ def stream_send():
                                 "text": reply, "audio_b64": audio})
         except Exception as e:  # noqa: BLE001
             logger.exception("流式对话处理失败")
-            yield _sse({"status": "tool_error", "tool": "chat", "error": str(e)})
+            yield _sse({"status": "tool_error", "tool": "chat", "error": "对话处理失败"})
         finally:
             if tts_err:
                 yield _sse({"status": "tool_error", "tool": "tts",

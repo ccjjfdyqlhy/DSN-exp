@@ -195,7 +195,8 @@ class VisionModel:
                 results.append({"name": name, "success": True, "content": text})
             except Exception as e:  # noqa: BLE001 - 单张失败不影响整批
                 self.logger.warning("批量 OCR 单张失败 (%s): %s", name, e)
-                results.append({"name": name, "success": False, "error": str(e)})
+                results.append({"name": name, "success": False,
+                                "error": "OCR 处理失败"})
         return results
 
     def __repr__(self) -> str:

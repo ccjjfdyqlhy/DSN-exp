@@ -117,7 +117,8 @@ class SkillRegistry:
                     logger.error("加载工具失败 %s.%s: %s",
                                  skill.name, tool_spec.name, e)
                     report.add(LEVEL_ERROR, "load-failed", skill.name,
-                               f"加载工具失败: {e}", tool=tool_spec.name)
+                               # 校验报告会经 diagnostics() 回给 REST，只带类名
+                               "加载工具失败（详见服务端日志）", tool=tool_spec.name)
 
         prompts_content: list[str] = []
         for prompt in skill.prompts:
@@ -284,7 +285,8 @@ class SkillRegistry:
                 ]
                 broken.append({
                     "key": key,
-                    "reason": str(exc),
+                    # reason 会经 diagnostics() 回给 REST，只保留异常类名
+                    "reason": "工具方法解析失败",
                     "declared_methods": [n for n in declared if n],
                 })
         return broken

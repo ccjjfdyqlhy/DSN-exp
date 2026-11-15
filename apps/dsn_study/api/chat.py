@@ -10,6 +10,7 @@ import logging
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+
 logger = logging.getLogger("Chat")
 
 chat_bp = Blueprint("chat_api", __name__)
@@ -49,6 +50,6 @@ def send():
         result = engine.chat_audio(message, user_id=user_id, image=image or None)
     except Exception as e:
         logger.exception("对话处理失败")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "对话处理失败"}), 500
 
     return jsonify(result)

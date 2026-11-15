@@ -25,6 +25,7 @@ import uuid
 
 from flask import Blueprint, request, jsonify, g, current_app
 
+
 from apps.dsn_study.engine_support import PluginContext
 
 logger = logging.getLogger("Scan")
@@ -117,7 +118,7 @@ def select_camera():
         logical_name = _choose_document_camera(frames, user_id)
     except Exception as e:
         logger.error("选择扫描摄像头失败: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": f"选择失败: {e}"}), 500
+        return jsonify({"success": False, "error": "选择摄像头失败"}), 500
 
     if not logical_name:
         return jsonify({"success": False, "error": "未能确定面向文档的摄像头，已回退到默认机位"}), 200
@@ -245,7 +246,7 @@ def _photo_worker(engine, user_id: int, photo_id: str, image_data: str,
         with _batch_lock:
             if batch is not None and not batch["finalized"]:
                 batch["photos"][photo_id]["status"] = "error"
-                batch["photos"][photo_id]["result"] = {"error": str(e)}
+                batch["photos"][photo_id]["result"] = {"error": "扫题照片识别失败"}
 
 
 @scan_bp.route("/api/scan/finish", methods=["POST"])

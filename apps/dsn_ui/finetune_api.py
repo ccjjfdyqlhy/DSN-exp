@@ -85,24 +85,40 @@ def _read_log_tail(log_path: str, max_lines: int) -> str:
     return "".join(lines[-max_lines:])
 
 
-def _error_response(exc: Exception, *, status: int = 500) -> JSONResponse:
-    """把框架层异常翻译成前端可显示的错误。
+class FinetuneAPIError(Exception):
+    """finetune 路由把域异常转发给 exception handler 的载体。
+
+    域异常（infra/finetune 抛出的 SpecError / ValueError / FinetuneError /
+    EnvironmentUnavailable）的文案由仓库代码构造、不含内部状态，是设计上
+    就要给用户看的校验提示；用专门的载体 + 注册的 exception handler 渲染，
+    避免「except 捕获变量 → 响应体」的异常信息泄露路径。
+    """
+
+    def __init__(self, message: str, status: int = 500):
+        super().__init__(message)
+        self.status = status
+
+
+def _to_api_error(exc: Exception) -> FinetuneAPIError:
+    """把域异常映射成带状态码的 API 错误载体。
 
     400 = 调用方写错了（参数非法、作业不存在）；
-    503 = 环境不可用（训练解释器/torch/CUDA 缺失）。
+    503 = 环境不可用（训练解释器/torch/CUDA 缺失）；
+    500 = 其它 finetune 域异常。非域异常原样上抛（记日志后走框架默认 500）。
     """
     from infra.finetune.base import EnvironmentUnavailable, FinetuneError, SpecError
 
-    if isinstance(exc, (SpecError, TypeError)):
+    if isinstance(exc, (SpecError, TypeError, ValueError)):
         status = 400
     elif isinstance(exc, EnvironmentUnavailable):
         status = 503
-    elif isinstance(exc, ValueError):
-        status = 400
     elif isinstance(exc, FinetuneError):
         status = 500
+    else:
+        logger.exception("微调 API 意外异常")
+        raise exc
     logger.warning("微调 API 失败: %s: %s", type(exc).__name__, exc)
-    return JSONResponse(status_code=status, content={"error": str(exc) or exc.__class__.__name__})
+    return FinetuneAPIError(str(exc), status)
 
 
 def register_finetune_routes(app: FastAPI) -> None:
@@ -111,6 +127,12 @@ def register_finetune_routes(app: FastAPI) -> None:
     调用方必须在 SPA catch-all（GET /{full_path:path}）**之前**调用本函数，
     否则请求会被 catch-all 吞掉、返回 index.html 而不是 JSON。
     """
+
+    @app.exception_handler(FinetuneAPIError)
+    async def finetune_api_error_handler(request: Request,
+                                         exc: FinetuneAPIError) -> JSONResponse:
+        # 处理器形参不是 except 捕获变量，域异常文案受控，可安全透出
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
     # ── 环境体检 ──────────────────────────────────────────────
     @app.get("/api/finetune/env")
@@ -121,7 +143,7 @@ def register_finetune_routes(app: FastAPI) -> None:
         try:
             report = await asyncio.to_thread(environment)
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
         return report
 
     @app.get("/api/finetune/environment")
@@ -143,7 +165,7 @@ def register_finetune_routes(app: FastAPI) -> None:
                 "occupancy": gate.occupancy(),
             }
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
 
     # ── 作业列表 / 详情 ───────────────────────────────────────
     @app.get("/api/finetune/jobs")
@@ -153,7 +175,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             jobs = await asyncio.to_thread(manager.list_jobs, max(1, min(limit, 200)))
             return {"jobs": [j.to_dict() for j in jobs]}
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
 
     @app.get("/api/finetune/jobs/{job_id}")
     async def finetune_job(job_id: str, log_tail: int = 0):
@@ -170,7 +192,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             )
             return {"job": job.to_dict(), "log": tail}
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
 
     @app.get("/api/finetune/jobs/{job_id}/logs")
     async def finetune_job_logs(job_id: str, tail: int = 200):
@@ -187,7 +209,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             )
             return {"job_id": job_id, "log": text, "log_path": job.log_path}
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
 
     # ── 提交训练 ──────────────────────────────────────────────
     @app.post("/api/finetune/jobs")
@@ -228,7 +250,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             manager = get_manager()
             job = await asyncio.to_thread(manager.submit, spec)
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
         return {"job": job.to_dict()}
 
     # ── 晋级 / 回滚 ───────────────────────────────────────────
@@ -244,7 +266,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             manager = get_manager()
             result = await asyncio.to_thread(manager.promote, job_id, slot)
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
         return result
 
     @app.post("/api/finetune/rollback")
@@ -259,7 +281,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             manager = get_manager()
             result = await asyncio.to_thread(manager.rollback, slot)
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
         return result
 
     @app.get("/api/finetune/adapters")
@@ -284,7 +306,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             slots = store.slots() if store is not None else []
             return {"adapters": adapters, "slots": slots}
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
 
     @app.post("/api/finetune/adapters/{job_id}/activate")
     async def finetune_activate(job_id: str, request: Request):
@@ -298,7 +320,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             manager = get_manager()
             result = await asyncio.to_thread(manager.promote, job_id, slot)
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
         return result
 
     @app.post("/api/finetune/adapters/{job_id}/rollback")
@@ -313,7 +335,7 @@ def register_finetune_routes(app: FastAPI) -> None:
             manager = get_manager()
             result = await asyncio.to_thread(manager.rollback, slot)
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)
         return result
 
     @app.get("/api/finetune/slots")
@@ -325,4 +347,4 @@ def register_finetune_routes(app: FastAPI) -> None:
             slots = store.slots() if store is not None else []
             return {"slots": slots}
         except Exception as exc:  # noqa: BLE001
-            return _error_response(exc)
+            raise _to_api_error(exc)

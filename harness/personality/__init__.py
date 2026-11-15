@@ -29,6 +29,7 @@ from .traits import (
     ALL_DIMENSIONS, TRAIT_MAP, TRAIT_IDS, CATEGORIES,
     default_indicator_vector, random_indicator_vector, clamp_vector, deviant_dimensions, format_deviant_dimensions,
 )
+from infra.webutil import valid_id, realpath_under, root_prefix
 
 logger = logging.getLogger("PersonalitySystemV3")
 
@@ -160,19 +161,34 @@ class PersonalitySystemV3:
 
     def upload_card(self, card: CharacterCard) -> bool:
         logger.info("V3: 上传角色卡 card_id=%s name=%s", card.card_id, card.name)
+        if not valid_id(card.card_id):
+            logger.error("V3: 角色卡 card_id 含非法字符，拒绝写入: %r", card.card_id)
+            return False
         errors = card.validate()
         if errors:
             logger.error("V3: 角色卡校验失败: %s", errors)
             return False
-        yaml_path = self._cards_dir / f"{card.card_id}.yaml"
-        card.to_yaml_file(yaml_path)
-        logger.info("V3: 角色卡已写入文件 card_id=%s path=%s", card.card_id, yaml_path)
+        # 防路径穿越：realpath 展开后做前缀守卫，确认写入目标在角色卡目录内
+        yaml_file = realpath_under(self._cards_dir, f"{card.card_id}.yaml")
+        if not yaml_file.startswith(root_prefix(self._cards_dir)):
+            logger.error("V3: 角色卡写入目标越出角色卡目录，拒绝: %r", card.card_id)
+            return False
+        card.to_yaml_file(Path(yaml_file))
+        logger.info("V3: 角色卡已写入文件 card_id=%s path=%s", card.card_id, yaml_file)
         return True
 
     def get_card(self, card_id: str) -> CharacterCard | None:
-        yaml_path = self._cards_dir / f"{card_id}.yaml"
-        if not yaml_path.exists():
-            logger.debug("V3: 角色卡文件不存在 card_id=%s path=%s", card_id, yaml_path)
+        if not valid_id(card_id):
+            logger.debug("V3: card_id 非法，拒绝查找: %r", card_id)
+            return None
+        # 防路径穿越：realpath 展开后做前缀守卫再读取
+        yaml_file = realpath_under(self._cards_dir, f"{card_id}.yaml")
+        if not yaml_file.startswith(root_prefix(self._cards_dir)):
+            logger.debug("V3: card_id 越出角色卡目录，拒绝读取: %r", card_id)
+            return None
+        yaml_path = Path(yaml_file)
+        if not yaml_path.is_file():
+            logger.debug("V3: 角色卡文件不存在 card_id=%s path=%s", card_id, yaml_file)
             return None
         try:
             card = CharacterCard.from_yaml_file(yaml_path)

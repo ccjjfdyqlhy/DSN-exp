@@ -46,6 +46,7 @@ from typing import Any, AsyncGenerator, Optional
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+
 logger = logging.getLogger("DSNUIIntegration")
 
 
@@ -360,7 +361,7 @@ async def anthropic_stream(
         logger.exception("Anthropic 流式转换失败")
         yield sse_event("error", {
             "type": "error",
-            "error": {"type": "api_error", "message": str(e)},
+            "error": {"type": "api_error", "message": "模型调用失败"},
         })
 
 
@@ -416,7 +417,7 @@ def register_integration_routes(app, engine) -> None:
             logger.exception("加载模型异常: %s", model_id)
             return JSONResponse(
                 status_code=500,
-                content={"success": False, "model": model_id, "error": str(e)},
+                content={"success": False, "model": model_id, "error": "模型加载失败"},
             )
         if not ok:
             return JSONResponse(
@@ -442,7 +443,7 @@ def register_integration_routes(app, engine) -> None:
             logger.exception("卸载模型异常: %s", model_id)
             return JSONResponse(
                 status_code=500,
-                content={"success": False, "model": model_id, "error": str(e)},
+                content={"success": False, "model": model_id, "error": "模型卸载失败"},
             )
         return {"success": bool(ok), "model": model_id, "status": "unloaded"}
 
@@ -587,7 +588,7 @@ def register_integration_routes(app, engine) -> None:
             return JSONResponse(
                 status_code=500,
                 content={"type": "error",
-                         "error": {"type": "api_error", "message": str(e)}},
+                         "error": {"type": "api_error", "message": "模型调用失败"}},
             )
 
         return {

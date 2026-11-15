@@ -49,7 +49,9 @@ def init_web_admin(engine, api_key: str = "", totp_secret: str = "") -> str:
         _api_keys.register(api_key, label="web-admin")
     else:
         api_key = _api_keys.generate(label="web-admin-auto")
-        logger.warning("WEB_ADMIN_API_KEY 未配置，已自动生成面板密钥: %s", api_key)
+        # 面板密钥属敏感信息，不回显进日志；运维从 WEB_ADMIN_API_KEY
+        # 环境变量或 flask_app.config["WEB_ADMIN_KEY"] 取得。
+        logger.warning("WEB_ADMIN_API_KEY 未配置，已自动生成面板密钥（不回显）")
     if totp_secret:
         _totp = TOTP()
     return api_key
@@ -142,7 +144,7 @@ def resources():
             "slots": pool.slot_status(),
         })
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 @admin_bp.route("/models", methods=["GET"])
@@ -153,7 +155,7 @@ def models():
         orch = ModelOrchestrator.get_instance()
         return jsonify({"success": True, "orchestrator": orch.status()})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 # ── 题库（验收项：面板能看题库） ──
@@ -257,7 +259,7 @@ def reminder_skip():
         engine.task_manager.skip_task(task_id)
         return jsonify({"success": True})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 # ── 插件 / 技能 ──
@@ -353,7 +355,7 @@ def memory_query():
             limit=int(data.get("limit", 20)))
         return jsonify({"success": True, "results": results})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 @admin_bp.route("/memory/reindex", methods=["POST"])
@@ -414,7 +416,7 @@ def memory_topic_action(topic_id: str, action: str):
             return jsonify({"error": f"未知 action: {action}"}), 400
         return jsonify({"success": bool(ok)})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 # ── 人格（harness PEV3） ──
@@ -469,7 +471,7 @@ def feature_flags():
         return jsonify({"success": True, "flags": gating.snapshot(),
                         "file": str(gating.FLAGS_FILE)})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 @admin_bp.route("/flags", methods=["POST"])
@@ -559,7 +561,7 @@ def plans():
                 "status": getattr(g, "status", ""),
             } for g in goals]})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 @admin_bp.route("/plan/today", methods=["GET"])
@@ -586,7 +588,7 @@ def plan_check():
             engine.plan_engine.check_off(str(data.get("task_id", "")))
         return jsonify({"success": True})
     except Exception as e:   # noqa: BLE001
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "管理面板请求处理失败"}), 500
 
 
 @admin_bp.route("/checkin/calendar", methods=["GET"])

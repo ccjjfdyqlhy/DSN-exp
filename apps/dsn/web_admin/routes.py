@@ -13,6 +13,7 @@ from io import StringIO
 
 from flask import Blueprint, jsonify, request, Response, send_file
 from apps.dsn.config import Config
+from infra.webutil import realpath_under, root_prefix
 
 logger = logging.getLogger("web_admin")
 
@@ -50,7 +51,7 @@ def api_vision_streams():
         cams = coordinator.list_cameras()
     except Exception as e:
         logger.warning("列出监控摄像头失败: %s", e)
-        return jsonify({"streams": [], "error": str(e)}), 500
+        return jsonify({"streams": [], "error": "列出监控摄像头失败"}), 500
     streams = []
     svc = _get_stream_service()
     for c in cams:
@@ -317,22 +318,18 @@ def api_checkin_video():
     path = request.args.get("path", "")
     if not path:
         return jsonify({"error": "缺少 path"}), 400
-    p = Path(path)
-    if not p.is_file():
-        return jsonify({"error": "文件不存在"}), 404
-    # 只允许访问 tracking 媒体目录下的文件（安全限制）
+    # 只允许访问 tracking 媒体目录下的文件（realpath 展开 ../ 与符号链接
+    # 后做前缀守卫；绝对路径必须落在媒体目录内，兄弟目录同样拒绝）
     from apps.dsn.config import Config as _Cfg
     media_root = Path(getattr(_Cfg, "TRACKING_MEDIA_ROOT", ".dsn/tracking_media")).resolve()
-    try:
-        p_resolved = p.resolve()
-        media_root_str = str(media_root)
-        if not str(p_resolved).startswith(media_root_str):
-            return jsonify({"error": "越权访问"}), 403
-    except Exception:
-        pass
+    p = realpath_under(media_root, path)
+    if not p.startswith(root_prefix(media_root)):
+        return jsonify({"error": "越权访问"}), 403
+    if not os.path.isfile(p):
+        return jsonify({"error": "文件不存在"}), 404
 
     range_header = request.headers.get("Range", "")
-    size = p.stat().st_size
+    size = os.path.getsize(p)
     if range_header and range_header.startswith("bytes="):
         try:
             start_s, _, end_s = range_header[6:].partition("-")
@@ -342,7 +339,8 @@ def api_checkin_video():
                 return Response(status=416)
             end = min(end, size - 1)
             length = end - start + 1
-            data = p.read_bytes()[start:end + 1]
+            with open(p, "rb") as fh:
+                data = fh.read()[start:end + 1]
             return Response(
                 data,
                 status=206,
@@ -355,7 +353,7 @@ def api_checkin_video():
             )
         except Exception as e:
             logger.warning("视频 Range 解析失败: %s", e)
-    return send_file(str(p), mimetype="video/mp4")
+    return send_file(p, mimetype="video/mp4")
 
 @admin_bp.route("/plugins", methods=["GET"])
 def api_plugins():

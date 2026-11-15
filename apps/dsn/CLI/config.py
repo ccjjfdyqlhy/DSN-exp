@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 
 from .env import DEFAULT_HOST, DEFAULT_PORT, HERE
@@ -43,6 +44,11 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        # 配置文件可能包含 API 密钥，收紧为仅属主可读写
+        CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
 
 
 def prompt_backend_host(cfg: dict) -> str:

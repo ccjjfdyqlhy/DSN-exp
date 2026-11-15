@@ -94,4 +94,8 @@ class APIKeyManager:
         return len(self._keys)
 
     def _hash(self, key: str) -> str:
-        return hashlib.sha256((self._secret + key).encode("utf-8")).hexdigest()
+        # HMAC(secret, key) —— 比 "secret + key" 直接拼接更规范（杜绝长度
+        # 扩展类问题）；密钥只以哈希形式存在内存里，明文不落盘。
+        return hmac.new(
+            self._secret.encode("utf-8"), key.encode("utf-8"), hashlib.sha256
+        ).hexdigest()

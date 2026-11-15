@@ -232,6 +232,35 @@ class LocalServerLauncher:
         """合成要执行的命令行（列表形式）。"""
         raise NotImplementedError
 
+    # ── 日志脱敏 ──
+
+    #: 值需要遮蔽的命令行旗标（后面跟一个独立参数）
+    _SECRET_FLAGS = {
+        "--api-key", "--api_key", "--hf-token", "--hf_token", "--token",
+        "--password", "--secret", "--key",
+    }
+
+    def _redact_command(self, cmd: list[str]) -> str:
+        """命令行预览：遮蔽敏感旗标的值，防凭据进日志。"""
+        parts: list[str] = []
+        mask_next = False
+        for arg in cmd:
+            text = str(arg)
+            if mask_next:
+                parts.append("***")
+                mask_next = False
+                continue
+            flag = text.split("=", 1)[0].lower()
+            if flag in self._SECRET_FLAGS:
+                # --flag=value 与 --flag value 两种形态都遮值
+                parts.append(f"{text.split('=', 1)[0]}=***"
+                             if "=" in text else text)
+                if "=" not in text:
+                    mask_next = True
+                continue
+            parts.append(text)
+        return " ".join(shlex.quote(p) for p in parts)
+
     def preflight(self) -> None:
         """启动前的校验（二进制/模型/配置文件是否存在）。
 
@@ -338,7 +367,9 @@ class LocalServerLauncher:
 
         cmd = self.build_command()
         self.last_command = list(cmd)
-        logger.info("正在启动 %s: %s", self.engine_label, " ".join(shlex.quote(c) for c in cmd))
+        # 日志里的命令预览必须脱敏：llama-server 的 --api-key 会把真实密钥
+        # 带进命令行，原样落日志等于把凭据写进日志文件。
+        logger.info("正在启动 %s: %s", self.engine_label, self._redact_command(cmd))
 
         stdout_dest = subprocess.DEVNULL
         stderr_dest = subprocess.DEVNULL

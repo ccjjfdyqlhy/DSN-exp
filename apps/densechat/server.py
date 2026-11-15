@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 
 from apps.densechat.engine import DenseChatEngine, DenseChatSession
 from infra.models.base import ChatMessage
+from infra.webutil import realpath_under, root_prefix
 
 COMMANDS = [
     {"cmd": "/mode", "desc": "Switch agent / oneshot mode"},
@@ -36,15 +37,17 @@ COMMANDS = [
 ]
 
 
-def _safe_project_path(engine: DenseChatEngine, path: str) -> Path:
-    p = Path(path)
-    if not p.is_absolute():
-        p = Path(engine.project_root) / p
-    p = p.resolve()
-    root = Path(engine.project_root).resolve()
-    if not str(p).startswith(str(root)):
+def _safe_project_path(engine: DenseChatEngine, path: str) -> str:
+    """把客户端提供的路径限制在工作区根目录内，返回规范化后的绝对路径。
+
+    相对路径按工作区根起算；绝对路径必须已落在根目录内。realpath 展开
+    `..` 与符号链接后做前缀守卫（带分隔符结尾，兄弟目录同样拒绝），越界
+    即 403。返回值是守卫后的字符串，调用方的文件操作必须使用该返回值。
+    """
+    candidate = realpath_under(engine.project_root, path)
+    if not candidate.startswith(root_prefix(engine.project_root)):
         raise HTTPException(status_code=403, detail="越权访问：路径超出工作区")
-    return p
+    return candidate
 
 
 GROUP_CHAT_PROFILE = "random"
@@ -469,9 +472,9 @@ def create_app(engine: DenseChatEngine) -> FastAPI:
         if not path:
             raise HTTPException(status_code=400, detail="缺少 path")
         p = _safe_project_path(engine, path)
-        original = p.read_text(encoding="utf-8") if p.is_file() else ""
+        original = Path(p).read_text(encoding="utf-8") if os.path.isfile(p) else ""
         new_content = data.get("content", original)
-        return {"path": str(p), "original": original, "content": new_content}
+        return {"path": p, "original": original, "content": new_content}
 
     @app.post("/api/diff/apply")
     async def diff_apply(request: Request):
@@ -481,9 +484,9 @@ def create_app(engine: DenseChatEngine) -> FastAPI:
         if not path:
             raise HTTPException(status_code=400, detail="缺少 path")
         p = _safe_project_path(engine, path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        return {"success": True, "path": str(p), "bytes": len(content.encode("utf-8"))}
+        Path(p).parent.mkdir(parents=True, exist_ok=True)
+        Path(p).write_text(content, encoding="utf-8")
+        return {"success": True, "path": p, "bytes": len(content.encode("utf-8"))}
 
     # ── 工作区 / 会话 ──
 

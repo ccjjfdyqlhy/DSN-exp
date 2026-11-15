@@ -26,6 +26,7 @@ from typing import Callable, Optional
 from harness.personality.character_card import CharacterCard
 from harness.personality.events import PerceptionRecord
 from harness.personality.traits import deviant_dimensions
+from infra.webutil import valid_id, realpath_under, root_prefix
 
 from .signals import Signal, extract_signals
 
@@ -480,12 +481,16 @@ class PersonaEngine:
 
     def _load_card(self, card_id: str) -> Optional[CharacterCard]:
         """读角色卡 —— 先看版本化目录，再问 PEV3。"""
-        if not card_id:
+        if not valid_id(card_id):
+            logger.debug("card_id 非法，拒绝读取本地角色卡: %r", card_id)
             return None
+        # 防路径穿越：realpath 展开后做前缀守卫，确认目标在角色卡目录内
         try:
-            path = self._cards_dir / ("%s.yaml" % card_id)
-            if path.exists():
-                return CharacterCard.from_yaml_file(path)
+            yaml_file = realpath_under(self._cards_dir, f"{card_id}.yaml")
+            if yaml_file.startswith(root_prefix(self._cards_dir)):
+                path = Path(yaml_file)
+                if path.is_file():
+                    return CharacterCard.from_yaml_file(path)
         except Exception:   # noqa: BLE001
             logger.warning("本地角色卡读取失败（转问 PEV3）card_id=%s", card_id,
                            exc_info=True)
