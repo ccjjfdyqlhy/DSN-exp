@@ -357,6 +357,42 @@ class Config:
     # 留空 = 不启用本地兜底，未配 VISION_API_KEY 时视觉功能明确报错。
     VISION_FALLBACK_MODEL_NAME = _env("VISION_FALLBACK_MODEL_NAME", "")
 
+    # ── 主模型视觉直发（AI 主动视觉时把图片**直接**发给主模型）──
+    #
+    # 取值：
+    #   "auto"（默认）—— 按主模型的图片输入能力判定结果决定（探测/覆盖）；
+    #   "on"          —— 强制直发（即使探测判定不支持也照样发，交给网关报错）；
+    #   "off"         —— 强制走 VLM 描述路径（look_around 只回文字描述）。
+    #
+    # 为什么需要它：主模型**不一定**能看图。
+    # 把图片直接塞给一个只支持文本的模型，要么被网关 400，要么让它对着
+    # 图片"想象"出一段描述（幻觉）—— 后者更糟，因为那段"观察结果"会被
+    # 下游当成真实画面。所以要先判定能力，再决定直发还是转述
+    # （判定见 apps/dsn_study/vision_support.py）。
+    #
+    # 注意：**能力是端点/模型名级别的，不是模型名的固有属性**。
+    # 本机当前这套（deepseek-v4.1-flash @ newapi.gay）实测能读图（判别式
+    # 探测通过），但换个网关/换个模型名结论就可能变 —— 所以要探测 +
+    # 缓存，而不是把结论写死在代码里。
+    VISION_DIRECT_TO_MAIN = (
+        _env("VISION_DIRECT_TO_MAIN", "auto").strip().lower() or "auto")
+
+    # 是否对主模型做「判别式图片」探测（判定它到底吃不吃图片）。
+    #
+    # 探测方式：生成一张**画着 4 位数字**的 PNG 发给主模型，问"图里的数字
+    # 是多少"，**答对才算支持**。
+    # 为什么不能用"1x1 测试图 + 回复 ok"当探测：纯文本模型照样能答 "ok"
+    # —— 那只证明了它会说话，完全没证明它看见了图，是**无效探测**
+    # （会得出"支持图片"的假阳性结论，于是把图直发给文本模型 → 幻觉）。
+    MAIN_MODEL_IMAGE_PROBE = _env_bool("MAIN_MODEL_IMAGE_PROBE", "true")
+
+    # 主模型图片能力的**显式覆盖**："auto"（默认，按探测结果）/ "true" / "false"。
+    # 优先级：显式覆盖 > 探测结果。
+    # 用途：① 探测不可用（网关不支持图片、探测被限流）时由人工兜底；
+    #      ② 明知主模型是纯文本模型时直接关掉，省掉一次探测请求。
+    MAIN_MODEL_SUPPORTS_IMAGE = (
+        _env("MAIN_MODEL_SUPPORTS_IMAGE", "auto").strip().lower() or "auto")
+
     # ── 人格系统（harness/personality PEV3）──
     # 角色卡目录必须指向 dsn_study 自己的（harness 的默认查找会落到
     # apps/dsn/character_cards —— 那是 dsn 的 EXA「AI 同事」卡）。

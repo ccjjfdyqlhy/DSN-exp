@@ -12,12 +12,12 @@ prompt_priority: 68
 tools:
   - name: look_around
     display_name: "看看周围"
-    description: "让边缘客户端对指定摄像头抓一帧，由视觉模型描述画面内容。用户问「你看到了什么」「看一下桌子/书桌」或你需要视觉信息时使用。"
+    description: "让边缘客户端对指定摄像头抓一帧，并把画面交给你：主模型能直接看图时画面以图片形式附在本次上下文里（未经过文字转述），否则由视觉模型转述成文字。用户问「你看到了什么」「看一下桌子/书桌」或你需要视觉信息时使用。"
     module: "tools.visual_tools"
     class: "VisualPerceptionTool"
     methods:
       - name: look_around
-        description: "抓帧并描述画面"
+        description: "抓帧并把画面交给模型（能直发就直发，否则 VLM 转述）"
         parameters:
           camera:
             type: string

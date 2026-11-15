@@ -20,6 +20,39 @@ from .base import ChatClientAdapter, ChatResponse, ToolCall
 
 logger = logging.getLogger("infra.anthropic")
 
+#: 用户级 effort 档位 -> Anthropic 扩展思考预算（budget_tokens）。
+#: 客户端在 wire 边界统一应用这一个映射表。
+_EFFORT_BUDGETS: dict[str, int] = {
+    "low": 2_048, "medium": 4_096, "high": 8_192, "xhigh": 12_288,
+    "max": 16_384, "ultra": 24_576,
+}
+
+
+def effort_thinking_budget(effort: Optional[str], max_tokens: Optional[int]) -> Optional[dict]:
+    """Map a user effort dial onto Anthropic extended thinking params.
+
+    Returns the ``thinking`` request dict, or None when thinking must not
+    be requested: no effort given, or the Messages API window
+    (1024 <= budget_tokens < max_tokens) cannot be satisfied.
+
+    Args:
+        effort: user-facing dial name (low ... ultra).
+        max_tokens: the request's max_tokens; the budget must stay below it.
+
+    Returns:
+        ``{"type": "enabled", "budget_tokens": <int>}`` or None.
+    """
+    if not effort:
+        return None
+    budget = _EFFORT_BUDGETS.get(str(effort).lower(), 4_096)
+    ceiling = (max_tokens or 0) - 1    # budget must be < max_tokens
+    if ceiling < 1_024:
+        return None
+    budget = max(1_024, min(budget, ceiling))
+    if budget >= (max_tokens or 0):
+        return None
+    return {"type": "enabled", "budget_tokens": budget}
+
 
 class AnthropicCompatClient(ChatClientAdapter):
     """基于 anthropic SDK 的 Messages API 客户端。"""
@@ -34,6 +67,11 @@ class AnthropicCompatClient(ChatClientAdapter):
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
         extra_headers: Optional[dict] = None,
+        http_client: Any = None,
+        async_http_client: Any = None,
+        max_retries: Optional[int] = None,
+        tool_choice: Any = None,
+        effort: Optional[str] = None,
     ):
         self.model = model
         self._temperature = temperature
@@ -42,20 +80,37 @@ class AnthropicCompatClient(ChatClientAdapter):
         self._max_tokens = max_tokens or 4096
         self._timeout = timeout
         self._extra_headers = extra_headers or {}
+        # tool_choice / effort 都是**可选**能力：默认 None 时不进请求体，
+        # 现有调用方的请求形状完全不变。
+        self._tool_choice = tool_choice
+        self._effort = effort
 
         from anthropic import Anthropic, AsyncAnthropic  # 延迟导入
-        self._client = Anthropic(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            default_headers=self._extra_headers or None,
-        )
-        self._async_client = AsyncAnthropic(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            default_headers=self._extra_headers or None,
-        )
+        # SDK 两端要求的 httpx 类型不同：同步端 httpx.Client，异步端 httpx.AsyncClient
+        sync_common: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "timeout": timeout,
+            "default_headers": self._extra_headers or None,
+        }
+        async_common: dict[str, Any] = dict(sync_common)
+        if http_client is not None:
+            sync_common["http_client"] = http_client
+        if async_http_client is not None:
+            async_common["http_client"] = async_http_client
+        if max_retries is not None:
+            # SDK 默认 max_retries=2；调用方要自己做"流创建重试 + retry 事件"
+            # 时显式传 0 快失败，避免两层重试叠加。
+            sync_common["max_retries"] = max_retries
+            async_common["max_retries"] = max_retries
+        self._client = Anthropic(**sync_common)
+        self._async_client = AsyncAnthropic(**async_common)
+
+    def _apply_thinking(self, params: dict[str, Any], effort: Optional[str] = None) -> None:
+        """按 effort 档位请求扩展思考（两处调用：invoke / stream）。"""
+        thinking = effort_thinking_budget(effort or self._effort, params.get("max_tokens"))
+        if thinking is not None:
+            params["thinking"] = thinking
 
     # ── 消息转换 ──
 
@@ -196,10 +251,13 @@ class AnthropicCompatClient(ChatClientAdapter):
         anth_tools = self._tools_to_anthropic(tools)
         if anth_tools:
             params["tools"] = anth_tools
+            if self._tool_choice is not None:
+                params["tool_choice"] = self._tool_choice
         if temperature is not None:
             params["temperature"] = temperature
         elif self._temperature is not None:
             params["temperature"] = self._temperature
+        self._apply_thinking(params)
 
         resp = self._client.messages.create(**params)
         return self._to_response(resp)
@@ -267,14 +325,18 @@ class AnthropicCompatClient(ChatClientAdapter):
         anth_tools = self._tools_to_anthropic(tools)
         if anth_tools:
             params["tools"] = anth_tools
+            if self._tool_choice is not None:
+                params["tool_choice"] = self._tool_choice
         if kwargs.get("temperature") is not None:
             params["temperature"] = kwargs["temperature"]
         elif self._temperature is not None:
             params["temperature"] = self._temperature
+        self._apply_thinking(params, effort=kwargs.get("effort"))
 
         # Anthropic 的 tool_use 参数是**增量 JSON 字符串**（input_json_delta），
         # 需要在块级别累积后按 index 输出片段，交给 AgentLoop 拼接。
         block_index = 0
+        stop_reason: Optional[str] = None
         async with self._async_client.messages.stream(**params) as stream:
             async for event in stream:
                 etype = getattr(event, "type", "")
@@ -314,6 +376,8 @@ class AnthropicCompatClient(ChatClientAdapter):
                             }]}
 
                 elif etype == "message_delta":
+                    stop_reason = (getattr(getattr(event, "delta", None), "stop_reason", None)
+                                   or stop_reason)
                     usage = getattr(event, "usage", None)
                     if usage is not None:
                         yield {"usage": {
@@ -322,3 +386,6 @@ class AnthropicCompatClient(ChatClientAdapter):
 
                 elif etype == "message_stop":
                     break
+        # 终态事件：max_tokens 截断透出为 'length'，让上层区分截断与正常收尾
+        yield {"finish": "length" if stop_reason == "max_tokens"
+               else (stop_reason or "stop")}

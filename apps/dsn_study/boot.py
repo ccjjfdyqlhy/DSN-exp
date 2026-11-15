@@ -1144,10 +1144,71 @@ def _build_skill_dep_map(c) -> dict[str, dict]:
         # 注意：注入表的键必须是工具实例的属性名（工具内部用 _studylog/_checkin）
         "study_tracking": dict(_studylog=c.get("studylog"),
                                _checkin=c.get("checkin_store")),
-        # 视觉感知工具（阶段 5）：协调器 + 模型服务
+        # 视觉感知工具（阶段 5）：协调器 + 模型服务 + 主模型 chat_client
+        # _chat_client 是主模型的对话客户端（不是 LLMService）：
+        # look_around 要用它做「主模型是否支持图片输入」的能力判定，
+        # 以及在直发模式下把帧作为图片内容块交给主模型。
         "visual_perception": dict(_coordinator=c.get("vision_coordinator"),
-                                  _models=c.get("llm")),
+                                  _models=c.get("llm"),
+                                  _chat_client=c.get("chat_client")),
     }
+
+
+# ── 主模型图片能力探测 ──
+
+def _start_main_model_image_probe(chat_client):
+    """后台探测主模型到底吃不吃图片（判别式探测）。
+
+    为什么放后台线程：探测要真发一张图、问一次、读一次回答，
+    耗时几百毫秒到数秒，放在启动路径上会拖慢首屏；
+    而它只影响「AI 主动视觉时能否把图**直接**发给主模型」，
+    失败也不该影响服务可用性 —— 所以异常一律吞掉，只记日志。
+
+    探测本身（apps.dsn_study.vision_support.main_model_supports_images）
+    用的是「判别式图片」：图里画着 4 位数字，问模型这个数字是多少，
+    **答对才算支持**。不能用"1x1 测试图 + 回复 ok"当探测 ——
+    纯文本模型也能答 ok，那只证明它会说话，不证明它看见了图。
+
+    import 放在线程函数体内部 + try/except：vision_support 是并行开发的
+    产物，文件/函数暂缺时本线程直接跳过，不阻塞启动、也不影响其他链路。
+    """
+
+    def _probe():
+        try:
+            mode = str(getattr(Config, "VISION_DIRECT_TO_MAIN", "auto")).strip().lower() or "auto"
+            override = (str(getattr(Config, "MAIN_MODEL_SUPPORTS_IMAGE", "auto"))
+                        .strip().lower() or "auto")
+            # 判定优先级：**显式覆盖 > 探测**（与 vision_support 内部一致）。
+            # 显式覆盖必须在「探测开关」之前判 —— 关掉探测不等于
+            # 把人工写死的配置也一起忽略掉。
+            if override in ("true", "false"):
+                supports = override == "true"
+                how = "显式配置 MAIN_MODEL_SUPPORTS_IMAGE=%s" % override
+            elif not getattr(Config, "MAIN_MODEL_IMAGE_PROBE", True):
+                # 探测被关掉 → 没有判定依据 → 按**不支持**处理
+                # （宁可走 VLM 转述，也不把图发给可能看不见图的模型）
+                supports = False
+                how = "探测已关闭 MAIN_MODEL_IMAGE_PROBE=false → 按不支持处理"
+            else:
+                from apps.dsn_study.vision_support import main_model_supports_images
+                supports = bool(main_model_supports_images(
+                    chat_client,
+                    model_name=Config.MAIN_MODEL_NAME,
+                    base_url=Config.OPENAI_API_BASE,
+                ))
+                how = "判别式图片探测"
+            logger.info("主模型图片输入能力: %s（%s）；直发模式=%s",
+                        "支持" if supports else "不支持", how, mode)
+        except ImportError as exc:
+            # 并行开发的 vision_support 还没落地 → 跳过探测，不影响启动
+            logger.info("主模型图片输入能力: 未探测（vision_support 不可用: %s）；"
+                        "直发模式=%s", exc,
+                        str(getattr(Config, "VISION_DIRECT_TO_MAIN", "auto")))
+        except Exception as exc:   # noqa: BLE001 - 探测失败不能影响启动
+            logger.warning("主模型图片输入能力探测失败（不影响运行）: %s", exc)
+
+    threading.Thread(target=_probe, daemon=True,
+                     name="main-model-image-probe").start()
 
 
 # ── 启动 ──
@@ -1438,6 +1499,14 @@ def create_application() -> Flask:
         threading.Thread(target=_vision_warmup, daemon=True,
                          name="vision-warmup").start()
 
+    # ── 主模型图片能力预探测（后台线程）──
+    # 放在这里而不是启动路径上：探测要真发一张图问一次，阻塞首屏不值得；
+    # 视觉工具是懒的，探测结果在首次 look_around 之前基本一定已经就绪。
+    try:
+        _start_main_model_image_probe(chat_client)
+    except Exception:
+        logger.warning("主模型图片能力探测启动失败（已跳过）", exc_info=True)
+
     c = {
         "db_mgr": db_mgr, "llm": llm, "question_store": question_store,
         "template_manager": template_manager, "composer": composer, "scorer": scorer,
@@ -1450,6 +1519,8 @@ def create_application() -> Flask:
         "studylog": studylog, "checkin_store": checkin_store,
         "complexity_analyzer": complexity_analyzer,
         "vision_coordinator": _vision_mod.coordinator,
+        # 主模型对话客户端（视觉技能做能力判定/图片直发时要用）
+        "chat_client": chat_client,
     }
 
     # ── 技能系统 ──
@@ -1742,7 +1813,10 @@ def create_application() -> Flask:
 
     # ── 引擎门面 ──
     engine = StudyEngine(
-        agent=agent, chat_client=chat_client,
+        # chat_client 由 **c 提供（容器里带着主模型 client，
+        # 视觉技能的能力判定/图片直发也用同一个实例），
+        # 这里不再重复传 —— 重复传会报 "got multiple values"。
+        agent=agent,
         skill_registry=skill_registry, skill_manager=skill_manager,
         workspace=workspace, chat_hooks=chat_hooks, voice=voice,
         prompt_builder=prompt_builder, personality=personality,

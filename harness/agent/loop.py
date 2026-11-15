@@ -21,7 +21,7 @@ from typing import Any, AsyncGenerator, Callable, Optional
 
 from infra.models.base import ChatMessage, ChatResponse, IChatClient, ToolCall
 from ..tools import ToolRegistry, ToolResult, from_wire_name
-from .adapters import ToolCallAdapter, NativeToolCallAdapter
+from .adapters import IMAGE_KEYS, ToolCallAdapter, NativeToolCallAdapter
 
 logger = logging.getLogger("harness.agent")
 
@@ -129,6 +129,15 @@ class RoundResult:
     reply: str = ""                  # 最终回复（continue_loop=False 时有效）
     hit_max: bool = False            # 是否因达到步数上限终止（供上层兜底）
     state: Any = None                # 可选的跨轮状态传递
+
+
+def _is_image_data_url(value: str) -> bool:
+    """是不是图片 data URL（data:image/...;base64,...）。
+
+    用来在截断工具输出时放过图片 —— 哪怕它被塞在某个非约定键名下
+    （比如 output 里的裸字符串），也不该被截成坏数据。
+    """
+    return isinstance(value, str) and value.startswith("data:image/")
 
 
 class AgentLoop:
@@ -485,11 +494,17 @@ class AgentLoop:
                 if not result.success and self.on_tool_error:
                     self.on_tool_error(tc.name, result.error or "")
                 safe_output = self._truncate_output(result.output)
-                results.append({
+                # 与 run_async（loop.py:269-280）对齐：ToolResult.data 要展开到
+                # 结果顶层。漏掉的后果很具体 —— 工具交出来的图片（image_url）
+                # 在流式路径下**连 results 都进不去**，图片直接消失。
+                payload: dict = {
                     "call_id": tc.id, "name": tc.name, "success": result.success,
                     "status": result.status, "output": safe_output,
                     "error": result.error, "hint": result.hint,
-                })
+                }
+                if result.data:
+                    payload.update(result.data)
+                results.append(payload)
                 yield StreamEvent(kind="tool_result", round=step + 1,
                                   tool_result=results[-1])
 
@@ -611,11 +626,22 @@ class AgentLoop:
         # → user(收束指令)。这里刻意不保留原 assistant(tool_calls)，因为它的
         # 配对 tool 消息已经被折叠，留着反而会形成"有 tool_calls 却无 tool"的悬空调用。
         finalize_msgs = self._fold_trailing_tools(list(msgs))
-        finalize_msgs.append(ChatMessage.user(
+        finalize_text = (
             "已达到本次自主执行的步数上限，请立即停止调用任何工具，"
             "基于以上已获得的全部工具执行结果，直接给出最终的完整答复："
             "总结已完成的进展与关键结论，并说明还有哪些未完成的部分。"
-        ))
+        )
+        # 末尾若已是承载图片的 user 消息（content 是 parts 列表），
+        # 收束指令**并入同一条**而不是再追加一条 user ——
+        # user/user 连续在部分 chat_template 下是敏感序列。
+        last = finalize_msgs[-1] if finalize_msgs else None
+        if (last is not None and getattr(last, "role", "") == "user"
+                and isinstance(getattr(last, "content", None), list)):
+            parts = list(last.content)
+            parts.append({"type": "text", "text": finalize_text})
+            last.content = parts
+        else:
+            finalize_msgs.append(ChatMessage.user(finalize_text))
 
         try:
             # 收束轮不下发任何 tools schema，从根上杜绝再次产生工具调用。
@@ -680,7 +706,16 @@ class AgentLoop:
             out = dict(output)
             truncated = False
             for k, v in list(out.items()):
+                # 图片 data URL 不参与截断（也不递归进去）。
+                #
+                # 截断是为了防止过大的**文本**输出击穿上下文；图片不是
+                # 上下文文本 —— build_round 会把它从回喂的 JSON 里摘掉。
+                # 在这里截断是净损失：模型拿到的是一张解不开的坏图。
+                if k in IMAGE_KEYS:
+                    continue
                 if isinstance(v, str) and len(v) > self.max_output_chars:
+                    if _is_image_data_url(v):
+                        continue
                     keep = self.max_output_chars
                     out[k] = v[:keep] + f"\n...[输出过长已截断(原长 {len(v)} 字符)]"
                     truncated = True

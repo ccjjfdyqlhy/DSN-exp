@@ -21,6 +21,68 @@ from infra.models.base import ChatMessage, ChatResponse, ToolCall
 #: 这里按仓库既有约定延迟导入，避免 harness/agent 与 harness/tools 的导入环。
 _TO_WIRE_NAME = None
 
+#: 工具结果里承载图片的字段名（约定）。
+#: 工具把图片放在结果的顶层，或放在 output 这个 dict 里，都认。
+#:
+#: 为什么要有这个约定：摄像头这类工具的产物就是「一张图」，
+#: 而 tool 结果的 content 在协议上是**字符串**（Anthropic 还会 str() 拍平），
+#: 图片塞不进 tool 消息。能进主模型上下文的只有 role="user" 的
+#: content parts 列表 —— 所以工具把图交出来，由本模块转成内容块。
+IMAGE_KEYS = ("image_url", "images")
+
+
+def _extract_image_urls(result: dict) -> list[str]:
+    """从一条工具结果里抽出图片 data URL。
+
+    支持两种约定（工具返回 dict，或返回带 dict output 的结果）：
+      * ``image_url`` —— 单张图的 data URL；
+      * ``images``   —— 多张图的 data URL 列表。
+    """
+    urls: list[str] = []
+    sources = [result]
+    out = result.get("output")
+    if isinstance(out, dict):
+        sources.append(out)
+    for src in sources:
+        single = src.get("image_url")
+        if isinstance(single, str) and single:
+            urls.append(single)
+        multi = src.get("images")
+        if isinstance(multi, (list, tuple)):
+            urls.extend([u for u in multi if isinstance(u, str) and u])
+    return urls
+
+
+def _strip_image_keys(value):
+    """把 dict 里的图片键去掉（只处理顶层）。
+
+    为什么必须摘掉：这些键里是 base64 原文。若留在 tool 结果的 JSON 里，
+    就会变成几 MB 的**文本**回喂给模型 —— 既烧 token 又撑爆上下文，
+    而且模型看到的是一串无意义字符，不是图片。
+    """
+    if isinstance(value, dict):
+        return {k: v for k, v in value.items() if k not in IMAGE_KEYS}
+    return value
+
+
+def _image_user_message(urls: list[str]) -> ChatMessage:
+    """构造承载图片的 user 消息（content parts 列表）。
+
+    为什么是 role="user" 而不是 role="tool"：
+      * OpenAI 的 tool 消息 content 必须是字符串，塞列表会 400；
+      * Anthropic 路径会把 tool content 用 str() 拍平（anthropic.py:100），
+        图片会变成 Python repr 的字符串。
+    只有 user 消息在所有 client 上都能原样透传 content parts。
+    """
+    parts: list[dict] = [{
+        "type": "text",
+        "text": "工具返回的画面如下（已直接附上图片，未经过文字转述），"
+                "请直接看图回答：",
+    }]
+    for url in urls:
+        parts.append({"type": "image_url", "image_url": {"url": url}})
+    return ChatMessage(role="user", content=parts)
+
 
 def _to_wire(name: str) -> str:
     """把内部工具名转成 wire 名（不可用时原样返回，保证不因导入问题崩溃）。"""
@@ -76,6 +138,7 @@ class NativeToolCallAdapter(ToolCallAdapter):
         return ParsedOutput(text=response.content, tool_calls=list(response.tool_calls))
 
     def build_round(self, response: ChatResponse, results: list[dict]) -> list[ChatMessage]:
+        image_urls: list[str] = []
         msgs = [ChatMessage.assistant(
             response.content,
             tool_calls=[
@@ -106,11 +169,19 @@ class NativeToolCallAdapter(ToolCallAdapter):
             # 工具的结构化附加信息依旧到不了模型。这里把「固定字段以外」的键也带上，
             # 同时不覆盖上面 5 个语义明确的字段。
             for _k, _v in r.items():
-                if _k not in payload and _k not in ("call_id", "name"):
+                if (_k not in payload and _k not in ("call_id", "name")
+                        and _k not in IMAGE_KEYS):
                     payload[_k] = _v
+            # output 里若也带了图片，同样摘掉（base64 不能进文本）
+            payload["output"] = _strip_image_keys(payload.get("output"))
             content = json.dumps(payload, ensure_ascii=False, default=str)
             msgs.append(ChatMessage.tool_result(
                 tool_call_id=r.get("call_id", "unknown"), content=content))
+            image_urls.extend(_extract_image_urls(r))
+        if image_urls:
+            # 图片作为独立的 user 消息跟在 tool 结果之后 ——
+            # 下一轮主模型调用就能直接看到这张图。
+            msgs.append(_image_user_message(image_urls))
         return msgs
 
 
@@ -162,6 +233,7 @@ class TaggedToolCallAdapter(ToolCallAdapter):
     def build_round(self, response: ChatResponse, results: list[dict]) -> list[ChatMessage]:
         """标签协议没有原生 tool_calls：用 assistant 文本 + user 结果回喂。"""
         msgs: list[ChatMessage] = []
+        image_urls: list[str] = []
         if response.content:
             msgs.append(ChatMessage.assistant(response.content))
         for i, r in enumerate(results):
@@ -169,7 +241,7 @@ class TaggedToolCallAdapter(ToolCallAdapter):
                 "tool": r.get("name", ""),
                 "success": r.get("success", True),
                 "status": r.get("status", "ok" if r.get("success", True) else "error"),
-                "output": r.get("output"),
+                "output": _strip_image_keys(r.get("output")),
                 "error": r.get("error"),
                 "hint": r.get("hint"),
             }
@@ -177,5 +249,8 @@ class TaggedToolCallAdapter(ToolCallAdapter):
                 "<toolresult>" + json.dumps(payload, ensure_ascii=False, default=str)
                 + "</toolresult>"
             ))
+            image_urls.extend(_extract_image_urls(r))
+        if image_urls:
+            msgs.append(_image_user_message(image_urls))
         return msgs
 

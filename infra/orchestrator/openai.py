@@ -68,6 +68,8 @@ class OpenAICompatClient(ChatClientAdapter):
         tool_choice: Any = "auto",
         send_tool_choice: bool = True,
         send_usage_in_stream: bool = True,
+        http_client: Any = None,
+        async_http_client: Any = None,
     ):
         self.model = model
         self.protocol = protocol
@@ -93,6 +95,9 @@ class OpenAICompatClient(ChatClientAdapter):
             timeout=timeout,
             max_retries=self._max_retries,
             default_headers=self._extra_headers or None,
+            # SOCKS 代理等场景由调用方构造好 httpx 客户端整体注入（infra.net）。
+            # SDK 两端要求的类型不同：同步端 httpx.Client，异步端 httpx.AsyncClient。
+            http_client=http_client,
         )
         self._async_client = AsyncOpenAI(
             api_key=api_key,
@@ -100,6 +105,7 @@ class OpenAICompatClient(ChatClientAdapter):
             timeout=timeout,
             max_retries=self._max_retries,
             default_headers=self._extra_headers or None,
+            http_client=async_http_client,
         )
 
     def set_timeout(self, timeout: Optional[float]) -> None:
@@ -336,21 +342,94 @@ class OpenAICompatClient(ChatClientAdapter):
         )
 
     @staticmethod
+    def _responses_content_parts(content: Any, role: str) -> list[dict]:
+        """把 OpenAI **对话协议**的 content parts 转成 Responses 协议的内容块。
+
+        两种协议的图片块形状不一样，不能原样透传：
+          对话协议：{"type": "image_url", "image_url": {"url": <url>}}
+          Responses：{"type": "input_image", "image_url": <url>}   ← image_url 是**字符串**
+        原样透传 → 网关 400（"Invalid type for 'input_image'"）。
+        文本块同理：对话协议的 {"type": "text"} → input_text（助手消息用 output_text）。
+        """
+        text_type = "output_text" if role == "assistant" else "input_text"
+        parts: list[dict] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append({"type": text_type, "text": part})
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type", "")
+            if ptype in ("text", "input_text", "output_text"):
+                text = part.get("text", "")
+                # 已经是 Responses 形状的（input_text/output_text）保持原样
+                parts.append({"type": ptype if ptype != "text" else text_type,
+                              "text": text})
+            elif ptype in ("image_url", "input_image"):
+                url = part.get("image_url", "")
+                if isinstance(url, dict):
+                    url = url.get("url", "")
+                if not url:
+                    continue
+                parts.append({"type": "input_image", "image_url": url})
+            else:
+                # 未知块：能当文本就当文本，总比把非法形状塞给网关强
+                text = part.get("text")
+                if text is None:
+                    continue
+                parts.append({"type": text_type, "text": text})
+        return parts
+
+    @staticmethod
     def _messages_to_responses_input(messages: list[Any]) -> list[dict]:
         """把 ChatMessage 列表转成 Responses API 的 input items。"""
         items: list[dict] = []
         for m in messages:
             if isinstance(m, dict):
-                items.append(m)
+                # dict 消息：只有 content 是 parts 列表时才需要重写图片块；
+                # 纯文本（content 是字符串）原样透传 —— 主路径行为不变。
+                content = m.get("content")
+                if isinstance(content, (list, tuple)):
+                    item = dict(m)
+                    item["content"] = OpenAICompatClient._responses_content_parts(
+                        content, str(m.get("role", "user")))
+                    items.append(item)
+                else:
+                    items.append(m)
                 continue
             role = getattr(m, "role", "")
             content = getattr(m, "content", "") or ""
+            parts = None
+            if isinstance(content, (list, tuple)):
+                # 多模态消息：content 是**内容块列表**。
+                # 过去整个列表被塞进 {"type":"input_text","text": <list>} ——
+                # text 必须是字符串，形状非法，网关直接 400；而且图片块被
+                # 丢掉，模型根本看不见图。现在按 Responses 协议逐块转换。
+                if role == "tool":
+                    # 工具输出在 Responses 协议里是**字符串**，不是内容块列表
+                    items.append({
+                        "type": "function_call_output",
+                        "call_id": getattr(m, "tool_call_id", "") or "",
+                        "output": "\n".join(
+                            str(p.get("text", "")) for p in content
+                            if isinstance(p, dict)),
+                    })
+                    continue
+                if role not in ("system", "user", "assistant"):
+                    continue
+                parts = OpenAICompatClient._responses_content_parts(content, role)
             if role == "system":
-                items.append({"role": "system", "content": [{"type": "input_text", "text": content}]})
+                items.append({"role": "system",
+                              "content": parts if parts is not None
+                              else [{"type": "input_text", "text": content}]})
             elif role == "user":
-                items.append({"role": "user", "content": [{"type": "input_text", "text": content}]})
+                items.append({"role": "user",
+                              "content": parts if parts is not None
+                              else [{"type": "input_text", "text": content}]})
             elif role == "assistant":
-                items.append({"role": "assistant", "content": [{"type": "output_text", "text": content}]})
+                items.append({"role": "assistant",
+                              "content": parts if parts is not None
+                              else [{"type": "output_text", "text": content}]})
                 for tc in (getattr(m, "tool_calls", None) or []):
                     fn = tc.get("function", {}) if isinstance(tc, dict) else {}
                     items.append({
@@ -409,6 +488,11 @@ class OpenAICompatClient(ChatClientAdapter):
             "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
             "n", "response_format", "tool_choice", "parallel_tool_calls",
             "user", "max_tokens", "max_completion_tokens", "stream_options",
+            # 推理档位：仅当调用方显式传入才会出现在请求体里（老网关不受影响）
+            "reasoning_effort",
+            # SDK 级参数：把厂商私有字段合并进请求体（如 toggle 式思考开关），
+            # 不会作为独立字段出现在 wire 上
+            "extra_body",
         }
         for key, value in kwargs.items():
             if value is not None and key in _STANDARD_STREAM_PARAMS:
@@ -420,13 +504,16 @@ class OpenAICompatClient(ChatClientAdapter):
             params.setdefault("stream_options", {"include_usage": True})
 
         stream = await self._async_client.chat.completions.create(**params)
+        finish: Optional[str] = None
         async for chunk in stream:
             usage = getattr(chunk, "usage", None)
             if usage is not None:
                 yield {"usage": _plain(usage)}
             if not chunk.choices:
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            finish = getattr(choice, "finish_reason", None) or finish
+            delta = choice.delta
             if delta is None:
                 continue
             reasoning = getattr(delta, "reasoning_content", None)
@@ -458,6 +545,9 @@ class OpenAICompatClient(ChatClientAdapter):
                     })
                 if emitted:
                     yield {"tool_calls": emitted}
+        # 终态事件：流正常结束但没有 finish_reason（断连/代理截断）时按
+        # 'incomplete' 透出，让上层把可能被截断的回复当未完成处理。
+        yield {"finish": finish or "incomplete"}
 
     async def _stream_responses(
         self,
@@ -479,9 +569,17 @@ class OpenAICompatClient(ChatClientAdapter):
             params["max_output_tokens"] = kwargs["max_tokens"]
         elif self._max_tokens is not None:
             params["max_output_tokens"] = self._max_tokens
+        # 推理档位与提示缓存键：Responses 协议的原生字段，仅调用方显式
+        # 传入时才出现。reasoning 形如 {"effort": "high", "summary": "auto"}；
+        # prompt_cache_key 由上层用稳定前缀指纹填充（命中则省前缀重复计费）。
+        if kwargs.get("reasoning") is not None:
+            params["reasoning"] = kwargs["reasoning"]
+        if kwargs.get("prompt_cache_key"):
+            params["prompt_cache_key"] = kwargs["prompt_cache_key"]
 
         # output_index -> {id, name}（function_call 元信息来自 output_item.added）
         call_meta: dict[int, dict] = {}
+        finish: Optional[str] = None
         async with self._async_client.responses.stream(**params) as stream:
             async for event in stream:
                 et = getattr(event, "type", "")
@@ -509,9 +607,19 @@ class OpenAICompatClient(ChatClientAdapter):
                         "arguments": getattr(event, "delta", ""),
                     }]}
                 elif et == "response.completed":
-                    usage = getattr(getattr(event, "response", None), "usage", None)
+                    response = getattr(event, "response", None)
+                    usage = getattr(response, "usage", None)
                     if usage:
                         yield {"usage": _plain(usage)}
+                    status = str(getattr(response, "status", "") or "")
+                    if status == "completed":
+                        finish = "stop"
+                    else:
+                        details = getattr(response, "incomplete_details", None)
+                        reason = str(getattr(details, "reason", "") or "")
+                        finish = "length" if reason == "max_output_tokens" else "incomplete"
+        if finish is not None:
+            yield {"finish": finish}
 
     @staticmethod
     def _to_response(resp: Any) -> ChatResponse:
