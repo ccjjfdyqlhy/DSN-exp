@@ -752,7 +752,10 @@ def _handle_account_directive(response: str) -> None:
         if len(parts) < 4:
             print("  ⚠ 账号指令格式应为: 名称|BaseURL|APIKey|模型")
             continue
-        name, base_url, api_key, model = parts[:4]
+        # api_key 单独赋值：与其它字段共用元组解包会把敏感源连坐到
+        # model/base_url，一路污染到 OpenAIChat 的日志与 .env 同步
+        name, base_url, model = parts[0], parts[1], parts[3]
+        api_key = parts[2]
         try:
             from apps.dsn.models.api_accounts import get_api_manager
             mgr = get_api_manager()

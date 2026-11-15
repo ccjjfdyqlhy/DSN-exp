@@ -284,13 +284,23 @@ def human_size(num_bytes: float) -> str:
 
 
 def ask(prompt: str, default: str = "", secret: bool = False) -> str | None:
-    """问一个问题。返回 None 表示用户回车跳过或输入流已结束。"""
+    """问一个问题。返回 None 表示用户回车跳过或输入流已结束。
+
+    secret 分支（getpass）与普通分支（input）彻底分开：普通输入（模型名、
+    地址等）不能被密码输入源连坐，否则整条安装向导的回显都会被当成密钥。
+    """
+    if secret:
+        try:
+            raw = getpass.getpass(f"  {prompt} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            out()
+            return None
+        if raw:
+            return raw
+        return None
     suffix = paint(f"（回车用默认值：{default}）", Ansi.DIM) if default else ""
     try:
-        if secret:
-            raw = getpass.getpass(f"  {prompt} ").strip()
-        else:
-            raw = input(f"  {prompt} {suffix} ").strip()
+        raw = input(f"  {prompt} {suffix} ").strip()
     except (EOFError, KeyboardInterrupt):
         out()
         return None
