@@ -131,3 +131,8 @@ MagicMock/
 
 # runtime session databases (the engine sqlite store)
 **/sessions/
+
+# dsn_existence 应用与它的测试留在本机（见 .git/local-only-policy.txt）
+tests/test_dsn_existence*
+apps/dsn_existence/**
+local/**
