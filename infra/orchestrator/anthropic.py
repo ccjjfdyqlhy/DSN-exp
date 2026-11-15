@@ -411,7 +411,12 @@ def _merge_alternating(messages: list[dict]) -> list[dict]:
     requires them at the front) and joins text blocks in order.
     """
     merged: list[dict] = []
-    for entry in messages:
+    # empty messages are rejected by the api: an assistant turn that produced
+    # only tool calls arrives with empty text and must not survive as its own
+    # (empty) entry, where it would also block the adjacent merge
+    entries = [entry for entry in messages
+               if entry.get("content") not in ('', None, [])]
+    for entry in entries:
         if (merged and merged[-1].get("role") == entry.get("role")
                 and entry.get("role") in ("user", "assistant")):
             previous = merged[-1]["content"]
