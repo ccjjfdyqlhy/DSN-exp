@@ -321,5 +321,10 @@ class ImageStore:
         try:
             relative = os.path.relpath(path, self.base_dir)
         except ValueError:
+            # different drive (windows): relpath is impossible, keep absolute
+            relative = str(path)
+        if relative.startswith('..'):
+            # the store lives outside the project (the app state dir): a
+            # ../..-chain in a marker is noise, keep the absolute path instead
             relative = str(path)
         return relative.replace(os.sep, '/')
