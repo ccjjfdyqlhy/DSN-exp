@@ -516,7 +516,17 @@ class OpenAICompatClient(ChatClientAdapter):
         if self._send_usage_in_stream:
             params.setdefault("stream_options", {"include_usage": True})
 
-        stream = await self._async_client.chat.completions.create(**params)
+        try:
+            stream = await self._async_client.chat.completions.create(**params)
+        except Exception as error:    # noqa: BLE001 - narrow the retry below
+            # Several OpenAI-compatible servers reject stream_options with a
+            # 400; retry once without it before giving up.
+            status = int(getattr(error, "status_code", 0)
+                         or getattr(error, "status", 0) or 0)
+            if status != 400 or "stream_options" not in params:
+                raise
+            params.pop("stream_options", None)
+            stream = await self._async_client.chat.completions.create(**params)
         finish: Optional[str] = None
         async for chunk in stream:
             usage = getattr(chunk, "usage", None)
