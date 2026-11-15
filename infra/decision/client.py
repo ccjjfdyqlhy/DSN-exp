@@ -208,7 +208,8 @@ class DecisionClient:
         try:
             resp = self._post_json("/v1/chat/completions", probe_payload)
         except DecisionUnavailable as e:
-            return False, str(e)[:200]
+            logger.warning("decision probe 请求失败: %s", e)
+            return False, "decision endpoint unavailable"
         try:
             choice = (resp.get("choices") or [])[0]
             content_lp = ((choice.get("logprobs") or {}).get("content") or [])
@@ -216,7 +217,8 @@ class DecisionClient:
                 return False, "the upstream returned no logprobs"
             return True, ""
         except Exception as e:
-            return False, f"cannot parse the response: {e}"[:200]
+            logger.warning("decision probe 响应解析失败: %s", e)
+            return False, "cannot parse the probe response"
 
     # -- decision forward pass --
 

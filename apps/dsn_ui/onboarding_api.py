@@ -695,7 +695,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             models = await asyncio.to_thread(_scan_models)
         except Exception as e:  # noqa: BLE001
             logger.exception("扫描 GGUF 失败")
-            return _bad(f"扫描模型失败: {e}", 500)
+            return _bad("扫描模型失败", 500)
         return models
 
     # ── 2. 表单默认值 ──
@@ -730,12 +730,12 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             eng_obj = _resolve_engine(app, engine)
         except Exception as e:  # noqa: BLE001
             logger.exception("解析 engine 失败")
-            return _bad(f"引擎不可用: {e}", 500)
+            return _bad("引擎不可用", 500)
         try:
             return await asyncio.to_thread(_register_local_model, eng_obj, body)
         except Exception as e:  # noqa: BLE001
             logger.exception("注册本地模型异常")
-            return _bad(f"注册本地模型失败: {e}", 500)
+            return _bad("注册本地模型失败", 500)
 
     # ── 4. 第三方 API 实例 ──
 
@@ -770,7 +770,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             eng_obj = _resolve_engine(app, engine)
         except Exception as e:  # noqa: BLE001
             logger.exception("解析 engine 失败")
-            return _bad(f"引擎不可用: {e}", 500)
+            return _bad("引擎不可用", 500)
 
         # 可选：留空 models 且 discover=true 时，主动向远端询问模型列表。
         # 发现失败**不再阻断保存**：很多兼容网关根本没有 /v1/models 端点，
@@ -907,7 +907,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("测试聊天异常")
-            return _bad(f"测试聊天异常: {e}", 500)
+            return _bad("测试聊天异常", 500)
         return result
 
     # ── 5. TTS payload 读取 / 保存 ──
@@ -919,7 +919,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             return await asyncio.to_thread(_payload_state)
         except Exception as e:  # noqa: BLE001
             logger.exception("读取 TTS payload 失败")
-            return _bad(f"读取 TTS payload 失败: {e}", 500)
+            return _bad("读取 TTS payload 失败", 500)
 
     @app.post("/api/tts/payload")
     async def tts_payload_set(request: Request):
@@ -936,7 +936,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             path = _save_payload(payload)
         except Exception as e:  # noqa: BLE001
             logger.exception("保存 TTS payload 失败")
-            return _bad(f"保存 TTS payload 失败: {e}", 500)
+            return _bad("保存 TTS payload 失败", 500)
         logger.info("已保存 TTS 默认请求体: %s", path)
         return {"status": "ok", "payload": payload, "file": str(path)}
 
@@ -967,7 +967,7 @@ def register_onboarding_routes(app: FastAPI, engine: Any = None) -> None:
             result = await asyncio.to_thread(_run_tts_test, payload, ensure_tts)
         except Exception as e:  # noqa: BLE001
             logger.exception("TTS 测试请求异常")
-            return _bad(f"TTS 测试请求异常: {e}", 500)
+            return _bad("TTS 测试请求异常", 500)
         return result
 
     logger.info(
