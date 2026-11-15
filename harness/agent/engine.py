@@ -736,6 +736,9 @@ class ConversationEngine:
                     {'role': 'user', 'content': question}]
         msgs = [ChatMessage.from_dict(m) if isinstance(m, dict) else m
                 for m in messages]
+        # The aside must know it is one: without this system prompt the model
+        # would happily continue the main task instead of answering briefly.
+        msgs = [ChatMessage.system(ASIDE_SYSTEM), *msgs]
         kwargs = effort_stream_params(self._model.wire, effort='low',
                                       reasoning_style=self._model.reasoning_style,
                                       reasoning_efforts=self._model.reasoning_efforts,
