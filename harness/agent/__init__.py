@@ -18,6 +18,7 @@ from .engine_config import (
     ReasoningSettings, ThinkingSettings,
 )
 from .engine import ConversationEngine, EngineSnapshot
+from .collab import AgentManager, AgentRecord
 
 __all__ = [
     "AgentLoop",
@@ -45,6 +46,8 @@ __all__ = [
     "SwarmRunResult",
     "ConversationEngine",
     "EngineSnapshot",
+    "AgentManager",
+    "AgentRecord",
     "EngineConfig",
     "ModelInfo",
     "EventSink",
