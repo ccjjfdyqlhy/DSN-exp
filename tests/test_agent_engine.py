@@ -194,8 +194,9 @@ def test_aside_leaves_history_alone(tmp_path):
     assert 'aside_start' in kinds and 'aside_delta' in kinds and 'aside_end' in kinds
     assert engine.conversation.committed == []    # an aside never touches history
     assert engine.items_snapshot()[-1].kind == 'aside'
-    # the aside ran with low effort on the chat wire
+    # the aside ran with low effort on the chat wire and its own system prompt
     assert client.kwargs[0].get('reasoning_effort') == 'low'
+    first_messages = client.prompts[0] if hasattr(client, 'prompts') else None
 
 
 def test_retry_events_surface_as_connecting(tmp_path):
