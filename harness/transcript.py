@@ -16,6 +16,9 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from infra.store.base import Migration, MigrationRunner
+from infra.store.sqlite import SqliteStore
 from typing import Any, Iterable
 
 SESSION_VERSION = 2
@@ -336,6 +339,235 @@ class SessionStore:
         payload.items = [item for item in payload.items if item.turn < turn]
         payload.turn = max(0, turn - 1)
         return payload
+
+
+
+_DB_MIGRATIONS = [
+    Migration('harness-001-agent-sessions', lambda c: c.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            name TEXT PRIMARY KEY,
+            title TEXT DEFAULT '',
+            created TEXT NOT NULL,
+            updated TEXT NOT NULL,
+            provider TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            turn INTEGER DEFAULT 0,
+            prefix_generation INTEGER DEFAULT 1,
+            compaction_archive TEXT DEFAULT '[]',
+            own_name TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS agent_messages (
+            session_name TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_calls TEXT,
+            tool_call_id TEXT,
+            reasoning_content TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_messages_session
+            ON agent_messages(session_name, seq);
+        CREATE TABLE IF NOT EXISTS agent_items (
+            session_name TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_items_session
+            ON agent_items(session_name, seq);
+        """
+    )),
+]
+
+
+
+class DbSessionStore:
+    """SQLite-backed session store: the same duck type as SessionStore.
+
+    The conversation thread (messages) lives in rows, so it stays queryable
+    and survives without any session JSON file; the UI transcript items and
+    the compaction archive ride on the session row as JSON documents (the
+    same shape the infra chat_store uses for its compressed chunks).  The
+    engine accepts either store - this one is the default.
+
+    Args:
+        store: an existing infra.store SqliteStore to share; one is created
+            at ``db_path`` when omitted (parent directories are made).
+        db_path: database file, used only when ``store`` is omitted.
+    """
+
+    def __init__(self, store: Any = None, *,
+                 db_path: str | os.PathLike[str] = 'sessions/agent.db') -> None:
+        self.db_path = str(db_path)
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self.store = store or SqliteStore(self.db_path)
+        MigrationRunner(self.store).migrate(_DB_MIGRATIONS)
+        self._lock = threading.Lock()
+
+    def _now(self) -> str:
+        return time.strftime('%Y-%m-%d %H:%M')
+
+    def _row_exists(self, name: str) -> bool:
+        return bool(self.store.execute(
+            'SELECT name FROM agent_sessions WHERE name = ?', (name,)))
+
+    def save(self, payload: SessionPayload, as_name: str | None = None) -> None:
+        name = (as_name if as_name is not None else payload.name).strip()
+        if not name:
+            raise ValueError('session name must not be empty')
+        updated = self._now()
+        created = updated
+        if self._row_exists(name):
+            row = self.store.execute(
+                'SELECT created FROM agent_sessions WHERE name = ?', (name,))
+            created = row[0]['created'] or updated
+        with self._lock:
+            self.store.execute(
+                'INSERT INTO agent_sessions (name, title, created, updated,'
+                ' provider, model, turn, prefix_generation, compaction_archive,'
+                ' own_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                ' ON CONFLICT(name) DO UPDATE SET title=excluded.title,'
+                ' updated=excluded.updated, provider=excluded.provider,'
+                ' model=excluded.model, turn=excluded.turn,'
+                ' prefix_generation=excluded.prefix_generation,'
+                ' compaction_archive=excluded.compaction_archive,'
+                ' own_name=excluded.own_name',
+                (name, payload.title, created, updated, payload.provider,
+                 payload.model, payload.turn, payload.prefix_generation,
+                 json.dumps(payload.compaction_archive, ensure_ascii=False),
+                 payload.name))
+            self.store.execute('DELETE FROM agent_messages WHERE session_name = ?',
+                               (name,))
+            self.store.execute('DELETE FROM agent_items WHERE session_name = ?',
+                               (name,))
+            rows = []
+            for seq, message in enumerate(payload.messages):
+                rows.append((name, seq, str(message.get('role', 'user')),
+                             message.get('content')
+                             if isinstance(message.get('content'), str) else None,
+                             json.dumps(message.get('tool_calls') or [],
+                                        ensure_ascii=False)
+                             if message.get('tool_calls') else None,
+                             message.get('tool_call_id'),
+                             message.get('reasoning_content')))
+            if rows:
+                self.store.execute_many(
+                    'INSERT INTO agent_messages (session_name, seq, role,'
+                    ' content, tool_calls, tool_call_id, reasoning_content)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?)', rows)
+            item_rows = [(name, seq,
+                          json.dumps(item.to_dict(), ensure_ascii=False))
+                         for seq, item in enumerate(payload.items)]
+            if item_rows:
+                self.store.execute_many(
+                    'INSERT INTO agent_items (session_name, seq, payload)'
+                    ' VALUES (?, ?, ?)', item_rows)
+
+    def load(self, name: str) -> SessionPayload | None:
+        rows = self.store.execute(
+            'SELECT name, own_name, title, created, updated, provider, model,'
+            ' turn, prefix_generation, compaction_archive FROM agent_sessions'
+            ' WHERE name = ?', (name,))
+        if not rows:
+            return None
+        row = rows[0]
+        messages = [dict(m) for m in self.store.execute(
+            'SELECT role, content, tool_calls, tool_call_id,'
+            ' reasoning_content FROM agent_messages'
+            ' WHERE session_name = ? ORDER BY seq', (name,))]
+        out: list[dict[str, Any]] = []
+        for message in messages:
+            entry: dict[str, Any] = {'role': message['role'],
+                                     'content': message['content'] or ''}
+            if message['tool_calls']:
+                try:
+                    entry['tool_calls'] = json.loads(message['tool_calls'])
+                except ValueError:
+                    pass
+            if message['tool_call_id']:
+                entry['tool_call_id'] = message['tool_call_id']
+            if message['reasoning_content']:
+                entry['reasoning_content'] = message['reasoning_content']
+            out.append(entry)
+        items = []
+        for record in self.store.execute(
+                'SELECT payload FROM agent_items WHERE session_name = ?'
+                ' ORDER BY seq', (name,)):
+            item = TranscriptItem.from_dict(json.loads(record['payload']))
+            if item is not None:
+                items.append(item)
+        try:
+            archive = json.loads(row['compaction_archive'] or '[]')
+        except ValueError:
+            archive = []
+        payload = SessionPayload(
+            # the checkpoint row is keyed __last__ but the payload keeps the
+            # session's own name, like the json store
+            name=str(row['own_name'] or row['name']),
+            title=str(row['title'] or ''),
+            created=str(row['created'] or ''),
+            updated=str(row['updated'] or ''),
+            provider=str(row['provider'] or ''),
+            model=str(row['model'] or ''),
+            turn=_safe_int(row['turn'], 0),
+            prefix_generation=max(1, _safe_int(row['prefix_generation'], 1)),
+            messages=out,
+            compaction_archive=archive,
+            items=items,
+        )
+        return payload
+
+    def delete(self, name: str) -> bool:
+        if not self._row_exists(name):
+            return False
+        with self._lock:
+            self.store.execute('DELETE FROM agent_sessions WHERE name = ?', (name,))
+            self.store.execute('DELETE FROM agent_messages WHERE session_name = ?',
+                               (name,))
+            self.store.execute('DELETE FROM agent_items WHERE session_name = ?',
+                               (name,))
+        return True
+
+    def list(self) -> list[dict[str, Any]]:
+        rows = [dict(row) for row in self.store.execute(
+            'SELECT s.name, s.title, s.created, s.updated,'
+            ' COALESCE(m.cnt, 0) AS messages FROM agent_sessions s'
+            ' LEFT JOIN (SELECT session_name, COUNT(*) cnt FROM agent_messages'
+            '  GROUP BY session_name) m ON s.name = m.session_name'
+            ' ORDER BY s.updated DESC, s.created DESC')]
+        return [row for row in rows
+                if row['name'] not in RESERVED_SESSION_NAMES]
+
+    def latest(self) -> SessionPayload | None:
+        checkpoint = self.load(LAST_SESSION)
+        if checkpoint is not None:
+            # an explicitly cleared checkpoint must not resurrect an older
+            # session, mirroring the json store
+            return checkpoint if checkpoint.messages else None
+        rows = self.list()
+        if not rows:
+            return None
+        return self.load(rows[0]['name'])
+
+    def unique_name(self, base: str) -> str:
+        stem = base.strip() or new_session_name()
+        candidate = stem
+        index = 2
+        while self._row_exists(candidate):
+            candidate = f'{stem}_{index}'
+            index += 1
+        return candidate
+
+    @staticmethod
+    def turn_starts(messages: Iterable[dict[str, Any]]) -> list[int]:
+        return SessionStore.turn_starts(messages)
+
+    @classmethod
+    def rewind(cls, payload: SessionPayload, turn: int,
+               edit_text: str | None = None) -> SessionPayload:
+        return SessionStore.rewind(payload, turn, edit_text)
 
 
 def group_turns(items: Iterable[TranscriptItem]) -> list[tuple[int, TranscriptItem]]:

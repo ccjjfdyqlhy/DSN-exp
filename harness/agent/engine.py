@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -32,7 +33,7 @@ from ..images import MARKER_RE, image_marker
 from ..tools.context import ToolContext, pop_context, push_context
 from ..tools.registry import ManagedToolRegistry
 from ..transcript import (
-    LAST_SESSION, SessionPayload, SessionStore, TranscriptItem,
+    DbSessionStore, LAST_SESSION, SessionPayload, SessionStore, TranscriptItem,
 )
 from ..usage import (
     TokenBudget, TokenBudgetExceeded, effective_reserved, estimate_tokens,
@@ -92,7 +93,7 @@ class ConversationEngine:
 
     def __init__(self, *, client: IChatClient,
                  registry: ManagedToolRegistry,
-                 store: SessionStore | None = None,
+                 store: Any = None,
                  sink: EventSink | None = None,
                  system_provider: Callable[[], str] | None = None,
                  cwd: str = '',
@@ -102,10 +103,13 @@ class ConversationEngine:
                  agent_name: str = 'root') -> None:
         self._client = client
         self._registry = registry
-        self._store = store or SessionStore()
         self.sink = sink or EventSink()
         self._system_provider = system_provider
         self._cwd = cwd
+        # persistence defaults to the sqlite route (infra.store under the
+        # hood); the json store stays available and duck-types the same
+        self._store = store or DbSessionStore(
+            db_path=os.path.join(self._cwd or '.', 'sessions', 'agent.db'))
         self.config = config or EngineConfig()
         self._model = model or ModelInfo()
         # sub-agent tool allowlist: None means every registered tool

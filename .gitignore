@@ -128,3 +128,6 @@ MagicMock/
 # ── 打印用 PDF 产物（tools/export_pdf.py 的输出）──
 # 单文件 PDF + 合并册都在这里，属于可再生成的派生产物，不入库。
 /pdf_export/
+
+# runtime session databases (the engine sqlite store)
+**/sessions/
