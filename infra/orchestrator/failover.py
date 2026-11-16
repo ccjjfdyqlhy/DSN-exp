@@ -136,20 +136,21 @@ class FailoverChat(ChatClientAdapter):
                 self._observe(ep.name, True, (time.time() - _t0) * 1000)
                 self.last_endpoint = ep.name
                 if errors:
-                    note = (f"{time.strftime('%H:%M:%S')} 回退到 {ep.name}"
-                            f"（此前失败: {errors[0][0]}）")
+                    note = (f"{time.strftime('%H:%M:%S')} failed over to "
+                            f"{ep.name} (first failure: {errors[0][0]})")
                     self.fallback_log.append(note)
-                    logger.info("FailoverChat: %s 失败后回退到 %s 成功",
-                                errors[0][0], ep.name)
+                    logger.info("FailoverChat: failed over to %s after %s",
+                                ep.name, errors[0][0])
                 return resp
             except Exception as e:
                 msg = f"{type(e).__name__}: {e}"
                 errors.append((ep.name, msg))
                 self._observe(ep.name, False, (time.time() - _t0) * 1000)
-                logger.warning("FailoverChat: 端点 %s 调用失败: %s", ep.name, msg)
+                logger.warning("FailoverChat: endpoint %s failed: %s",
+                               ep.name, msg)
                 continue
-        err = errors[-1][1] if errors else "无可用端点"
-        raise RuntimeError(f"所有端点均失败: {err}")
+        err = errors[-1][1] if errors else "no endpoints configured"
+        raise RuntimeError(f"all endpoints failed: {err}")
 
     # ── 流式调用 ──
 
@@ -182,8 +183,8 @@ class FailoverChat(ChatClientAdapter):
                 self._observe(ep.name, True, (time.time() - _t0) * 1000)
                 self.last_endpoint = ep.name
                 if errors:
-                    note = (f"{time.strftime('%H:%M:%S')} 流式回退到 {ep.name}"
-                            f"（此前失败: {errors[0][0]}）")
+                    note = (f"{time.strftime('%H:%M:%S')} failed over to "
+                            f"{ep.name} (first failure: {errors[0][0]})")
                     self.fallback_log.append(note)
                 return
             except Exception as e:
@@ -191,10 +192,12 @@ class FailoverChat(ChatClientAdapter):
                 errors.append((ep.name, msg))
                 self._observe(ep.name, False, (time.time() - _t0) * 1000)
                 if produced:
-                    # 已产出内容后失败：无法回滚，直接上抛
+                    # content was already produced: it cannot be rolled back
+                    # and retried on another endpoint, so it is raised as-is
                     raise RuntimeError(
-                        f"端点 {ep.name} 流式中途失败: {msg}") from e
-                logger.warning("FailoverChat: 端点 %s 流式启动失败: %s", ep.name, msg)
+                        f"endpoint {ep.name} failed mid-stream: {msg}") from e
+                logger.warning("FailoverChat: endpoint %s failed to start its "
+                               "stream: %s", ep.name, msg)
                 continue
-        err = errors[-1][1] if errors else "无可用端点"
-        raise RuntimeError(f"所有端点均失败: {err}")
+        err = errors[-1][1] if errors else "no endpoints configured"
+        raise RuntimeError(f"all endpoints failed: {err}")
