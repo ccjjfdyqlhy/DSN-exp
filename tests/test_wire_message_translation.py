@@ -88,3 +88,73 @@ def test_an_anthropic_turn_with_text_is_unchanged():
          'reasoning_content': 'the plan'},
     ])
     assert messages[0]['content'] == 'the answer'
+
+
+# ── model discovery ─────────────────────────────────────────
+class _FakeModel:
+    def __init__(self, model_id: str) -> None:
+        self.id = model_id
+
+
+class _FakePage:
+    def __init__(self, data: list, has_more: bool = False,
+                 last_id: str = '') -> None:
+        self.data = data
+        self.has_more = has_more
+        self.last_id = last_id
+
+
+class _FakeModels:
+    """A paginated models.list() stand-in recording the calls it saw."""
+
+    def __init__(self, pages: list) -> None:
+        self.pages = pages
+        self.calls: list[dict] = []
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.pages.pop(0)
+
+
+class _FakeSdk:
+    """The raw provider SDK object shape the clients keep: ``.models``."""
+
+    def __init__(self, models) -> None:
+        self.models = models
+
+
+def _client_with(models, kind: str):
+    from infra.orchestrator.anthropic import AnthropicCompatClient
+    from infra.orchestrator.openai import OpenAICompatClient
+    if kind == 'openai':
+        client = OpenAICompatClient(api_key='k', base_url='http://x/v1',
+                                    model='m')
+    else:
+        client = AnthropicCompatClient(api_key='k', base_url='http://x',
+                                       model='m')
+    client._client = _FakeSdk(models)
+    return client
+
+
+def test_openai_list_models_reads_one_page():
+    models = _FakeModels([_FakePage([_FakeModel('a'), _FakeModel('b'),
+                                     _FakeModel('a')])])
+    assert _client_with(models, 'openai').list_models() == ['a', 'b']
+
+
+def test_anthropic_list_models_walks_the_pages():
+    models = _FakeModels([
+        _FakePage([_FakeModel('a'), _FakeModel('b')], has_more=True,
+                  last_id='b'),
+        _FakePage([_FakeModel('c')]),
+    ])
+    client = _client_with(models, 'anthropic')
+    assert client.list_models() == ['a', 'b', 'c']
+    # the second page asks for everything after the last id of the first
+    assert models.calls[1].get('after_id') == 'b'
+
+
+def test_anthropic_list_models_stops_on_a_flat_list():
+    models = _FakeModels([])
+    models.list = lambda **kwargs: [_FakeModel('x')]
+    assert _client_with(models, 'anthropic').list_models() == ['x']

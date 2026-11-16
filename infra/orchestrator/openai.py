@@ -516,6 +516,18 @@ class OpenAICompatClient(ChatClientAdapter):
                 })
         return items
 
+    def list_models(self) -> list[str]:
+        """The model ids this endpoint exposes (``GET /models``)."""
+        page = self._client.models.list()
+        data = getattr(page, "data", page) or []
+        ids: list[str] = []
+        for item in data:
+            model_id = getattr(item, "id", None) or (
+                item.get("id") if isinstance(item, dict) else None)
+            if model_id:
+                ids.append(str(model_id))
+        return sorted(dict.fromkeys(ids))
+
     @staticmethod
     def _tools_to_responses(tools: Optional[list[dict]]) -> list[dict]:
         """把 chat 协议的 tools 列表转成 Responses API 的 tools 格式。"""

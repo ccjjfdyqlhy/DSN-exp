@@ -237,6 +237,40 @@ class AnthropicCompatClient(ChatClientAdapter):
 
         return "\n\n".join(p for p in system_parts if p), _merge_alternating(out)
 
+    def list_models(self) -> list[str]:
+        """The model ids this endpoint exposes, following its pagination.
+
+        The SDK pages the catalogue (1000 ids per call) and a single page
+        hides every model after it, so the pages are walked until
+        ``has_more`` says otherwise.
+        """
+        ids: list[str] = []
+        after_id: Optional[str] = None
+        for _ in range(50):
+            kwargs: dict[str, Any] = {"limit": 1000}
+            if after_id:
+                kwargs["after_id"] = after_id
+            try:
+                page = self._client.models.list(**kwargs)
+            except TypeError:
+                page = self._client.models.list()
+            data = getattr(page, "data", None)
+            if data is None and isinstance(page, list):
+                data = page
+            data = list(data or [])
+            for item in data:
+                model_id = getattr(item, "id", None) or (
+                    item.get("id") if isinstance(item, dict) else None)
+                if model_id:
+                    ids.append(str(model_id))
+            if not getattr(page, "has_more", False) or not data:
+                break
+            after_id = getattr(page, "last_id", None) or getattr(
+                data[-1], "id", None)
+            if not after_id:
+                break
+        return sorted(dict.fromkeys(ids))
+
     @staticmethod
     def _tools_to_anthropic(tools: Optional[list[dict]]) -> list[dict]:
         """harness 扁平工具 schema → Anthropic tools 结构。"""
