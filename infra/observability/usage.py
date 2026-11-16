@@ -11,9 +11,10 @@ from typing import Optional
 
 from ..models.base import ChatResponse
 # 复用 policy 层唯一实现（旧本地副本已合并删除）
-from ..policy.token_meter import UsageRecord, fmt_tokens, in_peak_hours
+from ..policy.token_meter import UsageRecord, fmt_tokens, in_peak_hours, read_usage
 
-__all__ = ["Price", "UsageRecord", "fmt_tokens", "in_peak_hours", "UsageTracker"]
+__all__ = ["Price", "UsageRecord", "fmt_tokens", "in_peak_hours", "read_usage",
+           "UsageTracker"]
 
 
 @dataclass
@@ -34,10 +35,7 @@ class UsageTracker:
     def record(self, response: ChatResponse, tier: str = "flash",
                elapsed: float = 0.0, *, peak_hours: Optional[bool] = None) -> UsageRecord:
         usage = response.usage or {}
-        prompt = int(usage.get("prompt_tokens", 0))
-        completion = int(usage.get("completion_tokens", 0))
-        details = usage.get("prompt_tokens_details") or {}
-        cached = int(details.get("cached_tokens", 0)) if isinstance(details, dict) else 0
+        prompt, completion, cached = read_usage(usage)
         miss = max(0, prompt - cached)
 
         peak = in_peak_hours() if peak_hours is None else peak_hours
