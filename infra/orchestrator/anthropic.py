@@ -163,6 +163,11 @@ class AnthropicCompatClient(ChatClientAdapter):
                 blocks: list[dict] = []
                 if content:
                     blocks.append({"type": "text", "text": str(content)})
+                elif d.get("reasoning_content"):
+                    # 这条 wire 没有 reasoning 字段：只带推理的轮次把推理
+                    # 当作正文携带，模型在工具调用旁边也能看见自己的计划。
+                    blocks.append({"type": "text",
+                                   "text": str(d["reasoning_content"])})
                 for tc in tool_calls:
                     fn = tc.get("function") or {}
                     raw_args = fn.get("arguments") or "{}"
@@ -219,6 +224,13 @@ class AnthropicCompatClient(ChatClientAdapter):
                                 "source": {"type": "url", "url": url},
                             })
                 out.append({"role": role, "content": blocks or ""})
+                continue
+
+            reasoning = d.get("reasoning_content")
+            if (role == "assistant" and not content and reasoning):
+                # 这条 wire 没有 reasoning 字段：只带推理的轮次把推理当作
+                # 正文携带，否则消息为空，会被 _merge_alternating 整条丢掉。
+                out.append({"role": role, "content": str(reasoning)})
                 continue
 
             out.append({"role": role, "content": str(content or "")})
