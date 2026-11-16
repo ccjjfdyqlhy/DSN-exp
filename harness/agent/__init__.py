@@ -14,11 +14,11 @@ from .subagent import SubAgentRunner, SubTask, SubAgentRunResult
 from .modes import AgentMode, ModeState
 from .events import EVENT_KINDS, EventSink, LEVELS, STATUSES
 from .engine_config import (
-    AgentSettings, ContextSettings, EngineConfig, ModelInfo,
+    AgentSettings, ContextSettings, EngineConfig, HoldSettings, ModelInfo,
     ReasoningSettings, ThinkingSettings,
 )
 from .engine import ConversationEngine, EngineSnapshot
-from .collab import AgentManager, AgentRecord
+from .collab import AgentManager, AgentRecord, AgentTypeSpec
 
 __all__ = [
     "AgentLoop",
@@ -49,7 +49,9 @@ __all__ = [
     "AgentManager",
     "AgentRecord",
     "EngineConfig",
+    "HoldSettings",
     "ModelInfo",
+    "AgentTypeSpec",
     "EventSink",
     "EVENT_KINDS",
     "STATUSES",
