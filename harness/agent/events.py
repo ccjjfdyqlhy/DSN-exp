@@ -88,3 +88,8 @@ class EventSink:
             except queue.Empty:
                 break
         return out
+
+    @property
+    def depth(self) -> int:
+        """The events waiting in the queue, drained or not."""
+        return self._events.qsize()
