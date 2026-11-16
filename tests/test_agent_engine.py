@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from harness.agent.engine import ConversationEngine
+from harness.agent.engine import UNFINISHED_NOTE, ConversationEngine
 from harness.agent.engine_config import EngineConfig, ModelInfo
 from harness.agent.events import EventSink
 from harness.tools.context import ToolContext, current_context
@@ -231,7 +231,9 @@ def test_retry_events_surface_as_connecting(tmp_path):
     assert client.calls == 2
 
 
-def test_interrupt_drops_text_draft(tmp_path):
+def test_interrupt_keeps_the_request_and_the_partial_text(tmp_path):
+    """An interrupted turn stays answerable: the request and the text the
+    round had already streamed are kept, marked as unfinished."""
     class SlowClient(ScriptedClient):
         async def stream(self, messages, tools=None, **kwargs):
             self.calls += 1
@@ -253,7 +255,10 @@ def test_interrupt_drops_text_draft(tmp_path):
     asyncio.run(main())
     kinds = _kinds(engine)
     assert 'interrupted' in kinds
-    assert engine.conversation.committed == []    # a text-only draft is dropped
+    committed = engine.conversation.committed
+    assert [m['role'] for m in committed] == ['user', 'assistant']
+    assert UNFINISHED_NOTE in committed[-1]['content']
+    assert 'partial answer' in committed[-1]['content']
     assert engine.items_snapshot()[-1].text == '[interrupted]'
 
 
