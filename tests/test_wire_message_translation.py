@@ -158,3 +158,14 @@ def test_anthropic_list_models_stops_on_a_flat_list():
     models = _FakeModels([])
     models.list = lambda **kwargs: [_FakeModel('x')]
     assert _client_with(models, 'anthropic').list_models() == ['x']
+
+
+def test_an_already_translated_item_passes_through():
+    items = OpenAICompatClient._messages_to_responses_input([
+        {'type': 'function_call', 'call_id': 'call_1', 'name': 'write',
+         'arguments': '{}'},
+        {'type': 'function_call_output', 'call_id': 'call_1',
+         'output': 'wrote'},
+    ])
+    assert items[0]['type'] == 'function_call'
+    assert items[1]['type'] == 'function_call_output'

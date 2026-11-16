@@ -473,6 +473,12 @@ class OpenAICompatClient(ChatClientAdapter):
         because a turn that says nothing is a turn the model cannot read.
         """
         role = str(m.get("role") or "user")
+        if m.get("type") in ("function_call", "function_call_output",
+                             "input_image", "input_text", "output_text",
+                             "message"):
+            # already a Responses item (a caller that pre-translates): pass
+            # it through untouched
+            return [m]
         if role not in ("system", "user", "assistant", "tool"):
             return []
         content = m.get("content")
