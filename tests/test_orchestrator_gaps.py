@@ -193,6 +193,30 @@ def test_openai_stream_omits_reasoning_effort_when_not_given():
     assert 'reasoning_effort' not in capture['chat']
 
 
+
+class _FakeResponsesStream:
+    """The raw ``responses.create(stream=True)`` object: iterate + close.
+
+    The client stopped using the SDK's ``responses.stream()`` helper (its state
+    machine indexes deltas by output_index and breaks on gateways that emit
+    deltas before the item events), so the fake has to offer the raw stream
+    shape: async iteration plus an async ``close``.
+    """
+
+    def __init__(self, events):
+        self._events = list(events)
+        self.closed = False
+
+    def __aiter__(self):
+        async def generate():
+            for event in self._events:
+                yield event
+        return generate()
+
+    async def close(self):
+        self.closed = True
+
+
 def test_openai_stream_emits_finish_event():
     client = OpenAICompatClient(api_key='k')
 
@@ -218,20 +242,15 @@ def test_openai_responses_finish_maps_incomplete_details():
     client = OpenAICompatClient(api_key='k', protocol='responses')
 
     class FakeResponses:
-        def stream(self, **params):
-            class CM:
-                async def __aenter__(self):
-                    async def gen():
-                        yield SimpleNamespace(
-                            type='response.completed',
-                            response=SimpleNamespace(
-                                usage=None, status='incomplete',
-                                incomplete_details=SimpleNamespace(
-                                    reason='max_output_tokens')))
-                    return gen()
-                async def __aexit__(self, *a):
-                    return False
-            return CM()
+        async def create(self, **params):
+            return _FakeResponsesStream([
+                SimpleNamespace(
+                    type='response.completed',
+                    response=SimpleNamespace(
+                        usage=None, status='incomplete',
+                        incomplete_details=SimpleNamespace(
+                            reason='max_output_tokens'))),
+            ])
 
     client._async_client.responses = FakeResponses()
     events = _run(client.stream([{'role': 'user', 'content': 'hi'}], None))
@@ -253,18 +272,9 @@ def test_openai_responses_passes_reasoning_and_cache_key():
     capture: dict = {}
 
     class FakeResponses:
-        def stream(self, **params):
+        async def create(self, **params):
             capture['responses'] = params
-
-            class CM:
-                async def __aenter__(self):
-                    async def gen():
-                        if False:
-                            yield ''
-                    return gen()
-                async def __aexit__(self, *a):
-                    return False
-            return CM()
+            return _FakeResponsesStream([])
 
     client._async_client.responses = FakeResponses()
     _run(client.stream([{'role': 'user', 'content': 'hi'}], None,
