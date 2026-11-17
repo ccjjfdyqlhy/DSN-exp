@@ -17,6 +17,7 @@
 #   codegraph        代码图谱与文件监听
 #   conversation     会话管理
 #   groupchat        群聊
+#   todo             Todo 计划/条目状态 + 变更事件（文件可持久化）
 #   context_assembly 分段上下文装配
 #   context_gatherer @ 指令上下文采集
 #   sdk              嵌入式 SDK (Agent / create_agent / tool)
@@ -68,6 +69,7 @@ from .context_assembly import (
     SEG_VERBATIM,
     SEG_TAIL,
 )
+from .todo import TodoItem, TodoPlan, TodoStore, default_todo_path
 from .sdk import Agent, create_agent, tool
 
 __version__ = "0.5.0"
@@ -80,6 +82,10 @@ __all__ = [
     "Tool",
     "ToolResult",
     "ToolRegistry",
+    "TodoItem",
+    "TodoPlan",
+    "TodoStore",
+    "default_todo_path",
     "AgentRuntime",
     "Conversation",
     "ConversationManager",

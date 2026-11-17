@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import logging
 import re
 import time
@@ -95,11 +96,61 @@ def _safe_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             or (m.get('role') == 'assistant' and not m.get('tool_calls'))]
 
 
-def _tail_text(engine: ConversationEngine, limit: int = 400) -> str:
+def _last_assistant_text(engine: ConversationEngine) -> str:
     for item in reversed(engine.items_snapshot()):
         if item.kind == 'assistant' and item.text:
-            return item.text[-limit:]
+            return item.text
     return ''
+
+
+def _tail_text(engine: ConversationEngine, limit: int = 400) -> str:
+    """The end of the last assistant message: the live view wants the tail."""
+    return _last_assistant_text(engine)[-limit:]
+
+
+def _report_text(engine: ConversationEngine, limit: int = 4_000) -> str:
+    """The child's final report, trimmed at both ends when it is too long.
+
+    A report is read from the top: cutting the head (a plain tail slice)
+    keeps the epilogue and drops the summary, and the parent then cannot
+    tell what the child actually concluded.  Long reports keep both ends
+    and say how much was elided.
+    """
+    text = _last_assistant_text(engine)
+    if len(text) <= limit:
+        return text
+    head = limit * 3 // 5
+    tail = limit - head
+    elided = len(text) - limit
+    return (f'{text[:head]}\n\n... <report truncated: {elided} characters '
+            f'elided from the middle> ...\n\n{text[-tail:]}')
+
+
+class _ChildMailbox:
+    """What a child engine sees as ``engine.collab``.
+
+    A child must consume its own mailbox -- that is how ``send_message`` and
+    its parent's answers reach its context -- but it must not drain the
+    manager's announcement queue.  That queue belongs to the root engine's
+    transcript pump, and a child's sink feeds announcements back into it, so
+    a child draining it would push the same events round forever.  Hence a
+    proxy: mailboxes yes, announcements no.
+    """
+
+    def __init__(self, manager: 'AgentManager') -> None:
+        self._manager = manager
+
+    def drain_events(self, limit: int = 1_000) -> list[tuple[str, dict]]:
+        return []
+
+    def consume_mailbox(self, engine: ConversationEngine) -> list[str]:
+        return self._manager.consume_mailbox(engine)
+
+    def settle_mailbox(self, engine: ConversationEngine) -> int:
+        return self._manager.settle_mailbox(engine)
+
+    def agents_snapshot(self) -> list[dict[str, Any]]:
+        return self._manager.agents_snapshot()
 
 
 class AgentManager:
@@ -130,7 +181,8 @@ class AgentManager:
         self._model_resolver = model_resolver
         self._agent_types: dict[str, AgentTypeSpec] = {}
         self._agents: dict[str, AgentRecord] = {}
-        self._condition: asyncio.Condition | None = None
+        # set by ``_touch`` (from any thread) to release wait_for_activity
+        self._wake = asyncio.Event()
         self._activity_version = 0
         self._events: deque[tuple[str, dict]] = deque(maxlen=2_000)
         # the full child stream (deltas, tool output, usage); the engine's
@@ -153,7 +205,7 @@ class AgentManager:
         running one, which only exists when attach is called from inside it.
         """
         self._loop = loop or asyncio.get_running_loop()
-        self._condition = asyncio.Condition()
+        self._wake = asyncio.Event()
         self._agents[ROOT_AGENT] = AgentRecord(
             name=ROOT_AGENT, parent=None, depth=0, engine=engine,
             status=RUNNING)
@@ -311,6 +363,9 @@ class AgentManager:
                 parent_record, extra, model_info),
             allowed_tools=allowed_tools, agent_name=name)
         child.sink = _forwarding_sink(child, self)
+        # without this a child never stages the messages sent to it:
+        # ``send_message`` would fill an inbox nothing ever reads
+        child.collab = _ChildMailbox(self)
         if fork_turns is None:
             fork_turns = self.config.default_fork_turns
         if fork_turns == 'none':
@@ -344,9 +399,17 @@ class AgentManager:
             engine.submit(message)
             while engine.busy() or not engine._work.empty():
                 await asyncio.sleep(0.02)
+            late = await self._settle_descendants(record)
             record.status = (INTERRUPTED if engine.last_turn_interrupted
                              else COMPLETED)
-            record.final_message = _tail_text(engine, limit=4_000) or '(no response)'
+            record.final_message = _report_text(engine) or '(no response)'
+            if late:
+                # Its own turn ended before these arrived; ride them along so
+                # the report the parent receives is not missing the work this
+                # agent started.
+                record.final_message += (
+                    '\n\n<reports received after this agent finished>\n'
+                    + '\n'.join(late))
         except Exception as error:    # noqa: BLE001 - a child failing is a report
             record.status = ERRORED
             record.error = str(error)
@@ -354,6 +417,39 @@ class AgentManager:
         finally:
             self._touch(record)
             self._deliver_to_parent(record)
+
+    async def _settle_descendants(self, record: AgentRecord) -> list[str]:
+        """Wait for this agent's own descendants, then take what they sent.
+
+        A child that delegates and finishes before its children report used to
+        lose those reports for good: the updates landed in an inbox that no
+        later turn would ever read, because nothing drives another turn on a
+        finished agent.  Waiting here makes "completed" mean *this agent and
+        everything it started are done*, and the late reports travel inside
+        this agent's own report so its parent still sees them.
+        """
+        late: list[str] = []
+        while True:
+            while self._has_active_descendant(record.name):
+                await asyncio.sleep(0.02)
+            new = list(record.inbox)
+            record.inbox.clear()
+            late.extend(new)
+            if not new and not self._has_active_descendant(record.name):
+                return late
+
+    def _has_active_descendant(self, name: str) -> bool:
+        """True while any agent below ``name`` in the tree is still running."""
+        children: dict[str, list[AgentRecord]] = {}
+        for record in self._agents.values():
+            children.setdefault(record.parent or '', []).append(record)
+        stack = list(children.get(name, []))
+        while stack:
+            record = stack.pop()
+            if record.status in ACTIVE_STATES:
+                return True
+            stack.extend(children.get(record.name, []))
+        return False
 
     def _deliver_to_parent(self, record: AgentRecord) -> None:
         parent = self._agents.get(record.parent) if record.parent else None
@@ -378,25 +474,36 @@ class AgentManager:
         if record is not None:
             record.updated_at = time.monotonic()
         self._activity_version += 1
-        if self._loop is not None and not self._loop.is_closed():
-            try:
-                self._loop.create_task(self._wake_waiters())
-            except RuntimeError:
-                pass
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        # ``_touch`` runs from worker threads too (the tool backends), and a
+        # bare ``create_task`` there is not safe and left "coroutine was never
+        # awaited" warnings behind when the loop stopped first.  Handing the
+        # wake to the loop itself has neither problem.
+        try:
+            loop.call_soon_threadsafe(self._wake_waiters)
+        except RuntimeError:      # the loop closed between the check and here
+            pass
 
-    async def _wake_waiters(self) -> None:
-        if self._condition is not None:
-            async with self._condition:
-                self._condition.notify_all()
+    def _wake_waiters(self) -> None:
+        """Release ``wait_for_activity`` waiters; always runs on the loop."""
+        self._wake.set()
 
     # ── collaboration tools ─────────────────────────────────
     def _collab_tools(self) -> list[AnnotatedTool]:
         manager = self
 
         def spawn_agent(task_name, message, fork_turns=None, agent_type=''):
-            return manager._bridge(manager.spawn, name=task_name,
-                                   message=message, fork_turns=fork_turns,
-                                   agent_type=agent_type)
+            spawned = manager._bridge(manager.spawn, name=task_name,
+                                      message=message, fork_turns=fork_turns,
+                                      agent_type=agent_type)
+            # The model gets a compact receipt, not the live record (whose
+            # engine field would leak an object repr into the transcript).
+            if isinstance(spawned, AgentRecord):
+                return {'agent': spawned.name, 'status': spawned.status,
+                        'parent': spawned.parent, 'depth': spawned.depth}
+            return spawned     # the bridge's 'Error: ...' text
 
         def send_message(target, message, trigger=False):
             return manager._bridge(manager.send_message, target=target,
@@ -507,18 +614,29 @@ class AgentManager:
         timeout = max(0, min(int(timeout_ms), 3_600_000)) / 1000
         seen = self._activity_version
 
-        def changed() -> bool:
-            return self._activity_version != seen
+        def recent() -> list[str]:
+            return [r.name for r in list(self._agents.values())
+                    if time.monotonic() - r.updated_at < 5]
 
-        try:
-            async with self._condition:
-                await asyncio.wait_for(self._condition.wait_for(changed),
-                                       timeout=timeout)
-        except (asyncio.TimeoutError, TimeoutError):
-            return {'timed_out': True, 'updated_agents': []}
-        recent = [r.name for r in list(self._agents.values())
-                  if time.monotonic() - r.updated_at < 5]
-        return {'timed_out': False, 'updated_agents': recent}
+        deadline = time.monotonic() + timeout
+        # Loop, not a single wait: a set left behind by an earlier touch would
+        # otherwise return "activity" without any version change, and the
+        # caller acts on that answer.
+        while self._activity_version == seen:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {'timed_out': True, 'updated_agents': []}
+            event = self._wake
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except (asyncio.TimeoutError, TimeoutError):
+                return {'timed_out': True, 'updated_agents': []}
+            finally:
+                # re-arm: the next activity has to wake the next wait.  A
+                # waiter that grabbed the old object is already awake.
+                if self._wake is event:
+                    self._wake = asyncio.Event()
+        return {'timed_out': False, 'updated_agents': recent()}
 
     def interrupt_agent(self, target: str) -> dict[str, Any]:
         record = self._agents.get(_sanitize(target))
@@ -529,15 +647,31 @@ class AgentManager:
         return {'previous_status': previous}
 
     # ── plumbing ────────────────────────────────────────────
-    def _bridge(self, coro_factory: Callable, **kwargs: Any) -> Any:
-        """Run a manager coroutine from a tool handler (worker thread).
+    def _bridge(self, factory: Callable, **kwargs: Any) -> Any:
+        """Run a manager method from a tool handler (worker thread).
 
         Tool handlers execute in asyncio.to_thread workers without a loop;
         the call hops onto the manager's loop and blocks this worker until
         the result is ready, which is exactly the sync-tool contract.
+
+        ``factory`` may be a coroutine function or a plain sync method: both
+        run on the manager's loop, because the backends touch asyncio state
+        (``Queue.put_nowait`` in ``submit``, ``loop.create_task`` in
+        ``_touch``) that is only safe on the owning loop.  Passing a sync
+        method straight to ``run_coroutine_threadsafe`` used to raise
+        "A coroutine object is required", which is how `send_message` and
+        `followup_task` failed for every model call.
         """
-        coro = coro_factory(**kwargs)
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        if self._loop is None or self._loop.is_closed():
+            return 'Error: the collaboration manager is not attached to a loop'
+
+        async def call() -> Any:
+            result = factory(**kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        future = asyncio.run_coroutine_threadsafe(call(), self._loop)
         try:
             return future.result(timeout=600)
         except asyncio.TimeoutError:

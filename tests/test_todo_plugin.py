@@ -37,40 +37,40 @@ def test_store_crud():
 
     store = TodoStore()
     plan = store.create_plan(chat_id=42, user_id=1)
-    assert plan.todo_id.startswith("todo-")
+    assert plan.plan_id.startswith("todo-")
     assert plan.status == "planning"
-    print(f"  创建计划: {plan.todo_id}")
+    print(f"  创建计划: {plan.plan_id}")
 
     items = [
         {"title": "设计数据库模型", "description": "设计表结构", "priority": 0},
         {"title": "实现API", "description": "编写路由", "priority": 1, "dependencies": [0]},
         {"title": "编写测试", "description": "单元测试", "priority": 2, "dependencies": [0, 1]},
     ]
-    store.set_items(plan.todo_id, items)
-    plan = store.get_plan(plan.todo_id)
+    store.set_items(plan.plan_id, items)
+    plan = store.get_plan(plan.plan_id)
     assert plan.status == "executing"
     assert len(plan.items) == 3
     assert plan.items[0].title == "设计数据库模型"
     print(f"  设置 3 个子任务")
 
     # 更新进度
-    store.update_item(plan.todo_id, "item-00", status="completed")
-    store.update_item(plan.todo_id, "item-01", status="in_progress")
-    plan = store.get_plan(plan.todo_id)
-    assert plan.overall_progress == 1.0 / 3.0
-    print(f"  进度: {plan.overall_progress:.2f}")
+    store.update_item(plan.plan_id, "item-00", status="completed")
+    store.update_item(plan.plan_id, "item-01", status="in_progress")
+    plan = store.get_plan(plan.plan_id)
+    assert plan.progress == 1.0 / 3.0
+    print(f"  进度: {plan.progress:.2f}")
 
     # 完成所有
-    store.update_item(plan.todo_id, "item-01", status="completed")
-    store.update_item(plan.todo_id, "item-02", status="completed")
-    store.set_completed(plan.todo_id, "全部完成")
-    plan = store.get_plan(plan.todo_id)
+    store.update_item(plan.plan_id, "item-01", status="completed")
+    store.update_item(plan.plan_id, "item-02", status="completed")
+    store.set_completed(plan.plan_id, "全部完成")
+    plan = store.get_plan(plan.plan_id)
     assert plan.status == "completed"
-    assert plan.overall_progress == 1.0
+    assert plan.progress == 1.0
     print(f"  计划完成")
 
     # dict 格式
-    d = store.get_plan_dict(plan.todo_id)
+    d = store.get_plan_dict(plan.plan_id)
     assert d is not None
     assert d["status"] == "completed"
     assert len(d["items"]) == 3
@@ -91,9 +91,9 @@ def test_store_subscribe():
     plan = store.create_plan(chat_id=1, user_id=1)
 
     # 订阅
-    q = store.subscribe(plan.todo_id)
+    q = store.subscribe(plan.plan_id)
     assert isinstance(q, queue.Queue)
-    print(f"  订阅成功: {plan.todo_id}")
+    print(f"  订阅成功: {plan.plan_id}")
 
     # 初始快照
     snapshot_event = q.get(timeout=2)
@@ -101,8 +101,8 @@ def test_store_subscribe():
     print("  收到初始快照事件")
 
     # 触发事件
-    store.set_items(plan.todo_id, [{"title": "任务1", "description": "test"}])
-    store.update_item(plan.todo_id, "item-00", status="completed")
+    store.set_items(plan.plan_id, [{"title": "任务1", "description": "test"}])
+    store.update_item(plan.plan_id, "item-00", status="completed")
 
     # 读取事件
     events = []
@@ -118,7 +118,7 @@ def test_store_subscribe():
     assert any("plan_started" in ev for ev in events)
     assert any("item_updated" in ev for ev in events)
 
-    store.set_completed(plan.todo_id)
+    store.set_completed(plan.plan_id)
     try:
         final = q.get(timeout=2)
         assert "completed" in final
@@ -127,7 +127,7 @@ def test_store_subscribe():
         print("  (完成事件可能已被处理)")
 
     # 取消订阅
-    store.unsubscribe(plan.todo_id, q)
+    store.unsubscribe(plan.plan_id, q)
     print("  取消订阅成功")
 
     print("  PASSED")
@@ -303,24 +303,24 @@ def test_sub_agent_spawning():
          "dependencies": [0], "needs_sub_agent": True,
          "sub_agent_prompt": "设计数据库", "sub_agent_model": "fast"},
     ]
-    store.set_items(plan.todo_id, items)
+    store.set_items(plan.plan_id, items)
 
     # 模拟子代理完成
-    store.update_item(plan.todo_id, "item-00", status="completed", result="已完成")
-    store.update_item(plan.todo_id, "item-01", status="in_progress")
-    plan = store.get_plan(plan.todo_id)
-    assert plan.overall_progress == 0.5
-    print(f"  一半完成时进度: {plan.overall_progress}")
+    store.update_item(plan.plan_id, "item-00", status="completed", result="已完成")
+    store.update_item(plan.plan_id, "item-01", status="in_progress")
+    plan = store.get_plan(plan.plan_id)
+    assert plan.progress == 0.5
+    print(f"  一半完成时进度: {plan.progress}")
 
-    store.update_item(plan.todo_id, "item-01", status="completed",
+    store.update_item(plan.plan_id, "item-01", status="completed",
                       result="数据库设计完成")
-    plan = store.get_plan(plan.todo_id)
-    assert plan.overall_progress == 1.0
+    plan = store.get_plan(plan.plan_id)
+    assert plan.progress == 1.0
     assert plan.status == "completed"
-    print(f"  全部完成进度: {plan.overall_progress}")
+    print(f"  全部完成进度: {plan.progress}")
 
     # 检查 dict 结果
-    d = store.get_plan_dict(plan.todo_id)
+    d = store.get_plan_dict(plan.plan_id)
     item_results = {it["id"]: it for it in d["items"]}
     assert item_results["item-00"]["status"] == "completed"
     assert item_results["item-01"]["status"] == "completed"

@@ -51,7 +51,7 @@ def todo_stream(todo_id: str):
     if plan is None:
         return jsonify({"error": "Todo plan not found"}), 404
     # 归属校验：仅计划所属用户可订阅其进度流
-    if plan.user_id != uid:
+    if plan.meta.get("user_id", 0) != uid:
         return jsonify({"error": "Todo plan not found"}), 404
 
     def generate():

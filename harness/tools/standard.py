@@ -25,6 +25,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -445,48 +447,106 @@ def tool_project_summary(deps: ToolDeps):
 
 
 def tool_project_todo(deps: ToolDeps):
-    """轻量待办文件（.harness_todo.json）：Agent 可读写的任务清单。"""
+    """轻量待办文件（.harness_todo.json）：Agent 可读写的任务清单。
+
+    三个刻意的选择：
+    * 线程安全 —— 工具在线程池里执行，多个子代理会同时读-改-写同一份清单，
+      所以"读、改、写回"整段在锁内完成；
+    * 原子写入 —— 先写临时文件再 os.replace，进程中断不会留下半截 JSON；
+    * 坏文件不被静默清空 —— 解析失败就报错并给出文件路径，绝不用空清单
+      覆盖掉已有的待办（旧实现 load() 吞掉异常返回 []，下一次 add 就把它
+      整个覆盖了）。
+    """
+    _lock = threading.Lock()
+    default_status = "pending"
+
     def _path() -> Path:
         return Path(deps.workspace) / ".harness_todo.json"
 
     def load() -> list[dict]:
-        p = _path()
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-        return []
+        path = _path()
+        if not path.exists():
+            return []
+        raw = path.read_text(encoding="utf-8")
+        if not raw.strip():
+            return []
+        items = json.loads(raw)
+        if not isinstance(items, list):
+            raise ValueError("内容是 JSON 但不是列表")
+        return [item for item in items if isinstance(item, dict)]
 
     def save(items: list[dict]) -> None:
-        _path().write_text(json.dumps(items, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
+        path = _path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp = tempfile.mkstemp(dir=str(path.parent),
+                                    prefix=".harness_todo.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(items, ensure_ascii=False, indent=2))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+
+    def snapshot(items: list[dict]) -> dict:
+        return {"success": True, "items": items, "count": len(items),
+                "open": sum(1 for item in items
+                            if str(item.get("status")) != "completed")}
+
+    def position(index: Any, total: int) -> Optional[int]:
+        try:
+            value = int(index)
+        except (TypeError, ValueError):
+            return None
+        return value if 0 <= value < total else None
 
     def run(action: str, text: str = "", index: int = -1,
-            status: str = "pending"):
-        items = load()
-        if action == "add":
-            items.append({"text": text, "status": status,
-                          "created": time.time()})
-            save(items)
-            return {"success": True, "items": items}
-        if action == "list":
-            return {"success": True, "items": items}
-        if action == "update":
-            if 0 <= index < len(items):
-                if text:
-                    items[index]["text"] = text
-                items[index]["status"] = status
+            status: str = "") -> dict:
+        # status 为空 = 保持原状态。旧实现把默认值写成 "pending"，于是
+        # "只改文本"的一次 update 会把已完成的任务悄悄退回未完成。
+        action = str(action or "").strip().lower()
+        text = str(text or "").strip()
+        status = str(status or "").strip()
+        try:
+            with _lock:
+                items = load()
+                if action == "add":
+                    if not text:
+                        return {"success": False, "error": "text 不能为空"}
+                    items.append({"text": text,
+                                  "status": status or default_status,
+                                  "created": time.time()})
+                    save(items)
+                    return snapshot(items)
+                if action == "list":
+                    return snapshot(items)
+                if action not in ("update", "remove"):
+                    return {"success": False,
+                            "error": f"未知 action: {action}（add/list/update/remove）"}
+                where = position(index, len(items))
+                if where is None:
+                    return {"success": False,
+                            "error": f"索引越界: {index}（当前 {len(items)} 项）"}
+                if action == "update":
+                    item = items[where]
+                    if text:
+                        item["text"] = text
+                    if status:
+                        item["status"] = status
+                    item["updated"] = time.time()
+                    save(items)
+                    return snapshot(items)
+                removed = items.pop(where)
                 save(items)
-                return {"success": True, "items": items}
-            return {"success": False, "error": f"索引越界: {index}"}
-        if action == "remove":
-            if 0 <= index < len(items):
-                removed = items.pop(index)
-                save(items)
-                return {"success": True, "removed": removed, "items": items}
-            return {"success": False, "error": f"索引越界: {index}"}
-        return {"success": False, "error": f"未知 action: {action}"}
+                removed_view = snapshot(items)
+                removed_view["removed"] = removed
+                return removed_view
+        except (OSError, ValueError, TypeError) as error:
+            return {"success": False,
+                    "error": f"待办文件不可用: {error}", "path": str(_path())}
+
     return run
 
 
@@ -741,12 +801,16 @@ def install_standard_tools(registry: ToolRegistry, *,
                             {"type": "object", "properties": {
                                 "path": {"type": "string"},
                                 "max_files": {"type": "integer"}}}),
-        "project.todo": ("轻量待办（add/list/update/remove）",
+        "project.todo": ("轻量待办（add/list/update/remove）；status 省略表示保持原状态",
                          {"type": "object", "properties": {
                              "action": {"type": "string",
                                         "enum": ["add", "list", "update", "remove"]},
-                             "text": {"type": "string"}, "index": {"type": "integer"},
-                             "status": {"type": "string"}},
+                             "text": {"type": "string",
+                                      "description": "待办内容（add 必填）"},
+                             "index": {"type": "integer",
+                                       "description": "update/remove 的项下标，从 0 开始"},
+                             "status": {"type": "string",
+                                        "description": "pending/doing/…；省略则不变"}},
                           "required": ["action"]}),
         "batch.run": ("批量执行：对 items 逐项调用已注册工具 fn（map 风格）",
                       {"type": "object", "properties": {

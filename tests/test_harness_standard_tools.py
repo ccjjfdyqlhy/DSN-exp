@@ -85,3 +85,67 @@ def test_project_summary_and_todo(reg, tmp_path):
     assert lst["items"][0]["text"] == "任务A"
     call(reg, "project.todo", action="update", index=0, status="done")
     assert call(reg, "project.todo", action="list")["items"][0]["status"] == "done"
+
+
+def test_todo_update_keeps_the_status_it_does_not_mention(reg, tmp_path):
+    """Editing the text must not silently un-complete a finished item."""
+    call(reg, "project.todo", action="add", text="任务A")
+    call(reg, "project.todo", action="update", index=0, status="completed")
+    out = call(reg, "project.todo", action="update", index=0, text="任务A（改）")
+    item = out["items"][0]
+    assert item["text"] == "任务A（改）"
+    assert item["status"] == "completed", item
+
+
+def test_todo_progress_counts(reg):
+    call(reg, "project.todo", action="add", text="A")
+    call(reg, "project.todo", action="add", text="B")
+    call(reg, "project.todo", action="update", index=0, status="completed")
+    out = call(reg, "project.todo", action="list")
+    assert out["count"] == 2 and out["open"] == 1
+
+
+def test_todo_rejects_unknown_actions_and_bad_indexes(reg):
+    call(reg, "project.todo", action="add", text="A")
+    assert call(reg, "project.todo", action="purge")["success"] is False
+    assert call(reg, "project.todo", action="remove", index=5)["success"] is False
+    assert call(reg, "project.todo", action="update", index="x")["success"] is False
+    assert call(reg, "project.todo", action="add", text="   ")["success"] is False
+
+
+def test_todo_never_overwrites_an_unreadable_file(reg, tmp_path):
+    """A corrupt todo file must be reported, not replaced by an empty list."""
+    path = tmp_path / ".harness_todo.json"
+    path.write_text('{"not": "a list"', encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    out = call(reg, "project.todo", action="add", text="A")
+    assert out["success"] is False
+    assert "待办文件不可用" in out["error"]
+    assert path.read_text(encoding="utf-8") == before, "the file must survive"
+    assert call(reg, "project.todo", action="list")["success"] is False
+
+
+def test_todo_survives_concurrent_writers(reg):
+    """Sub-agents call the tool from worker threads; no add may be lost."""
+    import threading
+
+    errors = []
+
+    def add(n):
+        try:
+            out = call(reg, "project.todo", action="add", text=f"t{n}")
+            if not out["success"]:
+                errors.append(out)
+        except Exception as error:      # noqa: BLE001 - reported below
+            errors.append(repr(error))
+
+    threads = [threading.Thread(target=add, args=(n,)) for n in range(24)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, errors[:3]
+    items = call(reg, "project.todo", action="list")["items"]
+    assert sorted(item["text"] for item in items) == sorted(
+        f"t{n}" for n in range(24))

@@ -171,18 +171,18 @@ class TodoPlugin(Plugin):
             try:
                 plan = self._store.create_plan(chat_id, user_id)
                 logger.info("Todo 分解开始: todo_id=%s, chat=%d, user=%d",
-                            plan.todo_id, chat_id, user_id)
+                            plan.plan_id, chat_id, user_id)
 
                 items = self._decompose(message, history)
                 if not items:
-                    self._store.set_failed(plan.todo_id, "未能分解出子任务")
+                    self._store.set_failed(plan.plan_id, "未能分解出子任务")
                     return
 
-                self._store.set_items(plan.todo_id, items)
+                self._store.set_items(plan.plan_id, items)
                 logger.info("Todo 分解完成: %d 个子任务", len(items))
 
                 # 启动子代理
-                self._spawn_sub_agents(plan.todo_id, ctx)
+                self._spawn_sub_agents(plan.plan_id, ctx)
 
             except Exception as e:
                 logger.exception("Todo 分解异常: %s", e)

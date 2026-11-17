@@ -9,12 +9,32 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from ..filediff import FileDiff, format_diff_for_model, make_file_diff, snapshot_file
 from .base import Tool, ToolRegistry
 from .context import resolve_path
+
+
+def tool_result_text(output: Any) -> str:
+    """The model-facing text for a tool result.
+
+    Tool handlers return whatever fits the job -- a str, a dict, a list, a
+    dataclass.  The engine only ever shows *text* to the model, and anything
+    that was not a str used to collapse to an empty string, so a tool that
+    answered ``{'delivered': True}`` looked to the model like it returned
+    nothing at all.  Structured results are serialized as JSON instead.
+    """
+    if output is None:
+        return ''
+    if isinstance(output, str):
+        return output
+    try:
+        return json.dumps(output, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(output)
 
 
 @dataclass
@@ -105,7 +125,7 @@ class ManagedToolRegistry(ToolRegistry):
         path = resolve_path(raw_path) if raw_path else ''
         before = snapshot_file(path) if path else None
         result = tool.run(**args)
-        text = result.output if isinstance(result.output, str) else ''
+        text = tool_result_text(result.output)
         if not result.success:
             if not text.startswith('Error:'):
                 text = f'Error: {result.error or text or "tool failed"}'

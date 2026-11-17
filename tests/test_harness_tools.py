@@ -86,3 +86,27 @@ def test_registry_duplicate_raises():
     reg.register_tool("t", "", lambda: None)
     with pytest.raises(KeyError):
         reg.register(Tool(name="t", description="", handler=lambda: None))
+
+
+def test_a_structured_tool_result_reaches_the_model_as_json():
+    """Non-str tool results must not arrive as an empty string.
+
+    Regression: ``ManagedToolRegistry.execute`` kept the text only when the
+    handler returned a str, so a tool answering ``{'delivered': True}`` (the
+    whole collaboration suite, ``project.todo``, ...) looked to the model like
+    it returned nothing at all.
+    """
+    from harness.tools.registry import AnnotatedTool, ManagedToolRegistry
+
+    reg = ManagedToolRegistry()
+    reg.register(AnnotatedTool(name='probe', description='probe',
+                               parameters={'type': 'object', 'properties': {}},
+                               handler=lambda: {'delivered': True, 'n': 2}))
+    text, _, error = reg.execute('probe', {})
+    assert not error
+    assert text == '{"delivered": true, "n": 2}'
+
+    reg.register(AnnotatedTool(name='silent', description='silent',
+                               parameters={'type': 'object', 'properties': {}},
+                               handler=lambda: None), replace=True)
+    assert reg.execute('silent', {})[0] == ''

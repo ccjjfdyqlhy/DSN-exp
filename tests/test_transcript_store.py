@@ -233,3 +233,47 @@ def test_engine_persists_through_the_db_store(tmp_path):
     assert rows and rows[0]['messages'] >= 2
     loaded = store.load(rows[0]['name'])
     assert loaded.messages[0]['content'] == 'hello there'
+
+
+def test_an_old_session_table_gains_the_own_name_column(tmp_path):
+    """A database written before ``own_name`` must be migrated, not broken.
+
+    Regression: the column was added to the CREATE TABLE script only, so an
+    existing ``agent.db`` kept the old shape and every session save died with
+    "table agent_sessions has no column named own_name" -- for anyone who had
+    run an older build, no turn could be persisted at all.
+    """
+    import sqlite3
+
+    db = tmp_path / 'sessions' / 'agent.db'
+    db.parent.mkdir(parents=True)
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE agent_sessions (
+            name TEXT PRIMARY KEY,
+            title TEXT DEFAULT '',
+            created TEXT NOT NULL,
+            updated TEXT NOT NULL,
+            provider TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            turn INTEGER DEFAULT 0,
+            prefix_generation INTEGER DEFAULT 1,
+            compaction_archive TEXT DEFAULT '[]'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = DbSessionStore(db_path=db)      # this used to leave the table as is
+
+    conn = sqlite3.connect(db)
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(agent_sessions)')}
+    conn.close()
+    assert 'own_name' in columns
+
+    payload = _payload(name='s_old')
+    payload.messages = [{'role': 'user', 'content': 'hi'}]
+    store.save(payload)                     # used to raise OperationalError
+    assert store.load('s_old').messages[0]['content'] == 'hi'

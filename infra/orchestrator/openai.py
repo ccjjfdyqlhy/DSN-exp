@@ -678,7 +678,16 @@ class OpenAICompatClient(ChatClientAdapter):
         # output_index -> {id, name}（function_call 元信息来自 output_item.added）
         call_meta: dict[int, dict] = {}
         finish: Optional[str] = None
-        async with self._async_client.responses.stream(**params) as stream:
+        # Use the raw Responses event stream instead of responses.stream():
+        # the SDK's ResponseStreamState indexes snapshot.output[output_index]
+        # and output.content[content_index] on delta events.  Third-party
+        # gateways that emit deltas before the matching output_item.added /
+        # content_part.added events make those lists shorter than the index,
+        # raising "IndexError: list index out of range" mid-stream.  Raw
+        # events carry the same type/index/delta fields without the fragile
+        # accumulator.
+        stream = await self._async_client.responses.create(**params, stream=True)
+        try:
             async for event in stream:
                 et = getattr(event, "type", "")
                 if et == "response.output_text.delta":
@@ -716,6 +725,11 @@ class OpenAICompatClient(ChatClientAdapter):
                         details = getattr(response, "incomplete_details", None)
                         reason = str(getattr(details, "reason", "") or "")
                         finish = "length" if reason == "max_output_tokens" else "incomplete"
+        finally:
+            try:
+                await stream.close()
+            except Exception:
+                pass
         if finish is not None:
             yield {"finish": finish}
 

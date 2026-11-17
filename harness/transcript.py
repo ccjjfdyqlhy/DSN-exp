@@ -342,6 +342,20 @@ class SessionStore:
 
 
 
+def _add_own_name(conn: Any) -> None:
+    """Give pre-existing session tables the ``own_name`` column.
+
+    The column is part of the create script, so a fresh database already
+    has it and only a database written by an older build needs the ALTER
+    -- hence the guard: a bare ``ALTER TABLE ... ADD COLUMN`` would fail
+    on every new install and take the whole migration run with it.
+    """
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(agent_sessions)')}
+    if 'own_name' not in columns:
+        conn.execute(
+            "ALTER TABLE agent_sessions ADD COLUMN own_name TEXT DEFAULT ''")
+
+
 _DB_MIGRATIONS = [
     Migration('harness-001-agent-sessions', lambda c: c.executescript(
         """
@@ -377,6 +391,7 @@ _DB_MIGRATIONS = [
             ON agent_items(session_name, seq);
         """
     )),
+    Migration('harness-002-agent-sessions-own-name', _add_own_name),
 ]
 
 
