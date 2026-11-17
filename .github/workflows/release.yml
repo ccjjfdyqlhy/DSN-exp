@@ -39,8 +39,11 @@ jobs:
       - name: install the package and run the smoke tests
         run: |
           python -m pip install -e ".[mcp,anthropic,socks]"
+          # tests/test_version.py keeps pyproject, harness.__version__ and the
+          # docs in step: the tag check above only compares against pyproject.
           python -m pytest tests/test_transcript_store.py tests/test_agent_engine.py \
-            tests/test_orchestrator_gaps.py tests/test_harness_agent.py -q
+            tests/test_orchestrator_gaps.py tests/test_harness_agent.py \
+            tests/test_version.py -q
 
       - name: build
         run: python -m build
