@@ -71,6 +71,7 @@ from .context_assembly import (
 )
 from .todo import TodoItem, TodoPlan, TodoStore, default_todo_path
 from .sdk import Agent, create_agent, tool
+from .agent.team import Team
 
 __version__ = "1.0.0"
 
@@ -102,6 +103,7 @@ __all__ = [
     "Agent",
     "create_agent",
     "tool",
+    "Team",
     "policy",
     "orchestrator",
     "models",

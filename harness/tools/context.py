@@ -21,6 +21,9 @@ class ToolContext:
     interrupt: threading.Event = field(default_factory=threading.Event)
     live_sink: Callable[[str], None] | None = None
     agent: str = 'root'
+    #: 本次运行的依赖（ToolDeps 实例）。用户自定义工具通过
+    #: ``current_deps().extra["..."]`` 拿自己的应用状态（数据库、连接、缓存…）。
+    deps: Any = None
 
 
 _CURRENT: contextvars.ContextVar[ToolContext | None] = contextvars.ContextVar(
@@ -38,6 +41,14 @@ def current_context() -> ToolContext:
         context = ToolContext()
         _CURRENT.set(context)
     return context
+
+
+def current_deps() -> Any:
+    """当前这次运行的依赖（ToolDeps）。
+
+    没注入时返回 None —— 工具要自己判空，不要假设一定有。
+    """
+    return current_context().deps
 
 
 def push_context(context: ToolContext):

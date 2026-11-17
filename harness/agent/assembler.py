@@ -256,7 +256,7 @@ class AgentAssembler:
 
         # 8) Agent 循环
         loop = AgentLoop(self.client, tools, max_steps=spec.max_steps,
-                         toolbox=toolbox)
+                         toolbox=toolbox, deps=deps)
         runtime.register("loop", loop)
         runtime.register("router", router) if router else None
         runtime.register("meter", meter)

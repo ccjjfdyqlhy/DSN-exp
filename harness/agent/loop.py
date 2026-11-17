@@ -21,6 +21,7 @@ from typing import Any, AsyncGenerator, Callable, Optional
 
 from infra.models.base import ChatMessage, ChatResponse, IChatClient, ToolCall
 from ..tools import ToolRegistry, ToolResult, from_wire_name
+from ..tools.context import current_context, pop_context, push_context
 from .adapters import IMAGE_KEYS, ToolCallAdapter, NativeToolCallAdapter
 
 logger = logging.getLogger("harness.agent")
@@ -110,12 +111,80 @@ class ToolExecution:
     result: ToolResult
 
 
+class _NullContext:
+    """什么也不做的上下文管理器（deps 已有或不需要时用）。"""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _PushedContext:
+    """push 一个 ToolContext，退出时还原。"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+        self._token = None
+
+    def __enter__(self):
+        self._token = push_context(self._ctx)
+        return self._ctx
+
+    def __exit__(self, *exc):
+        if self._token is not None:
+            pop_context(self._token)
+        return False
+
+
 @dataclass
 class AgentRunResult:
+    """一次 run 的结果。
+
+    为了让 ``agent.run("...")`` 和 ``agent.chat("...")`` 用起来一样自然，
+    这个对象**表现得像字符串**：可以直接 str()、可以直接比较、可以 in。
+    需要细节（工具执行、步数、usage）时用属性拿。
+
+        result = agent.run("查一下天气")
+        print(result)            # 等价于 print(result.reply)
+        assert result == "今天晴"  # 与字符串直接比较
+        result.tool_executions    # 工具执行明细
+    """
+
     reply: str = ""
     tool_executions: list[ToolExecution] = field(default_factory=list)
     steps: int = 0
     hit_max_steps: bool = False
+
+    @property
+    def text(self) -> str:
+        """回复文本（``reply`` 的别名，读起来更顺）。"""
+        return self.reply
+
+    def __str__(self) -> str:
+        return self.reply
+
+    def __bool__(self) -> bool:
+        return bool(self.reply)
+
+    def __len__(self) -> int:
+        return len(self.reply)
+
+    def __contains__(self, item: object) -> bool:
+        return item in self.reply
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.reply == other
+        if isinstance(other, AgentRunResult):
+            return (self.reply == other.reply
+                    and self.steps == other.steps
+                    and self.hit_max_steps == other.hit_max_steps)
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash((self.reply, self.steps, self.hit_max_steps))
 
 
 @dataclass
@@ -162,11 +231,14 @@ class AgentLoop:
         on_tool_error: Optional[Callable[[str, str], None]] = None,
         toolbox: Optional[Any] = None,
         on_usage: Optional[Callable[[dict], None]] = None,
+        deps: Any = None,
     ):
         # client/tools 在原生路径（run_async）必需；run_rounds 轮次策略模式可缺省
         self.client = client
         self.tools = tools
         self.adapter = adapter or NativeToolCallAdapter()
+        # 本次运行的依赖（ToolDeps）。工具通过 current_deps() 取自己的应用状态。
+        self.deps = deps
         self.max_steps = max_steps
         self.max_output_chars = max_output_chars
         # 墙钟预算（秒）：max_steps<=0（不限轮数）时的兜底，防止工具调用死循环。
@@ -265,7 +337,8 @@ class AgentLoop:
                 if tool is None:
                     result = ToolResult.fail(f"工具不存在: {tc.name}")
                 else:
-                    result = await tool.run_async(**tc.arguments)
+                    with self._tool_context():
+                        result = await tool.run_async(**tc.arguments)
                 if not result.success and self.on_tool_error:
                     self.on_tool_error(tc.name, result.error or "")
                 executions.append(ToolExecution(
@@ -490,7 +563,7 @@ class AgentLoop:
                 else:
                     tool = self.tools.get(tc.name)
                     result = (ToolResult.fail(f"工具不存在: {tc.name}")
-                              if tool is None else await tool.run_async(**tc.arguments))
+                              if tool is None else await self._run_tool(tool, tc.arguments))
                 if not result.success and self.on_tool_error:
                     self.on_tool_error(tc.name, result.error or "")
                 safe_output = self._truncate_output(result.output)
@@ -683,6 +756,23 @@ class AgentLoop:
             self.on_usage(usage)
         except Exception as e:  # noqa: BLE001
             logger.warning("用量回调失败（已忽略）: %s", e)
+
+    def _tool_context(self):
+        """工具执行期间的上下文：补上 deps，但**不覆盖**外层已有的上下文。
+
+        引擎路径（ConversationEngine）已经 push 过一个带 interrupt/live_sink 的
+        ToolContext；SDK 路径没有，于是这里补一个。两种路径下工具都能拿到
+        current_deps()。
+        """
+        ctx = current_context()
+        if self.deps is None or ctx.deps is not None:
+            return _NullContext()
+        from dataclasses import replace
+        return _PushedContext(replace(ctx, deps=self.deps))
+
+    async def _run_tool(self, tool: Any, arguments: dict):
+        with self._tool_context():
+            return await tool.run_async(**arguments)
 
     def _truncate_output(self, output: Any) -> Any:
         """弹性截断工具输出，防止过大结果击穿模型上下文。"""

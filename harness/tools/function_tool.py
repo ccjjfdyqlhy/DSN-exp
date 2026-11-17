@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Optional, get_type_hints
+from typing import Any, Callable, Optional, Union, get_type_hints
 
 from . import Tool
 
@@ -91,3 +91,28 @@ def tools_from_module(module: Any, *, namespace: str = "",
         except (ValueError, TypeError):
             continue
     return tools
+
+
+def tool(fn: Optional[Callable] = None, *, name: Optional[str] = None,
+         description: Optional[str] = None,
+         namespace: str = "") -> Union[Tool, Callable[[Callable], Tool]]:
+    """把普通 Python 函数变成 Agent 可用的工具（装饰器写法）。
+
+    放这里而不是只放 sdk，是为了让 ``from harness.tools import tool`` 能用——
+    那是大多数人找工具装饰器时第一个会试的导入路径。
+
+    示例:
+        from harness.tools import tool
+
+        @tool
+        def get_weather(city: str) -> str:
+            '''获取城市天气'''
+            return f"{city} 天气晴"
+    """
+    def decorator(func: Callable) -> Tool:
+        return tool_from_function(func, name=name, description=description,
+                                  namespace=namespace)
+
+    if fn is not None:
+        return decorator(fn)
+    return decorator

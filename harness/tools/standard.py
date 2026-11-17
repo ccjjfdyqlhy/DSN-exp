@@ -53,6 +53,9 @@ class ToolDeps:
         # 思路模板缓存服务（apps/dsn_ui/thought_cache.py 的 ThoughtCacheService）。
         # 未注入时 cache.recall 优雅降级为 hits: 0，不抛异常。
         self.thought_cache: Any = kwargs.get("thought_cache")
+        # 用户自己的依赖（数据库连接、缓存、租户信息…）。
+        # 用户工具通过 current_deps().extra["key"] 取。
+        self.extra: dict = dict(kwargs.get("extra") or {})
 
 
 # ── 文件工具 ──

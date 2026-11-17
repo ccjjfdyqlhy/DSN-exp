@@ -25,28 +25,24 @@ from infra.orchestrator.dynamic_router import DynamicRouter
 from infra.orchestrator.failover import FailoverChat
 from infra.orchestrator.router import ModelOrchestrator
 from .tools.base import Tool, ToolRegistry
-from .tools.function_tool import tool_from_function
+from .tools.function_tool import tool, tool_from_function
 from .tools.standard import ToolDeps, install_standard_tools
 
 
-def tool(fn: Optional[Callable] = None, *, name: Optional[str] = None,
-         description: Optional[str] = None,
-         namespace: str = "") -> Union[Tool, Callable[[Callable], Tool]]:
-    """将普通 Python 函数快速转为可供 Agent 使用的 Tool 对象。
+def _deps_to_mapping(deps: Any) -> Optional[dict]:
+    """把 deps（ToolDeps 实例或 dict）转成 AgentSpec.tool_deps 能吃的 dict。
 
-    示例:
-        @tool
-        def get_weather(city: str) -> str:
-            '''获取城市天气'''
-            return f"{city} 天气晴"
+    AgentSpec.tool_deps 是「ToolDeps 的构造 kwargs」，
+    所以这里只把 extra 原样带过去，其余字段由框架自己填。
     """
-    def decorator(func: Callable) -> Tool:
-        return tool_from_function(func, name=name, description=description,
-                                  namespace=namespace)
-
-    if fn is not None:
-        return decorator(fn)
-    return decorator
+    if deps is None:
+        return None
+    if isinstance(deps, dict):
+        return dict(deps)
+    extra = getattr(deps, "extra", None)
+    if isinstance(extra, dict) and extra:
+        return {"extra": dict(extra)}
+    return None
 
 
 class Agent:
@@ -68,6 +64,7 @@ class Agent:
         enable_toolbox: bool = False,
         enable_memory: bool = False,
         mcp: Optional[Union[list, dict, str]] = None,
+        deps: Optional[Any] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
@@ -108,6 +105,7 @@ class Agent:
             tools=tool_spec,
             toolbox=toolbox_spec,
             budget=budget_config,
+            tool_deps=_deps_to_mapping(deps),
             memory=enable_memory,
             mcp=mcp_spec,
         )
@@ -117,9 +115,15 @@ class Agent:
         # MCP 惰性预热标志：首个异步入口（chat_async/run_async/chat_stream）触发
         self._mcp_ready = False
 
-        # 如果手动注册了自定义工具函数，合并到 assembled.loop.tools 中
+        # 如果手动注册了自定义工具函数，合并到 assembled.loop.tools 中。
+        #
+        # 修复说明（DX-2026-11-18）：原来写的是 `if self._assembled.loop.tools:`。
+        # ToolRegistry 定义了 __len__，**空注册表是 falsy** → 当 agent 没有
+        # standard 工具时（最常见的情况），整个合并被跳过 → 用户传进来的工具
+        # 从未注册进 loop，模型收到的工具 schema 是空的，工具调用永远不发生，
+        # 而且**没有任何报错**。改成显式的 `is not None` 判断。
         for t in self.tool_registry.tools():
-            if self._assembled.loop.tools:
+            if self._assembled.loop.tools is not None:
                 self._assembled.loop.tools.register(t, replace=True)
 
     async def _ensure_mcp_ready(self) -> None:
@@ -219,6 +223,14 @@ class Agent:
         return await self._assembled.loop.run_async(msgs, system_prompt=self.system_prompt_text)
 
 
+#: create_agent 认识的「Agent 侧」选项。**其余**关键字参数会被转交给模型客户端
+#: （temperature / timeout / max_tokens / max_retries …），因此签名不需要列全。
+_AGENT_OPTIONS = (
+    "max_steps", "workspace", "router_config", "budget_config",
+    "enable_toolbox", "enable_memory", "mcp", "deps",
+)
+
+
 def create_agent(
     model: str = "gpt-4o-mini",
     *,
@@ -227,63 +239,75 @@ def create_agent(
     client: Optional[IChatClient] = None,
     system_prompt: str = "You are a helpful assistant.",
     tools: Optional[Union[List[Union[Tool, Callable]], str, dict]] = None,
-    max_steps: int = 8,
-    workspace: Optional[str] = None,
-    budget_cap: Optional[float] = None,
-    token_cap: Optional[int] = None,
-    enable_toolbox: bool = False,
-    enable_memory: bool = False,
-    mcp_servers: Optional[list] = None,
-    mcp_config: Optional[str] = None,
-    **kwargs: Any,
+    **options: Any,
 ) -> Agent:
     """SDK 快速工厂函数：一行代码创建嵌入式 Agent。
 
-    参数:
-        model: 模型名称（如 deepseek-chat, gpt-4o, 或本地 LMStudio 上的模型名）
-        api_key: 模型 API Key（若为空，默认读取环境变量 OPENAI_API_KEY）
-        base_url: 模型服务 Base URL（如 https://api.deepseek.com/v1 或 http://localhost:1234/v1）
-        client: 自定义 IChatClient 实例（提供时优先使用，忽略 model/api_key/base_url）
-        system_prompt: 系统提示词
-        tools: 工具列表（可传标准工具名 "standard"、自定义函数列表、或 Tool 对象列表）
-        max_steps: 单次任务工具调用最大循环步数
-        workspace: 工作目录路径（用于标准文件工具等）
-        budget_cap: 预算花费上限（美元）
-        token_cap: Token 数量上限
-        enable_toolbox: 是否开启两阶段工具动态激活
-        enable_memory: 是否开启向量记忆检索
-        mcp_servers: 外部 MCP 服务器列表（[{"name": ..., "transport": "stdio", ...}]，
-                      工具注册为 mcp.<server>.<tool>；需要 pip install 'mcp>=1.2'）
-        mcp_config: mcp_servers.yaml 路径（与 mcp_servers 可同时给，内联优先）
+    **常用的只有前 7 个参数**；其余全部写进 ``options``：
+
+    ==================  ==========================================
+    选项                 含义
+    ==================  ==========================================
+    max_steps           单次任务工具调用最大循环步数（默认 8）
+    workspace           工作目录（标准文件工具用）
+    budget_cap          预算花费上限（美元）
+    token_cap           Token 数量上限
+    enable_toolbox      两阶段工具动态激活
+    enable_memory       向量记忆检索
+    mcp_servers         外部 MCP 服务器列表
+    mcp_config          mcp_servers.yaml 路径
+    deps                工具依赖（ToolDeps 或 {"extra": {...}}）
+    ==================  ==========================================
+
+    **不属于上表的关键字参数会转交给模型客户端**
+    （temperature / timeout / max_tokens / max_retries …），
+    所以不必为了调模型参数去改这个函数的签名。
 
     示例:
         from harness import create_agent, tool
 
         @tool
         def add(a: int, b: int) -> int:
+            '''把两个数相加'''
             return a + b
 
         agent = create_agent(model="deepseek-chat", api_key="sk-...", tools=[add])
         print(agent.chat("计算 123 + 456"))
     """
-    if client is None:
-        client = OpenAICompatClient(
-            model=model,
-            api_key=api_key or "",
-            base_url=base_url or "",
-            **kwargs,
-        )
+    options = dict(options)
 
-    budget_config = None
+    max_steps = options.pop("max_steps", 8)
+    workspace = options.pop("workspace", None)
+    router_config = options.pop("router_config", None)
+    budget_config = options.pop("budget_config", None)
+    enable_toolbox = options.pop("enable_toolbox", False)
+    enable_memory = options.pop("enable_memory", False)
+    mcp = options.pop("mcp", None)
+    deps = options.pop("deps", None)
+
+    budget_cap = options.pop("budget_cap", None)
+    token_cap = options.pop("token_cap", None)
     if budget_cap is not None or token_cap is not None:
         budget_config = {
             "cost_cap": budget_cap,
             "token_cap": token_cap,
         }
 
-    mcp: Optional[Union[list, dict, str]] = None
+    mcp_servers = options.pop("mcp_servers", None)
+    mcp_config = options.pop("mcp_config", None)
     if mcp_servers is not None or mcp_config is not None:
         mcp = {"servers": mcp_servers or [], "config": mcp_config}
+
+    if client is None:
+        client = OpenAICompatClient(
+            model=model,
+            api_key=api_key or "",
+            base_url=base_url or "",
+            **options,          # 剩下的都是模型客户端的参数
+        )
+    elif options:
+        # 已经自带客户端时，多余参数无处可去（与旧行为一致：忽略）。
+        pass
 
     return Agent(
         client=client,
@@ -291,8 +315,10 @@ def create_agent(
         tools=tools,
         max_steps=max_steps,
         workspace=workspace,
+        router_config=router_config,
         budget_config=budget_config,
         enable_toolbox=enable_toolbox,
         enable_memory=enable_memory,
         mcp=mcp,
+        deps=deps,
     )

@@ -56,12 +56,34 @@ pip install "aicf-core[all]"           # everything
 
 ---
 
+## 🧩 Just want to write an agent? Five symbols.
+
+Most people only need these five. Everything else in `harness` exists for
+people building a *platform* on top of it.
+
+```python
+from harness import Agent, create_agent, tool   # the three you write with
+from harness.tools import ToolRegistry           # when you manage tools yourself
+from infra.models.base import IChatClient        # the model interface
+```
+
+| Symbol | What it is |
+|---|---|
+| `tool` | turns a typed function into a tool (schema generated from the signature) |
+| `Agent` | an agent bound to a client — `chat()` / `run()` / `chat_stream()` |
+| `create_agent` | one-liner factory: model + key + tools |
+| `ToolRegistry` | the tool table (only if you register them yourself) |
+| `IChatClient` | the model interface — implement it to plug in your own backend |
+
+Everything else — `harness.agent.*`, `harness.tools.standard`, `infra.*` — is
+there for the people who need it, not for the people who just want an agent.
+
 ## 🚀 Sixty seconds
 
 ```python
-from harness import create_agent
-from harness.tools import tool_from_function
+from harness import create_agent, tool
 
+@tool
 def add(a: int, b: int) -> int:
     """Add two numbers."""
     return a + b
@@ -70,11 +92,11 @@ agent = create_agent(
     model="deepseek-chat",
     base_url="https://api.deepseek.com/v1",
     api_key="sk-...",                 # or just export OPENAI_API_KEY
-    tools=[tool_from_function(add)],
+    tools=[add],
 )
 
 result = agent.run("what is 17 + 25?")
-print(result.reply)
+print(result)                        # the result is string-like
 ```
 
 Any OpenAI-compatible endpoint works. For a local model, point `base_url` at your

@@ -56,12 +56,33 @@ pip install "aicf-core[all]"           # 全都要
 
 ---
 
+## 🧩 只想写个 Agent？五个符号就够了
+
+大多数人只需要下面五个。`harness` 里其余的东西，是给要在它**之上建平台**的人准备的。
+
+```python
+from harness import Agent, create_agent, tool   # 你真正会写的三个
+from harness.tools import ToolRegistry           # 自己管工具注册表时才用
+from infra.models.base import IChatClient        # 模型接口
+```
+
+| 符号 | 是什么 |
+|---|---|
+| `tool` | 把带类型注解的函数变成工具（schema 从签名自动生成） |
+| `Agent` | 绑定到某个客户端的 agent——`chat()` / `run()` / `chat_stream()` |
+| `create_agent` | 一行工厂：模型 + key + 工具 |
+| `ToolRegistry` | 工具表（只有自己注册工具时才需要） |
+| `IChatClient` | 模型接口——实现它就能接自己的后端 |
+
+其余的（`harness.agent.*`、`harness.tools.standard`、`infra.*`）是给需要它们的人，
+不是给只想写个 agent 的人的。
+
 ## 🚀 六十秒
 
 ```python
-from harness import create_agent
-from harness.tools import tool_from_function
+from harness import create_agent, tool
 
+@tool
 def add(a: int, b: int) -> int:
     """把两个数相加。"""
     return a + b
@@ -70,11 +91,11 @@ agent = create_agent(
     model="deepseek-chat",
     base_url="https://api.deepseek.com/v1",
     api_key="sk-...",                 # 或者直接 export OPENAI_API_KEY
-    tools=[tool_from_function(add)],
+    tools=[add],
 )
 
 result = agent.run("17 + 25 等于多少？")
-print(result.reply)
+print(result)                        # 结果对象也能直接当字符串用
 ```
 
 任意 OpenAI 兼容端点都行。用本地模型时把 `base_url` 指向你的
