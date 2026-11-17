@@ -1,54 +1,40 @@
 # 本地运行与排障
 
-> 读者：第一次在本机把这个项目跑起来的人，以及被环境问题卡住的人。
-> 所有命令都在仓库根目录执行。
+> 读者：第一次在本机把 **aicf-core** 跑起来的人，以及被环境问题卡住的人。
+>
+> ⚠️ **2026-11-18 起本仓只有底层库**（`harness` + `infra`）。
+> 四个应用（控制台 / 语音 / 学习 / 编码助手）已拆到各自的仓库，
+> 见 [split_migration.md](split_migration.md)。本文命令都在**本仓根目录**执行。
 
 ---
 
-## 一、环境准备
+## 一、把 core 当库用
 
 ### 1.1 Python
 
-要求 **3.10+**。本仓库作者环境实测为 **3.12**（`~/anaconda3`）。
-
-先确认你的解释器：
+要求 **3.10+**。先确认你的解释器：
 
 ```bash
 python3 --version        # 若系统只有 python3，下文命令请把 python 换成 python3
 ```
 
 > ⚠️ **常见坑**：很多 Linux 发行版默认不提供 `python` 这个命令，只有 `python3`。
-> README 里写的 `python main.py` 在这类机器上要写成 `python3 main.py`。
 
-### 1.2 安装依赖
+### 1.2 安装
 
 ```bash
-pip install -r requirements.txt   # 运行框架与全部应用所需
-pip install -e .                  # 可选：以 SDK 方式安装 harness + infra
+pip install -e ".[mcp,anthropic,socks]"   # 从源码装（含 MCP / Anthropic / SOCKS 三条可选线）
+pip install -e .                            # 只要内核的话，最小依赖即可
 ```
 
-> `pip install -e .` 只会安装 **框架**（`harness` + `infra`）及其最小依赖，
-> **不含** Flask/FastAPI 等应用依赖。想跑 Web 界面仍然需要 `requirements.txt`。
+或者直接从 PyPI 装（**1.0.0 尚未发布，线上是 0.6.1**）：
 
-> ⚠️ `requirements.txt` 里的版本号是**精确钉死**的（`openai==2.38.0`、
-> `numpy==1.26.4` 等），等于把作者那台机器冻住了。换机器装不上时，
-> 先怀疑的是这些钉子，而不是你的环境：
->
-> ```bash
-> pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple   # 换镜像
-> pip install -r requirements.txt --upgrade                                     # 放开版本约束
-> ```
->
-> 其中 `numpy==1.26.4` 没有 Python 3.13+ 的 wheel，
-> `cryptography==50.0.0` 在部分平台需要 Rust 工具链。
->
-> **推荐直接用一键安装器**，它会建独立虚拟环境并按 `requirements.txt` 安装：
->
-> ```bash
-> python3 installer.py
-> ```
->
-> 想先体检再决定：`python3 installer.py --doctor`（只读，不改动任何东西）。
+```bash
+pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
+```
+
+extra 说明见 [README](../README_zh.md#-安装)：`personality` / `decisions` / `learning` /
+`finetune` / `mcp` / `anthropic` / `socks` / `all`。
 
 ### 1.3 配置
 
@@ -56,7 +42,7 @@ pip install -e .                  # 可选：以 SDK 方式安装 harness + infr
 cp .env.example .env
 ```
 
-然后编辑 `.env`，**至少**填写这两项：
+至少填这两项：
 
 ```ini
 MAIN_MODEL_TYPE=openai
@@ -65,49 +51,54 @@ OPENAI_API_KEY=sk-你的真实密钥
 OPENAI_API_BASE=https://api.deepseek.com/v1
 ```
 
-`.env.example` 有 344 行、200+ 个变量，但**绝大多数都有合理默认值**。
-完整的变量分类说明见 [configuration.md](configuration.md)。
-
-> `.env` 已被 `.gitignore` 忽略，不会误提交。**不要**把密钥写进代码或文档。
+`.env.example` 有 400+ 行、200+ 个变量，但**绝大多数都有合理默认值**。
+完整分类见 [configuration.md](configuration.md)。
+> `.env` 已被 `.gitignore` 忽略。**不要**把密钥写进代码或文档。
 
 ### 1.4 确认装好了
 
 ```bash
-python3 -c "import fastapi, flask, openai, yaml, dotenv; print('deps ok')"
 python3 -c "import harness; print('harness', harness.__version__)"   # 期望 1.0.0
-python3 main.py --list
-python3 installer.py --doctor                                    # 环境体检（只读）
+python3 -c "import infra; print('infra ok')"
+python3 -m pytest -q tests/                                          # 跑测试
 ```
 
-`--list` 的预期输出（7 个应用）：
+### 1.5 跑一个最小 Agent
 
-```text
-  coding_agent    基于 harness 的 coding agent 示例
-  densechat       基于 harness 复刻的 DenseChat WebUI（代码助手）
-  dsn            *  DSN 语音陪伴应用（默认）
-  dsn_study       DSN 学习特化应用（题库、模拟考试、知识图谱）
-  dsn_ui          现代化统一 Web 控制台与模型调度交互界面
-  emotion_exp     基于 harness 话题上下文与情绪状态机的伴侣 Agent
-  text_agent      harness 参考应用（纯文本 agent）
+```python
+from harness import create_agent
+from harness.tools import tool_from_function
+
+def add(a: int, b: int) -> int:
+    """把两个数相加。"""
+    return a + b
+
+agent = create_agent(
+    model="deepseek-chat",
+    base_url="https://api.deepseek.com/v1",
+    api_key="sk-...",                 # 或 export OPENAI_API_KEY
+    tools=[tool_from_function(add)],
+)
+print(agent.run("17 + 25 等于多少？").reply)
 ```
 
 ---
 
-## 二、跑起来
+## 二、跑应用（不在本仓）
 
-### 2.1 最快验证：不需要任何 API Key
+四个应用各自独立成仓，装法都是 `pip install -e .`：
 
-```bash
-python3 -m apps.emotion_exp
-```
-
-没有 `OPENAI_API_KEY` 时它会自动降级到 `StubChatClient`（固定回复），
-**因此一定能启动成功**。用它验证「框架能跑」是最快的方式。
-
-### 2.2 Web 控制台（日常主入口）
+| 想跑什么 | 仓库 | 启动命令 | 默认端口 |
+|---|---|---|---|
+| Web 控制台（日常主入口） | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | `python -m aicf_ui.server` | 8888 |
+| 语音陪伴 | [`aicf-dsn`](https://github.com/ccjjfdyqlhy/aicf-dsn) | `python -m aicf_dsn` | 5000 |
+| 学习助手 | [`aicf-study`](https://github.com/ccjjfdyqlhy/aicf-study) | `python -m aicf_study` | 5000 |
+| 终端编码助手 | [`aicf-code`](https://github.com/ccjjfdyqlhy/aicf-code) | `python -m aicf_code` | — |
 
 ```bash
-python3 -m apps.dsn_ui.server --host 127.0.0.1 --port 8888 --slots 2
+git clone https://github.com/ccjjfdyqlhy/aicf-ui.git && cd aicf-ui
+pip install -e .
+python -m aicf_ui.server --host 127.0.0.1 --port 8888
 ```
 
 浏览器打开 <http://127.0.0.1:8888>。
@@ -118,48 +109,8 @@ python3 -m apps.dsn_ui.server --host 127.0.0.1 --port 8888 --slots 2
 | `--port` | `8888` | `DSN_UI_PORT` |
 | `--slots` | `2` | `DSN_UI_DEFAULT_SLOTS` |
 
-> ⚠️ 必须**单进程**运行。SSE 广播与流会话注册表都是进程内单例，
-> 用 uvicorn 多 worker 或 gunicorn 会破坏断线重连。
-
-### 2.3 其他应用
-
-```bash
-python3 main.py --app dsn_study      # 学习助手（Flask，:5000）
-python3 main.py                      # DSN UI 网页控制台（默认，:8888）
-python3 main.py --app dsn            # DSN 语音陪伴（:5000，需终端）
-python3 -m apps.coding_agent         # 编码助手 REPL
-python3 -m apps.densechat            # DenseChat WebUI（:8080）
-```
-
-> ⚠️ `dsn` 与 `dsn_study` **默认端口都是 5000**，不要同时启动。
-
-### 2.3.1 仓库级引导（按需求自动配置）
-
-不确定该开哪些能力时，先运行根目录的 Textual TUI：
-
-```bash
-python3 onboarding.py            # 询问需求 → 选能力 → 确认计划 → 自动执行
-python3 onboarding.py --list     # 只列出目标 / 应用 / 能力
-python3 onboarding.py --check    # 非交互检查环境与已有资源
-```
-
-它会按你的选择写入 `.env`、安装依赖、克隆 llama.cpp / GPT-SoVITS、
-下载 GGUF 模型并生成 `apps/dsn/model_profiles/onboarding_*.yaml`。
-所有仓库克隆与下载都会在执行前列出，确认后才开始；已存在的文件会跳过。
-
-
-### 2.4 端口一览
-
-| 端口 | 服务 | 开关 |
-|---|---|---|
-| 8888 | dsn_ui Web 控制台 | `DSN_UI_PORT` |
-| 5000 | dsn 主 API / dsn_study Web | `SERVER_PORT` |
-| 5050 | dsn 调试接口 | `DEBUG_PLAY_AS_MODEL=true` |
-| 8008 | dsn 管理后台 | `WEB_ADMIN_ENABLED=true` |
-| 8080 | densechat | `DENSECHAT_PORT` |
-| 4501 | LM Studio（被连接） | `LMSTUDIO_BASE_URL` |
-
----
+> 应用侧还提供 `installer.py`（建 venv + 装依赖 + 首次运行）与 `main.py`（套件启动器，
+> 按入口模块探测装了哪些应用，没装的显示 `[未安装]` 而不是崩）。
 
 ## 三、接入模型
 
@@ -192,7 +143,7 @@ llama_config:
 > `config.py` 注释里提到的 `DSN_UI_MODEL_PROFILES_DIR` 环境变量**并未实现**，改了不生效。
 >
 > 模板在 `apps/dsn/model_profiles.example/`，复制过去并改掉路径才会生效。
-> 用 `python3 installer.py --doctor` 可以提前查出哪些 profile 的路径在本机不存在。
+> 用 `python installer.py --doctor        # 在 aicf-ui 仓里` 可以提前查出哪些 profile 的路径在本机不存在。
 
 ### 3.3 用图形界面配置（推荐新手）
 

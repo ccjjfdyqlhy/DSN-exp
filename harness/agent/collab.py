@@ -236,6 +236,14 @@ class AgentManager:
         return self._agent_types.get(name)
 
     async def shutdown(self) -> None:
+        """Stop every child engine and settle the records.
+
+        The root engine belongs to the application, which shuts it down
+        itself; a child was created here, so its engine has to be closed here
+        too.  Skipping that step left every child's run loop alive until the
+        event loop died -- at exit the process printed "Task was destroyed but
+        it is pending" / "Event loop is closed" for each of them.
+        """
         self._shutdown = True
         for record in list(self._agents.values()):
             record.engine.interrupt()
@@ -246,6 +254,13 @@ class AgentManager:
                     record.task.cancel()
             if record.status in ACTIVE_STATES:
                 record.status = SHUTDOWN    # finished agents keep their outcome
+            if record.name == ROOT_AGENT:
+                continue
+            try:
+                await record.engine.shutdown()
+            except Exception:      # noqa: BLE001 - one engine must not block exit
+                logger.warning('agent %s did not shut down cleanly',
+                               record.name, exc_info=True)
 
     # ── engine-facing protocol ──────────────────────────────
     def consume_mailbox(self, engine: ConversationEngine) -> list[str]:
