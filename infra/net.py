@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from email.message import Message
-from typing import Any
+from typing import Any, Callable, Iterator
 
 SOCKS_SCHEMES = frozenset({'socks', 'socks4', 'socks4a', 'socks5', 'socks5h'})
 
@@ -191,8 +191,60 @@ def build_http_client(timeout: float = 600.0, follow_redirects: bool = True) -> 
     )
 
 
+def build_async_http_client(timeout: float = 600.0,
+                            follow_redirects: bool = True) -> Any:
+    """Build an ``httpx.AsyncClient`` that understands the configured proxy.
+
+    The provider SDKs drive the wire through both a sync and an async httpx
+    client, so a caller that injects one has to inject the other too: the
+    side left to the library would build its own client from the environment
+    and refuse to start on a proxy scheme it does not know.
+
+    Args:
+        timeout: per-request timeout in seconds.
+        follow_redirects: whether redirects are followed.
+
+    Returns:
+        An ``httpx.AsyncClient``. Pass it as ``async_http_client=`` to
+        OpenAICompatClient / AnthropicCompatClient, or use it directly.
+
+    Raises:
+        ProxyError: a SOCKS proxy is configured but the socksio extra is
+            missing.
+    """
+    httpx = httpx_module()
+
+    proxies = environment_proxies()
+    mounts: dict[str, Any] = {}
+    for pattern, url in proxies.items():
+        if url is None:
+            mounts[pattern] = None
+            continue
+        try:
+            mounts[pattern] = httpx.AsyncHTTPTransport(
+                proxy=url, socket_options=_socket_options())
+        except ImportError as error:
+            raise ProxyError(
+                'SOCKS proxy support is missing: install the socks extra '
+                '(pip install "httpx[socks]") or remove the proxy from the '
+                f'environment. ({error})') from error
+    return httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(socket_options=_socket_options()),
+        mounts=mounts,
+        timeout=timeout,
+        follow_redirects=follow_redirects,
+    )
+
+
 def http_client() -> Any:
-    """A shared client for the urllib-style helpers."""
+    """A shared client for the urllib-style helpers.
+
+    The cache only covers the plain (no SOCKS) path: a SOCKS proxy is read
+    from the environment per call, and a client built before the variable
+    was set would silently bypass it for the life of the process.
+    """
+    if has_socks_proxy():
+        return build_http_client(timeout=60.0)
     global _http_client
     with _client_lock:
         if _http_client is None:
@@ -299,3 +351,50 @@ def urlopen(request: Any, timeout: float = 30.0) -> HttpResponse:
 
 class URLError(urllib.error.URLError):
     """Raised when a proxied request cannot be performed."""
+
+
+def stream_lines(request: Any, timeout: float = 60.0,
+                 on_open: Callable[[Any], None] | None = None) -> Iterator[str]:
+    """Yield the decoded lines of a streaming response.
+
+    The standard library has no streaming HTTP client, so a server-sent
+    events endpoint behind a SOCKS proxy could not be read at all through
+    ``urllib``.  The HTTP library streams the body instead and the caller
+    keeps its usual line-by-line protocol.
+
+    Args:
+        request: a ``urllib.request.Request`` (or anything with ``full_url`` /
+            ``method`` / ``headers`` / ``data``).
+        timeout: per-request timeout in seconds.
+        on_open: called with the response once the headers have arrived, and
+            before the body is read; used to pick up response headers such
+            as a session id.
+
+    Yields:
+        The response body, line by line, without the newline characters.
+
+    Raises:
+        urllib.error.HTTPError: the response status is 4xx or 5xx.
+        URLError: the request itself failed.
+    """
+    url, method, headers, data = _request_parts(request)
+    httpx = httpx_module()
+    client = build_http_client(timeout=timeout, follow_redirects=True)
+    try:
+        with client.stream(method, url, headers=headers, content=data,
+                           timeout=timeout) as response:
+            if response.status_code >= 400:
+                raise urllib.error.HTTPError(
+                    url, response.status_code, response.reason_phrase,
+                    dict(response.headers), io.BytesIO(b''))
+            if on_open is not None:
+                on_open(response)
+            for line in response.iter_lines():
+                yield line
+    except httpx.HTTPError as error:
+        raise URLError(str(error)) from error
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass

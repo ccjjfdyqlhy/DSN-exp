@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 
 # 高峰时段（与 policy.router 共用同一判定，单点定义）
@@ -75,6 +75,42 @@ class UsageRecord:
         }
 
 
+def _usage_get(usage: Any, key: str, fallback: str = "") -> Any:
+    if isinstance(usage, dict):
+        value = usage.get(key)
+        if value is None and fallback:
+            value = usage.get(fallback)
+        return value
+    value = getattr(usage, key, None)
+    if value is None and fallback:
+        value = getattr(usage, fallback, None)
+    return value
+
+
+def read_usage(usage: Any) -> tuple[int, int, int]:
+    """Read (input, output, cache-hit) from either wire's usage shape.
+
+    The OpenAI shape is prompt_tokens / completion_tokens with the cache
+    split inside prompt_tokens_details; the Responses shape renames them
+    input_tokens / output_tokens / input_tokens_details; the Anthropic shape
+    puts cache_read_input_tokens at the top level.  An accountant that only
+    reads one shape silently bills every other wire at zero.
+    """
+    usage = usage or {}
+    try:
+        input_tokens = int(_usage_get(usage, "input_tokens", "prompt_tokens") or 0)
+        output_tokens = int(_usage_get(usage, "output_tokens",
+                                       "completion_tokens") or 0)
+        details = _usage_get(usage, "prompt_tokens_details",
+                             "input_tokens_details")
+        cached = _usage_get(usage, "cache_read_input_tokens")
+        if cached is None and isinstance(details, dict):
+            cached = details.get("cached_tokens")
+        return input_tokens, output_tokens, int(cached or 0)
+    except (TypeError, ValueError):
+        return 0, 0, 0
+
+
 def fmt_tokens(n: int) -> str:
     if n >= 1_000_000_000:
         return f"{n / 1_000_000_000:.1f}B"
@@ -103,13 +139,7 @@ class TokenMeter:
 
     def record(self, usage: dict, *, model: str = "", elapsed: float = 0.0,
                model_mode: Optional[str] = None) -> UsageRecord:
-        usage = usage or {}
-        input_tokens = usage.get("prompt_tokens", 0)
-        output_tokens = usage.get("completion_tokens", 0)
-        details = usage.get("prompt_tokens_details")
-        cached = 0
-        if isinstance(details, dict):
-            cached = details.get("cached_tokens", 0)
+        input_tokens, output_tokens, cached = read_usage(usage)
         cache_miss = max(input_tokens - cached, 0)
 
         mode = model_mode or self.pricing_name

@@ -63,6 +63,22 @@ class AgentRecord:
     updated_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class AgentTypeSpec:
+    """A named child profile: system text, model and tool allowlist.
+
+    ``model`` is an opaque identifier the manager's ``model_resolver``
+    understands (an application typically owns provider routing); '' keeps
+    the parent's model.  An empty ``tools`` list inherits every registered
+    tool; a non-empty one restricts the child to those names.
+    """
+
+    name: str
+    system: str = ''
+    model: str = ''
+    tools: list[str] = field(default_factory=list)
+
+
 def _sanitize(name: str) -> str:
     safe = re.sub(r'[^a-z0-9_]', '_', str(name).strip().lower())
     return safe.strip('_')[:48] or 'agent'
@@ -100,31 +116,72 @@ class AgentManager:
                  model: ModelInfo | None = None,
                  config: AgentSettings | None = None,
                  cwd: str = '',
-                 store=None) -> None:
+                 store=None,
+                 model_resolver: Optional[Callable[
+                     [str], tuple[IChatClient, ModelInfo] | None]] = None
+                 ) -> None:
         self._client = client
         self._registry = registry
         self._model = model or ModelInfo()
         self.config = config or AgentSettings()
         self._cwd = cwd
         self._store = store
+        # resolves an AgentTypeSpec's model identifier to (client, ModelInfo)
+        self._model_resolver = model_resolver
+        self._agent_types: dict[str, AgentTypeSpec] = {}
         self._agents: dict[str, AgentRecord] = {}
         self._condition: asyncio.Condition | None = None
         self._activity_version = 0
         self._events: deque[tuple[str, dict]] = deque(maxlen=2_000)
+        # the full child stream (deltas, tool output, usage); the engine's
+        # pump never consumes it, a UI drains it itself
+        self._activity: deque[tuple[str, dict]] = deque(maxlen=2_000)
+        # mailbox updates handed to a turn, kept until that turn commits
+        self._pending_mailbox: dict[int, list[str]] = {}
+        # False silences the transcript forwarding for a UI that consumes
+        # the activity stream itself
+        self.forward_events = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._shutdown = False
 
     # ── wiring ──────────────────────────────────────────────
-    def attach(self, engine: ConversationEngine) -> None:
-        """Make an engine the root, register the tools, capture the loop."""
-        self._loop = asyncio.get_running_loop()
+    def attach(self, engine: ConversationEngine,
+               loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Make an engine the root, register the tools, capture the loop.
+
+        ``loop`` is the loop the manager lives on; it defaults to the
+        running one, which only exists when attach is called from inside it.
+        """
+        self._loop = loop or asyncio.get_running_loop()
         self._condition = asyncio.Condition()
         self._agents[ROOT_AGENT] = AgentRecord(
             name=ROOT_AGENT, parent=None, depth=0, engine=engine,
             status=RUNNING)
         engine.collab = self
-        for tool in self._collab_tools():
+        self.reinstall_tools()
+
+    def extra_tools(self) -> list[AnnotatedTool]:
+        """Additional tools registered with the collaboration suite."""
+        return []
+
+    def reinstall_tools(self) -> None:
+        """Re-register the collaboration tools after a registry refresh."""
+        for tool in self._collab_tools() + self.extra_tools():
             self._registry.register(tool, replace=True, source='collab')
+
+    def set_model(self, model: ModelInfo, client: IChatClient | None = None
+                  ) -> None:
+        """Future children spawn with this model; the client is optional."""
+        self._model = model
+        if client is not None:
+            self._client = client
+
+    # ── agent types ─────────────────────────────────────────
+    def register_agent_type(self, spec: AgentTypeSpec) -> None:
+        self._agent_types[spec.name] = spec
+
+    def agent_type(self, name: str) -> AgentTypeSpec | None:
+        return self._agent_types.get(name)
 
     async def shutdown(self) -> None:
         self._shutdown = True
@@ -140,11 +197,20 @@ class AgentManager:
 
     # ── engine-facing protocol ──────────────────────────────
     def consume_mailbox(self, engine: ConversationEngine) -> list[str]:
+        """Take the inbox, but remember it until the turn that used it commits.
+
+        A turn that fails or is interrupted after the updates were staged
+        would drop them for good -- the parent never learns what its
+        sub-agents found.  The copy kept here lets :meth:`settle_mailbox`
+        return the undelivered updates when the turn ends.
+        """
         record = self._record_for(engine)
         if record is None:
             return []
         messages = list(record.inbox)
         record.inbox.clear()
+        if messages:
+            self._pending_mailbox.setdefault(id(engine), []).extend(messages)
         return messages
 
     def requeue_mailbox(self, engine: ConversationEngine,
@@ -154,6 +220,26 @@ class AgentManager:
             return
         for message in reversed(messages):
             record.inbox.appendleft(message)
+
+    def settle_mailbox(self, engine: ConversationEngine) -> int:
+        """Requeue the sub-agent updates a turn never put into the history.
+
+        Called when the turn ends: the engine has committed or rolled back
+        by then, so the history says which updates made it through.  Returns
+        how many updates were put back.
+        """
+        pending = self._pending_mailbox.pop(id(engine), [])
+        if not pending:
+            return 0
+        history = ''
+        for message in engine.conversation.committed:
+            content = message.get('content')
+            if isinstance(content, str):
+                history += content
+        lost = [text for text in pending if text not in history]
+        if lost:
+            self.requeue_mailbox(engine, lost)
+        return len(lost)
 
     def agents_snapshot(self) -> list[dict[str, Any]]:
         return [{'name': record.name, 'status': record.status,
@@ -166,9 +252,22 @@ class AgentManager:
             out.append(self._events.popleft())
         return out
 
+    def drain_activity(self, limit: int = 1_000) -> list[tuple[str, dict]]:
+        """Drain the full child stream (deltas, tool output, usage).
+
+        The engine's round pump consumes only :meth:`drain_events`; this
+        stream belongs to the application, which can read it per frame
+        without starving the transcript.
+        """
+        out: list[tuple[str, dict]] = []
+        while len(out) < limit and self._activity:
+            out.append(self._activity.popleft())
+        return out
+
     # ── spawning ────────────────────────────────────────────
     async def spawn(self, name: str, message: str, *,
-                    fork_turns: str | int = 'all',
+                    agent_type: str = '',
+                    fork_turns: str | int | None = None,
                     system: str = '') -> AgentRecord:
         if not _TASK_NAME_RE.match(str(name)):
             raise ValueError('task_name must match ^[a-z0-9_]+$')
@@ -188,13 +287,32 @@ class AgentManager:
         if len(active) >= max(1, self.config.max_concurrent):
             raise ValueError('too many concurrent agents')
 
+        spec = self._agent_types.get(agent_type or self.config.default_type)
+        extra = system or (spec.system if spec is not None else '')
+        model_info = self._model
+        client = self._client
+        if spec is not None and spec.model:
+            resolved = (self._model_resolver(spec.model)
+                        if self._model_resolver else None)
+            if resolved is not None:
+                client, model_info = resolved
+            else:
+                logger.warning('no client resolved for agent type model %s; '
+                               'the child inherits the parent model',
+                               spec.model)
+        allowed_tools = set(spec.tools) if spec is not None and spec.tools \
+            else None
+
         child = ConversationEngine(
-            client=self._client, registry=self._registry,
-            store=self._store, cwd=self._cwd, model=self._model,
+            client=client, registry=self._registry,
+            store=self._store, cwd=self._cwd, model=model_info,
             config=EngineConfig(agents=self.config),
-            system_provider=lambda: self._child_system(parent_record, system),
-            agent_name=name)
+            system_provider=lambda: self._child_system(
+                parent_record, extra, model_info),
+            allowed_tools=allowed_tools, agent_name=name)
         child.sink = _forwarding_sink(child, self)
+        if fork_turns is None:
+            fork_turns = self.config.default_fork_turns
         if fork_turns == 'none':
             history = []
         elif fork_turns == 'all':
@@ -245,10 +363,16 @@ class AgentManager:
         parent.inbox.append(
             f'<subagent_update agent="{record.name}" '
             f'status="{record.status}">\n{body}\n</subagent_update>')
-        self._events.append(('agent_event', {
-            'agent': record.name, 'status': record.status, 'content': body}))
-        self._events.append(('agents_refresh', {}))
+        self._publish('agent_event', {
+            'agent': record.name, 'status': record.status, 'content': body})
+        self._publish('agents_refresh', {})
         self._touch(record)
+
+    def _publish(self, kind: str, payload: dict[str, Any]) -> None:
+        """Lifecycle announcements: the transcript stream and the UI stream."""
+        self._activity.append((kind, payload))
+        if self.forward_events:
+            self._events.append((kind, payload))
 
     def _touch(self, record: AgentRecord | None = None) -> None:
         if record is not None:
@@ -269,30 +393,37 @@ class AgentManager:
     def _collab_tools(self) -> list[AnnotatedTool]:
         manager = self
 
-        def spawn_agent(task_name, message, fork_turns='all'):
+        def spawn_agent(task_name, message, fork_turns=None, agent_type=''):
             return manager._bridge(manager.spawn, name=task_name,
-                                   message=message, fork_turns=fork_turns)
+                                   message=message, fork_turns=fork_turns,
+                                   agent_type=agent_type)
 
         def send_message(target, message, trigger=False):
             return manager._bridge(manager.send_message, target=target,
                                    message=message, trigger=trigger)
 
-        def wait_agent(timeout_ms=30_000):
+        def wait_agent(timeout_ms=None):
             return manager._bridge(manager.wait_for_activity,
-                                   timeout_ms=timeout_ms)
+                                   timeout_ms=timeout_ms
+                                   if timeout_ms is not None
+                                   else manager.config.wait_timeout_ms)
 
         return [
             AnnotatedTool(
                 name='spawn_agent',
                 description=('Delegate a task to a fresh sub-agent with its own '
                              'context. fork_turns: none, all or an integer (last N '
-                             'user turns).'),
+                             'user turns). agent_type: a registered agent profile '
+                             '(its system, model and tool allowlist), or empty '
+                             'for the default type.'),
                 parameters={'type': 'object', 'properties': {
                     'task_name': {'type': 'string',
                                   'description': 'lowercase identifier for the agent'},
                     'message': {'type': 'string', 'description': 'The task'},
                     'fork_turns': {'type': 'string',
                                    'description': 'none | all | <integer>'},
+                    'agent_type': {'type': 'string',
+                                   'description': 'a registered agent type name'},
                 }, 'required': ['task_name', 'message']},
                 handler=spawn_agent,
             ),
@@ -369,7 +500,10 @@ class AgentManager:
             rows.append(row)
         return rows
 
-    async def wait_for_activity(self, timeout_ms: int = 30_000) -> dict[str, Any]:
+    async def wait_for_activity(self, timeout_ms: int | None = None
+                                ) -> dict[str, Any]:
+        timeout_ms = (self.config.wait_timeout_ms
+                      if timeout_ms is None else timeout_ms)
         timeout = max(0, min(int(timeout_ms), 3_600_000)) / 1000
         seen = self._activity_version
 
@@ -422,22 +556,39 @@ class AgentManager:
         return agent if agent in self._agents else ROOT_AGENT
 
     def _child_system(self, parent_record: AgentRecord | None,
-                      extra: str) -> str:
+                      extra: str, model: ModelInfo | None = None) -> str:
         parts = []
         if parent_record is not None:
-            parts.append(parent_record.engine.system_prompt())
+            parts.append(self._parent_system(parent_record, model))
         parts.append(SUBAGENT_SYSTEM)
         if extra:
             parts.append(extra)
+        suffix = self.config.system_suffix
+        if suffix:
+            parts.append(suffix)
         return '\n\n'.join(p for p in parts if p)
+
+    def _parent_system(self, parent_record: AgentRecord,
+                       model: ModelInfo | None = None) -> str:
+        """The parent prompt a child starts from; ``model`` is the child's."""
+        return parent_record.engine.system_prompt()
 
 
 def _forwarding_sink(engine: ConversationEngine,
                      manager: 'AgentManager') -> Any:
-    """A sink for a child engine that mirrors its events into the manager."""
+    """A sink for a child engine that mirrors its events into the manager.
+
+    Lifecycle announcements reach the transcript stream (the engine's round
+    pump forwards them); the full stream -- deltas, tool output, usage --
+    lands in the activity deque a UI drains itself, so a slow transcript
+    pump never eats it.
+    """
     from .events import EventSink
 
     def emit(kind: str, payload: dict[str, Any]) -> None:
-        manager._events.append((kind, {'agent': engine.agent_name, **payload}))
+        event = {'agent': engine.agent_name, **payload}
+        manager._activity.append((kind, event))
+        if manager.forward_events and kind in ('agent_event', 'agents_refresh'):
+            manager._events.append((kind, event))
 
     return EventSink(emit=emit)

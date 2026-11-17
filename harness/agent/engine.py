@@ -54,6 +54,13 @@ _CONTINUATION_NOTE = (
     'the answer mid-sentence if that is where it stopped.'
 )
 
+#: What the model sees in front of the reasoning of a round that never
+#: finished.  It has to be in the history, not only in the transcript: the
+#: model has to know that it was cut off and what it had worked out.
+UNFINISHED_NOTE = ('[this turn did not finish - it was interrupted or the '
+                   'response was cut off. Continue from here instead of '
+                   'starting over.]')
+
 
 @dataclass
 class EngineSnapshot:
@@ -144,6 +151,13 @@ class ConversationEngine:
         self._lock = threading.RLock()
         self._last_checkpoint = time.monotonic()
         self._usage_records: list[dict[str, Any]] = []
+        # The reasoning flushed so far in the round in flight.  The flush
+        # empties the stream buffer as soon as the answer text starts, so
+        # the reasoning that came first would otherwise be gone from the
+        # request the round returns -- and with it from the history.
+        self._round_thinking: list[str] = []
+        # The reasoning and text of the round that did not finish, if any.
+        self._unfinished_round: tuple[str, str] | None = None
 
     # ── lifecycle ───────────────────────────────────────────
     def start(self) -> None:
@@ -193,17 +207,31 @@ class ConversationEngine:
     def busy(self) -> bool:
         return self.status != 'idle'
 
-    def submit(self, text: str, mode: str = 'chat') -> bool:
+    def submit(self, text: str, mode: str = 'chat',
+               announce: bool = True) -> bool:
         if not text.strip():
             return False
         self._work.put_nowait((mode, text))
-        self.sink.emit('queued', {'text': text, 'mode': mode,
-                                  'position': self._work.qsize()})
+        if announce:
+            self.sink.emit('queued', {'text': text, 'mode': mode,
+                                      'position': self._work.qsize()})
         return True
 
     def interrupt(self) -> None:
         self._interrupt.set()
         self._interrupt.set()
+
+    @property
+    def interrupt_event(self) -> threading.Event:
+        """The interrupt flag; a client watches it to stop its stream."""
+        return self._interrupt
+
+    def clear_interrupt(self) -> None:
+        self._interrupt.clear()
+
+    def usage_records(self) -> list[dict[str, Any]]:
+        """The per-request usage records (most engines keep the last 200)."""
+        return list(self._usage_records)
 
     stop_turn = interrupt
 
@@ -455,6 +483,7 @@ class ConversationEngine:
             stable_tokens=stable)
 
     async def _run_chat(self, text: str) -> None:
+        self._unfinished_round = None
         with self._lock:
             self.turn += 1
             if not self.session_name and self._store is not None:
@@ -510,7 +539,13 @@ class ConversationEngine:
                     self.add_notice('The response ended without a finish signal.',
                                     'warning')
                 self._add_item('assistant', text=full)
-                self.conversation.stage(_assistant_message(full, thinking))
+                message = _assistant_message(full, thinking)
+                if finish == 'incomplete' and not full and thinking:
+                    # The Responses and the Anthropic wire have no reasoning
+                    # field, and a turn that says nothing is a turn the model
+                    # cannot continue: the reasoning travels as the text.
+                    message['content'] = UNFINISHED_NOTE + '\n' + thinking
+                self.conversation.stage(message)
                 self.conversation.commit()
                 committed = True
                 break
@@ -528,6 +563,8 @@ class ConversationEngine:
                 committed = self._commit_partial()
             if not committed:
                 self.conversation.rollback()
+        if self.collab is not None:
+            self._settle_collab_mailbox()
         if self._interrupt.is_set():
             self._add_item('notice', text='[interrupted]')
             self.sink.emit('interrupted', {})
@@ -540,31 +577,147 @@ class ConversationEngine:
         self.save_active()
 
     def _commit_partial(self) -> bool:
-        """Commit the longest tool-closed prefix of the draft, if any.
+        """Commit the part of a turn that is worth keeping.
 
-        An interrupted turn keeps the work it already finished: the draft
-        prefix that ends on a complete tool result is committed (unanswered
-        calls repaired), everything after it is dropped.
+        The longest tool-closed prefix of the draft is committed (unanswered
+        calls repaired).  The reasoning of the round that never finished is
+        kept as its own assistant turn: dropping it makes the next turn
+        re-read the same files and re-plan the same work.
         """
         draft = self.conversation.draft
-        if not draft:
-            return False
         cut = 0
         for index, message in enumerate(draft):
             if message.get('role') == 'tool':
                 cut = index + 1
         prefix = draft[:cut]
-        if not prefix:
-            return False
-        repaired, _ = repair_messages(prefix)
-        self.conversation.draft.clear()
-        self.conversation.stage(*repaired)
-        self.conversation.commit()
-        return True
+        committed = False
+        if prefix:
+            repaired, _ = repair_messages(prefix)
+            self.conversation.draft.clear()
+            self.conversation.stage(*repaired)
+            self.conversation.commit()
+            committed = True
+        unfinished = self._unfinished_round
+        if unfinished is not None and (unfinished[0] or unfinished[1]):
+            self.conversation.stage(self._unfinished_message(*unfinished))
+            self.conversation.commit()
+            committed = True
+        if not committed and self._interrupt.is_set():
+            # Nothing was produced, but the request itself is part of the
+            # context: the next turn has to answer it.
+            draft = self.conversation.draft
+            if draft and draft[0].get('role') == 'user':
+                self.conversation.commit()
+                committed = True
+        return committed
+
+    @staticmethod
+    def _unfinished_message(thinking: str, full: str) -> dict[str, Any]:
+        """The assistant turn that carries an unfinished round's reasoning.
+
+        The reasoning goes into the text as well: the Responses and the
+        Anthropic wire have no field for it, and a turn that says nothing is
+        a turn the model cannot continue.
+        """
+        parts = [UNFINISHED_NOTE]
+        if full:
+            parts.append(full)
+        if thinking:
+            parts.append(thinking)
+        return {'role': 'assistant', 'content': '\n'.join(parts),
+                'reasoning_content': thinking}
+
+    def _settle_collab_mailbox(self) -> None:
+        """Return sub-agent updates the turn never put into the history."""
+        try:
+            lost = self.collab.settle_mailbox(self)
+        except Exception:    # noqa: BLE001 - settling never kills the turn
+            logger.exception('mailbox settlement failed')
+            return
+        if lost:
+            self.add_notice(f'{lost} sub-agent update(s) were kept for the '
+                            'next turn.', 'warning')
 
     async def _stream_request(self, budget: TokenBudget
                               ) -> tuple[str, str, list[dict[str, Any]], str]:
-        """One model round: returns (thinking, text, tool_calls, finish_reason)."""
+        """One model round, with the hold retry loop around it.
+
+        The retry lives here and not in the client: a round that broke may
+        already have streamed text, and only the engine knows which parts
+        belong to the failed attempt.
+        """
+        attempt = 0
+        while True:
+            self._round_thinking = []
+            try:
+                result = await self._round_once(budget)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:    # noqa: BLE001 - the hold retries
+                if not self._hold_active() or self._interrupt.is_set():
+                    raise
+                attempt += 1
+                if attempt > self.config.hold.max_retries:
+                    raise
+                self._retry_notice(attempt, str(error))
+                await asyncio.sleep(self._hold_delay(attempt))
+                continue
+            thinking, full, _tool_calls, finish = result
+            if self._interrupt.is_set():
+                # The user stopped the turn: remember what this round had
+                # produced.  It is the difference between continuing the
+                # work and starting it over.
+                if thinking or full:
+                    self._unfinished_round = (thinking, full)
+                return result
+            if finish != 'incomplete':
+                self._unfinished_round = None
+                return result
+            if thinking:
+                self._unfinished_round = (thinking, full)
+            # The provider closed the stream without a finish signal: the
+            # answer is truncated, not final.
+            if not self._hold_active() or self._interrupt.is_set():
+                return result
+            attempt += 1
+            if attempt > self.config.hold.max_retries:
+                retries = self.config.hold.max_retries
+                self.add_notice(
+                    f'Gave up after {retries} '
+                    f'retr{"y" if retries == 1 else "ies"}: '
+                    'the response kept ending early.', 'warning')
+                return result
+            self._retry_notice(attempt, 'the response ended without a finish '
+                                        'signal')
+            await asyncio.sleep(self._hold_delay(attempt))
+
+    def configure_hold(self, enabled: bool, max_retries: int,
+                       delay: float) -> None:
+        """Apply the hold settings to the running engine."""
+        self.config.hold.enabled = bool(enabled)
+        self.config.hold.max_retries = max(0, int(max_retries))
+        self.config.hold.delay = max(0.0, float(delay))
+
+    def _hold_active(self) -> bool:
+        hold = self.config.hold
+        return bool(hold.enabled and hold.max_retries > 0)
+
+    def _hold_delay(self, attempt: int) -> float:
+        hold = self.config.hold
+        return min(hold.delay * (2 ** max(0, attempt - 1)), hold.max_delay)
+
+    def _retry_notice(self, attempt: int, reason: str) -> None:
+        self._set_status('connecting', retrying=True)
+        self.add_notice(f'Retrying ({attempt}/{self.config.hold.max_retries}): '
+                        f'{reason[:160]}', 'warning')
+
+    async def _round_once(self, budget: TokenBudget
+                          ) -> tuple[str, str, list[dict[str, Any]], str]:
+        """One model round: returns (thinking, text, tool_calls, finish_reason).
+
+        ``thinking`` is the full reasoning of the round, including the part
+        flushed before the answer text started.
+        """
         prefix = self.conversation.stable_prefix
         max_tokens = max(256, min(self.config.max_output_tokens,
                                   self._model.max_output_tokens,
@@ -627,10 +780,10 @@ class ConversationEngine:
             if chunk.get('finish'):
                 finish = str(chunk['finish'])
 
-        thinking = ''.join(thinking_parts)
-        if thinking:
-            self._thinking_done(thinking, started)
+        if thinking_parts:
+            self._thinking_done(''.join(thinking_parts), started)
         full = ''.join(text_parts)
+        thinking = ''.join(self._round_thinking)
         self.sink.emit('text_end', {'text': full,
                                     'duration': time.monotonic() - started})
 
@@ -649,6 +802,10 @@ class ConversationEngine:
         return thinking, full, tool_calls, finish
 
     def _thinking_done(self, text: str, started: float) -> None:
+        # Keep what the flush is about to empty: the round's own reasoning
+        # has to reach the history even when the answer text started first.
+        if text:
+            self._round_thinking.append(text)
         if self.config.thinking.show_completed:
             self._add_item('thinking', text=text)
         self.sink.emit('thinking_end', {'text': text,

@@ -30,6 +30,22 @@ class ThinkingSettings:
 
 
 @dataclass
+class HoldSettings:
+    """Keep a broken request alive instead of failing the turn.
+
+    A round whose stream breaks, or that ends without a finish signal, is
+    re-sent until it works, the user interrupts, or the retries run out.
+    ``delay`` is the first wait; every further retry waits twice as long,
+    capped at ``max_delay``.
+    """
+
+    enabled: bool = False
+    max_retries: int = 20
+    delay: float = 2.0
+    max_delay: float = 30.0
+
+
+@dataclass
 class AgentSettings:
     team_enabled: bool = True
     max_concurrent: int = 10
@@ -65,6 +81,7 @@ class EngineConfig:
     reasoning: ReasoningSettings = field(default_factory=ReasoningSettings)
     thinking: ThinkingSettings = field(default_factory=ThinkingSettings)
     agents: AgentSettings = field(default_factory=AgentSettings)
+    hold: HoldSettings = field(default_factory=HoldSettings)
     max_output_tokens: int = 8_192
     checkpoint_interval: float = 30.0
     max_continuations: int = 3

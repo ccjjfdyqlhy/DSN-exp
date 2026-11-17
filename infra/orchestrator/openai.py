@@ -399,16 +399,11 @@ class OpenAICompatClient(ChatClientAdapter):
         items: list[dict] = []
         for m in messages:
             if isinstance(m, dict):
-                # dict 消息：只有 content 是 parts 列表时才需要重写图片块；
-                # 纯文本（content 是字符串）原样透传 —— 主路径行为不变。
-                content = m.get("content")
-                if isinstance(content, (list, tuple)):
-                    item = dict(m)
-                    item["content"] = OpenAICompatClient._responses_content_parts(
-                        content, str(m.get("role", "user")))
-                    items.append(item)
-                else:
-                    items.append(m)
+                # dict 消息与 ChatMessage 走同一套翻译：tool 轮在这里是
+                # function_call / function_call_output items，不是 chat 形状。
+                # 原样透传一条 {"role": "tool"}，模型就找不到能与自己调用
+                # 配对的结果，从此不再从工具结果里学习。
+                items.extend(OpenAICompatClient._dict_to_responses_items(m))
                 continue
             role = getattr(m, "role", "")
             content = getattr(m, "content", "") or ""
@@ -440,9 +435,16 @@ class OpenAICompatClient(ChatClientAdapter):
                               "content": parts if parts is not None
                               else [{"type": "input_text", "text": content}]})
             elif role == "assistant":
-                items.append({"role": "assistant",
-                              "content": parts if parts is not None
-                              else [{"type": "output_text", "text": content}]})
+                text = content
+                if not text and getattr(m, "reasoning_content", ""):
+                    # 这条 wire 没有 reasoning 字段：只带推理的轮次把推理
+                    # 当作正文携带，否则整条消息等于什么都没说。
+                    text = str(getattr(m, "reasoning_content", ""))
+                if parts is not None or text:
+                    # 只有 tool_calls 的轮次不附带空的 output_text 块
+                    items.append({"role": "assistant",
+                                  "content": parts if parts is not None
+                                  else [{"type": "output_text", "text": text}]})
                 for tc in (getattr(m, "tool_calls", None) or []):
                     fn = tc.get("function", {}) if isinstance(tc, dict) else {}
                     items.append({
@@ -458,6 +460,79 @@ class OpenAICompatClient(ChatClientAdapter):
                     "output": content,
                 })
         return items
+
+    @staticmethod
+    def _dict_to_responses_items(m: dict) -> list[dict]:
+        """Translate one chat-shaped dict into Responses input items.
+
+        Plain dicts take exactly the ChatMessage route: a tool result becomes
+        a ``function_call_output`` item and an assistant turn's tool calls
+        become ``function_call`` items.  ``reasoning_content`` is dropped on
+        purpose (a chat-completions field this endpoint rejects); an
+        assistant turn that carries only reasoning carries it as its text,
+        because a turn that says nothing is a turn the model cannot read.
+        """
+        role = str(m.get("role") or "user")
+        if m.get("type") in ("function_call", "function_call_output",
+                             "input_image", "input_text", "output_text",
+                             "message"):
+            # already a Responses item (a caller that pre-translates): pass
+            # it through untouched
+            return [m]
+        if role not in ("system", "user", "assistant", "tool"):
+            return []
+        content = m.get("content")
+        reasoning = m.get("reasoning_content")
+        if role == "tool":
+            if isinstance(content, str):
+                output = content
+            elif isinstance(content, (list, tuple)):
+                output = "\n".join(str(p.get("text", "")) for p in content
+                                   if isinstance(p, dict))
+            else:
+                output = str(content or "")
+            return [{"type": "function_call_output",
+                     "call_id": str(m.get("tool_call_id") or ""),
+                     "output": output}]
+        text = content if isinstance(content, str) else ""
+        if role == "assistant" and not text and reasoning:
+            text = str(reasoning)
+        items: list[dict] = []
+        if isinstance(content, (list, tuple)):
+            items.append({"role": role,
+                          "content": OpenAICompatClient._responses_content_parts(
+                              list(content), role)})
+        elif text:
+            text_type = "output_text" if role == "assistant" else "input_text"
+            items.append({"role": role,
+                          "content": [{"type": text_type, "text": text}]})
+        if role == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                arguments = fn.get("arguments", "{}")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                items.append({
+                    "type": "function_call",
+                    "call_id": str(tc.get("id") or ""),
+                    "name": str(fn.get("name") or ""),
+                    "arguments": arguments,
+                })
+        return items
+
+    def list_models(self) -> list[str]:
+        """The model ids this endpoint exposes (``GET /models``)."""
+        page = self._client.models.list()
+        data = getattr(page, "data", page) or []
+        ids: list[str] = []
+        for item in data:
+            model_id = getattr(item, "id", None) or (
+                item.get("id") if isinstance(item, dict) else None)
+            if model_id:
+                ids.append(str(model_id))
+        return sorted(dict.fromkeys(ids))
 
     @staticmethod
     def _tools_to_responses(tools: Optional[list[dict]]) -> list[dict]:
