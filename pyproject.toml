@@ -1,20 +1,19 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicf-core"
-version = "0.6.1"
+version = "1.0.0"
 description = "AICF - Agent Infrastructure Cybernetics Framework: a scenario-agnostic agent engine (turn loop, tools, sqlite sessions, sub-agent collaboration)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "Jeffery Darkstar", email = "ccjjfdyqlhy@outlook.com" }]
-keywords = ["agent", "llm", "tools", "sessions", "subagents", "framework"]
+keywords = ["agent", "llm", "tools", "sessions", "subagents", "framework", "agent-harness"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -31,12 +30,38 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/ccjjfdyqlhy/DSN-exp"
-Repository = "https://github.com/ccjjfdyqlhy/DSN-exp"
-Issues = "https://github.com/ccjjfdyqlhy/DSN-exp/issues"
-
+# ─────────────────────────────────────────────────────────────────────────
+# optional extras
+#
+# 1.0.0 起，core 只保留**与业务无关的机制**：模型接入、工具协议、上下文装配、
+# 记忆、事件、会话持久化、策略、鉴权、遥测。四块偏产品的能力
+# （人格 / 决策头 / 学习闭环 / 本地微调）**仍然留在 core**，但按 extra 区分，
+# 默认安装不拉任何额外依赖，用到哪块再装哪块。
+#
+#   pip install aicf-core                 # 内核 + 工具 + 上下文 + 会话
+#   pip install aicf-core[personality]    # + 人格动态（PEV3，角色卡/蒸馏/判官）
+#   pip install aicf-core[decisions]      # + System-1 决策头（零额外依赖）
+#   pip install aicf-core[learning]       # + 轨迹→数据集→分层判官→晋级闭环
+#   pip install aicf-core[finetune]       # + 本地 SFT（需要 torch）
+#   pip install aicf-core[all]            # 全部
+# ─────────────────────────────────────────────────────────────────────────
 [project.optional-dependencies]
+# 人格动态：角色卡加载、蒸馏、判官、情绪向量。仅依赖 yaml（已在核心依赖里），
+# 保留这个 extra 是为了让「装不装人格」在依赖层面可见。
+personality = ["PyYAML>=6.0"]
+# System-1 决策头：一次前向给出带概率的判断。纯标准库实现，无额外依赖。
+decisions = []
+# 学习闭环：从 agent 轨迹构建数据集、分层判官、候选晋级与回滚。纯标准库实现。
+learning = []
+# 本地 SFT / GGUF 导出：需要 torch。core 本身零 torch 依赖。
+finetune = ["torch>=2.0"]
+# 外部 MCP 工具源桥接（harness/tools/mcp.py，延迟导入，可选）
+mcp = ["mcp>=1.2.0"]
+# anthropic 线（infra/orchestrator/anthropic.py，延迟导入，可选）
+anthropic = ["anthropic>=1.0.0"]
+# SOCKS 代理穿透（infra/net.py，httpx 需要 socksio extra）
+socks = ["httpx[socks]>=0.24"]
+# Web / 语音 / 多媒体相关的全套运行时（应用层常用，core 本身不需要）
 full = [
     "flask>=3.0.0",
     "fastapi>=0.100",
@@ -46,13 +71,27 @@ full = [
     "rich>=13.0.0",
     "psutil>=5.9",
     "opencv-python>=4.8",
+    "mcp>=1.2.0",
+    "anthropic>=1.0.0",
 ]
-# 外部 MCP 工具源桥接（harness/tools/mcp.py，延迟导入，可选）
-mcp = ["mcp>=1.2.0"]
-# anthropic 线（infra/orchestrator/anthropic.py，延迟导入，可选）
-anthropic = ["anthropic>=1.0.0"]
-# SOCKS 代理穿透（infra/net.py，httpx 需要 socksio extra）
-socks = ["httpx[socks]>=0.24"]
+all = [
+    "flask>=3.0.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+    "numpy>=1.24.0",
+    "cryptography>=40.0.0",
+    "rich>=13.0.0",
+    "psutil>=5.9",
+    "opencv-python>=4.8",
+    "mcp>=1.2.0",
+    "anthropic>=1.0.0",
+    "torch>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ccjjfdyqlhy/aicf-core"
+Repository = "https://github.com/ccjjfdyqlhy/aicf-core"
+Issues = "https://github.com/ccjjfdyqlhy/aicf-core/issues"
 
 [tool.setuptools.packages.find]
 include = ["harness", "harness.*", "infra", "infra.*"]
@@ -62,7 +101,7 @@ include = ["harness", "harness.*", "infra", "infra.*"]
 # 其中 temp/test_chatglm*.py 会在**收集期真的调用外部 LLM API**（实测 401/503）。
 testpaths = ["tests"]
 norecursedirs = ["temp", "prototypes", "logs", "node_modules", ".git",
-                 "__pycache__", "MagicMock"]
+                 "__pycache__", "MagicMock", ".split"]
 python_files = ["test_*.py"]
 markers = [
   "slow: 运行较慢的测试",

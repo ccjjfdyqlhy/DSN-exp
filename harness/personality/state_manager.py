@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,14 +21,22 @@ _DEFAULT_CHARACTER_CARD_ID = "exa"
 
 
 def _default_cards_dir() -> Path:
+    """角色卡目录查找：环境变量 > 本包同级 > 仓库根。
+
+    与 ``harness/personality/__init__.py`` 的查找规则保持一致，
+    且不再依赖 ``apps/dsn/...``——core 拆分后已无 apps 目录。
+    """
+    env = os.environ.get("AICF_CHARACTER_CARDS_DIR")
+    if env:
+        candidate_env = Path(env).expanduser()
+        if candidate_env.exists():
+            return candidate_env
+    packaged = Path(__file__).resolve().parent / "character_cards"
+    if packaged.exists():
+        return packaged
     repo_root = Path(__file__).resolve().parent.parent.parent
-    c1 = repo_root / "apps" / "dsn" / "character_cards"
-    if c1.exists():
-        return c1
-    c2 = repo_root / "character_cards"
-    if c2.exists():
-        return c2
-    return c1
+    candidate = repo_root / "character_cards"
+    return candidate if candidate.exists() else packaged
 
 
 class V3StateManager:

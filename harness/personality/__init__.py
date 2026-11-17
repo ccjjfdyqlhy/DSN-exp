@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 import threading
@@ -36,21 +37,28 @@ logger = logging.getLogger("PersonalitySystemV3")
 
 def _find_default_cards_dir() -> Path:
     """自动查找角色卡目录。
-    1. 项目根目录/apps/dsn/character_cards
-    2. 项目根目录/character_cards
-    3. 本文件同级/上级的 character_cards
+
+    查找顺序（先命中先用）：
+    1. 环境变量 ``AICF_CHARACTER_CARDS_DIR`` —— 显式指定优先。
+       拆分后应用各自携带角色卡时由应用注入这个变量。
+    2. 本包同级 ``character_cards/``（开发态放在 harness/personality 下）。
+    3. 仓库根 ``character_cards/``。
+
+    为什么不再硬编码 ``apps/dsn/character_cards``：
+    拆分之后 core 不再与任何应用同仓，路径必然失效；把它换成环境变量，
+    既让 core 能独立安装，也让应用能指向自己的角色卡目录。
     """
+    env = os.environ.get("AICF_CHARACTER_CARDS_DIR")
+    if env:
+        candidate_env = Path(env).expanduser()
+        if candidate_env.exists():
+            return candidate_env
+    packaged = Path(__file__).resolve().parent / "character_cards"
+    if packaged.exists():
+        return packaged
     repo_root = Path(__file__).resolve().parent.parent.parent
-    candidate1 = repo_root / "apps" / "dsn" / "character_cards"
-    if candidate1.exists():
-        return candidate1
-    candidate2 = repo_root / "character_cards"
-    if candidate2.exists():
-        return candidate2
-    candidate3 = Path(__file__).resolve().parent / "character_cards"
-    if candidate3.exists():
-        return candidate3
-    return candidate1
+    candidate = repo_root / "character_cards"
+    return candidate if candidate.exists() else packaged
 
 
 class PersonalitySystemV3:
