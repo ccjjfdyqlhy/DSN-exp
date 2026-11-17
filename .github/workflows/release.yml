@@ -1,8 +1,11 @@
 # aicf 发布流程 — 推送 v* 标签即构建、测试并发布到 PyPI。
 #
 # 依赖 PyPI 上的可信发布（trusted publishing）：仓库页 -> Settings ->
-# Add a new pending publisher，填 owner=ccjjfdyqlhy、repository=DSN-exp、
+# Add a new pending publisher，填 owner=ccjjfdyqlhy、repository=aicf-core、
 # workflow=release.yml、environment=pypi。首次配置后无需任何 token。
+#
+# ⚠️ 仓库已从 DSN-exp 改名为 aicf-core（2026-11-18 拆分），
+#    **PyPI 上的 publisher 配置也要把 repository 改成 aicf-core**，否则发布会 403。
 
 name: release
 
