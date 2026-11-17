@@ -10,7 +10,7 @@
 ## 一、目录布局
 
 ```
-apps/<应用>/skills/
+<应用仓>/<包名>/skills/
 ├── builtin/          # 内置技能（随仓库走）
 ├── custom/           # 插件目录：放这里的就是"可插拔"的
 └── <其它>/            # 某些应用还有 system/ batch/ 等专有目录
@@ -104,7 +104,7 @@ class HelloTool:
 ### 4.1 以前是怎么做的（别再这么写）
 
 应用层维护一张**硬编码的属性名映射表**
-（`apps/dsn_study/boot.py: _build_skill_dep_map`）：
+（`aicf-study 仓的 aicf_study/boot.py: _build_skill_dep_map`）：
 
 ```python
 "question_bank": dict(_store=..., _tm=..., _models=...)
@@ -121,7 +121,7 @@ class HelloTool:
 
 ### 4.2 现在怎么做
 
-应用层注册**语义能力**（`apps/dsn_study/boot.py: _register_skill_capabilities`）：
+应用层注册**语义能力**（`aicf-study 仓的 aicf_study/boot.py: _register_skill_capabilities`）：
 
 ```python
 skill_registry.register_capabilities({
@@ -257,13 +257,13 @@ dsn_study 暴露了技能管理 API：
 | `harness/skills/validator.py` | 加载期一致性校验 |
 | `harness/skills/env_loader.py` | `skill.env` 加载 |
 | `harness/skills/agent_bridge.py` | 技能工具 → AgentLoop 工具（同步 + 协程） |
-| `apps/dsn_study/api/skills.py` | 技能管理 REST API |
+| `aicf-study 仓的 aicf_study/api/skills.py` | 技能管理 REST API |
 
 ---
 
 ## 十、实例：`gaokzx` —— 从高考在线抓试题/答案图
 
-`apps/dsn_study/skills/builtin/gaokzx/`，四个工具：
+`aicf-study 仓的 aicf_study/skills/builtin/gaokzx/`，四个工具：
 
 | 工具 | 作用 |
 |---|---|

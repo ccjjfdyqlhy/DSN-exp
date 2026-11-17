@@ -6,7 +6,7 @@ what the existing sdk (harness/sdk.py) can and cannot drive yet.
 ## what was added, layer by layer
 
 The harness stays scenario-agnostic. Every addition below is a mechanism, not
-an application; application tools remain in `apps/`.
+an application; application tools remain in 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code）.
 
 | capability | where it lives | state |
 |---|---|---|
@@ -31,7 +31,7 @@ an application; application tools remain in `apps/`.
 | partial commit of interrupted turns (tool results kept, repaired) | `engine.py` (`_commit_partial`) | done |
 | 30s session checkpoints + `__last__` resume | `engine.py` + `transcript.py` | done |
 | mailboxes, delegation, wait/interrupt for sub-agent teams | `harness/agent/collab.py` (`AgentManager`) | done |
-| coding app tool suite (read/write/edit/bash/grep/...) | `apps/coding_agent/core_tools.py` | done, app layer |
+| coding app tool suite (read/write/edit/bash/grep/...) | `aicf-code 仓的 aicf_code/core_tools.py` | done, app layer |
 
 Test coverage lives beside each layer: `tests/test_orchestrator_gaps.py`,
 `test_harness_utilities.py`, `test_tools_runtime.py`,

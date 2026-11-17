@@ -228,8 +228,8 @@ with pool.acquire("tts") as lease:
 
 ### 5.1 边界：主进程永远不 import torch
 
-仓库里 `infra/` `harness/` `apps/` **零 `import torch`**（唯一例外是
-`apps/dsn/models/asr_engine.py:92` 用 `sys.modules.get("torch")` 做防御性检查）。
+仓库里 `infra/` `harness/` 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） **零 `import torch`**（唯一例外是
+`aicf-dsn 仓的 aicf_dsn/models/asr_engine.py:92` 用 `sys.modules.get("torch")` 做防御性检查）。
 训练因此跑在**独立解释器 + 独立脚本**里：
 
 ```

@@ -122,7 +122,7 @@ python -m aicf_ui.server --host 127.0.0.1 --port 8888
 ### 3.2 接本地 llama.cpp
 
 1. 编译好 llama.cpp，确认 `llama-server` 可执行；
-2. 在 `apps/dsn/model_profiles/` 放一个 YAML（模板见 `apps/dsn/model_profiles.example/`）：
+2. 在 `aicf-dsn 仓的 aicf_dsn/model_profiles/` 放一个 YAML（模板见 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`）：
 
 ```yaml
 model: my-model
@@ -139,10 +139,10 @@ llama_config:
 
 3. 重启 `dsn_ui`，模型会自动出现在列表里。
 
-> ⚠️ `apps/dsn/model_profiles/` 是**唯一生效的** profile 目录。
+> ⚠️ `aicf-dsn 仓的 aicf_dsn/model_profiles/` 是**唯一生效的** profile 目录。
 > `config.py` 注释里提到的 `DSN_UI_MODEL_PROFILES_DIR` 环境变量**并未实现**，改了不生效。
 >
-> 模板在 `apps/dsn/model_profiles.example/`，复制过去并改掉路径才会生效。
+> 模板在 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`，复制过去并改掉路径才会生效。
 > 用 `python installer.py --doctor        # 在 aicf-ui 仓里` 可以提前查出哪些 profile 的路径在本机不存在。
 
 ### 3.3 用图形界面配置（推荐新手）
@@ -159,10 +159,10 @@ llama_config:
 
 ### 启动就卡住 / 进入交互式引导
 
-这是 `apps.dsn.main` 的**导入期副作用**：模块导入时就检查 `.env` 里
+这是 `aicf_dsn.main` 的**导入期副作用**：模块导入时就检查 `.env` 里
 `OPENAI_API_KEY` 是否有效，无效则进入 onboarding 流程。
 
-**影响**：任何 `import apps.dsn.main`（包括测试、`/reboot`）都会触发。写测试时要避开。
+**影响**：任何 `import aicf_dsn.main`（包括测试、`/reboot`）都会触发。写测试时要避开。
 
 **解决**：把 `.env` 的 `OPENAI_API_KEY` 填成非占位值。
 
@@ -221,5 +221,5 @@ llama_config:
 2. **先确认走的哪条装配路径。** 同一个应用可能有多套初始化逻辑（`dsn` 有三套），
    行为不一致时先确认你改的是被实际执行的那一套。
 
-3. **先确认配置从哪读。** 真相分散在 `.env`、`apps/*/config.py` 的类属性、
+3. **先确认配置从哪读。** 真相分散在 `.env`、各应用仓 `config.py` 的类属性、
    以及 `*.yaml` 的 `condition` 三处，可能互相覆盖。

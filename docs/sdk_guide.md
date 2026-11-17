@@ -215,4 +215,4 @@ result = loop.run([ChatMessage.user("echo 你好")])
    调用时自动还原。你自己的客户端实现如果不是 OpenAI 语义，要注意这一点。
 
 4. **不要 import `apps.*`**：SDK 的价值就在于只依赖 `harness` + `infra`。
-   `apps/` 下的任何东西都不应该出现在你的项目里。
+   应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） 下的任何东西都不应该出现在你的项目里。

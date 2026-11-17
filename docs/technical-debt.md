@@ -164,7 +164,7 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 | `OutputFilter` | `harness/pipeline/filters.py` | ANSI/时间戳/UUID 过滤，未接入回喂链路 |
 | `SwarmRuntime` | `harness/agent/swarm.py` | 群组共识，apps 中零引用 |
 | `create_agent` / `Agent` | `harness/sdk.py` | 仅测试使用，apps 不调用 |
-| `SemanticCache` | `infra/cache.py` | 仅被 `harness/__init__` 重导出；业务用的是 `apps/dsn/semantic_cache/` |
+| `SemanticCache` | `infra/cache.py` | 仅被 `harness/__init__` 重导出；业务用的是 `aicf-dsn 仓的 aicf_dsn/semantic_cache/` |
 | `EventLogger` | `infra/observability/core.py` | 全仓无调用者，且是逆向依赖 |
 
 **建议**：这不是必须修的 bug，但它们让「框架能力」的描述容易夸大。
@@ -182,7 +182,7 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 | `AsyncTaskStore._ttl` | `infra/tasks/async_store.py` | 声明后从未使用 |
 | `ToolResult.data` | `harness/tools/base.py` | `AgentLoop` 打包结果时**丢弃** `data` 字段 |
 | `AgentSpec.tools` 的 list 形式 | `harness/agent/assembler.py:118` | 只识别字面量 `standard`，其余元素静默忽略 |
-| `DSN_UI_MODEL_PROFILES_DIR` | `apps/dsn_ui/config.py:60` | 目录写死为 `apps/dsn/model_profiles`，**没有读环境变量** |
+| `DSN_UI_MODEL_PROFILES_DIR` | `aicf-ui 仓的 aicf_ui/config.py:60` | 目录写死为 `aicf-dsn 仓的 aicf_dsn/model_profiles`，**没有读环境变量** |
 
 **这类问题的危害**：读者按名字以为能力存在，排查时浪费大量时间。
 建议统一处理：要么实现，要么删除，要么在字段旁注明「预留」。
@@ -211,9 +211,9 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 
 | 路径 | 位置 | 备注 |
 |---|---|---|
-| `boot.create_application()` | `apps/dsn/boot.py:399` | 生产路径，658 行、约 106 个分支 |
-| `DSNEngine(subapp_path)` | `apps/dsn/engine.py:156` | SubApp 路径 |
-| `create_engine_with_defaults()` | `apps/dsn/engine.py:1140` | 主应用复用 boot 组件 |
+| `boot.create_application()` | `aicf-dsn 仓的 aicf_dsn/boot.py:399` | 生产路径，658 行、约 106 个分支 |
+| `DSNEngine(subapp_path)` | `aicf-dsn 仓的 aicf_dsn/engine.py:156` | SubApp 路径 |
+| `create_engine_with_defaults()` | `aicf-dsn 仓的 aicf_dsn/engine.py:1140` | 主应用复用 boot 组件 |
 
 「DI 注册 + 4 遍插件加载」这段逻辑在 `engine.py:635-724` 与 `engine.py:1231-1338`
 **写了两遍且已经分叉**（后者缺 `enable_set` / `disable_set` 与 `complexity_analyzer`）。
@@ -254,15 +254,15 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 
 | 文件 | 指数 | 最复杂函数 |
 |---|---:|---|
-| `apps/dsn/plugins/pipeline.py` | 56.55 | `_dsn_agent_round` (44)、`_poll_pending_tasks` (38) |
-| `apps/dsn/psychoscope/minimal.py` → **已拆分为 `apps/dsn/CLI/` 包**（2026-11-07，数据为拆分前） | 56.50 | `main`、`_poll_loop` |
-| `apps/dsn/main.py` | 52.68 | `_cmd_reminder` (31)、`_cmd_plan` (21) |
+| `aicf-dsn 仓的 aicf_dsn/plugins/pipeline.py` | 56.55 | `_dsn_agent_round` (44)、`_poll_pending_tasks` (38) |
+| `aicf-dsn 仓的 aicf_dsn/psychoscope/minimal.py` → **已拆分为 `aicf-dsn 仓的 aicf_dsn/CLI/` 包**（2026-11-07，数据为拆分前） | 56.50 | `main`、`_poll_loop` |
+| `aicf-dsn 仓的 aicf_dsn/main.py` | 52.68 | `_cmd_reminder` (31)、`_cmd_plan` (21) |
 | `apps/densechat/static/app.js` | 52.50 | `handleMessage` (62) |
-| `apps/dsn_ui/server.py` | 48.64 | `_produce_sse` (72)、`chat_completions` (57) |
-| `apps/dsn/memory/core.py` | 46.89 | `search` (39) |
+| `aicf-ui 仓的 aicf_ui/server.py` | 48.64 | `_produce_sse` (72)、`chat_completions` (57) |
+| `aicf-dsn 仓的 aicf_dsn/memory/core.py` | 46.89 | `search` (39) |
 | `infra/orchestrator/anthropic.py` | 45.35 | `_split_system` (34) |
-| `apps/dsn/engine.py` | 45.33 | `_init_plugins_via_loader` (38) |
-| `apps/dsn_ui/agent.py` | 41.98 | `chat_stream` (64) |
+| `aicf-dsn 仓的 aicf_dsn/engine.py` | 45.33 | `_init_plugins_via_loader` (38) |
+| `aicf-ui 仓的 aicf_ui/agent.py` | 41.98 | `chat_stream` (64) |
 | `harness/agent/loop.py` | 40.46 | `run_stream` (49) |
 
 **改动这些函数前请先补测试。** 最值得拆分的三个：
@@ -301,7 +301,7 @@ semantic_cache / TTS 都是这样）。
 
 ## P2-4. 前端构建脚本失效
 
-`apps/dsn_ui/frontend` 的 `npm run dev` 会 cd 到不存在的 `tools/ui`（llama.cpp 上游遗留路径）。
+`aicf-ui 仓的 aicf_ui/frontend` 的 `npm run dev` 会 cd 到不存在的 `tools/ui`（llama.cpp 上游遗留路径）。
 本地开发请直接 `npx vite dev`。另外 `vite.config.ts` 默认指向 `localhost:8080`，
 与 `dsn_ui` 默认端口 8888 **不一致**，需要手动设置。
 
@@ -321,7 +321,7 @@ semantic_cache / TTS 都是这样）。
 | P1-3 | 声明但不生效的字段 | `AsyncTaskStore.ttl`、`ContextGatherer` | ✅ 已实现 |
 | P1-6 | `infra.models` shim | `infra/models/__init__.py` | ✅ 已重写 |
 | P2 | 管线计时断裂 | `harness/pipeline/pipeline.py` | ✅ 已修 |
-| P2 | dsn_ui 不读 .env | `apps/dsn_ui/dotenv_boot.py` | ✅ 已修 |
+| P2 | dsn_ui 不读 .env | `aicf-ui 仓的 aicf_ui/dotenv_boot.py` | ✅ 已修 |
 | P2 | APIKeyManager 存明文 | `infra/auth/api_key.py` | ✅ 已修 |
 | **P0-6** | **`killpg(0)` 误杀宿主进程** | `infra/orchestrator/local_engine.py` | ✅ 已修 |
 
@@ -372,7 +372,7 @@ semantic_cache / TTS 都是这样）。
 | `temp/` | 开发临时区（含 `dsn_study_backup` 等） |
 | `MagicMock/` | 测试副作用产物（**不是源码**）。跑一次 `tests/test_harness_strata.py` 就会新增若干 `MagicMock/mock.agent.data_dir/<id>/thought_cache.db`——因为测试里 `data_dir` 是 MagicMock，被当真路径用了。**注意：它没有被 .gitignore 显式忽略**，只是因为 `*.db` 规则侥幸没入库 |
 | `__pycache__/` / `.pytest_cache/` / `.ruff_cache/` | 缓存 |
-| `apps/dsn_ui/frontend/node_modules/` | 前端依赖（很大，会干扰按 `.py` 统计行数的脚本） |
+| `aicf-ui 仓的 aicf_ui/frontend/node_modules/` | 前端依赖（很大，会干扰按 `.py` 统计行数的脚本） |
 
 ### 统计代码规模时要注意
 

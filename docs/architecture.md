@@ -8,30 +8,32 @@
 
 ---
 
-## 一、三层与唯一允许的依赖方向
+## 一、两层与唯一允许的依赖方向
 
 ```
-        ┌──────────────────────────────────────────────┐
-        │  apps/        业务语义：做什么               │
-        │  dsn · dsn_ui · dsn_study · coding_agent ...  │
-        └───────────────────┬──────────────────────────┘
-                            │ import harness.* / infra.*
-        ┌───────────────────▼──────────────────────────┐
-        │  harness/     Agent 逻辑：怎么想、怎么动手   │
-        │  agent · tools · pipeline · memory · SDK     │
-        └───────────────────┬──────────────────────────┘
-                            │ import infra.*
-        ┌───────────────────▼──────────────────────────┐
-        │  infra/       资源：模型从哪来、状态存哪     │
-        │  orchestrator · resources · store · policy   │
-        └──────────────────────────────────────────────┘
+   ┌───────────────────────────────────────────────────────────┐
+   │  应用仓（各自独立仓库）                                  │
+   │  aicf-ui · aicf-dsn · aicf-study · aicf-code              │
+   │  业务语义：做什么                                         │
+   └───────────────────┬───────────────────────────────────────┘
+                       │ pip install aicf-core / import harness.* infra.*
+   ┌───────────────────▼───────────────────────────────────────┐
+   │  harness/     Agent 逻辑：怎么想、怎么动手                │
+   │  agent · tools · pipeline · memory · SDK                  │
+   └───────────────────┬───────────────────────────────────────┘
+                       │ import infra.*
+   ┌───────────────────▼───────────────────────────────────────┐
+   │  infra/       资源：模型从哪来、状态存哪                  │
+   │  orchestrator · resources · store · policy                │
+   └───────────────────────────────────────────────────────────┘
 ```
 
+**本仓只有下面两层**（2026-11-18 起 `apps/` 已拆到四个独立仓库）。
 **规则：箭头只能向下。** 判断新代码该放哪一层，问三个问题：
 
 | 问题 | 是 → |
 |---|---|
-| 它认识“语音/学习/陪伴/界面”这类词吗？ | `apps/` |
+| 它认识“语音/学习/陪伴/界面”这类词吗？ | 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） |
 | 它关心“消息进、工具出、上下文预算”吗？ | `harness/` |
 | 它只管进程、HTTP、显存、磁盘、密钥吗？ | `infra/` |
 
@@ -54,8 +56,8 @@
 ```
 浏览器 POST /v1/chat/completions
    │
-   ▼  apps/dsn_ui/server.py          路由层：解析请求、决定 api_mode
-   ▼  apps/dsn_ui/agent.py           协调层：组装上下文、选择模型、发起流式
+   ▼  aicf-ui 仓的 aicf_ui/server.py          路由层：解析请求、决定 api_mode
+   ▼  aicf-ui 仓的 aicf_ui/agent.py           协调层：组装上下文、选择模型、发起流式
    │      ├─ 组装 system prompt（dsn 模式才做）
    │      ├─ 情绪刺激 / 话题记忆（dsn 模式才做）
    │      └─ 选择 IChatClient
@@ -70,7 +72,7 @@
 SSE 流回浏览器
 ```
 
-**关键分界**：`apps/dsn_ui/agent.py` 里的 `api_mode` 决定是否注入 DSN 那套
+**关键分界**：`aicf-ui 仓的 aicf_ui/agent.py` 里的 `api_mode` 决定是否注入 DSN 那套
 提示词/情绪/记忆。`passthrough` 模式下 harness 与 infra 的行为完全不变，
 只是跳过了应用层的增强——这正是分层的价值所在。
 
@@ -123,11 +125,11 @@ SSE 流回浏览器
 | `groupchat.py` | 群聊 | — |
 | `sdk.py` | 嵌入式 SDK | `Agent` `create_agent` `tool` |
 
-### `apps/` —— 业务与装配
+### 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） —— 业务与装配
 
 | 应用 | 定位 | 启动方式 |
 |---|---|---|
-| `dsn_ui` | Web 控制台，日常主入口 | `python main.py --app dsn_ui` / `python -m apps.dsn_ui.server` |
+| `dsn_ui` | Web 控制台，日常主入口 | `python main.py --app dsn_ui` / `python -m aicf_ui.server` |
 | `dsn` | 语音陪伴，规模最大（58k 行），包含最多历史包袱 | `python main.py`（默认） |
 | `dsn_study` | 学习助手，**装配范式最规范** | `python main.py --app dsn_study` |
 | `coding_agent` | 编码助手，**最小可读范例**（186 行） | `python -m apps.coding_agent` |
@@ -209,7 +211,7 @@ class IChatClient(Protocol):
 调用方若只提交 `SEG_VERBATIM`，一旦预算耗尽，**包含最近一轮的那整段会被裁掉**，
 用户看到的现象就是「弹性上下文偶尔丢失上一条消息」。
 
-因此 `apps/dsn_ui/topic_manager.py` 现在会**额外产出一段 `SEG_TAIL`**：
+因此 `aicf-ui 仓的 aicf_ui/topic_manager.py` 现在会**额外产出一段 `SEG_TAIL`**：
 
 - 取当前话题最近 `budget.tail_rounds` 轮的原文；
 - 不参与共享预算，因此任何裁剪策略都动不了它；
@@ -232,14 +234,14 @@ class IChatClient(Protocol):
 | `Runtime._default_runtime` | `infra/runtime.py:32` | 全局兜底运行时，测试之间可能串味 |
 
 此外有两个“并存的调度器”需要警惕：`ResourcePool` **继承**了 `ModelScheduler`
-但**不共享**它的单例，而 `apps/dsn/models/*.py` 又直接用 `ModelScheduler.get_instance()`。
+但**不共享**它的单例，而 `aicf-dsn 仓的 aicf_dsn/models/*.py` 又直接用 `ModelScheduler.get_instance()`。
 因此同一进程里可能同时存在两套互不可见的插槽配额。
 
 ---
 
 ## 六、命名与文档约定
 
-- **代码完全 snake_case**（PEP 8）。唯一例外：vendored 的 `apps/dsn/pyncm` 与外部 API 属性名。
+- **代码完全 snake_case**（PEP 8）。唯一例外：vendored 的 `aicf-dsn 仓的 aicf_dsn/pyncm` 与外部 API 属性名。
 - **注释即缺陷数据库**：本仓库不给 `infra/` 留 `TODO`/`FIXME`（实测全目录 0 个），
   而是把「这里曾经出过什么 bug、为什么这么写」写成中文长注释贴在代码旁。
   **改代码时请保留这些注释**——它们是这个项目最重要的知识载体。

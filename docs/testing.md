@@ -87,7 +87,7 @@ python tests/scripts_openaichat.py
 
 | 文件 | 用例数 | 根因 |
 |---|---:|---|
-| `test_prompt_ecosystem.py` | 6 | 依赖已删除的 `apps.dsn.prompt._personality_v1_legacy`；断言 prompt 含旧版文案（如 "task"） |
+| `test_prompt_ecosystem.py` | 6 | 依赖已删除的 `aicf_dsn.prompt._personality_v1_legacy`；断言 prompt 含旧版文案（如 "task"） |
 | `test_skills_system.py` | 4 | 技能资产漂移 + `WorkspaceManager` 未初始化 |
 
 这 10 个是**资产漂移**：断言依赖已被删除或改写的资产，而不是代码回归。
@@ -187,11 +187,11 @@ def test_something():
         ...
 ```
 
-### 5.4 避开 `import apps.dsn.main`
+### 5.4 避开 `import aicf_dsn.main`
 
-`apps/dsn/main.py` **在导入期就会检查 `.env` 并可能进入交互式 onboarding**
+`aicf-dsn 仓的 aicf_dsn/main.py` **在导入期就会检查 `.env` 并可能进入交互式 onboarding**
 （`main.py:54`）。测试里导入它会让 pytest 卡在等待 stdin。
-需要测 DSN 组件时，直接导入子模块（如 `apps.dsn.engine`）。
+需要测 DSN 组件时，直接导入子模块（如 `aicf_dsn.engine`）。
 
 ### 5.5 改动前后各跑一次
 
@@ -218,12 +218,12 @@ python -m pytest tests/test_harness_*.py -q     # 改动后
 ### 数据隔离是怎么做的
 
 `conftest.py` 把 `DSN_UI_DATA_DIR` 指向临时目录并自动清理，
-因此跑测试**不再往 `apps/dsn_ui/data/` 写真实数据库**。
-`MagicMock/` 产物也已根治：`apps/dsn_ui/thought_cache.py` 现在只接受
+因此跑测试**不再往 `aicf-ui 仓的 aicf_ui/data/` 写真实数据库**。
+`MagicMock/` 产物也已根治：`aicf-ui 仓的 aicf_ui/thought_cache.py` 现在只接受
 `str` / `os.PathLike` 作为 data_dir，MagicMock 会被拒掉并回退到默认值。
 
 > ⚠️ `conftest.py` **刻意不修改工作目录**。本仓库大量测试用相对路径定位
-> `apps/dsn/skills`、`prompt` 目录，cwd 一旦变成 tmp 就会大面积
+> `aicf-dsn 仓的 aicf_dsn/skills`、`prompt` 目录，cwd 一旦变成 tmp 就会大面积
 > `FileNotFoundError`（首次实现时踩过，已修正）。
 
 ---

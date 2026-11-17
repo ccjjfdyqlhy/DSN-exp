@@ -9,7 +9,7 @@
 ```
 1. 环境变量 / .env        ← 优先级最高，最常用
          ↓
-2. apps/<app>/config.py    ← 类是「import 时快照」的类属性
+2. 各应用仓自己的 config.py  ← 类是「import 时快照」的类属性
          ↓
 3. *.yaml（model_profiles、plugin.yaml、skill.yaml）
 ```
@@ -18,22 +18,22 @@
 
 | 应用 | 读取方式 | 备注 |
 |---|---|---|
-| `dsn` | `apps/dsn/config.py` 中 `load_dotenv(repo_root/.env)` | 导入时快照 |
-| `dsn_study` | `apps/dsn_study/config.py` | 同上 |
-| `densechat` | `apps/densechat/config.py` + `server.py::main` 显式 `load_dotenv()` | |
+| `dsn` | `aicf-dsn 仓的 aicf_dsn/config.py` 中 `load_dotenv(repo_root/.env)` | 导入时快照 |
+| `dsn_study` | `aicf-study 仓的 aicf_study/config.py` | 同上 |
+| （已随实验应用归档） | | |
 | `emotion_exp` | `entry.py` 顶部 `load_dotenv()` | |
-| `dsn_ui` | ✅ 经 `apps/dsn_ui/dotenv_boot.py` 加载（在 `config.py` 顶部被 import 时触发） | 2026-10 已修复 |
+| `dsn_ui` | ✅ 经 `aicf-ui 仓的 aicf_ui/dotenv_boot.py` 加载（在 `config.py` 顶部被 import 时触发） | 2026-10 已修复 |
 
 > ⚠️ **`dsn_ui` 的 `.env` 加载（2026-10 已修复）**：`UIConfig` 是导入时求值的类属性，
-> 因此 `load_dotenv` 必须发生在它之前。现在 `apps/dsn_ui/config.py` 顶部会 import
-> `apps/dsn_ui/dotenv_boot`，后者在 import 时加载仓库根的 `.env`。
+> 因此 `load_dotenv` 必须发生在它之前。现在 `aicf-ui 仓的 aicf_ui/config.py` 顶部会 import
+> `aicf-ui 仓的 aicf_ui/dotenv_boot`，后者在 import 时加载仓库根的 `.env`。
 >
 > 优先级为：**进程环境变量 > `.env` > 代码内默认值**
 >（`dotenv_boot.load_env(override=False)`）。
 
 ### `Config` 是「import 时快照」
 
-`apps/dsn/config.py` 在模块导入时就把环境变量读成类属性。因此：
+`aicf-dsn 仓的 aicf_dsn/config.py` 在模块导入时就把环境变量读成类属性。因此：
 
 - 运行时改 `os.environ` **不会**影响已经导入的 `Config`；
 - `/config set` 写 `.env` 后，对当前进程是否生效**未验证**。
@@ -64,7 +64,7 @@
 | `DSN_UI_DEFAULT_SLOTS` | `2` | 并发模型槽位 |
 | `DSN_UI_LOG_LEVEL` | `INFO` | dsn_ui 日志级别 |
 | `DSN_UI_CORS_ORIGINS` | 仅本机 | 额外放行的跨域来源 |
-| `DSN_UI_DATA_DIR` | `apps/dsn_ui/data` | 数据目录（记忆/凭据/缓存）。**测试用此变量隔离** |
+| `DSN_UI_DATA_DIR` | `aicf-ui 仓的 aicf_ui/data` | 数据目录（记忆/凭据/缓存）。**测试用此变量隔离** |
 | `DENSECHAT_PORT` | `8080` | densechat 端口 |
 
 ### 2.3 本地模型
@@ -79,9 +79,9 @@
 | `DSN_UI_MODEL_ROOTS` | `~/.lmstudio/models` | onboarding 扫描目录（`os.pathsep` 分隔） |
 
 > ⚠️ `DSN_UI_MODEL_PROFILES_DIR` 在注释里出现但**未实现**。生效的 profile 目录
-> 永远是 `apps/dsn/model_profiles/`。
+> 永远是 `aicf-dsn 仓的 aicf_dsn/model_profiles/`。
 >
-> 模板与参考放在 `apps/dsn/model_profiles.example/`（默认不生效，复制过去才生效）。
+> 模板与参考放在 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`（默认不生效，复制过去才生效）。
 > 仓库里**不预置**带绝对路径的本地模型 —— 那些路径只在作者机器上有效，
 > 换个机器就会变成"列得出来、加载必失败"的幽灵模型。
 
@@ -156,12 +156,12 @@
 |---|---|---|
 | API Key / 模型 | `.env`（dsn/dsn_study）或 `export`（dsn_ui） | 是 |
 | dsn_ui 端口 | `export DSN_UI_PORT=...` | 是 |
-| 本地模型清单 | `apps/dsn/model_profiles/*.yaml`（模板在 `apps/dsn/model_profiles.example/`） | 是（dsn_ui 启动时扫描） |
+| 本地模型清单 | `aicf-dsn 仓的 aicf_dsn/model_profiles/*.yaml`（模板在 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`） | 是（dsn_ui 启动时扫描） |
 | 远程 Provider | dsn_ui 设置页 → 存到 `data/api_providers.json` | 否 |
 | 模型启动参数 | dsn_ui 界面 → `data/model_launch_overrides.json` | 否 |
 | 插件开关 | `plugin.yaml` 的 `condition` | 是 |
 | 技能启用 | `skill.yaml` 或 `/api/skill/*` | 视情况 |
-| 提示词 | `apps/dsn/prompt/prompts/{core,capabilities,extensions}/` | 是 |
+| 提示词 | `aicf-dsn 仓的 aicf_dsn/prompt/prompts/{core,capabilities,extensions}/` | 是 |
 
 ---
 
@@ -181,9 +181,9 @@
 
 ### `dsn_ui` 的凭据是加密存储的
 
-- Provider 名单（明文）：`apps/dsn_ui/data/api_providers.json`
-- 凭据密文（Fernet）：`apps/dsn_ui/data/dsn_ui_secrets.db`
-- 主密钥来源顺序：`DSN_UI_SECRET_KEY` 环境变量 → `apps/dsn_ui/data/.secret_key`
+- Provider 名单（明文）：`aicf-ui 仓的 aicf_ui/data/api_providers.json`
+- 凭据密文（Fernet）：`aicf-ui 仓的 aicf_ui/data/dsn_ui_secrets.db`
+- 主密钥来源顺序：`DSN_UI_SECRET_KEY` 环境变量 → `aicf-ui 仓的 aicf_ui/data/.secret_key`
 
 > ⚠️ **备份时必须连 `.secret_key` 一起备份。** 密钥丢失且没设 `DSN_UI_SECRET_KEY` 时，
 > 所有 provider 的 base_url / api_key 都**无法恢复**，只能重新填。

@@ -7,22 +7,37 @@
 
 ## 一、先选路线
 
+> **前提（2026-11-18 起）**：应用是**独立仓库**，只依赖 `aicf-core`。
+> 本文里的「参考实现」都指对应仓库，不是本仓的子目录。
+
 ```
 你要做的东西需要 Web 界面吗？
   ├─ 是 → 需要多子系统 + 技能吗？
-  │        ├─ 是 → 照 dsn_study 写（Runtime + AppBundle + FlaskGateway）
-  │        └─ 否 → 照 dsn_ui 写（FastAPI），但注意它不走 AppBundle
+  │        ├─ 是 → 照 aicf-study 写（Runtime + AppBundle + FlaskGateway）
+  │        └─ 否 → 照 aicf-ui 写（FastAPI），但注意它不走 AppBundle
   └─ 否 → 终端工具？
-           ├─ 简单 → 照 coding_agent 写（AgentRuntime + 工具）
-           └─ 极简 → 照 text_agent 写（Runtime + AgentLoop）
+           ├─ 简单 → 照 aicf-code 写（AgentRuntime + 工具）
+           └─ 极简 → 照 core 的 harness/sdk.py 写（Runtime + AgentLoop）
 ```
 
-| 你的需求 | 参考实现 | 行数 |
-|---|---|---:|
-| 学会最小可用组合 | `apps/text_agent` | 106 |
-| 加工具、加持久化 | `apps/coding_agent` | 186 |
-| 加人格 / 情绪 / 话题 | `apps/emotion_exp` | 836 |
-| 加 Web + 技能 + 多子系统 | `apps/dsn_study` | 10k |
+| 你的需求 | 参考实现 | 规模 |
+|---|---|---|
+| 学会最小可用组合 | `aicf-code` 仓 | 6 个文件 / ~730 行 |
+| 加 Web + 技能 + 多子系统 | `aicf-study` 仓 | 约 4 万行 |
+| 完整控制台体验（模型管理 / 资源 / 决策） | `aicf-ui` 仓 | 约 1.2 万行 |
+| 加人格 / 情绪 / 话题 | `aicf-dsn` 仓 | 约 5.9 万行 |
+
+新应用该长什么样：
+
+```bash
+mkdir my-app && cd my-app && git init
+# pyproject.toml：dependencies = ["aicf-core>=1.0,<2"]
+# 包名与仓库名对齐（my_app / my-app）
+pip install -e .
+```
+
+一条硬规则：**应用不得被 core 反向依赖**。core 里出现任何应用概念
+（语音、学习、角色卡路径）都是设计错误。
 
 ---
 
@@ -31,7 +46,7 @@
 ### 2.1 结构
 
 ```
-apps/my_app/
+my_app/
 ├── __init__.py
 ├── entry.py        # 供 launcher 调用：def main()
 ├── __main__.py     # 供 python -m apps.my_app 调用
@@ -41,7 +56,7 @@ apps/my_app/
 ### 2.2 `entry.py` 与 `__main__.py`
 
 ```python
-# apps/my_app/entry.py
+# my_app/entry.py
 from __future__ import annotations
 
 def main() -> None:
@@ -50,7 +65,7 @@ def main() -> None:
 ```
 
 ```python
-# apps/my_app/__main__.py
+# my_app/__main__.py
 from __future__ import annotations
 
 def main() -> None:
@@ -135,7 +150,7 @@ print(result.reply)
 ```
 
 `AgentRuntime` 已经帮你建好 `Runtime` / `Settings` / `ToolRegistry` / `Conversation`。
-加工具用 `agent.register_tool(...)`（见 `apps/coding_agent/app.py:42`）。
+加工具用 `agent.register_tool(...)`（见 `aicf-code 仓的 aicf_code/app.py:42`）。
 
 > ⚠️ `AgentRuntime` 的**记忆只写不读**——写入的记忆不会进入上下文。
 > 需要真正的记忆请自己管理上下文。
@@ -257,7 +272,7 @@ class MyBundle(AppBundle):
         ...
 ```
 
-> 真实范例见 `apps/dsn_study/boot.py`，它顶部的注释就是完整装配顺序的提纲。
+> 真实范例见 `aicf-study 仓的 aicf_study/boot.py`，它顶部的注释就是完整装配顺序的提纲。
 
 ---
 
@@ -274,7 +289,7 @@ skills/builtin/my_skill/
     └── my_tools.py
 ```
 
-`skill.yaml` 大致形状（字段以 `apps/dsn_study/skills/builtin/*/skill.yaml` 为准）：
+`skill.yaml` 大致形状（字段以 `aicf-study 仓的 aicf_study/skills/builtin/*/skill.yaml` 为准）：
 
 ```yaml
 name: my_skill
@@ -289,7 +304,7 @@ tools:
     class: MyTool
 ```
 
-**注意**：`apps/dsn` 与 `apps/dsn_study` 各有一套技能加载器，接口不完全相同；
+**注意**：`aicf-dsn` 与 `aicf-study` 各有一套技能加载器，接口不完全相同；
 `harness/skills/` 里的 `Skill` / `SkillRegistry` 是基类，应用侧各自重写了实现。
 新写技能前先确认目标应用的加载器。
 
@@ -301,12 +316,12 @@ tools:
 
 | 位置 | 问题 |
 |---|---|
-| `apps/coding_agent/skills.py` 的 `run_bash` | `shell=True` 且无路径校验 |
-| `apps/text_agent/app.py` 的 `_calc` | 用 `eval`，靠字符白名单防护 |
-| `apps/dsn/boot.py` | 20+ 个模块级全局，被三层转发（`api/app.py` → `main.py`） |
-| `apps/dsn` 的 `except Exception: pass` 风格 | 静默吞异常，排障极难 |
-| `apps/dsn_ui/server.py` 的路由注册方式 | 3000 行单文件集中注册，注意 catch-all 顺序 |
-| `apps/dsn_ui/agent.py` 的 `chat_stream` / `chat_invoke` | 两份重复分支逻辑，容易改漏 |
+| `aicf-code 仓的 aicf_code/skills.py` 的 `run_bash` | `shell=True` 且无路径校验 |
+| 早期 `text_agent/app.py` 的 `_calc`（已随实验应用归档） | 用 `eval`，靠字符白名单防护 |
+| `aicf-dsn 仓的 aicf_dsn/boot.py` | 20+ 个模块级全局，被三层转发（`api/app.py` → `main.py`） |
+| `aicf-dsn` 的 `except Exception: pass` 风格 | 静默吞异常，排障极难 |
+| `aicf-ui 仓的 aicf_ui/server.py` 的路由注册方式 | 3000 行单文件集中注册，注意 catch-all 顺序 |
+| `aicf-ui 仓的 aicf_ui/agent.py` 的 `chat_stream` / `chat_invoke` | 两份重复分支逻辑，容易改漏 |
 
 ---
 
@@ -314,7 +329,7 @@ tools:
 
 - [ ] 有 `entry.py`（`main()`）和 `__main__.py`；
 - [ ] 在 `apps.yaml` 注册，`python main.py --list` 能看到；
-- [ ] 不 import `apps.dsn.main`（会在导入期触发 onboarding）；
+- [ ] 不 import `aicf_dsn.main`（会在导入期触发 onboarding）；
 - [ ] 模型客户端来自 `infra.orchestrator`，不是自己再造一套；
 - [ ] 工具注册进 `ToolRegistry`，而不是在业务码里硬编码调用；
 - [ ] 长任务给 `max_steps` 一个合理值（注意 0 = 不限制）；

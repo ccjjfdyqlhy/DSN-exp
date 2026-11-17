@@ -1,6 +1,6 @@
 # 应用层 —— 现在是四个独立仓库
 
-> 2026-11-18 起，`apps/` 已从 core 拆走。
+> 2026-11-18 起，应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） 已从 core 拆走。
 > 本文回答两个问题：**我该去哪个仓库改代码**，以及**新应用怎么起步**。
 
 ---
@@ -9,10 +9,10 @@
 
 | 仓库 | 原来在哪 | 定位 | 入口 | 默认端口 |
 |---|---|---|---|---|
-| [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | `apps/dsn_ui/` | **日常主入口**，Web 控制台 | `python -m aicf_ui.server` | 8888 |
-| [`aicf-dsn`](https://github.com/ccjjfdyqlhy/aicf-dsn) | `apps/dsn/` | 语音陪伴，历史最长 | `python -m aicf_dsn` | 5000 |
-| [`aicf-study`](https://github.com/ccjjfdyqlhy/aicf-study) | `apps/dsn_study/` + `dsn_study_cli/` | 学习助手，Web 应用的正规范例 | `python -m aicf_study` | 5000 |
-| [`aicf-code`](https://github.com/ccjjfdyqlhy/aicf-code) | `apps/coding_agent/` | **最小可读范例** | `python -m aicf_code` | — |
+| [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | `aicf-ui 仓的 aicf_ui/` | **日常主入口**，Web 控制台 | `python -m aicf_ui.server` | 8888 |
+| [`aicf-dsn`](https://github.com/ccjjfdyqlhy/aicf-dsn) | `aicf-dsn 仓的 aicf_dsn/` | 语音陪伴，历史最长 | `python -m aicf_dsn` | 5000 |
+| [`aicf-study`](https://github.com/ccjjfdyqlhy/aicf-study) | `aicf-study 仓的 aicf_study/` + `dsn_study_cli/` | 学习助手，Web 应用的正规范例 | `python -m aicf_study` | 5000 |
+| [`aicf-code`](https://github.com/ccjjfdyqlhy/aicf-code) | `aicf-code 仓的 aicf_code/` | **最小可读范例** | `python -m aicf_code` | — |
 
 被丢弃的实验物（历史在 [`DSN-legacy`](https://github.com/ccjjfdyqlhy/DSN-legacy)）：
 `densechat`（他人项目复刻）、`emotion_exp`、`harness_lab`、`text_agent`、`dsn_existence`。
@@ -26,7 +26,7 @@
 | 拆之前 | 拆之后 |
 |---|---|
 | 一个仓装库 + 四个应用，改一处要 review 几万行 | 库与应用分开，各自 PR、各自发版 |
-| 库代码里写死 `apps/dsn/...` 路径 | core 不认识任何应用；应用用环境变量/包内路径 |
+| 库代码里写死 `aicf-dsn 仓的 aicf_dsn/...` 路径 | core 不认识任何应用；应用用环境变量/包内路径 |
 | 「这个 pip 包到底装了什么」说不清 | `aicf-core` 只装 `harness` + `infra` |
 | 四个应用共享的改动要在四处复制 | 共享部分下沉到 core，应用只留业务语义 |
 

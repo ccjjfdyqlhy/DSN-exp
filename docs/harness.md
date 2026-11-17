@@ -1,7 +1,7 @@
 # harness/ —— Agent 核心层
 
 > 读者：要修改 Agent 行为（循环、工具、上下文、管线）的维护者。
-> 这一层**不认识任何业务**：它只处理“消息进、事件出”。业务语义属于 `apps/`。
+> 这一层**不认识任何业务**：它只处理“消息进、事件出”。业务语义属于 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code）。
 
 ---
 
@@ -46,7 +46,7 @@ print(agent.chat("计算 123 + 456"))
 | `run_rounds(round_runner, state)` | **通用骨架**，由应用提供每轮策略 | 否 | **否** |
 
 > `run_rounds` 是超集能力：DSN 应用的引擎用它来驱动自己的轮次策略
-> （见 `apps/dsn/plugins/pipeline.py` 的 `_dsn_agent_round`）。它只负责
+> （见 `aicf-dsn 仓的 aicf_dsn/plugins/pipeline.py` 的 `_dsn_agent_round`）。它只负责
 > 步数迭代与 `on_progress` 生命周期，每轮做什么完全由调用方决定。
 
 ### 2.2 原生路径的控制流
@@ -319,7 +319,7 @@ OUTPUT        输出渲染 / 投递
 
 | 模块 | 说明 |
 |---|---|
-| `memory/` | `MemoryStore` 契约 + `InMemoryStore` + `VectorIndex`（余弦检索）。DSN 的真实记忆系统在 `apps/dsn/memory/`，这里只是抽象 |
+| `memory/` | `MemoryStore` 契约 + `InMemoryStore` + `VectorIndex`（余弦检索）。DSN 的真实记忆系统在 `aicf-dsn 仓的 aicf_dsn/memory/`，这里只是抽象 |
 | `personality/` | PEV3：50 维特质向量、贝叶斯演化、动态快照、证据累积、角色卡。**这是本仓库最完整的子系统之一** |
 | `prompts/` | `PromptEngine` + `PromptFragment`，支持模块化提示词与预设 |
 | `skills/` | `SkillLoader`：从目录加载技能定义并注册为工具 |
@@ -396,7 +396,7 @@ agent 轨迹 ──▶ harness/learning/dataset_builder ──▶ JSONL
 
 ## 九、改这一层时的检查清单
 
-- [ ] 新能力是否**场景无关**？如果出现了“语音/学习/提醒”字样，它应该去 `apps/`。
+- [ ] 新能力是否**场景无关**？如果出现了“语音/学习/提醒”字样，它应该去 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code）。
 - [ ] 是否破坏 `IChatClient` 契约？`stream()` 只能 yield `str` 或约定 dict。
 - [ ] 是否新增了全局状态？优先走 `Runtime` 或显式参数注入。
 - [ ] 工具改动是否同时更新了 schema 与执行逻辑？（两者分离，容易只改一半）

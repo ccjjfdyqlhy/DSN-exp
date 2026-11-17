@@ -28,7 +28,7 @@ if gate.evaluate(text).value and gate.evaluate(text).confident:
 
 | 场景 | 类型 | 落点 |
 |---|---|---|
-| 情绪读取（驱动语气与 TTS 语速） | choice | `apps/dsn_study/models/decision_service.py` |
+| 情绪读取（驱动语气与 TTS 语速） | choice | `aicf-study 仓的 aicf_study/models/decision_service.py` |
 | 危机检测（关键词预筛 + 模型确认） | yes_no | 同上 |
 | 工具路由 | choice | `harness/decisions/use_cases.py` |
 | 检索前置判断 | yes_no | 同上 |
@@ -97,8 +97,8 @@ infra/resources/decision_service.py  作为外周资源托管（ResourceKind.DEC
 harness/decisions/core.py         语义：请求/结果/提示词/分布解释/置信度
 harness/decisions/service.py      门面：把传输与语义接起来
 harness/decisions/use_cases.py    用例：情绪、危机、工具路由、检索闸门、分类
-apps/dsn_ui/system1_api.py        HTTP 契约（/v1/decide、/v1/decide/capabilities）
-apps/dsn_study/models/decision_service.py  应用侧：状态探测 + 情绪→语气
+aicf-ui 仓的 aicf_ui/system1_api.py        HTTP 契约（/v1/decide、/v1/decide/capabilities）
+aicf-study 仓的 aicf_study/models/decision_service.py  应用侧：状态探测 + 情绪→语气
 ```
 
 ---
@@ -114,7 +114,7 @@ python3 -m pytest tests/test_decisions_core.py \
                  tests/test_dsn_study_decision.py -q
 
 # 真机闭环（会真的加载 16.5G 权重，占满双卡，约 2 分钟）
-python3 apps/dsn_study/scripts/verify_decision_lifecycle.py
+python3 aicf-study 仓的 aicf_study/scripts/verify_decision_lifecycle.py
 ```
 
 真机闭环会打印：拉起耗时 → 两次真实决策的候选分布 → 情绪读数 →
