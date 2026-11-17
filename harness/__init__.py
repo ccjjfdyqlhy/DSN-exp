@@ -72,7 +72,7 @@ from .context_assembly import (
 from .todo import TodoItem, TodoPlan, TodoStore, default_todo_path
 from .sdk import Agent, create_agent, tool
 
-__version__ = "0.5.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "Runtime",
