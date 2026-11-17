@@ -443,3 +443,29 @@ def test_wait_agent_wakes_up_when_activity_happens():
         await root.shutdown()
 
     asyncio.run(main())
+
+
+def test_shutdown_stops_the_child_engines_too():
+    """A child's run loop must not outlive the manager.
+
+    Regression: only the record was settled, the child engine kept awaiting
+    work until the loop closed, and the process printed "Task was destroyed
+    but it is pending" plus an "Event loop is closed" traceback per child.
+    """
+    client = ScriptedClient([['ok', {'finish': 'stop'}]])
+    registry = _registry()
+
+    async def main():
+        root = ConversationEngine(client=client, registry=registry, cwd='.',
+                                  model=_model(), system_provider=lambda: 'sys')
+        manager = AgentManager(client=client, registry=registry, model=_model())
+        manager.attach(root)
+        record = await manager.spawn('helper', 'work')
+        await _wait_idle(record.engine)
+        assert record.engine._task is not None
+
+        await manager.shutdown()
+        await root.shutdown()
+        assert record.engine._task is None, 'the child engine is still running'
+
+    asyncio.run(main())

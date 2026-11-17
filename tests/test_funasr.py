@@ -1,3 +1,10 @@
+# 语音栈是可选依赖（funasr / pvrecorder）。
+# 缺依赖时**跳过**而不是让整个测试集收集失败。
+import pytest
+
+pytest.importorskip("funasr", reason="未安装 funasr（可选语音栈）")
+pytest.importorskip("pvrecorder", reason="未安装 pvrecorder（可选语音栈）")
+
 import numpy as np
 import threading
 import queue

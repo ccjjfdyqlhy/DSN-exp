@@ -74,7 +74,7 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 
 ```bash
 python3 -c "import fastapi, flask, openai, yaml, dotenv; print('deps ok')"
-python3 -c "import harness; print('harness', harness.__version__)"   # 期望 0.6.1
+python3 -c "import harness; print('harness', harness.__version__)"   # 期望 1.0.0
 python3 main.py --list
 python3 installer.py --doctor                                    # 环境体检（只读）
 ```
