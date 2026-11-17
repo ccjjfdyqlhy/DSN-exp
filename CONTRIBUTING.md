@@ -6,18 +6,25 @@ that keep the repository coherent, and how to land a change.
 ## what lives where
 
 - `harness/` - the scenario-agnostic agent core: turn engine, tool
-  abstractions, conversation state, sessions, collaboration. this is the
-  part published to pypi as `aicf`
+  abstractions, conversation state, sessions, collaboration
 - `infra/` - the layer under the core: model clients (openai compatible,
   responses, anthropic), storage, settings, networking
-- `apps/` - scenario layers built on the core (they are **not** part of
-  the pypi package)
 - `tests/` - the pytest suite
-- `bench/` - (adcode repo only; not this one)
+- `docs/` - the documentation you are reading
 
-the layering rule that matters: `harness` never imports an application.
-if your change needs an app concept inside `harness`, it belongs in the
-app or needs to be designed as a generic mechanism first.
+this repository is **the library only**, published to pypi as
+`aicf-core`. the four products that use it live in their own
+repositories and depend on it, nothing else:
+
+- `aicf-ui` - web console
+- `aicf-dsn` - voice companion
+- `aicf-study` - study assistant
+- `aicf-code` - terminal coding agent
+
+the layering rule that matters: the core never imports an application.
+if your change needs a product concept inside `harness`, it belongs in
+that product's repository, or it needs to be designed as a generic
+mechanism first.
 
 ## setup
 
@@ -38,17 +45,16 @@ the local gateway, never a real provider.
 some paths are machine-local and must never be committed. they are
 gitignored and hook-enforced (`.git/local-only-policy.txt`):
 
-- `apps/dsn_existence/**`
-- `tests/test_dsn_existence*`
 - `local/**`
+- `sessions/` and `**/logs/*` (runtime state)
 
 if `git status` shows them, leave them alone. do not remove the ignore
 entries, and do not `git add -f` past the pre-commit hook.
 
 ## branch and commit conventions
 
-- the default branch is `harness-refactor`; feature branches cut from it
-  and PR against it
+- the default branch is `main`; feature branches cut from it and PR
+  against it
 - commit messages are exactly one line: `type(scope): description` -
   imperative, lowercase, no trailing period (`feat(engine): ...`,
   `fix(infra): ...`). if it needs a paragraph, that is the PR
@@ -77,12 +83,12 @@ entries, and do not `git add -f` past the pre-commit hook.
 
 changes under `harness/` are the sensitive ones:
 
-- `harness` imports `infra` and itself, never `apps.*`
+- `harness` imports `infra` and itself, never an application package
 - new capabilities are mechanisms, not application features: if a name
   only makes sense for one scenario (coding, study, chat), it belongs in
   that app, not the core
 - every added parameter must keep the old behavior when omitted; the
-  apps in this repository are the regression net
+  four application repositories are the regression net
 - public surface additions land in the package `__init__` exports and
   need tests beside them (`tests/`)
 
@@ -97,7 +103,7 @@ changes under `harness/` are the sensitive ones:
 
 ## pull requests
 
-- PR against `harness-refactor`, one coherent change per PR
+- PR against `main`, one coherent change per PR
 - the description covers what / why / how to test, in that order; test
   steps are exact commands a reviewer can paste
 - CI and the maintainer review; keep the diff reviewable - a 3k-line
@@ -105,7 +111,11 @@ changes under `harness/` are the sensitive ones:
 
 ## releases
 
-maintainer-only. `uv build`, verify the wheel contains only `harness`
-and `infra`, then publish (twine with an api token, or the tag-driven
-trusted publishing flow). bump the version in `pyproject.toml` in the
-release commit.
+maintainer-only. `python -m build`, verify the wheel contains only
+`harness` and `infra`, then publish (twine with an api token, or the
+tag-driven trusted publishing flow). bump the version in
+`pyproject.toml` in the release commit.
+
+the pending publisher on pypi must point at this repository under its
+current name (`aicf-core`); it was renamed from `DSN-exp` when the
+monorepo was split.
