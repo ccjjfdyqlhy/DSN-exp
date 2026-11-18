@@ -116,6 +116,8 @@ norecursedirs = ["temp", "prototypes", "logs", "node_modules", ".git",
 python_files = ["test_*.py"]
 markers = [
   "slow: 运行较慢的测试",
+  "fault: 故障注入层（kill -9 / 重复投递 / 快照损坏等真故障，会起子进程）",
+  "mutation: 变异测试层（拆掉实现里的保护，验证对应用例会变红；默认不跑）",
   "integration: 需要外部服务/设备/网络的测试",
   "known_broken: 已确认的资产漂移（断言依赖已变更的提示词/技能资产），待重新对齐",
   "script_not_test: 名为 test_*.py 但实为手动脚本，导入即执行，pytest 收集没有意义",
