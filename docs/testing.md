@@ -34,11 +34,15 @@ resets. do not use `os.chdir` to isolate directories.
 on 2026-11-18, python 3.12, the full suite reports:
 
 ```text
-601 passed, 1 skipped
+1153 passed, 16 skipped
 ```
 
-the skipped test needs `python-vlc` and a sample clip. CI runs the same suite on
-python 3.10 through 3.13.
+the skips are: one test needs `python-vlc` and a sample clip, and the rest are
+the mutation-testing layer (`tests/fault/mutation/`) which is off by default —
+turn it on with `RUN_MUTATION=1 pytest -q tests/fault/mutation/`.
+
+CI runs the same suite on python 3.10 through 3.13, plus a nightly `fault`
+job for the L4 fault-injection layer.
 
 the config does three things:
 

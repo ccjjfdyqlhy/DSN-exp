@@ -138,8 +138,9 @@ python -m pytest -q
 python -m compileall -q harness infra tests
 ```
 
-The current baseline is **601 passed, 1 skipped, 0 failed, 0 collection errors**.
-The skip needs `python-vlc`.
+The current baseline is **1153 passed, 16 skipped**.
+The skips are one `python-vlc` test and the mutation-testing layer
+(`tests/fault/mutation/`, off by default).
 
 > The `known_broken` marker is still registered but no test uses it.
 

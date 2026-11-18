@@ -7,24 +7,66 @@
 > **The engine, not the app.** A scenario-agnostic agent core: turn loop, tool protocol,
 > context assembly, memory, sessions, multi-agent collaboration — and nothing else.
 
-[English](README.md) · [中文](README_zh.md) · [文档](docs/README.md)
-
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Local First](https://img.shields.io/badge/local--first-100%25-8A2BE2?style=for-the-badge)
-![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)
-
 **AICF** = Agent Infrastructure Cybernetics Framework · Apache-2.0
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Local First](https://img.shields.io/badge/local--first-100%25-8A2BE2?style=for-the-badge)](docs/architecture.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](LICENSE)
+[![CI](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml/badge.svg)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
 
 ---
 
-## 📦 Install
+## One promise
+
+> **Run one long task safely, idempotently, and measurably.**
+
+Most agent frameworks assume the process lives. This one assumes it will not.
+
+| | The claim | How you can check it |
+|---|---|---|
+| **Safe** | Every tool call goes through a policy gate, an approval step when the tool has side effects, and a sandbox. Anything undecided is **denied**. | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → refused |
+| **Idempotent** | A crashed run can be resumed without repeating side effects. `effectful` calls are never auto-replayed. | `pytest tests/fault/` — real `kill -9` in a subprocess |
+| **Measurable** | Every run produces a trace; every change is scored against a dataset and stopped by a four-gate report. | `aicf eval` → `aicf gate` |
+
+---
+
+## Ninety seconds
+
+```bash
+pip install aicf-core
+```
+
+```bash
+# 1. What does each tool actually do? Effect level, sandbox tier, required scopes.
+aicf tool list
+
+# 2. Try to run a shell. It has side effects — so it waits for a human.
+aicf tool exec proc.run --args '{"command":"rm -rf /"}' --policy strict
+#    Error: 工具 proc.run 被策略拒绝（approval）：CLI 未开启 --yes
+
+# 3. Run one turn. It leaves a trace.
+aicf run "summarize this repo" --trace trace.jsonl
+
+# 4. Score it against a dataset (shipped with the package).
+aicf eval --dataset basic --traces trace.jsonl --out run.json
+
+# 5. Stop the release if anything regressed, got too expensive, or broke a rule.
+aicf gate --run run.json --out gate.json
+```
+
+No API key required for any of the above — it runs offline against a stub model.
+
+---
+
+## Install
 
 ```bash
 pip install aicf-core
 ```
 
 That is the whole library — the agent kernel and the model/tool/runtime layer.
-It has **no application code and no UI**: the web console lives in its own repository (see below).
+It has **no application code and no UI**: the web console lives in its own repository
+([`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui)).
 
 Optional extras, installed only when you need them:
 
@@ -39,32 +81,12 @@ pip install "aicf-core[all]"           # everything
 
 ---
 
-## 🧩 What you get
-
-| You need… | Module |
-|---|---|
-| A turn loop that only depends on `IChatClient + ToolRegistry` | `harness.agent.loop` |
-| A tool protocol with ownership tracking, diff snapshots, MCP bridge | `harness.tools` |
-| Context assembly under a token budget, with compaction | `harness.context_assembly` |
-| Memory stores (in-memory / vector) behind a port protocol | `harness.memory` |
-| Sessions that survive a restart (sqlite + atomic transcripts) | `harness.transcript`, `infra.store` |
-| Sub-agent collaboration by mailbox, with depth and concurrency limits | `harness.agent.collab` |
-| Model routing across llama.cpp / LM Studio / OpenAI / Anthropic, with failover | `infra.orchestrator` |
-| VRAM-aware scheduling for local models (and ASR/TTS/decision models) | `infra.resources` |
-| Budgets, retries, token accounting, policy | `infra.policy` |
-| A structured event stream you can build traces on | `harness.agent.events` |
-
----
-
-## 🧩 Just want to write an agent? Five symbols.
-
-Most people only need these five. Everything else in `harness` exists for
-people building a *platform* on top of it.
+## Just want to write an agent? Five symbols.
 
 ```python
-from harness import Agent, create_agent, tool   # the three you write with
-from harness.tools import ToolRegistry           # when you manage tools yourself
-from infra.models.base import IChatClient        # the model interface
+from harness import create_agent, tool   # the three you write with
+from harness.tools import ToolRegistry   # when you manage tools yourself
+from infra.models.base import IChatClient # the model interface
 ```
 
 | Symbol | What it is |
@@ -74,11 +96,6 @@ from infra.models.base import IChatClient        # the model interface
 | `create_agent` | one-liner factory: model + key + tools |
 | `ToolRegistry` | the tool table (only if you register them yourself) |
 | `IChatClient` | the model interface — implement it to plug in your own backend |
-
-Everything else — `harness.agent.*`, `harness.tools.standard`, `infra.*` — is
-there for the people who need it, not for the people who just want an agent.
-
-## 🚀 Sixty seconds
 
 ```python
 from harness import create_agent, tool
@@ -101,12 +118,11 @@ print(result)                        # the result is string-like
 
 Any OpenAI-compatible endpoint works. For a local model, point `base_url` at your
 `llama-server` / LM Studio, or hand `create_agent` a client
-(`infra.orchestrator.LlamaCppChat`, `LMStudioChat`, `OpenAICompatClient`, …) —
-see [docs/sdk_guide.md](docs/sdk_guide.md).
+(`infra.orchestrator.LlamaCppChat`, `LMStudioChat`, `OpenAICompatClient`, …).
 
 ---
 
-## 🗺️ The repo in 30 seconds
+## The repo in 30 seconds
 
 Two layers, dependencies pointing **downward only**:
 
@@ -129,7 +145,21 @@ It depends on `aicf-core` and nothing else.
 
 ---
 
-## 🧪 Development
+## Status
+
+`aicf-core` is at **0.6.2**. The **1.0.0-rc0** milestone is in progress and its
+definition of done is three executable claims:
+
+1. an agent that is `kill -9`'d once still resumes and produces the right answer;
+2. every tool call was either approved or refused — with an audit trail;
+3. the run can be scored by a ≥30-case dataset and produce a four-gate report.
+
+The plan, the acceptance criteria and the status of each workstream live in
+[docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md).
+
+---
+
+## Development
 
 ```bash
 git clone https://github.com/ccjjfdyqlhy/aicf-core.git && cd aicf-core
@@ -140,21 +170,24 @@ python -m pytest -q tests/
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | I want to… | Read this |
 |---|---|
+| Know what 1.0.0-rc0 is doing and how it is verified | [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md) |
 | Learn the module map and dependency rules | [docs/architecture.md](docs/architecture.md) |
+| Understand the security model (deny-by-default, approval, sandbox, audit) | [docs/security.md](docs/security.md) |
+| Understand the managed runtime (journal, checkpoint, idempotency, recovery) | [docs/runtime.md](docs/runtime.md) |
+| Understand the evaluation loop (dataset, gates, run versions, regression) | [docs/evaluation.md](docs/evaluation.md) |
 | Use the core as a library | [docs/sdk_guide.md](docs/sdk_guide.md) |
 | Go deeper into the agent loop / tools / context | [docs/harness.md](docs/harness.md) |
 | Go deeper into model routing / resources / storage | [docs/infra.md](docs/infra.md) |
 | Know which traps not to step into before changing code | [docs/maintenance.md](docs/maintenance.md) |
 | Configuration keys / environment variables | [docs/configuration.md](docs/configuration.md) |
 | Known tech debt and its fix priority | [docs/technical-debt.md](docs/technical-debt.md) |
-| How the old monorepo maps onto the new repositories | [docs/split_migration.md](docs/split_migration.md) |
 
 ---
 
-## 📄 License
+## License
 
 Apache-2.0

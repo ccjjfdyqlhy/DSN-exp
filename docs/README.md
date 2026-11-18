@@ -27,6 +27,9 @@ docs/testing.md          -> how to run tests and read a failure
 ```text
 docs/infra.md            -> model orchestration, resources, policy
 docs/harness.md          -> agent loop, tools, context, pipeline
+docs/security.md         -> deny-by-default, approval, sandbox, audit
+docs/runtime.md          -> journal, checkpoint, idempotency, recovery
+docs/evaluation.md       -> dataset, gates, run versions, regression
 docs/skills.md           -> skill plugins, dependency injection, validation
 docs/configuration.md    -> where configuration comes from
 docs/sdk_guide.md        -> embed the framework in another project
@@ -37,7 +40,11 @@ docs/app-development.md  -> write a new application
 
 | document | contents | read it when |
 |---|---|---|
+| [roadmap_1.0.0-rc0.md](roadmap_1.0.0-rc0.md) | the 1.0.0-rc0 plan: workstreams, acceptance criteria, status, risks | planning or reviewing 1.0.0 work |
 | [architecture.md](architecture.md) | layers, dependency direction, module map, request path, global singletons, quality baseline | always first |
+| [security.md](security.md) | the security model: tool contracts, admission, approval, sandbox, identity, audit | touching anything that can cause side effects |
+| [runtime.md](runtime.md) | the managed runtime: journal, checkpoint, idempotency, recovery | touching session state or resume behaviour |
+| [evaluation.md](evaluation.md) | the evaluation loop: dataset language, four gates, run versions, regression | touching anything that changes agent behaviour |
 | [harness.md](harness.md) | agent loop control flow and events, `AgentSpec`, tools, context trimming, hooks, learning subsystem | changing agent behavior |
 | [skills.md](skills.md) | skill directory layout, `skill.yaml`, capability injection, load-time validation, `skill.env`, runtime api | writing a skill |
 | [infra.md](infra.md) | orchestrator layers, scheduler, providers, resource pool, policy, store, finetune subsystem, device gate | changing models, resources or storage |

@@ -27,15 +27,26 @@ its own repository.
 | does it care about messages in, tools out, or a context budget? | `harness/` |
 | does it only manage processes, http, vram, disk or secrets? | `infra/` |
 
-### 当前存在的两处违规（已知技术债）
+### 曾经的两处违规（2026-10 已修复）
 
-| 文件 | 逆向依赖 | 影响 |
+| 文件 | 曾经的逆向依赖 | 现在的状态 |
 |---|---|---|
-| `infra/observability/core.py:12` | `from harness.pipeline.events import EventBus` | `EventLogger` 在全仓库无调用者，属**死代码 + 违规**的组合，可直接删除 |
-| `infra/cache.py:10` | `from harness.memory.vector import VectorIndex` | 与 `harness/memory/vector.py:13` 反向引用 `infra.models.base` 构成**循环依赖**；`SemanticCache` 在 infra 外无真实消费者 |
+| `infra/observability/core.py` | `from harness.pipeline.events import EventBus` | 已改掉；向量原语下沉到 `infra/vector.py`，`infra/cache.py` 不再依赖 `harness.memory.vector` |
+| `infra/cache.py` | `from harness.memory.vector import VectorIndex` | 已改掉，与 `harness/memory/vector.py` 的循环依赖消失 |
 
-两处都指向“没有真实消费者”的代码，因此**斩断风险很低**。详情与修复建议见
-[technical-debt.md](technical-debt.md)。
+**1.0.0-rc0 增加了两条硬规则，并有测试兜底**：
+
+1. `infra/eval/` 与 `infra/runtime/` **不得 import `harness`** ——
+   评测层只认自己定义的 `Trace` / `ToolCall`，harness 事件流靠
+   `trace_from_events()` 适配（只读 dict）。
+2. `harness/` 依赖 `infra/` 时**只允许依赖 Protocol** ——
+   契约（`ToolSpec` / `PolicyEngine` / `ApprovalBroker` / `Sandbox` /
+   `TelemetryPort` / `RuntimeClient`）全部住在 `harness/`，
+   实现在 `infra/`，由应用装配时注入。
+
+代价是两处**同名契约**需要在两侧各写一份实现
+（幂等键公式、`UnknownOutcomeError` 的识别标记），
+用**交叉测试**钉住，而不是靠约定文档。
 
 ---
 
@@ -73,8 +84,11 @@ split.
 | `tasks/` | 任务抽象与调度 | `Task` `TaskExecutorRegistry` `TaskScheduler` `AsyncTaskStore` |
 | `gateway/` | Web 网关适配 | `IGateway` `FlaskGateway` |
 | `auth/` | 认证 | `APIKeyManager` `SessionManager` `TOTP` `UserStore` |
-| `observability/` | 指标与用量 | `MetricsCollector` `UsageTracker` |
-| `runtime.py` | DI 容器 + 生命周期 | `Runtime` |
+| `observability/` | 指标与用量 + **trace 扇出 + 审计** | `MetricsCollector` `UsageTracker` `TraceCollector` `AuditLog` |
+| `runtime/di.py` | DI 容器 + 生命周期（原 `runtime.py` 迁入，见下方说明） | `Runtime` |
+| `runtime/` | **托管运行时**（D2）：状态模型 / journal / checkpoint / 幂等 / 恢复 | `ManagedRuntime` `Journal` `CheckpointStore` `recover` |
+| `eval/` | **评测闭环**（D6）：数据集 / 求值 / 四闸门 / run version / 回归 | `Evaluator` `GateEvaluator` `load_dataset` `RunVersion` |
+| `policy/engine.py` | **工具准入策略**（实现 `harness.policy.base.PolicyEngine`） | `RulePolicyEngine` |
 | `subapps.py` | 应用场景包 | `AppBundle` `AppBundleRegistry` |
 | `settings.py` | 命名空间化配置 | `Settings` `Namespace` |
 | `cache.py` | 语义缓存（L2 向量） | `SemanticCache` |
@@ -93,6 +107,14 @@ split.
 | `agent/modes.py` | 模式切换 | `AgentMode` `ModeState` |
 | `agent_runtime.py` | 运行时封装 | `AgentRuntime` |
 | `tools/` | 工具抽象与标准工具 | `Tool` `ToolRegistry` `ToolboxManager` `install_standard_tools` |
+| `tools/spec.py` | **工具契约**（副作用等级 / 沙箱档位 / 授权范围） | `ToolSpec` `stricter_than` |
+| `tools/guard.py` | **工具调用的唯一入口**（策略 → 审批 → 幂等 → 沙箱） | `ToolGuard` `GuardResult` |
+| `tools/sandbox/` | 隔离执行（路径判定 / restricted / namespaced） | `Sandbox` `SandboxRequest` `SandboxResult` |
+| `policy/` | 准入策略的**协议**（实现住在 infra/policy/engine.py） | `PolicyEngine` `PolicyDecision` `PolicyRule` |
+| `approval/` | 审批（人在回路） | `ApprovalRequest` `ApprovalDecision` `ApprovalBroker` |
+| `kernel/` | **执行内核 SPI**（ReAct / Workflow / Planner 可替换） | `ExecutionKernel` `KernelContext` `CapabilitySet` |
+| `telemetry/` | 遥测协议与 span 工具 | `TelemetryPort` `Span` `SpanHandle` |
+| `runtime_client.py` | Kernel → Runtime 的**唯一出口** | `RuntimeClient` `ToolIntent` `idempotency_key` |
 | `context_assembly.py` | 分段预算剪裁 | `SegmentedContextAssembler` `ContextBudget` `ContextSegment` |
 | `context_gatherer.py` | `@` 指令采集 | `ContextGatherer` |
 | `pipeline/` | 通用管线 | `Pipeline` `Plugin` `HookPoint` `EventBus` `OutputRenderer` |
@@ -121,7 +143,9 @@ see [apps.md](apps.md) for the repository relationship.
 
 ### 1. `Runtime`：依赖注入容器
 
-`infra/runtime.py` 提供进程内的服务注册表，替代到处传参或读全局。
+`infra/runtime/di.py` 提供进程内的服务注册表，替代到处传参或读全局。
+（1.0.0-rc0 起 DI 容器迁入 `infra/runtime/` 包内 —— 同名包会遮蔽同名模块，
+`infra/runtime.py` 一旦存在就不会被加载。包级 `infra.runtime.Runtime` 仍指向它。）
 
 ```python
 rt = Runtime(name="my_app")
@@ -206,7 +230,7 @@ class IChatClient(Protocol):
 | `ModelScheduler._instance` | `infra/orchestrator/scheduler.py:94` | 被 `ModelOrchestrator.__init__` 改写 `max_concurrent`（router.py:101） |
 | `_ACTIVE_LAUNCHERS` | `infra/orchestrator/local_engine.py:49` | 全局模型子进程回收点，配合 `atexit` 使用 |
 | `local_http_session()` / `local_probe_session()` | `orchestrator/base.py:15/45` | **必须区分**：流式用前者、探针用后者；混用会误判未就绪并触发重拉 |
-| `Runtime._default_runtime` | `infra/runtime.py:32` | 全局兜底运行时，测试之间可能串味 |
+| `Runtime._default_runtime` | `infra/runtime/di.py` | 全局兜底运行时，测试之间可能串味 |
 
 there are two schedulers to watch: `ResourcePool` inherits from `ModelScheduler`
 but does not share its singleton. application code that also calls
