@@ -31,18 +31,25 @@ resets. do not use `os.chdir` to isolate directories.
 
 ## baseline
 
-on 2026-11-18, python 3.12, the full suite reports:
+on 2026-11-18, python 3.12, the tracked suite reports:
 
 ```text
-1153 passed, 16 skipped
+1117 passed, 16 skipped
 ```
 
-the skips are: one test needs `python-vlc` and a sample clip, and the rest are
-the mutation-testing layer (`tests/fault/mutation/`) which is off by default —
-turn it on with `RUN_MUTATION=1 pytest -q tests/fault/mutation/`.
+the skips break down as 13 from the mutation-testing layer
+(`tests/fault/mutation/`, off by default, turn it on with
+`RUN_MUTATION=1 pytest -q tests/fault/mutation/`) plus three single cases: one
+needs `python-vlc`, one needs `funasr`, and one is skipped because `socksio` *is*
+installed (it asserts the failure path of a missing SOCKS transport).
 
-CI runs the same suite on python 3.10 through 3.13, plus a nightly `fault`
-job for the L4 fault-injection layer.
+a local-only file, `tests/test_dsn_existence_loop.py` (38 cases), joins the run
+when `apps/` exists. it is listed in `.git/local-only-policy.txt` and never
+leaves this machine, so it is not part of the baseline.
+
+CI runs the tracked suite on python 3.10 through 3.13. the `test` job collects
+`tests/fault/` as well (about 2s), and a separate nightly `fault` job re-runs
+that layer as its own gate.
 
 the config does three things:
 

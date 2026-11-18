@@ -32,21 +32,23 @@ rc0 只有三条 DoD，全部是**可执行**的：
 
 ## 二、现状基线（可验证，不是估计）
 
-| 项 | 数字 | 怎么验证 |
-|---|---|---|
-| 核心代码量 | `harness/` 20.8k 行 + `infra/` 16.6k 行 | `find harness infra -name '*.py' \| xargs wc -l` |
-| 测试基线（改造前） | 600 passed / 3 skipped | `pytest -q tests/` |
-| 审批 / 人在回路 | **零命中** | `grep -ri approv harness/ infra/` |
-| 沙箱 / 隔离 | **零命中** | `grep -ri sandbox harness/ infra/` |
-| 幂等 | **零命中** | `grep -ri idempot harness/ infra/` |
-| Agent Identity | 只有用户态 `uid + scopes` | `infra/auth/base.py` |
-| Artifact / 控制面 | **零命中** | `grep -ri artifact harness/ infra/` |
-| Experiment / Run Version | **零命中** | `grep -ri experiment harness/ infra/` |
-| Workflow / Planner | **零命中** | `grep -ri 'workflow\|planner' harness/ infra/` |
-| 遥测 | 有事件词表，无 trace/span 模型 | `harness/agent/events.py` |
+| 项 | 改造前 | 现在（2026-11-18 复核） | 怎么验证 |
+|---|---|---|---|---|
+| 核心代码量 | `harness/` 20.8k 行 + `infra/` 16.6k 行 | `harness/` 26.1k 行 + `infra/` 24.1k 行 | `find harness infra -name '*.py' \| xargs wc -l` |
+| 测试基线 | 600 passed / 3 skipped | 1117 passed / 16 skipped（只算入库用例） | `pytest -q tests/` |
+| 审批 / 人在回路 | 零命中 | `harness/approval/`：协议 + broker + 会话缓存 | `grep -ri approv harness/ infra/` |
+| 沙箱 / 隔离 | 零命中 | `harness/tools/sandbox/`：路径判定 + restricted + namespaced | `grep -ri sandbox harness/ infra/` |
+| 幂等 | 零命中 | `harness/runtime_client.py` + `infra/runtime/idempotency.py`，两份实现由交叉测试钉住 | `grep -ri idempot harness/ infra/` |
+| Agent Identity | 只有用户态 `uid + scopes` | 未变，留给 rc1 | `infra/auth/base.py` |
+| Artifact / 控制面 | 零命中 | 仍无资产模型；artifact 只作为 RunVersion 的元数据被冻结 | `grep -ri artifact harness/ infra/` |
+| Experiment / Run Version | 零命中 | `infra/eval/{experiment,run_version}.py`（最小版） | `grep -ri experiment harness/ infra/` |
+| Workflow / Planner | 零命中 | 只有内核协议，实现留给 rc1 | `grep -ri 'workflow\|planner' harness/ infra/` |
+| 遥测 | 有事件词表，无 trace/span 模型 | `harness/telemetry/` + `infra/observability/{span,trace,audit}.py` | `harness/agent/events.py` |
 
-> 这些「零命中」是策划案的结论，也是本轮改造的起点。**改造完成后本文档会重新填这张表**，
-> 让「缺口是否真的补上了」变成一个可以核对的事实。
+> 中间一列是策划案在改造前的结论，右列是 2026-11-18 重新核对的结果。
+> 每一行的验证命令都还能跑，所以「缺口是否真的补上了」是一个可以核对的事实，
+> 而不是一句总结。Agent Identity 与 Artifact 两行是**故意**没补的：
+> 它们属于 rc1 的控制面。
 
 ---
 
@@ -102,21 +104,23 @@ rc0 只有三条 DoD，全部是**可执行**的：
 | **T6** | R2 审批链路 | `harness/approval/{broker,session,events}.py` | 超时 = 拒绝；会话级放行缓存；等待期间进程退出可恢复补填 | ✅ 完成 |
 | **T7** | R5 遥测标准化 | `harness/telemetry/*`、`infra/observability/{trace,audit}.py` | 既有事件 kind 不变；JSONL trace；统一 `redact()` | ✅ 完成 |
 | **T8** | 执行内核 SPI | `harness/kernel/*` | `ExecutionKernel` 协议；能力协商收敛；旧 `AgentLoop` API 不破坏 | ✅ 完成 |
-| **T9** | R7 故障注入测试 | `tests/fault/*` | §8.2 的 7 条用例全部可自动运行 | ✅ 完成（7/7，45 条用例 + 12 条变异层） |
+| **T9** | R7 故障注入测试 | `tests/fault/*` | §8.2 的 7 条用例全部可自动运行 | ✅ 完成（7/7，59 条：46 条运行 + 11 条变异 + 2 条元测试） |
 | **T10** | R8 CLI | `harness/cli/*`、`pyproject.toml` | `aicf --help` 可用；run → eval → gate 跑通 | ✅ 完成 |
 | **T11** | R8 文档 | `docs/*`、`README*.md` | 每条验收标准映射到一个测试 | ✅ 完成 |
 
 ### 当前测试基线
 
 ```text
-1153 passed, 16 skipped      # 全量
+1117 passed, 16 skipped      # 入库用例全量（CI 跑的就是这个数字）
   46 passed, 13 skipped      # 故障注入层 tests/fault/（2.1s；跳过的 13 条是变异层，默认不跑）
 ```
 
-改造前的基线是 **600 passed / 3 skipped**。增量里包含：
-契约层 25 条、准入与守卫 28 条、审批 16 条、内核 15 条、CLI 16 条、
-依赖方向 194 条、运行时 50 条、评测 66 条、遥测 55 条、故障注入 46 条
-（含 12 条变异层）。
+改造前的基线是 **600 passed / 3 skipped**（本地口径；只算入库用例是 **562 / 3**）。
+两个数字差 38 条，来自 `tests/test_dsn_existence_loop.py`。它依赖不在本仓的 `apps/`，
+按 `.git/local-only-policy.txt` 留在本机。增量里包含（入库口径，共 568 条）：
+契约层 25 条、依赖方向 198 条、准入与守卫 28 条、审批 16 条、
+沙箱 40 条、运行时 50 条、评测 66 条、遥测 55 条、
+内核 15 条、CLI 16 条、故障注入 59 条（46 运行 + 13 跳过）。
 
 > **变异层默认不跑**：`RUN_MUTATION=1 pytest -q tests/fault/mutation/`（约 20s）。
 
@@ -286,12 +290,16 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ### CI 门禁
 
-现有 `.github/workflows/ci.yml` 只跑 `pytest -q tests/`。1.0.0 要补：
+`ci.yml` 现在有三个 job：`test`（每次提交，python 3.10 - 3.13）、`build`（构建 + 元数据检查）、
+`fault`（nightly + 手动触发，跑 `tests/fault/`）。`fault` job 加了 `if` 条件，
+所以它不在每次 push 上跑。
 
-- `contract` job：L2 契约测试
-- `fault` job：L4 故障注入（nightly）
-- `eval` job：L5 评测 + Gate（每次发布）
-- README 徽章改成 CI 自动生成的真实数字（当前的数字与实际不符）
+还有两件没做完，属于 rc1：
+
+- `contract` job：把 L2 契约测试单列。现在它跟着 `test` job 一起跑，没有独立门禁
+- `eval` job：发布时跑 L5 评测 + Gate。现在 `aicf eval` / `aicf gate` 只有手工跑和单测
+- `test` job 的命令是 `pytest -q tests/`，会把 `tests/fault/` 一起收进来（2s 左右，代价可以接受）。
+  要让「fault 只在 nightly 跑」名副其实，得给 `test` job 加 `-m "not fault and not mutation"`
 
 ---
 
@@ -405,7 +413,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ### 工程
 
-- [x] 既有 600 个测试全绿（改造不破坏现有用户）—— **当前 895 passed**
+- [x] 既有 600 个测试全绿（改造不破坏现有用户）—— **当前 1117 passed / 16 skipped**
 - [x] 所有新增模块可独立 import
       （`test_rc0_contracts.py`）
 - [x] `harness` 不 import `infra` 的实现（只依赖协议）
@@ -421,7 +429,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ### 额外加的一条
 
-- [x] **用例不是恒真断言** —— 变异测试验证：拆掉实现里的 9 条保护，
+- [x] **用例不是恒真断言** —— 变异测试验证：拆掉实现里的 11 条保护，
       对应用例立刻变红
       （`tests/fault/mutation/`；变异层默认不跑，需显式开启）
 
