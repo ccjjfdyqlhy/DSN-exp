@@ -51,7 +51,35 @@ EVENT_KINDS: dict[str, str] = {
     'session_rewound': 'turn',
     'model_changed': 'provider, model',
     'tools_refreshed': '',
+
+    # ── 事件词表 v2（策划案 §5.2）────────────────────────────
+    #
+    # 增量原则：既有 kind 一个不改（避免破坏已有消费方），只新增下面这些。
+    # 新增字段 trace_id / span_id / seq 全部是**可选**的 —— 旧的事件生产者
+    # 不带它们，消费方必须容忍缺失。
+    'approval_request': 'id, tool, args_preview, effect, risk, expires_at',
+    'approval_decision': 'id, tool, decision, decided_by, reason, scope',
+    'approval_timeout': 'id, tool',
+    'tool_blocked': 'tool, reason, effect, risk',
+    'sandbox_degraded': 'tool, backend, detail',
+    'tool_intent': 'tool, idempotency_key, effect, args_digest',
+    'tool_effect_unknown': 'tool, idempotency_key, effect',
+    'run_started': 'run_id, session_id',
+    'run_finished': 'run_id, session_id, status, usage',
+    'run_failed': 'run_id, session_id, error',
+    'checkpoint_written': 'session_id, turn_seq, ref',
+    'session_resumed': 'session_id, turn_seq',
+
+    # 审计事件（策划案 §4.4.7）：与业务事件同流，但独立存储、不可被业务删除。
+    'audit.tool_call': 'identity, tool, version, args_digest, effect, sandbox, '
+                       'decision, duration, outcome',
+    'audit.denied': 'identity, tool, reason',
+    'audit.secret_access': 'identity, credential_ref, tool',
+    'audit.delegation': 'from, to, scopes',
 }
+
+#: v2 新增的可选字段 —— 旧事件不带它们，消费方必须容忍缺失
+TRACE_FIELDS = ('trace_id', 'span_id', 'seq')
 
 
 EventCallback = Callable[[str, dict[str, Any]], None]
