@@ -79,6 +79,14 @@ async def _wait_idle(engine, timeout=5.0):
     await asyncio.wait_for(poll(), timeout)
 
 
+async def _wait_completed(record, timeout=5.0):
+    async def poll():
+        # completion itself touches the manager, so wait for it before a timeout test.
+        while record.status != 'completed':
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(poll(), timeout)
+
+
 def test_spawn_delivers_update_to_parent_mailbox():
     client = ScriptedClient(_rounds())
     registry = _registry()
@@ -275,6 +283,7 @@ def test_tool_calls_reach_the_manager_loop():
         assert not error, text
         assert {row['name'] for row in json.loads(text)} == {'root', 'helper'}
 
+        await _wait_completed(record)
         text, _, error = await asyncio.to_thread(registry.execute,
                                                  'wait_agent',
                                                  {'timeout_ms': 10})
@@ -437,8 +446,7 @@ def test_wait_agent_wakes_up_when_activity_happens():
 
         # let the child finish first: its completion is activity too
         await _wait_idle(record.engine)
-        while record.status != 'completed':
-            await asyncio.sleep(0.01)
+        await _wait_completed(record)
 
         # an idle manager times out instead of hanging
         text, _, error = await asyncio.to_thread(
