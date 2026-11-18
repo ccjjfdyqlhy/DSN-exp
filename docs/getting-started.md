@@ -27,7 +27,7 @@ pip install -e ".[mcp,anthropic,socks]"   # 从源码装（含 MCP / Anthropic /
 pip install -e .                            # 只要内核的话，最小依赖即可
 ```
 
-或者直接从 PyPI 装（**本仓版本是 0.6.2；发布前线上仍是 0.6.1**）：
+或者直接从 PyPI 装（**当前发布版是 0.6.2**）：
 
 ```bash
 pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
