@@ -89,6 +89,11 @@ all = [
     "torch>=2.0",
 ]
 
+[project.scripts]
+# aicf —— 核心库的命令行门面。
+# 装完 aicf-core 就有 aicf 命令，不需要再装第二个包。
+aicf = "harness.cli.main:main"
+
 [project.urls]
 Homepage = "https://github.com/ccjjfdyqlhy/aicf-core"
 Repository = "https://github.com/ccjjfdyqlhy/aicf-core"
