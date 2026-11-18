@@ -1,5 +1,14 @@
-# infra/runtime.py
-# Runtime — 场景无关的 DI 容器与生命周期管理。
+# infra/runtime/di.py
+# Runtime（DI 容器）—— 场景无关的服务注册与生命周期管理。
+#
+# 【为什么从 infra/runtime.py 挪到这里】
+#   策划案 §4.2 要求托管运行时住在 infra/runtime/ 这个**包**里
+#   （journal.py / checkpoint.py / idempotency.py / recovery.py）。
+#   而 Python 里同名包会**遮蔽**同名模块：只要 infra/runtime/ 存在，
+#   `import infra.runtime` 拿到的就是包，infra/runtime.py 永远不会被加载。
+#   所以 DI 容器整体迁进包内，本文件是它的原体（行为一字未改），
+#   包级 `infra.runtime.Runtime` 仍然指向它 —— harness/__init__.py 里的
+#   `from infra.runtime import Runtime` 不受影响（rc0 的公开 API 冻结）。
 #
 # 用途:
 #   - 提供服务的注册 / 解析（实例注册 或 惰性工厂注册）
