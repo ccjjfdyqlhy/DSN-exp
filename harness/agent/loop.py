@@ -338,8 +338,7 @@ class AgentLoop:
                 if tool is None:
                     result = ToolResult.fail(f"工具不存在: {tc.name}")
                 else:
-                    with self._tool_context():
-                        result = await tool.run_async(**tc.arguments)
+                    result = await self._run_tool(tool, tc.arguments)
                 if not result.success and self.on_tool_error:
                     self.on_tool_error(tc.name, result.error or "")
                 executions.append(ToolExecution(
@@ -772,7 +771,15 @@ class AgentLoop:
         return _PushedContext(replace(ctx, deps=self.deps))
 
     async def _run_tool(self, tool: Any, arguments: dict):
+        """执行一次工具调用。
+
+        走注册表的统一入口而不是直接 ``tool.run_async`` —— 这样注册表上挂的
+        guard（策略 → 审批 → 幂等 → 沙箱）才会真正生效。
+        没有 guard 时注册表的行为与直接调用完全一致（向后兼容）。
+        """
         with self._tool_context():
+            if self.tools is not None:
+                return await self.tools.execute_async(tool.name, arguments)
             return await tool.run_async(**arguments)
 
     def _truncate_output(self, output: Any) -> Any:

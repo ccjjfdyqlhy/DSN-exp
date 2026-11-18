@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .spec import ToolSpec
+
 # ── 线路名（wire name）编解码 ──
 #
 # harness 内部工具名带命名空间点号（如 "file.read"），可读性好；但部分 OpenAI 兼容
@@ -117,6 +119,10 @@ class Tool:
     parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}})
     async_mode: bool = False
     version: str = "1.0"
+    #: 工具的契约（副作用等级 / 沙箱档位 / 所需授权范围）。
+    #: **留空 = 按最严格档处理**（effectful + isolated + 需审批），
+    #: 见 harness/tools/spec.py 的说明。
+    spec: Optional[ToolSpec] = None
 
     def run(self, **params) -> ToolResult:
         try:
@@ -194,6 +200,19 @@ class ToolRegistry:
         if tool is None:
             raise KeyError(f"工具不存在: {name}")
         return tool
+
+    # ── 统一执行入口 ───────────────────────────────────────
+    async def execute_async(self, name: str, args: dict[str, Any]) -> ToolResult:
+        """执行一次工具调用。
+
+        这是「工具调用的唯一入口」的**基线实现**：直接跑 handler。
+        子类（ManagedToolRegistry）会在挂上 guard 时改走
+        策略 → 审批 → 幂等 → 沙箱 的完整链路。
+        """
+        tool = self.get(name)
+        if tool is None:
+            return ToolResult.fail(f"工具不存在: {name}")
+        return await tool.run_async(**args)
 
     def has(self, name: str) -> bool:
         return name in self._tools

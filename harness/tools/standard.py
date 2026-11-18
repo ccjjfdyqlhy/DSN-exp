@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .base import Tool, ToolRegistry, ToolResult
+from .spec import ToolSpec
 
 NL = chr(10)
 
@@ -833,13 +834,83 @@ def install_standard_tools(registry: ToolRegistry, *,
         if include and ns not in include:
             continue
         desc, params = tool_meta[name]
-        tool = Tool(name=name, description=desc, handler=handler, parameters=params)
+        spec = _TOOL_SPECS.get(name)
+        tool = Tool(name=name, description=desc, handler=handler,
+                    parameters=params, spec=spec)
         try:
             registry.register(tool)
             registered.append(tool)
         except KeyError:
             continue
     return registered
+
+
+#: 标准工具的契约声明（副作用等级 / 沙箱档位 / 所需授权范围）。
+#:
+#: 为什么要显式写：ToolSpec 的默认值是**最严格档**
+#: （effectful + isolated + 需审批）。那是对的兜底，但不该套在
+#: 「读一个文件」这种工具上 —— 纯计算工具每次都弹审批会让框架没法用。
+#:
+#: 分档依据：
+#:   pure        只读，不改任何东西，重放无副作用
+#:   idempotent  写操作但重复执行无害（写同一个文件、跑同一个命令）
+#:   effectful   对外产生不可预知影响（发请求、抓网页、批量执行）
+#:
+#: 没有出现在这张表里的工具 → 走默认最严格档（安全兜底）。
+_TOOL_SPECS: dict[str, "ToolSpec"] = {
+    # ── 只读：纯计算 ────────────────────────────────────
+    "file.read": ToolSpec(name="file.read", effect="pure",
+                          sandbox="readonly", scopes=("fs.read",),
+                          group="file"),
+    "file.list": ToolSpec(name="file.list", effect="pure",
+                          sandbox="readonly", scopes=("fs.read",),
+                          group="file"),
+    "file.tree": ToolSpec(name="file.tree", effect="pure",
+                          sandbox="readonly", scopes=("fs.read",),
+                          group="file"),
+    "text.chunk": ToolSpec(name="text.chunk", effect="pure",
+                           sandbox="none", group="text"),
+    "text.extract_json": ToolSpec(name="text.extract_json", effect="pure",
+                                  sandbox="none", group="text"),
+    "text.diff": ToolSpec(name="text.diff", effect="pure",
+                          sandbox="none", group="text"),
+    "code.syntax_check": ToolSpec(name="code.syntax_check", effect="pure",
+                                  sandbox="none", group="code"),
+    "code.locate_symbol": ToolSpec(name="code.locate_symbol", effect="pure",
+                                   sandbox="none", group="code"),
+    "code.diagnose": ToolSpec(name="code.diagnose", effect="pure",
+                              sandbox="none", group="code"),
+    "project.summary": ToolSpec(name="project.summary", effect="pure",
+                                sandbox="readonly", scopes=("fs.read",),
+                                group="project"),
+    "project.todo": ToolSpec(name="project.todo", effect="pure",
+                             sandbox="readonly", scopes=("fs.read",),
+                             group="project"),
+    "cache.recall": ToolSpec(name="cache.recall", effect="pure",
+                             sandbox="none", group="cache"),
+
+    # ── 写操作：重复执行无害 ────────────────────────────
+    "file.write": ToolSpec(name="file.write", effect="idempotent",
+                           sandbox="workspace", scopes=("fs.write",),
+                           group="file"),
+    "file.edit": ToolSpec(name="file.edit", effect="idempotent",
+                          sandbox="workspace", scopes=("fs.write",),
+                          group="file"),
+    "project.snapshot": ToolSpec(name="project.snapshot", effect="idempotent",
+                                 sandbox="workspace", scopes=("fs.write",),
+                                 group="project"),
+
+    # ── 对外有影响：需要审批 ─────────────────────────────
+    "proc.run": ToolSpec(name="proc.run", effect="effectful",
+                         sandbox="workspace", scopes=("proc.run",),
+                         destructive=True, group="proc"),
+    "batch.run": ToolSpec(name="batch.run", effect="effectful",
+                          sandbox="workspace", scopes=("proc.run",),
+                          destructive=True, group="proc"),
+    "web.fetch": ToolSpec(name="web.fetch", effect="effectful",
+                          sandbox="none", network="allowlist",
+                          scopes=("net.fetch",), group="net"),
+}
 
 
 __all__ = ["ToolDeps", "install_standard_tools"]

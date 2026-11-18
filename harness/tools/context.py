@@ -24,6 +24,21 @@ class ToolContext:
     #: 本次运行的依赖（ToolDeps 实例）。用户自定义工具通过
     #: ``current_deps().extra["..."]`` 拿自己的应用状态（数据库、连接、缓存…）。
     deps: Any = None
+    #: 沙箱后端。工具需要起子进程时从这里拿 —— 由 ToolGuard 注入。
+    #: 没有它时工具自己起进程（legacy 行为）。
+    sandbox: Any = None
+    #: 本次调用产生的**结构化违规记录**。
+    #:
+    #: 为什么要有这个通道：沙箱拒绝执行时，工具需要给模型一句人能读的
+    #: 文本（「Error: 沙箱拒绝执行（path:escape）」），但审计需要结构化的
+    #: 违规码与原因。两者不能靠「从返回文本里正则嗅探」来连接 ——
+    #: 那是把审计建在文案上，改一次文案就丢一次审计。
+    #:
+    #: 工具 append，ToolGuard 读。默认空列表（每次 ToolContext 一个新的）。
+    violations: list = field(default_factory=list)
+    #: 会话 / 轮次标识。工具（或沙箱）据此定位工作区与幂等键。
+    session_id: str = ''
+    turn_id: str = ''
 
 
 _CURRENT: contextvars.ContextVar[ToolContext | None] = contextvars.ContextVar(

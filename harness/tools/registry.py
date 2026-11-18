@@ -9,13 +9,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from ..filediff import FileDiff, format_diff_for_model, make_file_diff, snapshot_file
-from .base import Tool, ToolRegistry
+from .base import Tool, ToolRegistry, ToolResult
 from .context import resolve_path
+
+logger = logging.getLogger("harness.tools.registry")
 
 
 def tool_result_text(output: Any) -> str:
@@ -52,12 +56,36 @@ class AnnotatedTool(Tool):
     snapshot: bool = False
 
 
+def run_sync(coro):
+    """在同步上下文里跑一个协程。
+
+    优先用 asyncio.run；但如果当前线程已经在跑事件循环（asyncio.run 会
+    抛 RuntimeError），就另起一个线程跑 —— 同步工具入口（比如控制台的
+    ``registry.execute``）完全可能在事件循环里被调用。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 class ManagedToolRegistry(ToolRegistry):
-    """A ToolRegistry that remembers owners and snapshots writes."""
+    """A ToolRegistry that remembers owners and snapshots writes.
+
+    It also owns the **single entry point** for tool calls: attach a
+    ``ToolGuard`` and every call goes through policy -> approval ->
+    idempotency -> sandbox, with an audit trail.  Without a guard the
+    registry runs in legacy mode and says so loudly (once).
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self._source_of: dict[str, str] = {}
+        self._guard: Any = None
+        self._legacy_warned = False
 
     def register(self, tool: Tool, *, replace: bool = False,
                  source: str = 'builtin') -> Tool:
@@ -105,7 +133,49 @@ class ManagedToolRegistry(ToolRegistry):
                         if not (isinstance(t, AnnotatedTool) and t.vision_only)]
         return [t.to_openai_schema() for t in selected]
 
+    # ── guard wiring ───────────────────────────────────────
+    def attach_guard(self, guard: Any) -> 'ManagedToolRegistry':
+        """挂上守卫：此后所有工具调用都走策略 / 审批 / 幂等 / 沙箱。
+
+        守卫可以是 ``harness.tools.guard.ToolGuard``，也可以是任何提供
+        ``execute(tool, args)`` 协程方法的对象 —— 保持鸭子类型，方便
+        测试时塞一个假守卫。
+        """
+        self._guard = guard
+        return self
+
+    @property
+    def guard(self) -> Any:
+        return self._guard
+
+    def detach_guard(self) -> None:
+        self._guard = None
+
+    def _warn_legacy(self) -> None:
+        """legacy 直连模式只告警一次，但必须显眼。"""
+        if self._legacy_warned:
+            return
+        self._legacy_warned = True
+        logger.warning(
+            '当前为 legacy 直连模式：无审批、无审计、无幂等保护。'
+            '请挂上 ToolGuard（harness.tools.guard）。')
+
     # ── execution ───────────────────────────────────────────
+    async def execute_async(self, name: str, args: dict[str, Any]) -> ToolResult:
+        """异步执行一次工具调用。
+
+        挂了 guard 就走完整链路；没挂就是基线行为（保持向后兼容）。
+        """
+        if self._guard is None:
+            self._warn_legacy()
+            return await super().execute_async(name, args)
+        tool = self.get(name)
+        if tool is None:
+            return ToolResult.fail(f'工具不存在: {name}')
+        guarded = await self._guard.execute(tool, args)
+        result = getattr(guarded, 'result', guarded)
+        return result if isinstance(result, ToolResult) else ToolResult.ok(result)
+
     def execute(self, name: str, args: dict[str, Any]) -> tuple[str, FileDiff | None, bool]:
         """Run a tool and return (model_text, file_diff, error).
 
@@ -114,6 +184,9 @@ class ManagedToolRegistry(ToolRegistry):
         ``snapshot`` get their file snapshotted around the call and the
         unified diff appended to the text.
         """
+        if self._guard is not None:
+            return self._execute_guarded(name, args)
+        self._warn_legacy()
         tool = self.get(name)
         if tool is None:
             return f'Error: unknown tool: {name}', None, True
@@ -125,6 +198,33 @@ class ManagedToolRegistry(ToolRegistry):
         path = resolve_path(raw_path) if raw_path else ''
         before = snapshot_file(path) if path else None
         result = tool.run(**args)
+        text = tool_result_text(result.output)
+        if not result.success:
+            if not text.startswith('Error:'):
+                text = f'Error: {result.error or text or "tool failed"}'
+        file_diff = None
+        if before is not None and path:
+            after = snapshot_file(path)
+            file_diff = make_file_diff(raw_path, before, after)
+        if file_diff is not None and not text.startswith('Error:'):
+            text += format_diff_for_model(file_diff)
+        return text, file_diff, text.startswith('Error:')
+
+    def _execute_guarded(self, name: str,
+                         args: dict[str, Any]) -> tuple[str, FileDiff | None, bool]:
+        """挂上 guard 之后的同步执行路径。
+
+        快照 / diff 的行为与 legacy 路径保持一致 —— 守卫只负责准入、
+        审批、幂等与沙箱，不该改变模型看到的结果形状。
+        """
+        tool = self.get(name)
+        if tool is None:
+            return f'Error: unknown tool: {name}', None, True
+        wants_snapshot = getattr(tool, 'snapshot', False)
+        raw_path = str(args.get('path', '')) if wants_snapshot else ''
+        path = resolve_path(raw_path) if raw_path else ''
+        before = snapshot_file(path) if path else None
+        result = run_sync(self.execute_async(name, args))
         text = tool_result_text(result.output)
         if not result.success:
             if not text.startswith('Error:'):
