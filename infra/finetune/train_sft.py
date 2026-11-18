@@ -1,14 +1,14 @@
 
 # infra/finetune/train_sft.py
-# **独立训练脚本**：在训练解释器（dsn-train 环境）里直接运行，不 import 仓库任何模块。
+# Standalone training script. It runs in the training interpreter and imports
+# no repository module.
 #
 #   python infra/finetune/train_sft.py --spec /path/to/spec.json
 #
-# 为什么要独立成脚本而不是 infra.finetune.runner 的一个函数：
-#   训练依赖 torch / transformers / peft / trl，
-#   而 DSN 主进程**不允许 import torch**（见 infra/finetune/env.py 顶部的说明）。
-#   把它做成零仓库依赖的独立脚本，训练解释器与 DSN 解释器之间只剩
-#   「一个 JSON spec 进、一个 JSON 结果出」这一条缝。
+# Why a standalone script rather than a runner function:
+#   Training needs torch, transformers, peft and trl, while the application
+#   process never imports torch. With a standalone script, the only seam between
+#   the two interpreters is one JSON spec in and one JSON result out.
 #
 # 结果文件（output_dir/result.json）：
 #   {"status": "succeeded"|"failed", "adapter_path": "...", "metrics": {...}, "error": "..."}
@@ -416,7 +416,7 @@ def train(spec: dict) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="DSN SFT 训练脚本（独立运行于训练解释器）")
+    parser = argparse.ArgumentParser(description="AICF SFT training script, run in the training interpreter")
     parser.add_argument("--spec", required=True, help="训练参数 JSON 路径")
     args = parser.parse_args(argv)
 

@@ -45,8 +45,8 @@ from infra.orchestrator.scheduler import DeviceBusy, DeviceGate, ModelProfile, M
 def _spec(**kw) -> TrainSpec:
     base = dict(
         base_model="Qwen/Qwen3-4B",
-        dataset_path="/tmp/dsn-test/train.jsonl",
-        output_dir="/tmp/dsn-test/out",
+        dataset_path="/tmp/aicf-test/train.jsonl",
+        output_dir="/tmp/aicf-test/out",
     )
     base.update(kw)
     return TrainSpec(**base)
@@ -199,7 +199,7 @@ def test_gguf_rejects_non_gguf(tmp_path: Path):
 
 def test_gguf_missing_file():
     with pytest.raises(GGUFError):
-        read_meta("/tmp/dsn-not-exists-xyz.gguf")
+        read_meta("/tmp/aicf-not-exists-xyz.gguf")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -289,8 +289,8 @@ def test_resolve_python_uses_env(monkeypatch):
 
 
 def test_environment_reports_missing_interpreter_without_raising():
-    """体检失败必须降级成报告，不能让 DSN 主进程崩。"""
-    report = environment("/tmp/dsn-definitely-missing/python")
+    """A failed check must degrade to a report, not crash the host process."""
+    report = environment("/tmp/aicf-definitely-missing/python")
     assert report["available"] is False
     assert "不存在" in report["reason"]
 
@@ -410,7 +410,7 @@ def test_manager_submit_failure_is_visible(tmp_path: Path, caplog):
     caplog.set_level(logging.CRITICAL, logger="infra.tasks")
     manager = FinetuneManager(
         store=FinetuneStore(),
-        python="/tmp/dsn-definitely-missing/python",
+        python="/tmp/aicf-definitely-missing/python",
         root=tmp_path,
         device_timeout=1.0,
     )
@@ -451,7 +451,7 @@ def test_manager_rejects_unsupported_architecture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("infra.finetune.runner.check_model_support", _fake_support)
     manager = FinetuneManager(
         store=FinetuneStore(),
-        python="/tmp/dsn-definitely-missing/python",
+        python="/tmp/aicf-definitely-missing/python",
         root=tmp_path,
     )
     with pytest.raises(SpecError, match="foo_bar"):
@@ -470,7 +470,7 @@ def test_manager_allows_qwen35_base_but_warns(tmp_path: Path, monkeypatch, caplo
     monkeypatch.setattr("infra.finetune.runner.check_model_support", _fake_support)
     manager = FinetuneManager(
         store=FinetuneStore(),
-        python="/tmp/dsn-definitely-missing/python",
+        python="/tmp/aicf-definitely-missing/python",
         root=tmp_path,
     )
     with caplog.at_level(logging.WARNING, logger="infra.finetune.runner"):
@@ -487,7 +487,7 @@ def test_manager_skips_arch_gate_when_env_is_broken(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("infra.finetune.runner.check_model_support", _fake_support)
     manager = FinetuneManager(
         store=FinetuneStore(),
-        python="/tmp/dsn-definitely-missing/python",
+        python="/tmp/aicf-definitely-missing/python",
         root=tmp_path,
     )
     job = manager.submit(_spec(output_dir=str(tmp_path / "out")))  # 不应抛异常
@@ -500,7 +500,7 @@ def test_manager_promote_requires_success(tmp_path: Path, caplog):
     # 用不存在的解释器，让作业立刻失败——**不要真的拉起训练进程**。
     manager = FinetuneManager(
         store=FinetuneStore(),
-        python="/tmp/dsn-definitely-missing/python",
+        python="/tmp/aicf-definitely-missing/python",
         root=tmp_path,
         device_timeout=1.0,
     )
@@ -512,7 +512,7 @@ def test_manager_promote_requires_success(tmp_path: Path, caplog):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 8. 不变式：DSN 主进程绝不 import torch
+# 8. invariant: the host process never imports torch
 # ════════════════════════════════════════════════════════════════════════════
 
 def test_importing_finetune_does_not_import_torch():
@@ -646,7 +646,7 @@ def test_trajectory_carries_reward():
     """harness 层：轨迹要能带 reward，并原样写进 record。"""
     from harness.learning.dataset_builder import DatasetBuilder
 
-    b = DatasetBuilder(out_dir="~/dsn-finetune/data/_t", val_ratio=0.0)
+    b = DatasetBuilder(out_dir="~/aicf-finetune/data/_t", val_ratio=0.0)
     assert b.from_messages(
         [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}],
         source="selfplay", reward=0.8,
@@ -655,7 +655,7 @@ def test_trajectory_carries_reward():
     assert rec["reward"] == pytest.approx(0.8)
     assert rec["source"] == "selfplay"
     # 缺省是中性 1.0
-    b2 = DatasetBuilder(out_dir="~/dsn-finetune/data/_t2", val_ratio=0.0)
+    b2 = DatasetBuilder(out_dir="~/aicf-finetune/data/_t2", val_ratio=0.0)
     b2.from_messages([{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}])
     assert b2._trajectories[0].to_record()["reward"] == pytest.approx(1.0)
 

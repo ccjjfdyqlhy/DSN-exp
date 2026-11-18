@@ -1,13 +1,12 @@
 # infra/orchestrator/vision.py
 # 视觉多模态模型客户端 —— OpenAI 兼容的 vision API。
 #
-# 下沉说明（2026-10 消除三套模型层）：
-#   这份实现此前在 apps/dsn/models/clients.py 与 apps/dsn_study/models/clients.py
-#   各存了一份几乎相同的拷贝（两边方法集只差一个 ocr_md_batch，配置来源不同），
-#   属于典型的「复制后各自演进」重复。本模块是唯一实现，两个应用改为薄封装：
+# Two applications used to keep near-identical copies of this client (their
+# method sets differed by one call, and each read configuration from its own
+# place). This module is the single implementation; applications import it:
 #       from infra.orchestrator.vision import VisionModel
-#   配置（api_key / base_url / model_name）由调用方显式传入，
-#   因此 infra 层不依赖任何应用的 Config。
+# The caller passes api_key, base_url and model_name explicitly, so infra
+# depends on no application config.
 
 from __future__ import annotations
 
@@ -240,11 +239,11 @@ class LMStudioVisionFallback:
 class OCRModel:
     """deepseek-ocr 客户端。纯视觉 → markdown 模型，无文本提示。
 
-    下沉说明（迁移计划阶段 5.5）：此前这份实现在 apps/dsn/models/clients.py
-    一份独苗（唯一没被下沉的模型客户端），与 dsn 的 ModelScheduler 耦合。
-    本模块是唯一实现：配置显式传入、加载/卸载走 infra.models 层的
-    LMStudio 助手，调度（managed）由调用方注入 use() 上下文管理器完成 ——
-    infra 层不依赖任何应用的 Config 或调度器。
+    This used to be the last model client left inside an application, coupled to
+    that application's scheduler. It is now the only implementation: the caller
+    passes configuration, load and unload go through the infra LMStudio helper,
+    and managed scheduling is an injected use() context manager. infra depends
+    on no application config or scheduler.
 
     用法:
         ocr = OCRModel(base_url="http://localhost:4502", model_name="deepseek-ocr")

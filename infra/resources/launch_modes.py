@@ -1,10 +1,11 @@
 # infra/resources/launch_modes.py
 # 启动策略 —— 托管型外周服务（TTS / ASR sidecar 等）的三种拉起方式。
 #
-# 背景：此前 HTTPServiceLauncher 只接受一条裸 argv（start_command），调用方必须自己
-# 拼解释器路径。apps/dsn/models/resource_setup.py 用 sys.executable 拼命令行，于是
-# GPT-SoVITS 被 base env 的 python 拉起 —— 缺 fast_langdetect / split_lang / peft /
-# opencc 等依赖，必然启动失败。
+# Background: HTTPServiceLauncher used to accept one bare argv (start_command),
+# so the caller had to build the interpreter path itself. One application used
+# sys.executable, which started GPT-SoVITS with the base environment python; the
+# missing fast_langdetect, split_lang, peft and opencc dependencies made startup
+# fail every time.
 #
 # 三种模式：
 #   * COMMAND —— 直接以 argv 拉起子进程（最原始、最可控）。

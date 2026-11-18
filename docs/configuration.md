@@ -6,37 +6,23 @@
 
 ## 一、配置从哪来（三条来源，可能互相覆盖）
 
-```
-1. 环境变量 / .env        ← 优先级最高，最常用
-         ↓
-2. 各应用仓自己的 config.py  ← 类是「import 时快照」的类属性
-         ↓
-3. *.yaml（model_profiles、plugin.yaml、skill.yaml）
+```text
+1. environment variables / .env   <- highest priority, most common
+2. config.py constants            <- class attributes snapshotted at import
+3. *.yaml                         <- model_profiles, plugin.yaml, skill.yaml
 ```
 
-### 各应用读 .env 的方式并不统一
+`.env` loading is application-owned. the console loads it before its config
+class is evaluated, so the order is: process environment, then `.env`, then code
+defaults.
 
-| 应用 | 读取方式 | 备注 |
-|---|---|---|
-| `dsn` | `aicf-dsn 仓的 aicf_dsn/config.py` 中 `load_dotenv(repo_root/.env)` | 导入时快照 |
-| `dsn_study` | `aicf-study 仓的 aicf_study/config.py` | 同上 |
-| （已随实验应用归档） | | |
-| `emotion_exp` | `entry.py` 顶部 `load_dotenv()` | |
-| `dsn_ui` | ✅ 经 `aicf-ui 仓的 aicf_ui/dotenv_boot.py` 加载（在 `config.py` 顶部被 import 时触发） | 2026-10 已修复 |
+### config classes snapshot at import
 
-> ⚠️ **`dsn_ui` 的 `.env` 加载（2026-10 已修复）**：`UIConfig` 是导入时求值的类属性，
-> 因此 `load_dotenv` 必须发生在它之前。现在 `aicf-ui 仓的 aicf_ui/config.py` 顶部会 import
-> `aicf-ui 仓的 aicf_ui/dotenv_boot`，后者在 import 时加载仓库根的 `.env`。
->
-> 优先级为：**进程环境变量 > `.env` > 代码内默认值**
->（`dotenv_boot.load_env(override=False)`）。
+an application config class usually reads environment variables into class
+attributes when the module is imported. therefore:
 
-### `Config` 是「import 时快照」
-
-`aicf-dsn 仓的 aicf_dsn/config.py` 在模块导入时就把环境变量读成类属性。因此：
-
-- 运行时改 `os.environ` **不会**影响已经导入的 `Config`；
-- `/config set` 写 `.env` 后，对当前进程是否生效**未验证**。
+- changing `os.environ` at runtime does not affect an already imported config;
+- changing `.env` after import has no effect until the process restarts.
 
 ---
 
@@ -57,15 +43,12 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `SERVER_HOST` | `0.0.0.0` | dsn / dsn_study 监听地址 |
-| `SERVER_PORT` | `5000` | dsn / dsn_study 端口 |
-| `DSN_UI_HOST` | `0.0.0.0` | dsn_ui 监听地址 |
-| `DSN_UI_PORT` | `8888` | dsn_ui 端口 |
-| `DSN_UI_DEFAULT_SLOTS` | `2` | 并发模型槽位 |
-| `DSN_UI_LOG_LEVEL` | `INFO` | dsn_ui 日志级别 |
-| `DSN_UI_CORS_ORIGINS` | 仅本机 | 额外放行的跨域来源 |
-| `DSN_UI_DATA_DIR` | `aicf-ui 仓的 aicf_ui/data` | 数据目录（记忆/凭据/缓存）。**测试用此变量隔离** |
-| `DENSECHAT_PORT` | `8080` | densechat 端口 |
+| `DSN_UI_HOST` | `0.0.0.0` | console listen address |
+| `DSN_UI_PORT` | `8888` | console port |
+| `DSN_UI_DEFAULT_SLOTS` | `2` | concurrent model slots |
+| `DSN_UI_LOG_LEVEL` | `INFO` | console log level |
+| `DSN_UI_CORS_ORIGINS` | local only | extra allowed origins |
+| `DSN_UI_DATA_DIR` | the console package data directory | data, memory, credentials and cache; tests use it to isolate state |
 
 ### 2.3 本地模型
 
@@ -78,12 +61,12 @@
 | `MODEL_REQUEST_TIMEOUT` | `300` | 请求超时（秒） |
 | `DSN_UI_MODEL_ROOTS` | `~/.lmstudio/models` | onboarding 扫描目录（`os.pathsep` 分隔） |
 
-> ⚠️ `DSN_UI_MODEL_PROFILES_DIR` 在注释里出现但**未实现**。生效的 profile 目录
-> 永远是 `aicf-dsn 仓的 aicf_dsn/model_profiles/`。
->
-> 模板与参考放在 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`（默认不生效，复制过去才生效）。
-> 仓库里**不预置**带绝对路径的本地模型 —— 那些路径只在作者机器上有效，
-> 换个机器就会变成"列得出来、加载必失败"的幽灵模型。
+the model profile directory belongs to the console repository. check its
+configuration module for the active path and the template directory.
+
+this repository ships no model profiles with absolute paths. such paths only work
+on the machine that wrote them, and elsewhere they produce entries that list but
+never load.
 
 ### 2.4 Agent 行为
 
@@ -154,14 +137,14 @@
 
 | 你想改… | 改哪里 | 需要重启？ |
 |---|---|---|
-| API Key / 模型 | `.env`（dsn/dsn_study）或 `export`（dsn_ui） | 是 |
-| dsn_ui 端口 | `export DSN_UI_PORT=...` | 是 |
-| 本地模型清单 | `aicf-dsn 仓的 aicf_dsn/model_profiles/*.yaml`（模板在 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`） | 是（dsn_ui 启动时扫描） |
-| 远程 Provider | dsn_ui 设置页 → 存到 `data/api_providers.json` | 否 |
-| 模型启动参数 | dsn_ui 界面 → `data/model_launch_overrides.json` | 否 |
-| 插件开关 | `plugin.yaml` 的 `condition` | 是 |
-| 技能启用 | `skill.yaml` 或 `/api/skill/*` | 视情况 |
-| 提示词 | `aicf-dsn 仓的 aicf_dsn/prompt/prompts/{core,capabilities,extensions}/` | 是 |
+| api key / model | `.env` or `export` | yes |
+| console port | `export DSN_UI_PORT=...` | yes |
+| local model list | the console model profile directory | yes, scanned at startup |
+| remote provider | console settings, stored in `data/api_providers.json` | no |
+| model launch arguments | console settings, stored in `data/model_launch_overrides.json` | no |
+| plugin switch | the `condition` field in `plugin.yaml` | yes |
+| skill enablement | `skill.yaml` or `/api/skill/*` | depends |
+| prompts | the console prompt directory | yes |
 
 ---
 
@@ -169,9 +152,9 @@
 
 按顺序问四个问题：
 
-1. **这个进程真的读了这个文件吗？** `dsn_ui` 不读 `.env`；`Config` 是导入时快照。
-2. **有更高优先级的东西覆盖它吗？** `*.yaml` 的 `condition`、请求体字段、
-   `DSN_UI_API_MODE_LOCKED` 都可能压过环境变量。
+1. **did this process read the file?** config classes snapshot values at import.
+2. **is something with higher priority overriding it?** a `*.yaml` `condition`, a
+   request field, or `DSN_UI_API_MODE_LOCKED` can beat an environment variable.
 3. **这个变量真的被实现了吗？** 见 [technical-debt.md](technical-debt.md#p1-3-声明了但不生效的字段)。
 4. **这个功能真的在运行路径上吗？** 参考 [maintenance.md](maintenance.md) 的「多套实现」表。
 

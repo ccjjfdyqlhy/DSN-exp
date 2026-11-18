@@ -1,9 +1,9 @@
 # infra/tasks/base.py
 # 通用任务抽象。
 #
-# DSN 超集：TaskStatus 已含 dsn 的 MISSED/SKIPPED；TaskPriority 为通用优先级；
-# TaskManagerPort 是"对话路径任务服务"的 canonical 契约（dsn TaskManager 实现并
-# 经 harness Runtime 注册，见 apps/dsn/tasks.py 与 boot.py）。
+# TaskStatus includes MISSED and SKIPPED from the earlier engine. TaskPriority is
+# generic. TaskManagerPort is the canonical contract for the conversation task
+# service; an application implements it and registers it through Runtime.
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ from typing import Any, Optional, Protocol, runtime_checkable
 
 
 class TaskStatus(Enum):
-    """任务状态（含 DSN 扩展：MISSED / SKIPPED）。"""
+    """Task status, including the MISSED and SKIPPED extensions."""
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-    MISSED = "missed"              # 过期未执行（DSN 兼容）
-    SKIPPED = "skipped"            # 用户主动跳过该次触发（DSN 兼容）
+    MISSED = "missed"              # the scheduled time passed without a run
+    SKIPPED = "skipped"            # the user skipped this occurrence
 
 
 class TaskPriority(Enum):
@@ -76,10 +76,10 @@ class TaskExecutor(ABC):
 
 @runtime_checkable
 class TaskManagerPort(Protocol):
-    """对话路径使用的任务服务契约（由 harness 全局引擎定义）。
+    """Contract for the task service used by the conversation path.
 
-    DSN 的 TaskManager 即实现此契约并经 harness Runtime 注册，
-    对话路径（TaskPlugin / api / engine）经 harness 解析该服务。
+    An application implements it and registers it through Runtime. The task
+    plugin, api and engine resolve the service from there.
     """
 
     def create_task(

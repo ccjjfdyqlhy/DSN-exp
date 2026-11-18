@@ -2,11 +2,11 @@
 # infra/finetune/probe.py
 # 训练环境体检探针（**独立脚本，不 import 仓库任何模块**）。
 #
-# 为什么单独一个文件：
-#   探针必须在「训练解释器」里跑（可能是 conda env dsn-train，Python 3.10 + torch 2.3.1），
-#   而 DSN 主进程是另一套解释器（Python 3.12，且不允许 import torch）。
-#   如果探针写成仓库模块，就得保证两个解释器都能 import 它——
-#   所以这里做成零依赖的独立脚本，由 infra/finetune/env.py 用子进程调用。
+# Why a separate file:
+#   The probe runs in the training interpreter (python 3.10 with torch), while
+#   the application runs in another interpreter and does not import torch. A
+#   repository module would have to import under both, so this is a standalone
+#   script with no repository imports, called from infra/finetune/env.py.
 #
 # 输出：一行 JSON 到 stdout。任何异常都收敛成 {"error": ...}，绝不抛栈给调用方。
 

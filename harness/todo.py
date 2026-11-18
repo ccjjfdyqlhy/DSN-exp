@@ -1,10 +1,10 @@
 # harness/todo.py
 # Todo plans: the state behind "what is this agent working through".
 #
-# Sunk from apps/dsn (the todo plugin and its store): the plan/item model, the
-# progress bookkeeping and the change notifications were app-level, so every
-# application that wanted a visible task list rebuilt them.  Nothing here knows
-# about chat rooms, transports or sub-agents: an app puts its own keys in
+# Moved here from an application plugin and its store. The plan/item model,
+# progress bookkeeping and change notifications were app-level, so every product
+# that wanted a visible task list rebuilt them. Nothing here knows about chat
+# rooms, transports or sub-agents: an app puts its own keys in
 # ``TodoPlan.meta`` and follows changes with ``add_listener`` (or the
 # ``revision`` counter, for a UI that polls once a frame).
 #

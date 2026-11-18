@@ -1,8 +1,8 @@
 # harness/memory/base.py
-# 通用记忆抽象。
+# generic memory abstraction.
 #
-# DSN 超集：MemoryStorePort 是"对话路径记忆服务"的 canonical 契约
-# （dsn MemorySystem 实现并经 harness Runtime 注册，见 apps/dsn/memory/core.py）。
+# MemoryStorePort is the canonical contract for a conversation memory service.
+# an application implements it and registers the instance through Runtime.
 
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ class IMemoryStore(Protocol):
 
 @runtime_checkable
 class MemoryStorePort(Protocol):
-    """对话路径使用的记忆服务契约（由 harness 全局引擎定义）。
+    """Contract for the memory service used by the conversation path.
 
-    DSN 的 MemorySystem 即实现此契约并经 harness Runtime 注册，
-    对话路径（MemoryPlugin / RecallPlugin / topics）经 harness 解析该服务。
+    An application implements this contract, registers it through Runtime, and
+    the memory and recall plugins resolve it from there.
     """
 
     def assemble_context(

@@ -3,7 +3,7 @@
 > 读者：要写一个新技能、或排查"技能不生效 / 工具调用报错"的人。
 >
 > 技能 = 一组具名工具的可装卸单元。声明式技能（YAML）由
-> `harness/skills/` 承载，`apps/dsn` 与 `apps/dsn_study` 共用同一份实现。
+> `harness/skills/` 承载，应用共用同一份实现。
 
 ---
 
@@ -103,8 +103,7 @@ class HelloTool:
 
 ### 4.1 以前是怎么做的（别再这么写）
 
-应用层维护一张**硬编码的属性名映射表**
-（`aicf-study 仓的 aicf_study/boot.py: _build_skill_dep_map`）：
+应用层维护一张**硬编码的属性名映射表**：
 
 ```python
 "question_bank": dict(_store=..., _tm=..., _models=...)
@@ -121,7 +120,7 @@ class HelloTool:
 
 ### 4.2 现在怎么做
 
-应用层注册**语义能力**（`aicf-study 仓的 aicf_study/boot.py: _register_skill_capabilities`）：
+应用层注册**语义能力**：
 
 ```python
 skill_registry.register_capabilities({
@@ -155,13 +154,7 @@ class HelloTool:
 
 ### 4.3 可用能力清单
 
-`GET /api/skills`（dsn_study）返回 `capabilities` 字段。dsn_study 当前注册：
-
-`question_store` `template_manager` `models_plugin` `llm` `db_mgr`
-`exam_engine` `exam_scorer` `scorer` `graph_store` `graph_engine`
-`knowledge_matcher` `kg_matcher` `kg_builder` `scanner_pipeline`
-`plan_engine` `task_manager` `memory_system` `cache_engine`
-`studylog` `checkin_store` `workspace`
+应用自己注册能力名。`GET /api/skills` 返回的 `capabilities` 字段就是当前注册表。
 
 ---
 
@@ -223,14 +216,14 @@ GAOKZX_USER_AGENT=Mozilla/5.0 ...
 * 结果同时挂在 `Skill.env` 上；
 * 格式错误（缺 `=`、空键名）会跳过该行并告警，不会整份文件失效。
 
-> dsn_study 此前有 `Config.load_skill_configs()`，但**从来没被调用过** ——
-> 写 skill.env 是静默失效的。现统一由 harness 的 env_loader 负责。
+> some applications had their own skill env loader but never called it, so
+> `skill.env` was silently ignored. the harness loader is now the single path.
 
 ---
 
 ## 八、运行时管理（不必重启）
 
-dsn_study 暴露了技能管理 API：
+the application exposes the skill management API:
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
@@ -257,33 +250,22 @@ dsn_study 暴露了技能管理 API：
 | `harness/skills/validator.py` | 加载期一致性校验 |
 | `harness/skills/env_loader.py` | `skill.env` 加载 |
 | `harness/skills/agent_bridge.py` | 技能工具 → AgentLoop 工具（同步 + 协程） |
-| `aicf-study 仓的 aicf_study/api/skills.py` | 技能管理 REST API |
 
 ---
 
-## 十、实例：`gaokzx` —— 从高考在线抓试题/答案图
+## 十、a worked example
 
-`aicf-study 仓的 aicf_study/skills/builtin/gaokzx/`，四个工具：
+a skill that scrapes a third-party site should keep the site facts in the file
+header: parameter names, pagination markers, image filename prefixes. state what
+you verified, not what you guessed.
 
-| 工具 | 作用 |
-|---|---|
-| `search_papers(keyword, page, page_size)` | 站内搜索试题文章（返回 id/标题/链接/是否含答案） |
-| `inspect_paper(paper_id \| url)` | 解析文章：分页数、试题图/答案图清单（带判别依据）、附件 PDF |
-| `find_answer_paper(paper_id \| title)` | 找配套答案文章（比对**学年**，不瞎猜） |
-| `download_images(paper_id, kind, user_id, max_images)` | 下载试题图/答案图到工作区（幂等） |
+two mechanism checks are worth copying:
 
-它体现了这套插件机制的几个要点：
+- `needs = {"workspace": "_workspace"}` injects the workspace. when it is absent,
+  fall back to a temporary directory and say so in the result instead of failing
+  silently.
+- keep private settings in `skill.env`, for example a delay, a timeout and a user
+  agent string.
 
-* **站点逆向结论写在文件头注释里** —— 参数名（`searchName` / `sourceType: GAOKZX`）、
-  分页标记（`<!-- pagebreak -->`）、图片文件名前缀（`无答案` / `有答案`）
-  都是实测确认的，不靠猜；
-* **能力注入**：`needs = {"workspace": "_workspace"}` 拿工作区落盘，
-  拿不到时退到临时目录并在返回里标记，不静默失败；
-* **私有配置**：`skill.env` 里放 `GAOKZX_DELAY` / `GAOKZX_TIMEOUT` / `GAOKZX_USER_AGENT`；
-* **对第三方站点礼貌**：请求之间 sleep（默认 0.8s）、失败指数退避重试 2 次、
-  429 尊重 `Retry-After`。
-
-> 站点接口的关键事实（实测）：
-> * 所有 API 请求必须带请求头 `sourceType: GAOKZX` —— 不带会拿到「自主选拔在线」站的数据，文章 id 对不上；
-> * 搜索参数名是 `searchName` / `searchType`（`title`、`keyword`、`titleLike` 一律无效）；
-> * `columnId` 必须是 **int**（`314` = 试题库，`139` = 高考真题，`145` = 期中期末）。
+be polite to third-party sites: sleep between requests, back off on failure, and
+honor `Retry-After` on 429.

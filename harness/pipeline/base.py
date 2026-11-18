@@ -1,11 +1,13 @@
 # harness/pipeline/base.py
-# 通用插件基类 + 钩子点 + 管线上下文。
+# generic plugin base, hook points and pipeline context.
 #
-# 关键设计：Context 只包含"消息进、输出出"的通用字段，
-# 不含语音/人格/提醒等应用语义 —— 应用特定数据走 extra / outputs / events。
+# Context carries generic "message in, output out" fields only. voice,
+# personality and reminder semantics belong to the application and travel in
+# extra / outputs / events.
 #
-# DSN 超集：HookPoint 与 Context 已扩展为 dsn 引擎（apps.dsn.plugins）的超集，
-# dsn 的 PluginContext / 5 个钩子点直接映射到本模块（apps.dsn.plugins 直接再导出本模块符号）。
+# HookPoint and Context are a superset of the earlier engine: PRE_FILTER,
+# PRE_PROCESS and POST_TTS keep their established names, while PREPARE and the
+# generic fields serve new code.
 
 from __future__ import annotations
 
@@ -16,22 +18,22 @@ from typing import Any, Optional
 
 
 class HookPoint(Enum):
-    """通用管线钩子点，按执行顺序排列。
+    """Generic pipeline hook points, in execution order.
 
-    DSN 兼容说明：
-      - PRE_FILTER / PRE_PROCESS / POST_TTS 与 dsn 引擎同名钩子（超集）。
-      - PRE_PROCESS 与 PREPARE 语义相近但保留独立成员：dsn 在 PRE_FILTER 之后
-        先组装 system prompt 再派发 PRE_PROCESS；harness 的 PREPARE 自行负责
-        上下文组装。两套应用各用各的名字，互不串扰。
+    PRE_FILTER, PRE_PROCESS and POST_TTS keep their established names.
+    PRE_PROCESS and PREPARE look similar but stay separate: the earlier engine
+    assembles the system prompt after PRE_FILTER and then dispatches
+    PRE_PROCESS, while PREPARE owns context assembly here. Each caller uses its
+    own name, so neither path interferes with the other.
     """
-    INBOUND = "inbound"              # 入站处理 / 过滤（可短路）
-    PRE_FILTER = "pre_filter"        # ASR 输入过滤（可短路）— dsn 兼容
-    PREPARE = "prepare"              # 上下文组装 / system prompt / 记忆注入
-    PRE_PROCESS = "pre_process"      # dsn 兼容名（PRE_FILTER → assemble_prompt → 本阶段）
-    MODEL_INVOKE = "model_invoke"    # 模型调用
-    POST_PROCESS = "post_process"    # 后处理 / 工具执行 / 记忆更新
-    POST_TTS = "post_tts"            # TTS 合成 — dsn 兼容
-    OUTPUT = "output"                # 输出渲染 / 投递
+    INBOUND = "inbound"              # inbound handling and filtering, may short-circuit
+    PRE_FILTER = "pre_filter"        # input filtering, may short-circuit
+    PREPARE = "prepare"              # context assembly, system prompt, memory injection
+    PRE_PROCESS = "pre_process"      # compatibility stage after prompt assembly
+    MODEL_INVOKE = "model_invoke"    # model call
+    POST_PROCESS = "post_process"    # post-processing, tools, memory update
+    POST_TTS = "post_tts"            # speech synthesis
+    OUTPUT = "output"                # render and deliver
 
 
 @dataclass
@@ -45,19 +47,19 @@ class Attachment:
 
 @dataclass
 class Context:
-    """贯穿管线的上下文。插件间通过它传递数据。
+    """Context that travels through the pipeline.
 
-    除通用字段外，还承载 DSN 引擎兼容字段（chat_id / image_data / agent_* 等，
-    全部可选带默认值，通用场景不受影响）。应用特定数据放 extra / outputs / events。
+    It also carries compatibility fields (chat_id, image_data, agent_*) that all
+    have defaults. Application-specific data belongs in extra / outputs / events.
     """
 
-    # ── 输入 ──
+    # input
     session_id: str = ""
-    user_id: str | int = ""          # 通用为 str，DSN 场景为 int（运行时不强制）
+    user_id: str | int = ""          # str in generic code, int in the legacy engine
     message: str = ""
     attachments: list[Attachment] = field(default_factory=list)
 
-    # ── 输入（DSN 兼容） ──
+    # input: compatibility fields
     chat_id: Optional[int] = None
     chat_name: str = "未命名"
     is_asr_input: bool = False
@@ -66,7 +68,7 @@ class Context:
     nickname: str = "用户"
     image_data: Optional[str] = None
 
-    # ── 中间态 ──
+    # intermediate state
     system_prompt: str = ""
     history: list = field(default_factory=list)      # 对话历史（通用消息）
     reply: str = ""                                   # 最终文本回复
@@ -75,28 +77,28 @@ class Context:
     usage: Optional[dict] = None
     model_name: Optional[str] = None
 
-    # ── 中间态（DSN 兼容） ──
+    # intermediate state: compatibility fields
     full_history: list = field(default_factory=list)
     original_reply: str = ""                          # 含标签的原始回复
     audio: Optional[bytes] = None
     audio_b64: Optional[str] = None
     tts_error: Optional[str] = None
 
-    # ── Agent 循环状态 ──
+    # agent loop state
     agent_active: bool = False
     agent_step_count: int = 0
     agent_max_steps: int = 5
     agent_token_budget: int = 1000000
 
-    # ── 剧本/回放（DSN 兼容） ──
+    # scripted replay: compatibility fields
     skip_model: bool = False                          # 回放命中时跳过 MODEL_INVOKE
     cross_user_id: Optional[int] = None               # Agent 模式下绑定的用户 uid
     recall_engine: Optional[Any] = None               # 记忆召回引擎实例
 
-    # ── 输出产物（渲染器填充，如 text/audio/image） ──
+    # output produced by renderers, such as text, audio or image
     outputs: dict = field(default_factory=dict)
 
-    # ── 扩展（应用特定数据放这里） ──
+    # extension point for application-specific data
     extra: dict = field(default_factory=dict)
 
     # ── 便捷方法 ──

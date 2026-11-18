@@ -15,11 +15,9 @@
 #
 # "Where the model lives, how it starts and on which port" is a resource
 # question (process, port, VRAM, disk), so by the layering rule it belongs to
-# infra. This logic used to live in apps/dsn_ui/jev_integration.py, which meant
-# only dsn_ui could use the model and dsn_study had to copy the file. Two
-# copies drift (port conflicts, one half of a VRAM change updated). It now
-# lives in infra and the app layer only registers the model with the
-# orchestrator.
+# infra. This logic used to live in an application integration module, which
+# meant every product copied the file and the copies drifted. It now lives in
+# infra; the application only registers the model with the orchestrator.
 #
 # ## Hard constraints (read before changing anything)
 #

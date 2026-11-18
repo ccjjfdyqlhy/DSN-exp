@@ -2,14 +2,14 @@
 
 ## supported versions
 
-only the default branch (`harness-refactor`) receives security fixes.
-released `aicf` packages on pypi are supported for one minor version back.
+only the default branch (`main`) receives security fixes.
+released `aicf-core` packages on pypi are supported for one minor version back.
 
 | branch / version | supported |
 |---|---|
-| `harness-refactor` (default) | yes |
-| pypi `aicf` latest | yes |
-| pypi `aicf` older minors | no |
+| `main` (default) | yes |
+| pypi `aicf-core` latest | yes |
+| pypi `aicf-core` older minors | no |
 | other branches | no |
 
 ## reporting a vulnerability
@@ -35,9 +35,8 @@ prefer to stay anonymous.
 
 in scope:
 
-- the `aicf` distribution itself: the `harness` and `infra` packages
+- the `aicf-core` distribution itself: the `harness` and `infra` packages
   (agent engine, tool execution, session storage, model clients)
-- the applications under `apps/` in this repository
 - the published pypi artifacts
 
 out of scope:
@@ -53,9 +52,8 @@ out of scope:
 - provider api keys are stored encrypted (`~/.adcode/config.json`,
   keyring-backed) and are never logged or sent anywhere except the
   configured provider endpoint
-- session databases and image stores live under `~/.adcode/` and are
-  never committed; `local/`, `apps/dsn_existence/` and
-  `tests/test_dsn_existence*` are machine-local by policy
+- session databases and image stores live under the user data directory
+  and are never committed; `local/` is machine-local by policy
 - tools run with the operator's privileges by design: there is no
   sandbox. do not point the agent at untrusted workloads without
   understanding that `bash`, `write` and `edit` act on real files

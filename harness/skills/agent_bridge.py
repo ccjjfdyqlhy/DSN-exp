@@ -1,9 +1,8 @@
 # harness/skills/agent_bridge.py
-# 技能工具 → AgentLoop 工具 的桥接 —— 下沉到 harness，两个应用共用。
+# bridge skill tools into AgentLoop tools. shared by every application.
 #
-# 下沉说明（2026-11）：此前这段逻辑写在 apps/dsn_study/boot.py 里
-# （_bridge_tools_to_agent / _bridge_async_tools_to_agent 两个函数），
-# 应用层各自抄一份，改一处就要记得改另一处。这里统一成一份实现。
+# This logic used to live in an application boot module with two near-identical
+# copies. One implementation removes the risk of fixing only one copy.
 #
 # 关键点：同步工具与**协程工具**要分开桥接。
 #   * 同步 handler 走 agent.register_tool(...)；

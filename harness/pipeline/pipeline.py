@@ -20,10 +20,10 @@ logger = logging.getLogger("harness.pipeline")
 
 
 class Pipeline:
-    """通用消息管线。
+    """Generic message pipeline.
 
-    hook_order 可配置（默认覆盖全部钩子点的超集顺序）；
-    DSN 引擎可传入 dsn 专属顺序，见 apps/dsn/plugins/pipeline.py。
+    ``hook_order`` is configurable. the default covers every hook point, and a
+    caller may pass its own order.
     """
 
     _HOOK_ORDER = [

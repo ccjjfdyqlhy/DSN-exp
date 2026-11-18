@@ -8,9 +8,10 @@
 #     训练在本机天然是串行的（本机 2×2080Ti，同时跑两个 QLoRA 必 OOM）。
 # 不用 TaskScheduler 的原因：它按时间/间隔触发任务，而训练是"提交一次、跑一次"。
 #
-# 子进程边界（铁律）：
-#   DSN 主进程**不 import torch**。训练在独立解释器里以独立脚本运行，
-#   主进程只负责：写 spec.json、拉起进程、收日志、读 result.json。
+# Process boundary:
+#   The application process does not import torch. Training runs as a separate
+#   script in its own interpreter; the runner writes spec.json, starts the
+#   process, collects logs and reads result.json.
 
 from __future__ import annotations
 

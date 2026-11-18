@@ -51,8 +51,7 @@ class _HttpReadinessMixin:
       * 此时服务其实已经完全启动，严格 200 会让就绪等待一直超时。
 
     因此当 `ready_accept_below` 被设置（如 500）时，改为"任何响应状态
-    < N 即视为就绪" —— 与仓库既有约定一致：
-    apps/dsn/audio/infer.py 的 VocalExp.probe() 即 `status_code < 500`。
+    < N 即视为就绪"。
     """
 
     #: None = 严格 200；否则接受 status == 200 或 status < ready_accept_below

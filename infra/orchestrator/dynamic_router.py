@@ -1,12 +1,13 @@
 # infra/models/dynamic_router.py
-# DynamicRouter + MonitorStore — 端点可用性学习路由（场景无关，从 DSN 广义化移植）。
+# DynamicRouter + MonitorStore - availability-aware endpoint routing.
 #
 # 问题域：同一"服务"有多个可用端点（API 账号 / 后端 / 镜像站），
 # 各端点在一天不同时段的可靠性不同。本模块：
 #   - MonitorStore   记录每次请求的成功/失败/延迟观察（线程安全 + JSON 持久化）
 #   - DynamicRouter  基于观察为每个端点生成动态时段优先级（reliability 加权）
 #
-# 与 DSN 的差异：端点来源抽象为 AccountProvider 协议（names()/get()），
+# Unlike the earlier implementation, endpoint sources are an AccountProvider
+# protocol (names()/get()),
 # 端点为 ManagedAccount 协议（name/enabled/priority/time_slots + 时段写入方法），
 # 手动时段规则可通过 manual_schedule 回调注入——应用只需接线，不承载学习逻辑。
 

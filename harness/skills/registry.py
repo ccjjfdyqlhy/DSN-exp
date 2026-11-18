@@ -1,12 +1,9 @@
 # harness/skills/registry.py
 # 技能注册表 —— **harness 层唯一实现**。
 #
-# 改造前（2026-11）：apps/dsn/skills/registry.py 与 apps/dsn_study/skills/registry.py
-# 是两份**各自维护**的副本，方法集还不一样（study 侧多 call_tool_async /
-# is_async_tool / inject_dependencies / get_tool_instances）。改一边不会影响另一边，
-# 于是"同一个技能在两个应用里行为不一致"这类问题很难排查。
-#
-# 现在：两边都 import 这一份，行为一致。
+# Before this module, two applications each maintained their own registry copy
+# with different method sets. A change on one side did not reach the other, so
+# the same skill behaved differently per product. Both now import this file.
 #
 # 本模块相对旧版的增强：
 #   1. **能力（capability）注入**：工具类用类属性 needs 声明

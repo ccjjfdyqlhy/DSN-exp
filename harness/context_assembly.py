@@ -1,19 +1,18 @@
 # harness/context_assembly.py
 # SegmentedContextAssembler — 结构化上下文预算剪裁（场景无关）。
 #
-# 背景：长会话 / 多话题记忆场景下，把所有历史原文塞进上下文既不经济也不利于
-# 模型聚焦。本模块提供"分段 + 预算"的上下文组装策略，把 DSN 话题系统
-# （apps/dsn/memory/topics.py）中验证过的优秀实践提炼为引擎通用能力：
+# Background: in a long conversation, putting every past message into the
+# context is expensive and distracts the model. this module turns the working
+# practice from an earlier topic system into a generic segmented budget:
 #
-#   - 闭锁段（closed/summary）→ 只注入聚合摘要，受 summary 预算约束
-#   - 激活段（open/pinned/passive）→ 注入原文，受 verbatim 共享预算约束
-#   - 备忘段（memo）→ 全局常驻事实，独立预算，永不模糊
-#   - 尾部段（tail）→ 最近 N 轮原文，保证即时上下文
-#   - 预算超限时按段优先级裁剪，超出原文截断并标注
+#   - closed/summary segment: only an aggregate summary, capped by the summary budget
+#   - open/pinned/passive segment: original text, sharing the verbatim budget
+#   - memo segment: global facts with their own budget, never blurred
+#   - tail segment: the last N rounds of original text
+#   - when the budget overflows, trim by segment priority and mark the truncation
 #
-# 本类不依赖任何存储 / 加密 / 模型：数据由调用方（应用层）以 ContextSegment
-# 列表提供，纯函数式剪裁，可独立测试。DSN 的 TopicManager 即委托本类完成
-# 预算与裁剪（见 apps/dsn/memory/topics.py 的 assemble_topic_context）。
+# the class uses no storage, crypto or model. the caller supplies a list of
+# ContextSegment values, and the trimming is pure, so it is easy to test.
 
 from __future__ import annotations
 
@@ -138,7 +137,7 @@ class SegmentedContextAssembler:
     def plan(self, segments: list[ContextSegment]) -> AssemblyPlan:
         """按预算剪裁段列表（无副作用，可独立测试）。
 
-        规则（与 DSN 话题组装语义对齐）：
+        Rules:
           - memo 段独立预算 memo_chars，按输入顺序保留
           - summary 段独立预算 summary_chars，按输入顺序保留
           - verbatim 段共享预算 verbatim_chars，按输入顺序保留；
@@ -208,7 +207,7 @@ class SegmentedContextAssembler:
         # 修复说明（P1-4）：常量与文档都声明"值越大越先保留（剪裁时低优先级先被
         # 丢弃）"，但原实现完全不读 seg.priority，纯按输入顺序先到先得 —— 实测预算
         # 100、两段各 70 字符时，优先级 90 的"当前话题"被优先级 80 的普通段挤掉，
-        # DSN"当前话题必须保留"的契约实际失效。
+        # the rule that the current topic must survive was broken in practice.
         #
         # 这里采用两阶段策略，兼顾两个互相冲突的需求：
         #   ① 调用方通常已按语义排好输入顺序，段序本身有意义（测试也依赖这点），

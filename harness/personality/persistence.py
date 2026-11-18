@@ -46,8 +46,9 @@ ALL_TABLES = [
 
 
 def _get_conn_from_db(db):
-    """从不同类型的 DB 适配器中安全提取 sqlite3.Connection。
-    支持 SqliteStore、DSN 原生 db 或已有连接。
+    """Extract a sqlite3.Connection from several DB adapters.
+
+    Accepts a SqliteStore, a legacy database wrapper or an existing connection.
     """
     if db is None:
         return None

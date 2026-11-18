@@ -44,8 +44,8 @@ class AgentRuntime:
         self.max_steps = max_steps
         # 墙钟预算（秒）：max_steps<=0（不限轮数）时的兜底
         self.max_seconds = max_seconds
-        # 工具调用协议适配器（None → harness 默认的原生 function calling）。
-        # 应用可注入自定义适配器（如 dsn_study 的 <tool> 标签降级适配器）。
+        # tool-call adapter; None means native function calling.
+        # an application may inject its own adapter for a tagged wire format.
         self.adapter = adapter
 
         self.runtime = Runtime(name=name)

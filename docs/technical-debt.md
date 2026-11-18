@@ -4,7 +4,7 @@
 > **状态（2026-10-20 更新）**：本文列出的 P0 问题**全部已修复**。
 > 保留条目是为了记录「曾经出过的错」与修复思路 —— 按仓库惯例，
 > 「注释即缺陷数据库」，历史同样有留存价值。
-> 当前测试基线：**547 通过 / 0 失败 / 0 收集错误**（另有 18 个按 marker 排除）。
+> 当前测试基线：**601 通过 / 1 跳过 / 0 失败 / 0 收集错误**（2026-11-18，Python 3.12）。
 
 > 本文所有条目均经过源码核对或实际运行验证；标注「未验证」的是静态阅读推断。
 
@@ -145,7 +145,7 @@ def run(self, message):
 ```
 
 **影响**：旧文档宣称的「Agent 自己会省钱」在框架层并不成立。
-DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起来能用。
+应用层另有一套自己的实现，这也是为什么产品侧看起来能用。
 
 **建议**：要么把 policy 真正接到循环（`_invoke` 后回填 usage、每轮 `budget.check()`），
 要么在文档与代码注释里明确标注「预留能力」。**当前最危险的是文档与代码不一致。**
@@ -162,9 +162,9 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 | `FileWatcher` | `harness/codegraph/watcher.py` | 文件变更监听 |
 | `ImportResolver` | `harness/codegraph/imports.py` | import 路径映射 |
 | `OutputFilter` | `harness/pipeline/filters.py` | ANSI/时间戳/UUID 过滤，未接入回喂链路 |
-| `SwarmRuntime` | `harness/agent/swarm.py` | 群组共识，apps 中零引用 |
-| `create_agent` / `Agent` | `harness/sdk.py` | 仅测试使用，apps 不调用 |
-| `SemanticCache` | `infra/cache.py` | 仅被 `harness/__init__` 重导出；业务用的是 `aicf-dsn 仓的 aicf_dsn/semantic_cache/` |
+| `SwarmRuntime` | `harness/agent/swarm.py` | 群组共识，应用层零引用 |
+| `create_agent` / `Agent` | `harness/sdk.py` | 仅测试使用，应用层不调用 |
+| `SemanticCache` | `infra/cache.py` | 仅被 `harness/__init__` 重导出，无其他消费者 |
 | `EventLogger` | `infra/observability/core.py` | 全仓无调用者，且是逆向依赖 |
 
 **建议**：这不是必须修的 bug，但它们让「框架能力」的描述容易夸大。
@@ -182,7 +182,6 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 | `AsyncTaskStore._ttl` | `infra/tasks/async_store.py` | 声明后从未使用 |
 | `ToolResult.data` | `harness/tools/base.py` | `AgentLoop` 打包结果时**丢弃** `data` 字段 |
 | `AgentSpec.tools` 的 list 形式 | `harness/agent/assembler.py:118` | 只识别字面量 `standard`，其余元素静默忽略 |
-| `DSN_UI_MODEL_PROFILES_DIR` | `aicf-ui 仓的 aicf_ui/config.py:60` | 目录写死为 `aicf-dsn 仓的 aicf_dsn/model_profiles`，**没有读环境变量** |
 
 **这类问题的危害**：读者按名字以为能力存在，排查时浪费大量时间。
 建议统一处理：要么实现，要么删除，要么在字段旁注明「预留」。
@@ -197,29 +196,19 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 | `AgentRuntime` | `harness/agent_runtime.py` | 记忆**只写不读**（写入后从不进入上下文） |
 | `sdk.Agent` | `harness/sdk.py` | 内部其实走 `AgentAssembler` |
 
-外加应用侧还有四个平行的「Agent 门面」：`DSNUIAgentCoordinator`、`StudyEngine`、
-`EmotionExpAgent`、以及 `dsn` 的 `DSNEngine`。
+applications also add their own facades on top, so the full set is larger than
+the three core entry points.
 
 **建议**：短期在文档中明确「新代码用 `AgentRuntime` 或直接 `AgentLoop`」；
 长期收敛到一到两个入口。
 
 ---
 
-## P1-5. 应用层的装配路径分叉（`apps/dsn`）
+## P1-5. application assembly paths
 
-`apps/dsn` 有**三套并存**的装配逻辑：
-
-| 路径 | 位置 | 备注 |
-|---|---|---|
-| `boot.create_application()` | `aicf-dsn 仓的 aicf_dsn/boot.py:399` | 生产路径，658 行、约 106 个分支 |
-| `DSNEngine(subapp_path)` | `aicf-dsn 仓的 aicf_dsn/engine.py:156` | SubApp 路径 |
-| `create_engine_with_defaults()` | `aicf-dsn 仓的 aicf_dsn/engine.py:1140` | 主应用复用 boot 组件 |
-
-「DI 注册 + 4 遍插件加载」这段逻辑在 `engine.py:635-724` 与 `engine.py:1231-1338`
-**写了两遍且已经分叉**（后者缺 `enable_set` / `disable_set` 与 `complexity_analyzer`）。
-
-另一个分叉：prompt 目录在 SubApp 路径只加载 `{core, capabilities}`，
-而主路径加载 `{core, capabilities, extensions}`——**同一份配置在两条路径下内容不同**。
+the console repository carries more than one assembly path. this repository
+cannot fix that from here; it is listed so the next maintainer does not assume
+that one entry point describes the whole product.
 
 ---
 
@@ -254,22 +243,14 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 
 | 文件 | 指数 | 最复杂函数 |
 |---|---:|---|
-| `aicf-dsn 仓的 aicf_dsn/plugins/pipeline.py` | 56.55 | `_dsn_agent_round` (44)、`_poll_pending_tasks` (38) |
-| `aicf-dsn 仓的 aicf_dsn/psychoscope/minimal.py` → **已拆分为 `aicf-dsn 仓的 aicf_dsn/CLI/` 包**（2026-11-07，数据为拆分前） | 56.50 | `main`、`_poll_loop` |
-| `aicf-dsn 仓的 aicf_dsn/main.py` | 52.68 | `_cmd_reminder` (31)、`_cmd_plan` (21) |
-| `apps/densechat/static/app.js` | 52.50 | `handleMessage` (62) |
 | `aicf-ui 仓的 aicf_ui/server.py` | 48.64 | `_produce_sse` (72)、`chat_completions` (57) |
-| `aicf-dsn 仓的 aicf_dsn/memory/core.py` | 46.89 | `search` (39) |
 | `infra/orchestrator/anthropic.py` | 45.35 | `_split_system` (34) |
-| `aicf-dsn 仓的 aicf_dsn/engine.py` | 45.33 | `_init_plugins_via_loader` (38) |
 | `aicf-ui 仓的 aicf_ui/agent.py` | 41.98 | `chat_stream` (64) |
 | `harness/agent/loop.py` | 40.46 | `run_stream` (49) |
 
-**改动这些函数前请先补测试。** 最值得拆分的三个：
-
-1. `boot.create_application()`（658 行）——按子系统拆成多个 `_init_*` 函数；
-2. `plugins/pipeline.py::process_stream`（412 行）——抽出 SSE 编码层；
-3. `dsn_ui/server.py::_produce_sse`（复杂度 72）——抽出事件生成器。
+**改动这些函数前请先补测试。** the console repository owns the two largest
+files. inside this repository, `harness/agent/loop.py::run_stream` is the first
+target.
 
 ---
 
@@ -277,9 +258,10 @@ DSN 应用侧另有一套自己的实现，这也是为什么 `apps/dsn` 看起�
 
 `fuck-u-code` 显示错误处理项得分仅 31.37%，是 11 项指标中最低的。
 
-`apps/dsn` 有大量 `except Exception: pass` 与 `logger.warning("Operation failed")` 式
-通用文案。子系统初始化失败只是置为 `None` 然后继续启动（world / tracking /
-semantic_cache / TTS 都是这样）。
+the old monorepo carried many `except Exception: pass` blocks and generic
+`logger.warning("Operation failed")` messages. subsystem initialization set the
+value to `None` and kept starting (world, tracking, semantic_cache and TTS all
+behaved this way).
 
 **直接后果**：「某功能没反应」时，第一现场是启动日志里的一条 warning，而不是异常栈。
 这也是 [getting-started.md](getting-started.md) 把「先看 warning」列为排障第一原则的原因。
@@ -342,12 +324,13 @@ semantic_cache / TTS 都是这样）。
 
 ### `docs/` 已恢复入库（2026-10-20）
 
-**历史**：`.gitignore` 曾包含 `/docs/` 一行，导致 **`docs/` 下的 17 篇架构与维护文档
-完全不被 git 跟踪**——clone 仓库的新成员看不到任何架构信息。
-本仓库的文档密度极高（12 篇 / 2949 行），不入库等于这些知识只活在某一台机器上。
+**History**: `.gitignore` once contained a `/docs/` line, so none of the
+architecture and maintenance documents were tracked. A new clone had no
+architecture information at all.
 
-**现状**：已从 `.gitignore` 移除该行，`docs/` 全量入库（含 `docs/archive/`
-的旧版文档与一次性完成记录，其自带 `README.md` 明确标注「架构已过时」）。
+**Current state**: the line is gone and `docs/` is tracked. the obsolete
+`docs/archive/` and local-only `docs/expansion/` trees were deleted in 2026-11
+because they described applications that no longer live here.
 
 **入库前已核查**（仓库为 **public** 可见，故逐项排查过）：
 
@@ -357,7 +340,7 @@ semantic_cache / TTS 都是这样）。
 | `client_secret` / `password` / 私钥 | 无 |
 | 个人邮箱 | 无 |
 | 绝对家目录路径 | 无 |
-| 二进制文件 | 无（17 个文件全为 `.md`） |
+| 二进制文件 | none; the directory holds markdown and two svg headers |
 | 外链 | 仅 `127.0.0.1` / `localhost` / `api.deepseek.com` |
 
 ### 运行产物散落仓库根目录
@@ -366,10 +349,9 @@ semantic_cache / TTS 都是这样）。
 
 | 路径 | 性质 |
 |---|---|
-| `DSN_usrdata.db` | DSN 用户数据 |
-| `.dekacode_web.db` / `.emotion_exp.db` | 各应用数据 |
+| `*.db` | 运行时数据 |
 | `logs/` | 日志 |
-| `temp/` | 开发临时区（含 `dsn_study_backup` 等） |
+| `temp/` | 开发临时区 |
 | `MagicMock/` | 测试副作用产物（**不是源码**）。跑一次 `tests/test_harness_strata.py` 就会新增若干 `MagicMock/mock.agent.data_dir/<id>/thought_cache.db`——因为测试里 `data_dir` 是 MagicMock，被当真路径用了。**注意：它没有被 .gitignore 显式忽略**，只是因为 `*.db` 规则侥幸没入库 |
 | `__pycache__/` / `.pytest_cache/` / `.ruff_cache/` | 缓存 |
 | `aicf-ui 仓的 aicf_ui/frontend/node_modules/` | 前端依赖（很大，会干扰按 `.py` 统计行数的脚本） |

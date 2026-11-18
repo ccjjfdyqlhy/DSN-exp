@@ -1,5 +1,5 @@
 # infra/models/scheduler.py
-# ModelScheduler — 多模型编排器（场景无关，从 DSN 应用广义化移植）。
+# ModelScheduler - scenario-agnostic multi-model orchestration.
 #
 # 能力：
 #   - 每模型 FIFO 任务队列（use() 上下文管理器获取使用权）
@@ -8,8 +8,8 @@
 #   - resident（常驻）模型永不卸载；orchestrated=False 的模型不受本调度器管理
 #   - 模型 profile 可来自 YAML 目录（profiles_dir）或 register() 显式参数
 #
-# 与 DSN 的差异：本实现不依赖任何应用配置/客户端——load_fn/unload_fn、
-# 插槽数、超时、profiles 目录全部由调用方注入。
+# It depends on no application config or client: load_fn, unload_fn, slot count,
+# timeouts and the profiles directory all come from the caller.
 
 from __future__ import annotations
 

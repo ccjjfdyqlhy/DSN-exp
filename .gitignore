@@ -43,53 +43,9 @@ AGENTS.md
 /third_party/
 /models/
 .onboarding_state.json
-# 自动生成的 model profile 含本机绝对路径，不入库（模板见 model_profiles.example/）
-apps/dsn/model_profiles/onboarding_*.yaml
-
 # ── 文档目录 ──
-# 2026-10-20 起恢复跟踪：docs/ 下 17 篇架构/维护文档是本仓库最重要的知识资产，
-# 不入库意味着 clone 的人看不到任何架构信息。
-# 已核查：docs/ 内无密钥、无个人邮箱、无绝对家目录路径、无二进制文件。
-# docs/archive/ 为「已被取代的旧版文档 + 一次性完成记录」，随目录一并入库，
-# 其自带 README.md 明确标注了「架构已过时，不要作为现状依据」。
-
-# ── DSN 语音陪伴应用 (apps/dsn/) 运行时目录 ──
-/apps/dsn/website/*
-/apps/dsn/logs/*
-/apps/dsn/.dsn/*
-/apps/dsn/temp/*
-/apps/dsn/skills/claw_skills/*
-/apps/dsn/skills/builtin/ncm_music/music/*
-/apps/dsn/character_cards/*
-/apps/dsn/character_cards/materials/*
-/apps/dsn/character_cards/backups/*
-/apps/dsn/psychoscope/logs/*
-/apps/dsn/psychoscope/temp/*
-/apps/dsn/psychoscope/.dsn_client.json
-# CLI 客户端包（原 psychoscope/minimal.py 拆分而来）的运行期产物
-/apps/dsn/CLI/logs/*
-/apps/dsn/CLI/temp/*
-/apps/dsn/CLI/.dsn_client.json
-
-# ── DSN 学习特化应用 (apps/dsn_study/) 运行时目录与用户内容 ──
-/apps/dsn_study/website/*
-/apps/dsn_study/logs/*
-/apps/dsn_study/.dsn/*
-/apps/dsn_study/temp/*
-/apps/dsn_study/skills/claw_skills/*
-/apps/dsn_study/skills/builtin/ncm_music/music/*
-/apps/dsn_study/character_cards/*
-/apps/dsn_study/character_cards/materials/*
-/apps/dsn_study/character_cards/backups/*
-/apps/dsn_study/psychoscope/logs/*
-/apps/dsn_study/psychoscope/temp/*
-/apps/dsn_study/psychoscope/.dsn_client.json
-/apps/dsn_study/.env
-/apps/dsn_study/.env.*
-/apps/dsn_study/*.db
-/apps/dsn_study/*.key
-/apps/dsn_study/*.enc
-/apps/dsn_study/reports/*
+# docs/ is tracked: the architecture and maintenance documents are the most
+# valuable knowledge asset in this repository. keep them committed.
 
 /.reasonix/
 /.zcode/
@@ -98,7 +54,7 @@ apps/dsn/model_profiles/onboarding_*.yaml
 # ── pi 编程代理的本地状态（任务日志、会话缓存；不属于项目源码）──
 /.pi/
 
-# ── 前端构建与源码（dsn_ui 只跟踪构建产物 static/，忽略 frontend/ 源码与缓存）──
+# ── frontend build and sources; only the built static/ directory is tracked ──
 apps/dsn_ui/frontend/
 node_modules/
 */node_modules/
@@ -111,17 +67,9 @@ debug-storybook.log
 
 *character_cards*
 
-# ── dsn_study 人格卡片（2026-11-11 重构）──
-# 卡片本身**进版本库**（persona/cards/*.yaml），
-# 但蒸馏产物与备份是**派生物**，不入库。
-apps/dsn_study/persona/cards/*.distilled.json
-apps/dsn_study/persona/cards/backups/
-apps/dsn_study/persona/cards/_legacy/
 apps/dsn_ui/logs
 apps/dsn_ui/data
-# ── 测试副作用产物（2026-10）──
-# tests/ 里把 MagicMock 当 settings.data_dir 用时会生成这种目录；
-# 源头已在 apps/dsn_ui/thought_cache.py 加了类型守卫，这里再兜一层。
+# test side effects: a MagicMock used as settings.data_dir creates this tree.
 MagicMock/
 .harness_todo.json
 
@@ -132,10 +80,10 @@ MagicMock/
 # runtime session databases (the engine sqlite store)
 **/sessions/
 
-# dsn_existence 应用与它的测试留在本机（见 .git/local-only-policy.txt）
-tests/test_dsn_existence*
-apps/dsn_existence/**
 local/**
+
+# application checkouts and build output never belong in this repository
+/apps/
 
 # 构建产物（发布时临时生成，不入库）
 dist/

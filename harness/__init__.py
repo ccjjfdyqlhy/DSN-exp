@@ -1,8 +1,9 @@
 # harness/__init__.py
 # AICF（Agent Infrastructure Cybernetics Framework）—— Agent 核心层
 #
-# 场景无关的 Agent 核心。harness 只关心"消息进、输出流/事件出"，
-# 不关心语音、人格、提醒等具体应用语义 —— 这些由 apps/ 下的 AppBundle 提供。
+# Scenario-agnostic agent core. harness only handles messages in and
+# events/stream out. Product semantics such as voice, personality or reminders
+# belong to the application layer.
 #
 # 分层: AICF 的基础设施与运行时管理位于 infra/，Agent 核心位于 harness/。
 # 本包保留的 Agent 核心模块:
@@ -73,7 +74,7 @@ from .todo import TodoItem, TodoPlan, TodoStore, default_todo_path
 from .sdk import Agent, create_agent, tool
 from .agent.team import Team
 
-__version__ = "1.0.0"
+__version__ = "0.6.2"
 
 __all__ = [
     "Runtime",

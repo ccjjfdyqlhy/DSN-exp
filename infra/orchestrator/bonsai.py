@@ -12,15 +12,16 @@
 #         Ternary-Bonsai-2-27B-PQ2_0.gguf          ← 主模型（ternary 27B）
 #         Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf    ← 视觉投影器（图像输入）
 #
-# 为什么要上提到 infra
-# ------------------
-# 此前这段发现逻辑只存在于 apps/dsn_ui/bonsai_integration.py，但**两个应用
-# 都要用**它：
-#   * dsn_ui  —— 把 Bonsai 注册成可调度的本地模型（多轮对话 / 图片输入）；
-#   * dsn_study —— 把同一个 llama-server 挂进资源池，作为**入库 OCR 的 VLM**，
-#                  按需拉起、空闲回收。
-# 两边各写一份必然分叉（这正是本仓库反复出现的问题类型），因此唯一实现在
-# 这里，apps/dsn_ui/bonsai_integration.py 改为薄封装转发。
+# Why this lives in infra
+# -----------------------
+# The discovery logic used to live in one application integration module, but
+# another product needed the same implementation:
+#   * one product registers Bonsai as a schedulable local model for chat and
+#     image input;
+#   * another mounts the same llama-server in the resource pool as an OCR VLM,
+#     starting it on demand and reclaiming it when idle.
+# Two copies always drift, so the only implementation is here and the
+# application integration module is a thin forwarding wrapper.
 #
 # 发现规则
 # --------

@@ -24,7 +24,7 @@ pip install aicf-core
 ```
 
 装完就是整个库——Agent 内核 + 模型/工具/运行时层。
-**不含任何应用代码和界面**：产品都在各自的仓库里（见下表）。
+**不含任何应用代码和界面**：Web 控制台在独立的仓库里（见下表）。
 
 可选 extra，用到哪块再装哪块：
 
@@ -117,18 +117,14 @@ infra/     基础设施      模型路由 · 资源池 · 存储 · 网关 · �
 ```
 
 ```
-apps/  →  已拆走。产品现在各自独立成仓：
+apps/  →  已拆走。Web 控制台现在独立成仓：
 ```
 
 | 仓库 | 是什么 |
 |---|---|
 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | Web 控制台——模型、对话、资源、System-1 决策 |
-| [`aicf-dsn`](https://github.com/ccjjfdyqlhy/aicf-dsn) | 语音伴侣——实时音频、情绪、话题记忆 |
-| [`aicf-study`](https://github.com/ccjjfdyqlhy/aicf-study) | 学习助手——题库、模拟考试、知识图谱 |
-| [`aicf-code`](https://github.com/ccjjfdyqlhy/aicf-code) | 终端编码助手——最小但完整的范例 |
-| [`DSN-legacy`](https://github.com/ccjjfdyqlhy/DSN-legacy) | 旧 monorepo 的归档快照 |
 
-它们每一个都只依赖 `aicf-core`，没有第二个内部依赖。
+它只依赖 `aicf-core`，没有第二个内部依赖。
 
 ---
 

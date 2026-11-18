@@ -254,7 +254,7 @@ class OpenAICompatChat(ChatClientAdapter):
         严格的 Jinja chat template（Bonsai、部分 Qwen/Llama 官方模板、Strata 的
         Qwen3.8 模板）会直接报错 "System message must be at the beginning."，
         导致上游 500。而应用层出于模块化，可能按段追加多条 system
-        （DSN 的记忆注入即如此）。
+        （记忆注入即如此）。
 
         这里做最后一道归一化，语义等价（系统内容都是前缀上下文）：
           * 开头的连续 system 合并为一条；

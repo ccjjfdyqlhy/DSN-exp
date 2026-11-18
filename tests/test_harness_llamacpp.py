@@ -7,6 +7,7 @@ import asyncio
 import os
 import signal
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,7 +75,7 @@ def test_lora_flags_are_optional_and_correct():
     cfg = LlamaServerConfig(model_path="/tmp/model.gguf", lora_path="~/adapter")
     cmd = cfg.build_command()
     assert "--lora" in cmd
-    assert "/home/darkstar/adapter" in cmd      # ~ 被展开
+    assert str(Path("~/adapter").expanduser()) in cmd
     assert "--lora-init-without-apply" not in cmd
 
     cfg2 = LlamaServerConfig(

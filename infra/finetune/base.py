@@ -2,15 +2,16 @@
 # infra/finetune/base.py
 # 训练子系统的基础契约：作业状态、训练参数、产物描述。
 #
-# 这个文件是「本地应用」与「GitHub 上的框架层」之间的唯一契约：
-# 本地实验应用（apps/dsn_bonsai 等）只允许通过这里的类型与 infra.finetune 的
-# 公开函数提交训练、查询状态、取回产物——不允许直接 import 训练后端。
+# This file is the only contract between an application and the training layer:
+# an application submits jobs, queries state and collects artifacts through these
+# types and the public infra.finetune functions. It never imports a training
+# backend.
 #
-# 为什么要独立成契约：
-#   1. 应用层不碰 torch：DSN 主进程保持零 torch 依赖（见 apps/dsn/models/asr_engine.py:92
-#      的既有约定：只用 sys.modules.get("torch") 做防御性检查）。
-#   2. 训练参数与后端解耦：换后端（peft / llama.cpp / unsloth）不改调用方。
-#   3. 状态机集中：候选→评测→晋级→回滚的生命周期只有一处定义。
+# Why the boundary:
+#   1. The application process never imports torch.
+#   2. Training parameters are independent of the backend (peft, llama.cpp,
+#      unsloth), so switching backends does not change callers.
+#   3. One state machine defines candidate, evaluation, promotion and rollback.
 #
 # 生命周期（候选态 → 终态）：
 #   QUEUED → RUNNING → SUCCEEDED

@@ -1,7 +1,7 @@
 # harness/ —— Agent 核心层
 
 > 读者：要修改 Agent 行为（循环、工具、上下文、管线）的维护者。
-> 这一层**不认识任何业务**：它只处理“消息进、事件出”。业务语义属于 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code）。
+> 这一层**不认识任何业务**：它只处理“消息进、事件出”。业务语义属于 `aicf-ui` 仓。
 
 ---
 
@@ -45,9 +45,8 @@ print(agent.chat("计算 123 + 456"))
 | `run_stream(messages)` | 异步流式，产 `StreamEvent` | 是 | 是 |
 | `run_rounds(round_runner, state)` | **通用骨架**，由应用提供每轮策略 | 否 | **否** |
 
-> `run_rounds` 是超集能力：DSN 应用的引擎用它来驱动自己的轮次策略
-> （见 `aicf-dsn 仓的 aicf_dsn/plugins/pipeline.py` 的 `_dsn_agent_round`）。它只负责
-> 步数迭代与 `on_progress` 生命周期，每轮做什么完全由调用方决定。
+> `run_rounds` 是通用骨架：它只负责步数迭代与 `on_progress` 生命周期，
+> 每轮做什么完全由调用方决定。
 
 ### 2.2 原生路径的控制流
 
@@ -283,23 +282,25 @@ await manager.load_tools(registry)
 ### 6.1 8 个 HookPoint（`base.py:18`）
 
 ```
-INBOUND       入站处理 / 过滤（可短路）
-PRE_FILTER    ASR 输入过滤（可短路）        ← dsn 兼容
-PREPARE       上下文组装 / system prompt    ← harness 原生
-PRE_PROCESS   dsn 兼容名（PRE_FILTER → 组装 prompt → 本阶段）
-MODEL_INVOKE  模型调用
-POST_PROCESS  后处理 / 工具执行 / 记忆更新
-POST_TTS      TTS 合成                     ← dsn 兼容
-OUTPUT        输出渲染 / 投递
+INBOUND       inbound handling and filtering (may short-circuit)
+PRE_FILTER    input filtering (may short-circuit)
+PREPARE       context assembly and system prompt
+PRE_PROCESS   compatibility stage after prompt assembly
+MODEL_INVOKE  model call
+POST_PROCESS  post-processing, tools, memory update
+POST_TTS      speech synthesis
+OUTPUT        render and deliver
 ```
 
-> `PREPARE` 与 `PRE_PROCESS` 语义相近但**故意保留为两个成员**：harness 侧用
-> `PREPARE` 自己组装上下文，dsn 侧用 `PRE_PROCESS`。两套应用各用各的名字，互不串扰。
+> `PREPARE` and `PRE_PROCESS` look similar but stay separate on purpose:
+> `PREPARE` owns context assembly, while `PRE_PROCESS` keeps the compatibility
+> stage name. Each caller uses its own, so they do not interfere.
 
 ### 6.2 插件调度语义
 
 `PluginManager` 按 **`priority` 升序**调度（**值小者先执行**）。
-这是从 dsn 沿用下来的约定，harness 最初是降序、已对齐——**改排序前请确认没有应用依赖它**。
+this ordering is inherited and every existing plugin matches it. confirm no
+caller depends on the current order before changing it.
 
 `dispatch` / `dispatch_except` / `dispatch_only` 支持按名字过滤。
 
@@ -319,7 +320,7 @@ OUTPUT        输出渲染 / 投递
 
 | 模块 | 说明 |
 |---|---|
-| `memory/` | `MemoryStore` 契约 + `InMemoryStore` + `VectorIndex`（余弦检索）。DSN 的真实记忆系统在 `aicf-dsn 仓的 aicf_dsn/memory/`，这里只是抽象 |
+| `memory/` | `MemoryStore` 契约 + `InMemoryStore` + `VectorIndex`（余弦检索）。应用层可以实现并注入自己的存储。 |
 | `personality/` | PEV3：50 维特质向量、贝叶斯演化、动态快照、证据累积、角色卡。**这是本仓库最完整的子系统之一** |
 | `prompts/` | `PromptEngine` + `PromptFragment`，支持模块化提示词与预设 |
 | `skills/` | `SkillLoader`：从目录加载技能定义并注册为工具 |
@@ -396,7 +397,7 @@ agent 轨迹 ──▶ harness/learning/dataset_builder ──▶ JSONL
 
 ## 九、改这一层时的检查清单
 
-- [ ] 新能力是否**场景无关**？如果出现了“语音/学习/提醒”字样，它应该去 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code）。
+- [ ] 新能力是否**场景无关**？如果出现了产品概念，它应该去 `aicf-ui` 仓。
 - [ ] 是否破坏 `IChatClient` 契约？`stream()` 只能 yield `str` 或约定 dict。
 - [ ] 是否新增了全局状态？优先走 `Runtime` 或显式参数注入。
 - [ ] 工具改动是否同时更新了 schema 与执行逻辑？（两者分离，容易只改一半）

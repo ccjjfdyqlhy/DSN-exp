@@ -211,7 +211,7 @@ with pool.acquire("tts") as lease:
 
 ### gateway
 
-`IGateway` 协议 + `FlaskGateway` 适配器。dsn_study 用它挂载 Blueprint。
+`IGateway` 协议 + `FlaskGateway` 适配器。应用可以用它挂载 Blueprint。
 
 ### observability
 
@@ -228,17 +228,13 @@ with pool.acquire("tts") as lease:
 
 ### 5.1 边界：主进程永远不 import torch
 
-仓库里 `infra/` `harness/` 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） **零 `import torch`**（唯一例外是
-`aicf-dsn 仓的 aicf_dsn/models/asr_engine.py:92` 用 `sys.modules.get("torch")` 做防御性检查）。
-训练因此跑在**独立解释器 + 独立脚本**里：
+neither `infra/` nor `harness/` imports torch. training therefore runs in a
+separate interpreter with its own environment:
 
-```
-DSN 主进程                    训练解释器（dsn-train 环境）
-------------                  -------------------------
-infra/finetune/runner.py  --写 spec.json-->  infra/finetune/train_sft.py
-        |                                     （零仓库依赖，只 import torch/…）
-        <--读 result.json / train.log---------
-```
+- `infra/finetune/runner.py` writes `spec.json`;
+- a training interpreter runs `infra/finetune/train_sft.py`, which imports torch
+  and none of this repository;
+- the runner reads `result.json` and `train.log` back.
 
 `infra/finetune/probe.py` 是**独立脚本**（不 import 仓库任何模块），
 由 `infra/finetune/env.py` 用子进程调用来体检环境，主进程只拿到 JSON。
@@ -266,8 +262,8 @@ from infra.finetune import FinetuneManager, TrainSpec
 mgr = FinetuneManager()
 job = mgr.submit(TrainSpec(
     base_model="Qwen/Qwen3-4B",       # HF 权重，不能是 GGUF
-    dataset_path="~/dsn-finetune/data/train.jsonl",
-    output_dir="~/dsn-finetune/out/j1",
+    dataset_path="~/aicf-finetune/data/train.jsonl",
+    output_dir="~/aicf-finetune/out/j1",
     method="qlora",                    # 单卡 11GB 的现实选择
 ))
 mgr.status(job.id); mgr.list_jobs()

@@ -21,10 +21,10 @@ _DEFAULT_CHARACTER_CARD_ID = "exa"
 
 
 def _default_cards_dir() -> Path:
-    """角色卡目录查找：环境变量 > 本包同级 > 仓库根。
+    """Find the card directory: environment variable, package sibling, repo root.
 
-    与 ``harness/personality/__init__.py`` 的查找规则保持一致，
-    且不再依赖 ``apps/dsn/...``——core 拆分后已无 apps 目录。
+    The order matches ``harness/personality/__init__.py``. No application path
+    is involved, so core works as a standalone install.
     """
     env = os.environ.get("AICF_CHARACTER_CARDS_DIR")
     if env:

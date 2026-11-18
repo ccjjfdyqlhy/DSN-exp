@@ -210,12 +210,13 @@ def _is_image_data_url(value: str) -> bool:
 
 
 class AgentLoop:
-    """执行 模型 → 工具 → 回喂 的循环，直到模型给出最终答复或达到步数上限。
+    """Run the model -> tools -> feed-back loop until an answer or a step limit.
 
-    run_async / run  : 原生路径（模型返回工具调用 → 经 ToolRegistry 执行 → 回喂）。
-    run_rounds       : 通用循环骨架（超集）——由应用提供每轮策略 round_runner，
-                       骨架负责步数迭代 / 上限 / on_progress 生命周期。
-                       DSN 引擎的 Agent 循环即以此方式驱动（见 apps.dsn.plugins.pipeline）。
+    run_async / run  : native path (model returns tool calls, ToolRegistry runs
+                       them, the results go back to the model).
+    run_rounds       : generic loop skeleton. the caller supplies a per-round
+                       strategy; the skeleton owns step iteration, limits and the
+                       on_progress lifecycle.
     """
 
     def __init__(

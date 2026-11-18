@@ -606,7 +606,7 @@ class ModelOrchestrator:
           * "anthropic" Anthropic Messages（/v1/messages）
 
         tool_choice / send_tool_choice:
-          有工具时随请求体发送 path["tool_choice"]（默认 "auto"，对齐 apps/dsn）。
+          有工具时随请求体发送 path["tool_choice"]（默认 "auto"）。
           个别网关不认该字段，可用 send_tool_choice=False 关闭。
         """
         target_name = remote_model_name or name

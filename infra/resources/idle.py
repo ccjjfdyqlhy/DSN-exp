@@ -77,7 +77,7 @@ class IdleReaper:
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
-                name="dsn-idle-reaper",
+                name="aicf-idle-reaper",
                 daemon=True,   # 守护线程：主进程退出时随之退出，不阻塞退出
             )
             self._thread.start()

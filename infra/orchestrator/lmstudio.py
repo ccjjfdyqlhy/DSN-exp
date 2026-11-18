@@ -1,7 +1,7 @@
 # infra/models/lmstudio.py
 # LMStudioChat — 本地 LMStudio（OpenAI 兼容 /v1/chat/completions）客户端。
 #
-# 从 DSN 应用的 LMStudioChat 广义化移植：
+# Generalized from the earlier application client:
 #   - 实现 IChatClient 契约（invoke/stream），原生 JSON tool call
 #   - 流式：SSE 逐 token（文本增量 yield str；工具调用增量 yield dict）
 #   - 模型加载管理：无模型错误自动加载重试；可选接入 ModelScheduler

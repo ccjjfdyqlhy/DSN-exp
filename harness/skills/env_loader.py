@@ -1,16 +1,15 @@
 # harness/skills/env_loader.py
-# 技能私有配置文件（skill.env）加载 —— 下沉到 harness，供各应用共用。
+# load per-skill configuration files (skill.env). shared by every application.
 #
-# 改造前的问题（2026-11）：
-#   apps/dsn_study/config.py 里有 Config.load_skill_configs()，会扫
-#   skills/{builtin,custom}/*/skill.env 并把键值塞到 Config 类属性上 ——
-#   但**从来没有被调用过**（只有 apps/dsn/boot.py 调了同名方法）。
-#   于是"给技能配个自己的环境变量"这件事在 dsn_study 上是静默失效的：
-#   写了 skill.env，技能里 os.environ.get() 永远拿到 None。
+# The old behavior: an application config class could scan
+# skills/{builtin,custom}/*/skill.env and copy the values onto class attributes,
+# but nothing called that path. A skill's own environment variable was therefore
+# silently missing, and os.environ.get() always returned None.
 #
-# 现在：harness 提供统一实现，两边应用都在启动时调用；
-#   * 已存在的环境变量优先于文件里的值（现场配置覆盖仓库默认值）；
-#   * 文件里的值同时挂到 Skill.env，工具可以通过注入的 skill_env 能力读取。
+# This module is the single implementation:
+#   * an existing environment variable wins over the file value;
+#   * file values are also attached to Skill.env, readable through the injected
+#     skill_env capability.
 #
 # 格式：KEY=VALUE，一行一个；# 开头为注释；值可带引号。
 
@@ -91,7 +90,7 @@ def load_skill_envs(skill_dirs: list[str], *,
         result[skill_dir.name] = values
         if apply_environ:
             for key, value in values.items():
-                # 现场环境变量优先（与 dsn 既有语义一致）
+                # an existing environment variable wins
                 if key not in os.environ:
                     os.environ[key] = value
         logger.info("skill.env: %s (%d 项)", skill_dir.name, len(values))

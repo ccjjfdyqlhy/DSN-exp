@@ -2,9 +2,9 @@
 # infra/finetune/env.py
 # 训练解释器定位与环境体检。
 #
-# 铁律：**DSN 主进程不 import torch**（仓库现状：apps/ infra/ harness/ 里零 import torch，
-# 只有 apps/dsn/models/asr_engine.py:92 用 sys.modules.get("torch") 做防御性检查）。
-# 因此体检一律通过**子进程**跑独立探针脚本完成，主进程只拿到 JSON。
+# Rule: the application process never imports torch. This repository has no
+# torch import at all. Environment checks therefore run an independent probe in
+# a subprocess, and the main process only reads JSON.
 #
 # 解释器选择顺序（第一个可用的胜出）：
 #   1. 显式参数 python=
@@ -79,7 +79,7 @@ def subprocess_env() -> dict[str, str]:
 
 
 def environment(python: Optional[str] = None, *, timeout: float = 120.0) -> dict[str, Any]:
-    """体检训练环境。**永不抛异常**——DSN 主进程必须能正常启动。
+    """Check the training environment. It never raises; the app must start.
 
     返回结构::
 

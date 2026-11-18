@@ -1,10 +1,10 @@
 # harness/skills/yaml_loader.py
 # 技能加载器 —— **YAML 声明式**技能（skill.yaml + prompts/*.md + tools/*.py）。
 #
-# 下沉说明（2026-10 消除符号链接）：这套实现原先在 apps/dsn/skills/loader.py，
-# apps/dsn_study 通过**符号链接**直接指向它 —— 改一处会静默影响另一个应用，
-# 且在 Windows / 打包场景会直接断。现下沉到 harness/skills/，
-# 两个应用各自 import 同一份实现，行为一致且无文件系统耦合。
+# This implementation used to live in one application and another application
+# reached it through a symlink. A change silently affected both, and the link
+# broke on Windows and in packaged installs. It now lives here, and every
+# application imports the same module.
 #
 # 与 harness/skills/loader.py 的区别：
 #   * loader.py        —— 基于 Python 类（Skill 子类 + 顶层函数）的发现式装载

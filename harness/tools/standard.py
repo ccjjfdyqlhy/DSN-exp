@@ -50,8 +50,8 @@ class ToolDeps:
         self.fetcher: Any = kwargs.get("fetcher")       # web 抓取器
         self.tool_registry: Any = kwargs.get("tool_registry")  # ToolRegistry（batch.run 解析 fn 用）
         self.max_output_chars: int = kwargs.get("max_output_chars", 6000)
-        # 思路模板缓存服务（apps/dsn_ui/thought_cache.py 的 ThoughtCacheService）。
-        # 未注入时 cache.recall 优雅降级为 hits: 0，不抛异常。
+        # optional thought-cache service injected by the application.
+        # when absent, cache.recall returns hits: 0 instead of raising.
         self.thought_cache: Any = kwargs.get("thought_cache")
         # 用户自己的依赖（数据库连接、缓存、租户信息…）。
         # 用户工具通过 current_deps().extra["key"] 取。

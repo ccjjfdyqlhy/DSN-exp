@@ -24,7 +24,7 @@ pip install aicf-core
 ```
 
 That is the whole library — the agent kernel and the model/tool/runtime layer.
-It has **no application code and no UI**: products live in their own repositories (see below).
+It has **no application code and no UI**: the web console lives in its own repository (see below).
 
 Optional extras, installed only when you need them:
 
@@ -118,18 +118,14 @@ infra/     Infra         model routing · resource pool · storage · gateway ·
 ```
 
 ```
-apps/  →  gone. Products now live in their own repositories:
+apps/  →  gone. The web console now lives in its own repository:
 ```
 
 | Repository | What it is |
 |---|---|
 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | Web console — models, chat, resources, System-1 decisions |
-| [`aicf-dsn`](https://github.com/ccjjfdyqlhy/aicf-dsn) | Voice companion — real-time audio, emotion, topic memory |
-| [`aicf-study`](https://github.com/ccjjfdyqlhy/aicf-study) | Study assistant — question banks, mock exams, knowledge graph |
-| [`aicf-code`](https://github.com/ccjjfdyqlhy/aicf-code) | Terminal coding agent — the smallest complete example |
-| [`DSN-legacy`](https://github.com/ccjjfdyqlhy/DSN-legacy) | Archived snapshot of the old monorepo |
 
-Every one of them depends on `aicf-core` and nothing else.
+It depends on `aicf-core` and nothing else.
 
 ---
 

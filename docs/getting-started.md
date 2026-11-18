@@ -27,7 +27,7 @@ pip install -e ".[mcp,anthropic,socks]"   # 从源码装（含 MCP / Anthropic /
 pip install -e .                            # 只要内核的话，最小依赖即可
 ```
 
-或者直接从 PyPI 装（**1.0.0 尚未发布，线上是 0.6.1**）：
+或者直接从 PyPI 装（**本仓版本是 0.6.2；发布前线上仍是 0.6.1**）：
 
 ```bash
 pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
@@ -58,7 +58,7 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 ### 1.4 确认装好了
 
 ```bash
-python3 -c "import harness; print('harness', harness.__version__)"   # 期望 1.0.0
+python3 -c "import harness; print('harness', harness.__version__)"   # 期望 0.6.2
 python3 -c "import infra; print('infra ok')"
 python3 -m pytest -q tests/                                          # 跑测试
 ```
@@ -86,14 +86,11 @@ print(agent.run("17 + 25 等于多少？").reply)
 
 ## 二、跑应用（不在本仓）
 
-四个应用各自独立成仓，装法都是 `pip install -e .`：
+the web console lives in its own repository and installs with `pip install -e .`:
 
 | 想跑什么 | 仓库 | 启动命令 | 默认端口 |
 |---|---|---|---|
-| Web 控制台（日常主入口） | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | `python -m aicf_ui.server` | 8888 |
-| 语音陪伴 | [`aicf-dsn`](https://github.com/ccjjfdyqlhy/aicf-dsn) | `python -m aicf_dsn` | 5000 |
-| 学习助手 | [`aicf-study`](https://github.com/ccjjfdyqlhy/aicf-study) | `python -m aicf_study` | 5000 |
-| 终端编码助手 | [`aicf-code`](https://github.com/ccjjfdyqlhy/aicf-code) | `python -m aicf_code` | — |
+| Web 控制台 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | `python -m aicf_ui.server` | 8888 |
 
 ```bash
 git clone https://github.com/ccjjfdyqlhy/aicf-ui.git && cd aicf-ui
@@ -109,8 +106,8 @@ python -m aicf_ui.server --host 127.0.0.1 --port 8888
 | `--port` | `8888` | `DSN_UI_PORT` |
 | `--slots` | `2` | `DSN_UI_DEFAULT_SLOTS` |
 
-> 应用侧还提供 `installer.py`（建 venv + 装依赖 + 首次运行）与 `main.py`（套件启动器，
-> 按入口模块探测装了哪些应用，没装的显示 `[未安装]` 而不是崩）。
+> the console repository also provides `installer.py`, which creates a virtual
+> environment, installs dependencies and starts the first run.
 
 ## 三、接入模型
 
@@ -122,7 +119,7 @@ python -m aicf_ui.server --host 127.0.0.1 --port 8888
 ### 3.2 接本地 llama.cpp
 
 1. 编译好 llama.cpp，确认 `llama-server` 可执行；
-2. 在 `aicf-dsn 仓的 aicf_dsn/model_profiles/` 放一个 YAML（模板见 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`）：
+2. 在 `aicf-ui` 仓的 model profile 目录放一个 YAML（模板同目录）：
 
 ```yaml
 model: my-model
@@ -139,11 +136,9 @@ llama_config:
 
 3. 重启 `dsn_ui`，模型会自动出现在列表里。
 
-> ⚠️ `aicf-dsn 仓的 aicf_dsn/model_profiles/` 是**唯一生效的** profile 目录。
-> `config.py` 注释里提到的 `DSN_UI_MODEL_PROFILES_DIR` 环境变量**并未实现**，改了不生效。
->
-> 模板在 `aicf-dsn 仓的 aicf_dsn/model_profiles.example/`，复制过去并改掉路径才会生效。
-> 用 `python installer.py --doctor        # 在 aicf-ui 仓里` 可以提前查出哪些 profile 的路径在本机不存在。
+> the console repository owns the active model profile directory and its
+> template. copy the template there and edit the paths before restarting.
+> `python installer.py --doctor` in the console repository checks for dead paths.
 
 ### 3.3 用图形界面配置（推荐新手）
 
@@ -218,8 +213,8 @@ llama_config:
    置为 `None` 继续启动（world / tracking / semantic_cache / TTS 都是这样）。
    「某功能没反应」的第一嫌疑是启动日志。
 
-2. **先确认走的哪条装配路径。** 同一个应用可能有多套初始化逻辑（`dsn` 有三套），
-   行为不一致时先确认你改的是被实际执行的那一套。
+2. **check which assembly path runs.** one product can carry more than one
+   initialization path. confirm the one that actually executes before you edit.
 
 3. **先确认配置从哪读。** 真相分散在 `.env`、各应用仓 `config.py` 的类属性、
    以及 `*.yaml` 的 `condition` 三处，可能互相覆盖。

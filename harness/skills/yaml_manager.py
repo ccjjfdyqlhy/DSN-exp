@@ -1,8 +1,8 @@
 # harness/skills/yaml_manager.py
 # 技能生命周期管理器 —— 扫描/启用/禁用/卸载/安装（配合 yaml_loader 的声明式技能）。
 #
-# 下沉说明（2026-10）：见 harness/skills/yaml_loader.py 的同名说明 ——
-# 原先住在 apps/dsn/skills/manager.py，dsn_study 用符号链接共用。
+# Moved here from an application package that another application reached
+# through a symlink. See harness/skills/yaml_loader.py for the full reason.
 #
 # 2026-11 增强（"免踩坑"）：
 #   1. 加载期做**一致性校验**（类/方法/参数/依赖），问题分级记录并可查询；
@@ -26,10 +26,9 @@ logger = logging.getLogger("SkillManager")
 class SkillRegistryPort(Protocol):
     """技能注册表契约 —— SkillManager 只依赖这几个方法。
 
-    下沉说明（2026-10）：此前这里 `from .registry import SkillRegistry` 是硬导入，
-    但 apps/dsn 与 apps/dsn_study **各自实现了** SkillRegistry（API 基本一致，
-    study 侧多两个方法）。硬导入会让 harness 无法同时服务两个应用。
-    现改为结构化协议：只要注册表提供这些方法即可接入。
+    This used to hard-import SkillRegistry, but applications kept their own
+    implementations with small differences. A structural protocol lets any
+    registry with these methods plug in.
     """
 
     def register_skill(self, skill: Skill, deps: Optional[dict] = None): ...

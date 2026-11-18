@@ -12,14 +12,14 @@
 ```
 需求：'加一个新的记忆检索策略'
    ↓ 它认识业务语义吗？
-     认识 → apps/<对应应用>/memory/
+     认识 → the application repository
    ↓ 它只是通用的检索算法吗？
      是   → harness/memory/
    ↓ 它需要新的向量模型接口吗？
      需要 → infra/orchestrator/（新增 IEmbeddingClient 实现）
 ```
 
-**判断口诀**：`infra` 管资源，`harness` 管思考，`apps` 管场景。
+**判断口诀**：`infra` 管资源，`harness` 管思考，`aicf-ui` 仓管场景。
 
 ### 1.2 确认你改的是「被执行的那一套」
 
@@ -27,11 +27,10 @@
 
 | 场景 | 并存的实现 |
 |---|---|
-| `dsn` 的启动装配 | `boot.create_application` / `DSNEngine(subapp)` / `create_engine_with_defaults` |
-| Agent 门面 | `AgentRuntime` / `AgentAssembler` / `sdk.Agent` / 各应用的 Coordinator |
-| 模型客户端 | `infra.orchestrator.*` / `aicf-dsn 仓的 aicf_dsn/models/` / `aicf-study 仓的 aicf_study/models/` |
-| 语义缓存 | `infra/cache.py`（无人用） / `aicf-dsn 仓的 aicf_dsn/semantic_cache/`（在用） |
-| 记忆 | `harness/memory/`（抽象） / `aicf-dsn 仓的 aicf_dsn/memory/`（实现） |
+| Agent 门面 | `AgentRuntime` / `AgentAssembler` / `sdk.Agent` |
+| 模型客户端 | `infra.orchestrator.*` |
+| 语义缓存 | `infra/cache.py`，框架内无真实消费者 |
+| 记忆 | `harness/memory/` 抽象，应用可注入实现 |
 
 **动手前的自检**：在你打算修改的函数上打一个断点或加一条 `logger.warning`，
 实际跑一遍，确认它真的被调用了。这能省掉大量「改完没反应」的时间。
@@ -88,7 +87,7 @@ DeepSeek reasoner 一类模型要求把思考链原样带回。丢掉会报错�
 ### 2.6 插件按 priority 升序调度
 
 `PluginManager` 是**值小者先执行**（`harness/pipeline/manager.py:132`）。
-这是从 dsn 沿用下来的约定，harness 原本是降序、已对齐。
+this ordering is inherited and the rest of the harness already matches it.
 **改成降序会静默改变十几个插件的执行顺序。**
 
 ### 2.7 上下文计划必须无副作用
@@ -120,11 +119,9 @@ loop 关闭时模型被误杀。
 | `infra/*` 的 import | 是否引入了 `harness`（逆向依赖红线） |
 | `aicf-ui 仓的 aicf_ui/server.py` | 新路由必须在 SPA catch-all **之前**注册 |
 | `aicf-ui 仓的 aicf_ui/agent.py` | `chat_stream` **和** `chat_invoke` 两份分支逻辑 |
-| `apps/dsn_ui` 前端 | 必须 `npm run build`，否则后端读的还是旧 `static/` |
-| `aicf-dsn 仓的 aicf_dsn/skills/**` | `dsn_study` 通过**符号链接**复用，必须回归两边 |
+| `aicf-ui` 前端 | 必须 `npm run build`，否则后端读的还是旧 `static/` |
 | `harness/context_assembly.py` | 改动 `plan()` 前先读 `_fold_trailing_tools` 的注释——最近对话的保底逻辑依赖 `SEG_TAIL` 语义 |
 | `infra/policy/router.py` | 改 `select()` 优先级前注意 `switch()` 会设置 `_explicitly_selected` 锁定档位 |
-| `aicf-dsn 仓的 aicf_dsn/boot.py` | `api/app.py` 的重新导出、`main.py` 的读取点（三层转发） |
 
 ---
 
@@ -134,30 +131,30 @@ loop 关闭时模型被误杀。
 # 1. 框架层测试（最快，几秒）
 python -m pytest tests/test_harness_*.py -q
 
-# 2. 全量测试（约 78 秒，仓库已内置配置，直接跑即可）
+# 2. full test suite (about 45 seconds; the repository already configures pytest)
 python -m pytest -q
 
-# 3. 语法检查
-python -m compileall -q harness infra apps
+# 3. syntax check
+python -m compileall -q harness infra tests
 ```
 
-当前基线是 **547 通过 / 0 失败 / 0 收集错误**。
+The current baseline is **601 passed, 1 skipped, 0 failed, 0 collection errors**.
+The skip needs `python-vlc`.
 
-> 因为有 `known_broken` marker，默认跑分会排除 10 个资产漂移用例。
-> 想看它们：`python -m pytest -m known_broken`。
+> The `known_broken` marker is still registered but no test uses it.
 
 ---
 ## 五、风格约定
 
 | 项 | 约定 |
 |---|---|
-| 命名 | 全仓库 snake_case（PEP 8）。例外：vendored 的 `aicf-dsn 仓的 aicf_dsn/pyncm`、外部 API 属性名 |
-| 注释语言 | **中文**。面向维护者的解释一律中文，即使代码是英文标识符 |
-| 用户可见文案 | 中文 |
-| 日志 | `logger = logging.getLogger("模块名")`，避免用 print（除 CLI 输出） |
+| 命名 | 全仓库 snake_case（PEP 8）。例外：vendored 第三方包、外部 API 属性名 |
+| 注释语言 | plain english |
+| 用户可见文案 | plain english |
+| 日志 | `logger = logging.getLogger("module")`，避免用 print（除 CLI 输出） |
 | 异常 | 只在**确实要降级**时捕获；捕获时必须记录足够的上下文 |
-| 新配置 | 优先环境变量 + `apps/<app>/config.py`，与既有惯例一致 |
-| 新文档 | 放 `docs/`，并在 README 的文档索引里登记 |
+| 新配置 | 优先环境变量 + 应用自己的 config 模块 |
+| 新文档 | 放 `docs/`，并在 `docs/README.md` 的索引里登记 |
 
 ---
 
@@ -165,7 +162,7 @@ python -m compileall -q harness infra apps
 
 ### `docs/` 已入库
 
-`docs/` 下的 17 篇文档**随仓库分发**（2026-10-20 起从 `.gitignore` 移除 `/docs/` 一行）。
+`docs/` 下的文档**随仓库分发**（2026-10-20 起从 `.gitignore` 移除 `/docs/` 一行）。
 改动文档时请一并提交——这些文档是本仓库最主要的知识载体。
 详见 [technical-debt.md](technical-debt.md#文档与仓库卫生)。
 
@@ -173,7 +170,7 @@ python -m compileall -q harness infra apps
 
 | 路径 | 说明 |
 |---|---|
-| `*.db` | 运行时数据（`DSN_usrdata.db`、`.emotion_exp.db` 等） |
+| `*.db` | 运行时数据 |
 | `.env` | 真实密钥 |
 | `logs/`、`temp/` | 日志与临时区 |
 | `MagicMock/` | 测试副作用产物，不是源码 |
@@ -197,6 +194,5 @@ find . -name '*.py' -not -path './.git/*' -not -path '*/__pycache__/*' \
 - 要给 `ModelOrchestrator` / `ModelScheduler` 的公开方法改名；
 - 要改 `AgentSpec` 的字段；
 - 要改 `HookPoint` 的成员或 `PluginManager` 的排序方向；
-- 要动 `aicf-dsn` 仓的模块级全局（`boot.py` 的 20+ 个变量）；
 - 要动 `infra` 对 `harness` 的依赖方向；
 - 要删除任何带「修复说明」注释的代码。

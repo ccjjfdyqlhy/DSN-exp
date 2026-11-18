@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicf-core"
-version = "1.0.0"
+version = "0.6.2"
 description = "AICF - Agent Infrastructure Cybernetics Framework: a scenario-agnostic agent engine (turn loop, tools, sqlite sessions, sub-agent collaboration)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = "Apache-2.0"
 authors = [{ name = "Jeffery Darkstar", email = "ccjjfdyqlhy@outlook.com" }]
 keywords = ["agent", "llm", "tools", "sessions", "subagents", "framework", "agent-harness"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -33,10 +33,11 @@ dependencies = [
 # ─────────────────────────────────────────────────────────────────────────
 # optional extras
 #
-# 1.0.0 起，core 只保留**与业务无关的机制**：模型接入、工具协议、上下文装配、
-# 记忆、事件、会话持久化、策略、鉴权、遥测。四块偏产品的能力
-# （人格 / 决策头 / 学习闭环 / 本地微调）**仍然留在 core**，但按 extra 区分，
-# 默认安装不拉任何额外依赖，用到哪块再装哪块。
+# core keeps only product-neutral mechanisms: model access, the tool protocol,
+# context assembly, memory, events, session persistence, policy, auth and
+# telemetry. Four product-oriented capabilities (personality, decision head,
+# learning loop, local finetune) stay in core but sit behind extras, so a
+# default install pulls no extra dependency.
 #
 #   pip install aicf-core                 # 内核 + 工具 + 上下文 + 会话
 #   pip install aicf-core[personality]    # + 人格动态（PEV3，角色卡/蒸馏/判官）

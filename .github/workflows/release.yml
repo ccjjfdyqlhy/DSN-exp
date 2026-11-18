@@ -1,11 +1,11 @@
-# aicf 发布流程 — 推送 v* 标签即构建、测试并发布到 PyPI。
+# release flow: pushing a v* tag builds, tests and publishes to pypi.
 #
-# 依赖 PyPI 上的可信发布（trusted publishing）：仓库页 -> Settings ->
-# Add a new pending publisher，填 owner=ccjjfdyqlhy、repository=aicf-core、
-# workflow=release.yml、environment=pypi。首次配置后无需任何 token。
+# This uses pypi trusted publishing. Configure it once on pypi:
+# owner=ccjjfdyqlhy, repository=aicf-core, workflow=release.yml,
+# environment=pypi. After that, no token is needed.
 #
-# ⚠️ 仓库已从 DSN-exp 改名为 aicf-core（2026-11-18 拆分），
-#    **PyPI 上的 publisher 配置也要把 repository 改成 aicf-core**，否则发布会 403。
+# The repository was renamed from DSN-exp to aicf-core, so the pypi publisher
+# must point at the current repository name or the upload returns 403.
 
 name: release
 
@@ -14,7 +14,12 @@ on:
     tags: ['v*']
 
 permissions:
-  id-token: write   # trusted publishing（OIDC）必需
+  contents: read
+  id-token: write   # required for trusted publishing (OIDC)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -28,7 +33,7 @@ jobs:
           python-version: '3.12'
 
       - name: install build and test tools
-        run: python -m pip install -U build twine pytest
+        run: python -m pip install -U build twine pytest pytest-asyncio
 
       - name: check the tag matches the package version
         run: |
@@ -39,14 +44,10 @@ jobs:
             exit 1
           fi
 
-      - name: install the package and run the smoke tests
+      - name: install the package and run the test suite
         run: |
           python -m pip install -e ".[mcp,anthropic,socks]"
-          # tests/test_version.py keeps pyproject, harness.__version__ and the
-          # docs in step: the tag check above only compares against pyproject.
-          python -m pytest tests/test_transcript_store.py tests/test_agent_engine.py \
-            tests/test_orchestrator_gaps.py tests/test_harness_agent.py \
-            tests/test_version.py -q
+          python -m pytest -q tests/
 
       - name: build
         run: python -m build

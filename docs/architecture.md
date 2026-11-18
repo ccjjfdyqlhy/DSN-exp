@@ -10,32 +10,22 @@
 
 ## 一、两层与唯一允许的依赖方向
 
-```
-   ┌───────────────────────────────────────────────────────────┐
-   │  应用仓（各自独立仓库）                                  │
-   │  aicf-ui · aicf-dsn · aicf-study · aicf-code              │
-   │  业务语义：做什么                                         │
-   └───────────────────┬───────────────────────────────────────┘
-                       │ pip install aicf-core / import harness.* infra.*
-   ┌───────────────────▼───────────────────────────────────────┐
-   │  harness/     Agent 逻辑：怎么想、怎么动手                │
-   │  agent · tools · pipeline · memory · SDK                  │
-   └───────────────────┬───────────────────────────────────────┘
-                       │ import infra.*
-   ┌───────────────────▼───────────────────────────────────────┐
-   │  infra/       资源：模型从哪来、状态存哪                  │
-   │  orchestrator · resources · store · policy                │
-   └───────────────────────────────────────────────────────────┘
+```text
+aicf-ui (separate repository) -> depends on aicf-core
+harness/                      -> agent logic: turn loop, tools, context, memory
+infra/                        -> resources: models, storage, gateway, policy
 ```
 
-**本仓只有下面两层**（2026-11-18 起 `apps/` 已拆到四个独立仓库）。
-**规则：箭头只能向下。** 判断新代码该放哪一层，问三个问题：
+this repository contains only the two library layers. the web console lives in
+its own repository.
 
-| 问题 | 是 → |
+**rule: dependencies point down only.** ask three questions when placing new code:
+
+| question | yes -> |
 |---|---|
-| 它认识“语音/学习/陪伴/界面”这类词吗？ | 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） |
-| 它关心“消息进、工具出、上下文预算”吗？ | `harness/` |
-| 它只管进程、HTTP、显存、磁盘、密钥吗？ | `infra/` |
+| does it know about a user interface or a product feature? | `aicf-ui` repository |
+| does it care about messages in, tools out, or a context budget? | `harness/` |
+| does it only manage processes, http, vram, disk or secrets? | `infra/` |
 
 ### 当前存在的两处违规（已知技术债）
 
@@ -51,30 +41,20 @@
 
 ## 二、一次请求怎么走完三层
 
-以「用户在 Web 控制台发一条消息」为例，这是全仓库最典型的路径：
+the typical path for one console message:
 
-```
-浏览器 POST /v1/chat/completions
-   │
-   ▼  aicf-ui 仓的 aicf_ui/server.py          路由层：解析请求、决定 api_mode
-   ▼  aicf-ui 仓的 aicf_ui/agent.py           协调层：组装上下文、选择模型、发起流式
-   │      ├─ 组装 system prompt（dsn 模式才做）
-   │      ├─ 情绪刺激 / 话题记忆（dsn 模式才做）
-   │      └─ 选择 IChatClient
-   ▼  harness/agent/loop.py          Agent 循环：invoke → 解析 tool_calls → 执行 → 回喂
-   │      ├─ harness/tools/          工具注册表与执行
-   │      └─ harness/context_assembly.py  上下文预算剪裁
-   ▼  infra/orchestrator            模型层：选端点、管插槽、发 HTTP、读 SSE
-   │      ├─ ModelOrchestrator     模型注册表与状态
-   │      ├─ ModelScheduler        显存插槽与驱逐
-   │      └─ LocalServerLauncher   必要时拉起 llama-server 子进程
-   ▼
-SSE 流回浏览器
-```
+1. the browser sends `POST /v1/chat/completions`.
+2. `aicf_ui/server.py` parses the request and picks `api_mode`.
+3. `aicf_ui/agent.py` assembles context, chooses a model and starts the stream.
+4. `harness/agent/loop.py` invokes the model, runs tool calls and feeds results back.
+5. `harness/tools/` executes tools; `harness/context_assembly.py` trims the budget.
+6. `infra/orchestrator` selects an endpoint, manages slots, sends http and reads sse.
+7. the stream returns to the browser.
 
-**关键分界**：`aicf-ui 仓的 aicf_ui/agent.py` 里的 `api_mode` 决定是否注入 DSN 那套
-提示词/情绪/记忆。`passthrough` 模式下 harness 与 infra 的行为完全不变，
-只是跳过了应用层的增强——这正是分层的价值所在。
+**The important boundary:** `api_mode` decides whether the console injects its
+product prompts and memory. In `passthrough` mode harness and infra behave
+exactly the same; only the application layer is skipped. That is the value of the
+split.
 
 ---
 
@@ -125,19 +105,13 @@ SSE 流回浏览器
 | `groupchat.py` | 群聊 | — |
 | `sdk.py` | 嵌入式 SDK | `Agent` `create_agent` `tool` |
 
-### 应用仓（aicf-ui / aicf-dsn / aicf-study / aicf-code） —— 业务与装配
+### the web console repository
 
-| 应用 | 定位 | 启动方式 |
+| product | purpose | entry point |
 |---|---|---|
-| `dsn_ui` | Web 控制台，日常主入口 | `python main.py --app dsn_ui` / `python -m aicf_ui.server` |
-| `dsn` | 语音陪伴，规模最大（58k 行），包含最多历史包袱 | `python main.py`（默认） |
-| `dsn_study` | 学习助手，**装配范式最规范** | `python main.py --app dsn_study` |
-| `coding_agent` | 编码助手，**最小可读范例**（186 行） | `python -m apps.coding_agent` |
-| `densechat` | WebUI 复刻 | `python -m apps.densechat` |
-| `emotion_exp` | 情绪状态机实验 | `python -m apps.emotion_exp` |
-| `text_agent` | 占位示例（106 行） | `python main.py --app text_agent` |
+| `aicf-ui` | web console: models, chat, resources, system-1 decisions | `python -m aicf_ui.server` |
 
-各应用细节见 [apps.md](apps.md)。
+see [apps.md](apps.md) for the repository relationship.
 
 ---
 
@@ -150,7 +124,7 @@ SSE 流回浏览器
 `infra/runtime.py` 提供进程内的服务注册表，替代到处传参或读全局。
 
 ```python
-rt = Runtime(name="dsn")
+rt = Runtime(name="my_app")
 rt.register("db", db)
 rt.register_factory("engine", lambda: create_engine(rt.get("db")))
 
@@ -172,8 +146,9 @@ runtime.start() → bundle.start(runtime)  启动后台线程、加载模型
 runtime.stop()  → bundle.stop()          释放资源（逆序）
 ```
 
-`dsn` 用 9 个 bundle 拆解自身（core/voice/companion/personal/media/vision/
-tracking/agent_api/maintenance），`dsn_study` 是单应用完整走通这条链路的典范。
+an application can split itself into several bundles (core, media, vision,
+tracking, agent api, maintenance) and let the registry install and start them in
+order. one bundle is enough for a small product.
 
 ### 3. `IChatClient`：唯一模型契约
 
@@ -233,19 +208,21 @@ class IChatClient(Protocol):
 | `local_http_session()` / `local_probe_session()` | `orchestrator/base.py:15/45` | **必须区分**：流式用前者、探针用后者；混用会误判未就绪并触发重拉 |
 | `Runtime._default_runtime` | `infra/runtime.py:32` | 全局兜底运行时，测试之间可能串味 |
 
-此外有两个“并存的调度器”需要警惕：`ResourcePool` **继承**了 `ModelScheduler`
-但**不共享**它的单例，而 `aicf-dsn 仓的 aicf_dsn/models/*.py` 又直接用 `ModelScheduler.get_instance()`。
-因此同一进程里可能同时存在两套互不可见的插槽配额。
+there are two schedulers to watch: `ResourcePool` inherits from `ModelScheduler`
+but does not share its singleton. application code that also calls
+`ModelScheduler.get_instance()` can end up with two independent slot budgets in
+one process.
 
 ---
 
 ## 六、命名与文档约定
 
-- **代码完全 snake_case**（PEP 8）。唯一例外：vendored 的 `aicf-dsn 仓的 aicf_dsn/pyncm` 与外部 API 属性名。
-- **注释即缺陷数据库**：本仓库不给 `infra/` 留 `TODO`/`FIXME`（实测全目录 0 个），
-  而是把「这里曾经出过什么 bug、为什么这么写」写成中文长注释贴在代码旁。
-  **改代码时请保留这些注释**——它们是这个项目最重要的知识载体。
-- 面向用户的字段/接口用英文；面向维护者的解释用中文。
+- code uses `snake_case` per pep 8. the only exceptions are vendored third-party
+  packages and external api attribute names.
+- comments are a defect database: `infra/` carries no `TODO` or `FIXME`. instead,
+  each non-obvious workaround records the bug that caused it and why the current
+  shape is required. preserve those comments when editing the code.
+- new comments, docstrings and user-facing strings are plain english.
 
 ---
 

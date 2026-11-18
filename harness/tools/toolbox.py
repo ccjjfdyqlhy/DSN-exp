@@ -10,7 +10,7 @@
 #                     的完整 schema。
 #
 # 与注册表解耦：通过 ToolIndexSource 协议适配任意工具注册表
-# （harness ToolRegistry / dsn SkillRegistry / 其他自定义实现）。
+# (ToolRegistry, a skill registry, or any custom implementation).
 #
 # 用法:
 #     manager = ToolboxManager(registry)          # registry 实现 ToolIndexSource
@@ -18,7 +18,7 @@
 #     real, results = manager.handle_calls(calls) # 分离 toolbox 调用并确认激活
 #
 # AgentLoop 已支持注入 toolbox（见 harness/agent/loop.py），
-# 应用层也可独立使用（如 dsn models_plugin 委托本类）。
+# the application layer may also use it on its own.
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ class ToolboxManager:
         self.max_activated = max_activated
         # schema 样式：False = 扁平 {name, description, parameters}（harness 约定，
         # client 侧自行包装）；True = OpenAI 嵌套 {"type":"function","function":{...}}
-        # （如 DSN 技能加载器输出格式）
+        # (the shape produced by skill loaders)
         self.nested = nested
         self._activated: list[str] = []
         self._cached_index: Optional[list[dict]] = None
@@ -278,8 +278,11 @@ class ToolboxManager:
         return real_calls, results
 
     def results_to_legacy(self, results: list[dict]) -> list[dict]:
-        """把引擎风格结果转为旧式结果（function/tool_call_id/data），
-        供按旧格式消费的执行器（如 dsn ToolPlugin）直接使用。"""
+        """Convert engine-style results to the older shape.
+
+        The legacy keys are ``function``, ``tool_call_id`` and ``data``. The
+        conversion keeps older executors working.
+        """
         legacy = []
         for r in results:
             legacy.append({

@@ -316,9 +316,9 @@ class PersonalityPromptGenerator:
 
 #: 无快照时的兜底串。
 #:
-#: ⚠️ 这里曾经硬编码了另一个应用的人格（"你是 EXA，一个运行在用户本地电脑上的
-#: AI 同事"），而本兜底串会被注入到**任何**应用的 system prompt 里 ——
-#: dsn_study 偶尔会把"你是 EXA"讲给用户听。
-#: 现在它只描述**行为准则**，不描述任何具体角色身份：具体身份由角色卡决定。
+#: This fallback used to hardcode one application's persona ("you are EXA..."),
+#: and it is injected into every application's system prompt, so that identity
+#: leaked into unrelated products. It now describes behavior only; the card
+#: decides the identity.
 DEFAULT_FALLBACK_PROMPT = """## 角色设定
 （角色档案暂不可用，先按下列准则表现：直接、实事求是、不编造；该给结论就给结论，步骤该展开就展开。）"""

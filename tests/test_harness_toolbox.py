@@ -55,7 +55,7 @@ def test_toolbox_disabled_exports_full_schema():
 
 
 def test_toolbox_nested_schema_style():
-    """nested=True 时输出 OpenAI 嵌套格式（DSN 技能 schema 风格）。"""
+    """nested=True emits the OpenAI nested shape used by skill schemas."""
     m = ToolboxManager(RegistryIndexSource(_registry(2)), nested=True)
     schema = m.build_schema(None)
     assert schema[0]["type"] == "function"

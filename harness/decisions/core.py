@@ -14,10 +14,9 @@ pass" into "a typed answer".
 #      which as "A", how to normalize, how to compute confidence and the
 #      expected value. That is this module.
 #
-# Writing both in one place produces code like this: the same "merge Y and N"
-# logic once in the dsn_ui decision endpoint and once in the dsn_study emotion
-# check, and the two probabilities quietly disagree. This module keeps the
-# semantics in one place and every app calls it.
+# Writing both in one place produces code like this: the same "merge yes and no"
+# logic once in one endpoint and once in another feature, until the two
+# probabilities quietly disagree. This module keeps the semantics in one place.
 #
 # ## The three decision types
 #

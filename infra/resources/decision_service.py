@@ -75,9 +75,9 @@ _state: dict[str, Any] = {"launcher": None, "model": None}
 class DecisionConfig:
     """Configuration of the decision resource.
 
-    This layer knows nothing about any application: each app (dsn_study,
-    dsn_ui) reads these values from its own settings and passes them in. That
-    keeps infra from having to know what a study system or a console is.
+    This layer knows nothing about any application: each app reads these values
+    from its own settings and passes them in. That keeps infra from having to
+    know what a product is.
     """
 
     enabled: bool = True

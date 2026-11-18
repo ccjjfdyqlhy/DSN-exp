@@ -13,17 +13,14 @@ that keep the repository coherent, and how to land a change.
 - `docs/` - the documentation you are reading
 
 this repository is **the library only**, published to pypi as
-`aicf-core`. the four products that use it live in their own
-repositories and depend on it, nothing else:
+`aicf-core`. the web console lives in its own repository and depends
+on it:
 
 - `aicf-ui` - web console
-- `aicf-dsn` - voice companion
-- `aicf-study` - study assistant
-- `aicf-code` - terminal coding agent
 
 the layering rule that matters: the core never imports an application.
 if your change needs a product concept inside `harness`, it belongs in
-that product's repository, or it needs to be designed as a generic
+the application repository, or it needs to be designed as a generic
 mechanism first.
 
 ## setup
@@ -88,7 +85,7 @@ changes under `harness/` are the sensitive ones:
   only makes sense for one scenario (coding, study, chat), it belongs in
   that app, not the core
 - every added parameter must keep the old behavior when omitted; the
-  four application repositories are the regression net
+  `aicf-ui` repository is the regression net
 - public surface additions land in the package `__init__` exports and
   need tests beside them (`tests/`)
 

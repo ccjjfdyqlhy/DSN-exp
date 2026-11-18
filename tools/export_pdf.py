@@ -17,7 +17,7 @@
   python3 tools/export_pdf.py --merge             # 额外生成合并册
   python3 tools/export_pdf.py --merge --merged-only
   python3 tools/export_pdf.py --list              # 只看会导出哪些文件
-  python3 tools/export_pdf.py --ext .py --include 'apps/*' --exclude '*test*'
+  python3 tools/export_pdf.py --ext .py --include 'harness/*' --exclude '*test*'
   python3 tools/export_pdf.py --paper letter --margin 45 --font-size 9 --no-toc
 """
 

@@ -28,11 +28,10 @@ if gate.evaluate(text).value and gate.evaluate(text).confident:
 
 | 场景 | 类型 | 落点 |
 |---|---|---|
-| 情绪读取（驱动语气与 TTS 语速） | choice | `aicf-study 仓的 aicf_study/models/decision_service.py` |
-| 危机检测（关键词预筛 + 模型确认） | yes_no | 同上 |
-| 工具路由 | choice | `harness/decisions/use_cases.py` |
-| 检索前置判断 | yes_no | 同上 |
-| 题型 / 难度分类 | choice | 同上 |
+| emotional state (drives tone and speech rate) | choice | application policy layer |
+| crisis detection (keyword prefilter, then model check) | yes_no | application policy layer |
+| tool routing | choice | `harness/decisions/use_cases.py` |
+| retrieval gate | yes_no | `harness/decisions/use_cases.py` |
 
 ---
 
@@ -97,8 +96,7 @@ infra/resources/decision_service.py  作为外周资源托管（ResourceKind.DEC
 harness/decisions/core.py         语义：请求/结果/提示词/分布解释/置信度
 harness/decisions/service.py      门面：把传输与语义接起来
 harness/decisions/use_cases.py    用例：情绪、危机、工具路由、检索闸门、分类
-aicf-ui 仓的 aicf_ui/system1_api.py        HTTP 契约（/v1/decide、/v1/decide/capabilities）
-aicf-study 仓的 aicf_study/models/decision_service.py  应用侧：状态探测 + 情绪→语气
+aicf-ui 仓的 aicf_ui/system1_api.py        HTTP contract (/v1/decide, /v1/decide/capabilities)
 ```
 
 ---
@@ -106,19 +104,14 @@ aicf-study 仓的 aicf_study/models/decision_service.py  应用侧：状态探�
 ## 五、验证
 
 ```bash
-# 单元测试（纯逻辑，不碰模型）
+# unit tests: pure logic, no model load
 python3 -m pytest tests/test_decisions_core.py \
                  tests/test_decision_use_cases.py \
-                 tests/test_decision_resource.py \
-                 tests/test_dsn_ui_system1_api.py \
-                 tests/test_dsn_study_decision.py -q
-
-# 真机闭环（会真的加载 16.5G 权重，占满双卡，约 2 分钟）
-python3 aicf-study 仓的 aicf_study/scripts/verify_decision_lifecycle.py
+                 tests/test_decision_resource.py -q
 ```
 
-真机闭环会打印：拉起耗时 → 两次真实决策的候选分布 → 情绪读数 →
-空闲回收用时与显存变化 → 再拉起。
+a live run loads the full weights and needs both cards. the console repository
+owns its end-to-end verification script.
 
 **参考读数**（本机，2×RTX 2080 Ti）：
 

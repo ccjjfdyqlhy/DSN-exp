@@ -73,7 +73,8 @@ def _rounds():
 
 async def _wait_idle(engine, timeout=5.0):
     async def poll():
-        while engine.busy() or not engine._work.empty():
+        # spawn returns before the child task runs; wait for it to start first.
+        while engine._task is None or engine.busy() or not engine._work.empty():
             await asyncio.sleep(0.01)
     await asyncio.wait_for(poll(), timeout)
 
@@ -433,6 +434,11 @@ def test_wait_agent_wakes_up_when_activity_happens():
         result = json.loads(text)
         assert result['timed_out'] is False, result
         assert 'helper' in result['updated_agents'], result
+
+        # let the child finish first: its completion is activity too
+        await _wait_idle(record.engine)
+        while record.status != 'completed':
+            await asyncio.sleep(0.01)
 
         # an idle manager times out instead of hanging
         text, _, error = await asyncio.to_thread(

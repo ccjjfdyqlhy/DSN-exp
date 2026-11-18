@@ -73,7 +73,7 @@ class OpenAICompatClient(ChatClientAdapter):
     ):
         self.model = model
         self.protocol = protocol
-        #: 携带 tools 时一并发送的 tool_choice（对齐 apps/dsn：默认 "auto"）。
+        #: tool_choice sent with tools (default "auto").
         #: 个别 provider 不认 tool_choice，可用 send_tool_choice=False 关闭。
         self._tool_choice = tool_choice
         self._send_tool_choice = send_tool_choice
@@ -126,7 +126,7 @@ class OpenAICompatClient(ChatClientAdapter):
     def _apply_tools(self, params: dict[str, Any], tools: Optional[list[dict]]) -> None:
         """把工具 schema 与 tool_choice 写进请求体（invoke / stream 共用）。
 
-        请求体形状刻意与 apps/dsn 的 OpenAIChat._call_and_append 对齐：
+        请求体形状刻意与既有 OpenAI 客户端对齐：
             params["tools"] = [{"type": "function", "function": {...}}, ...]
             params["tool_choice"] = "auto"       # 仅在有工具时携带
         工具名此时已是 wire 名（file__read），由 harness/tools.to_openai_schema 转换，
@@ -567,7 +567,7 @@ class OpenAICompatClient(ChatClientAdapter):
         self._apply_tools(params, tools)
 
         # 只透传 OpenAI 认识的标准参数。前端请求体里带着一堆 llama.cpp /
-        # DSN 专有字段（samplers / dry_* / xtc_* / thinking_budget_tokens /
+        # legacy proprietary fields (samplers / dry_* / xtc_* / thinking_budget_tokens /
         # sse_ping_interval / return_progress ...），直接塞给远端网关通常
         # 会被判为非法参数而 400 —— 这也是「本地模型正常、换远端 API 就报错」
         # 的常见诱因之一。

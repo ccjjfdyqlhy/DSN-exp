@@ -142,7 +142,7 @@ def normalize_messages(messages: Any) -> list[dict[str, Any]]:
         else:
             content = str(content)
         item: dict[str, Any] = {"role": role, "content": content}
-        # tool_calls / tool_call_id 等字段原样保留：工具调用轨迹是 DSN 的主要训练信号。
+        # keep tool_calls and tool_call_id: tool-call traces are the main signal
         for key in ("tool_calls", "tool_call_id", "name", "reasoning_content"):
             if key in msg and msg[key] is not None:
                 item[key] = msg[key]

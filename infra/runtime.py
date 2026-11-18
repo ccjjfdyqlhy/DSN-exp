@@ -7,7 +7,7 @@
 #   - 通过 current() 提供线程/异步安全的运行时访问
 #
 # 用法:
-#     rt = Runtime(name="dsn")
+#     rt = Runtime(name="my_app")
 #     rt.register("db", db)
 #     rt.register_factory("engine", lambda: create_engine(rt.get("db")))
 #

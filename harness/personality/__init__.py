@@ -44,9 +44,10 @@ def _find_default_cards_dir() -> Path:
     2. 本包同级 ``character_cards/``（开发态放在 harness/personality 下）。
     3. 仓库根 ``character_cards/``。
 
-    为什么不再硬编码 ``apps/dsn/character_cards``：
-    拆分之后 core 不再与任何应用同仓，路径必然失效；把它换成环境变量，
-    既让 core 能独立安装，也让应用能指向自己的角色卡目录。
+    Why the old hardcoded application path is gone: core no longer shares a
+    repository with an application, so that path always breaks. an environment
+    variable lets core install on its own and lets each application point at its
+    own card directory.
     """
     env = os.environ.get("AICF_CHARACTER_CARDS_DIR")
     if env:
@@ -560,10 +561,10 @@ class PersonalitySystemV3:
         与 :meth:`analyze_interaction` 的唯一区别：省掉 ``judge.classify``
         这一步 —— 语义判定由调用方给。
 
-        为什么需要它：LLM 判定要排 provider 队列，实测会把用户的下一轮主回复
-        拖到 50~100 秒；而"这一轮用户是在表扬还是在抱怨"这类信号，
-        用规则就能判得足够准（见 ``apps/dsn_study/persona/signals.py``）。
-        判定之外的每一步（动力学 / 证据 / 审计 / 落库 / 固化）完全一致。
+        Why it exists: an LLM judgement waits behind the provider queue and was
+        measured at 50 to 100 seconds for the next main reply. a rule is accurate
+        enough for signals such as praise versus complaint. every step after the
+        judgement (dynamics, evidence, audit, persistence, freeze) is identical.
 
         :param perception: 已确定的语义事件（event_type 必须在
             ``harness.personality.events.EVENT_TYPES`` 里）

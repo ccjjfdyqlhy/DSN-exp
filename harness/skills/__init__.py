@@ -7,11 +7,12 @@
 #       —— 「发现式」：按 Python 类 / 顶层函数自动发现工具。
 #          历史 API，保持原样导出（tests/test_harness_coding.py 等在用）。
 #
-#   yaml_loader / yaml_manager / registry（YAML 声明式）
-#       —— 「声明式」：skill.yaml + prompts/*.md + tools/*.py。
-#          这是 apps/dsn 与 apps/dsn_study 实际使用的技能系统。
-#          为了不与 base 的同名类冲突，这里以 Yaml* 前缀导出；
-#          应用侧仍可直接 `from harness.skills.registry import SkillRegistry`。
+#   yaml_loader / yaml_manager / registry (YAML declarative)
+#       - declarative: skill.yaml + prompts/*.md + tools/*.py.
+#         this is the system applications use in production.
+#         to avoid clashing with base classes, it is exported with a Yaml*
+#         prefix; applications may still import SkillRegistry from
+#         harness.skills.registry directly.
 #
 # 2026-11 新增（"免踩坑"）：
 #   * CapabilityRegistry —— 能力注册表，技能依赖注入的唯一来源

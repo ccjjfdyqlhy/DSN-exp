@@ -1,5 +1,5 @@
 # infra/models/failover.py
-# FailoverChat — 多端点故障转移客户端（场景无关，从 DSN 广义化移植）。
+# FailoverChat - scenario-agnostic multi-endpoint failover client.
 #
 # 问题域：同一服务有多个可互换端点（API 账号 / 镜像 / 本地+云端），
 # 调用时按给定顺序逐个尝试，端点抛错自动回退下一个；全部失败才抛出。
@@ -24,10 +24,11 @@ logger = logging.getLogger("FailoverChat")
 
 def _invoke_client(client, messages, tools, *, temperature=None, max_tokens=None,
                    timeout=None) -> ChatResponse:
-    """调用端点客户端：优先 IChatClient.invoke；否则回退 dsn 风格有状态客户端。
+    """Call one endpoint client: prefer IChatClient.invoke.
 
-    有状态客户端（OpenAIChat/LMStudioChat 风格）具备 continue_conversation 与
-    messages 属性：先把同一消息集同步到客户端再调用，实现"同状态重试"。
+    A stateful client (OpenAIChat or LMStudioChat style) has
+    ``continue_conversation`` and ``messages``. Sync the same message list into
+    the client first, so a retry reuses the same state.
     """
     if hasattr(client, "invoke"):
         return client.invoke(

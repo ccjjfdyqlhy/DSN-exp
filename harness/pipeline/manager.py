@@ -109,7 +109,7 @@ class PluginManager:
                 logger.exception("插件 %s 在钩子 %s 中抛出异常", plugin.name, hook.value)
                 continue
             elapsed = round((time.perf_counter() - t0) * 1000, 1)
-            # 与 DSN 引擎语义一致：仅当调用方已初始化计时键时才记录（管线按需开启计时）
+            # timing is opt-in: record only after the caller creates the key
             timings = ctx.extra.get("_plugin_timings")
             if timings is not None:
                 timings.setdefault(hook.value, []).append((plugin.name, elapsed))
@@ -130,8 +130,7 @@ class PluginManager:
     # ── 内部 ──
 
     def _index(self, plugin: _PluginT) -> None:
-        # 按 priority 升序插入：值越小越先执行（与 DSN 引擎调度约定一致；
-        # dsn 插件如 help=5 在 task=40 前、todo=33 在 memory=30 后）
+        # insert by ascending priority: a smaller value runs first
         for hook in plugin.hooks:
             bisect.insort(self._hook_index[hook], plugin, key=lambda p: p.priority)
 

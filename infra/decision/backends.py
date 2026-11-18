@@ -6,15 +6,14 @@
 # The same decision model belongs to different owners depending on the app:
 #
 #   * **Pool managed** (infra/resources/decision_service.py) - the peripheral
-#     resource pool owns its lifecycle: start it on demand, keep it alive
-#     while it is leased, reclaim it when it goes idle. dsn_study uses this
-#     path: a decision model is a service you use occasionally, so its VRAM
-#     has to be able to come back.
+#     resource pool owns its lifecycle: start it on demand, keep it alive while
+#     it is leased, reclaim it when it goes idle. Use this when the decision
+#     model is an occasional service and its VRAM should come back.
 #
 #   * **Orchestrator managed** (infra/orchestrator) - the model orchestrator
-#     owns its lifecycle: slots and priority eviction. dsn_ui uses this path:
-#     JEV is also the System-2 chat model there, and the user may be chatting
-#     with it, so it must not be reclaimed just because it looks idle.
+#     owns its lifecycle: slots and priority eviction. Use this when the same
+#     model also serves chat, so it must not be reclaimed just because it looks
+#     idle.
 #
 # Both look the same to the caller: a context manager that yields a
 # DecisionClient and releases the lease on exit.
