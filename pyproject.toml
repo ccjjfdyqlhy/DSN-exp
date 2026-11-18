@@ -97,6 +97,16 @@ Issues = "https://github.com/ccjjfdyqlhy/aicf-core/issues"
 [tool.setuptools.packages.find]
 include = ["harness", "harness.*", "infra", "infra.*"]
 
+[tool.setuptools.package-data]
+# 评测集随包分发：装完 aicf-core 就有 `aicf eval --dataset basic` 可用，
+# 不需要再 clone 仓库才能跑通「90 秒上手」。
+#
+# 为什么放在 harness/ 而不是仓库根的 datasets/：
+# 顶层 `datasets` 作为一个可 import 的包会污染全局命名空间，
+# 而且和 HuggingFace 的 `datasets` 同名 —— 装 aicf-core 就会和别人打架。
+# 放在 harness/ 下既是包数据，又不抢名字。
+harness = ["datasets/*.yaml"]
+
 [tool.pytest.ini_options]
 # testpaths 限定收集范围：此前在仓库根裸跑 pytest 会扫进 temp/，
 # 其中 temp/test_chatglm*.py 会在**收集期真的调用外部 LLM API**（实测 401/503）。
