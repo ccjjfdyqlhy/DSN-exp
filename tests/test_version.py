@@ -39,5 +39,9 @@ def test_the_docs_quote_the_same_version():
 
 
 def test_the_version_is_a_release_number():
-    parts = _declared().split('.')
-    assert len(parts) == 3 and all(part.isdigit() for part in parts)
+    """Three numeric parts, plus an optional pre-release suffix.
+
+    The suffix is what marks a release candidate (1.0.0rc0).
+    """
+    match = re.fullmatch(r'\d+\.\d+\.\d+(?:[a-z]+\d*)?', _declared())
+    assert match, f'{_declared()} is not a release number'

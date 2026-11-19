@@ -74,7 +74,7 @@ from .todo import TodoItem, TodoPlan, TodoStore, default_todo_path
 from .sdk import Agent, create_agent, tool
 from .agent.team import Team
 
-__version__ = "0.6.2"
+__version__ = "1.0.0rc0"
 
 __all__ = [
     "Runtime",

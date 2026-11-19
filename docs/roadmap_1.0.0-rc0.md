@@ -35,9 +35,9 @@ rc0 只有三条 DoD，全部是**可执行**的：
 | 项 | 改造前 | 现在（2026-11-18 复核） | 怎么验证 |
 |---|---|---|---|---|
 | 核心代码量 | `harness/` 20.8k 行 + `infra/` 16.6k 行 | `harness/` 26.1k 行 + `infra/` 24.1k 行 | `find harness infra -name '*.py' \| xargs wc -l` |
-| 测试基线 | 600 passed / 3 skipped | 1117 passed / 16 skipped（只算入库用例） | `pytest -q tests/` |
+| 测试基线 | 600 passed / 3 skipped | 1142 passed / 16 skipped（只算入库用例） | `pytest -q tests/` |
 | 审批 / 人在回路 | 零命中 | `harness/approval/`：协议 + broker + 会话缓存 | `grep -ri approv harness/ infra/` |
-| 沙箱 / 隔离 | 零命中 | `harness/tools/sandbox/`：路径判定 + restricted + namespaced | `grep -ri sandbox harness/ infra/` |
+| 沙箱 / 隔离 | 零命中 | `harness/tools/sandbox/`：路径判定 + restricted + namespaced；**守卫默认挂后端**，SDK 与 CLI 的默认路径都在沙箱里跑 | `grep -ri sandbox harness/ infra/` |
 | 幂等 | 零命中 | `harness/runtime_client.py` + `infra/runtime/idempotency.py`，两份实现由交叉测试钉住 | `grep -ri idempot harness/ infra/` |
 | Agent Identity | 只有用户态 `uid + scopes` | 未变，留给 rc1 | `infra/auth/base.py` |
 | Artifact / 控制面 | 零命中 | 仍无资产模型；artifact 只作为 RunVersion 的元数据被冻结 | `grep -ri artifact harness/ infra/` |
@@ -107,12 +107,19 @@ rc0 只有三条 DoD，全部是**可执行**的：
 | **T9** | R7 故障注入测试 | `tests/fault/*` | §8.2 的 7 条用例全部可自动运行 | ✅ 完成（7/7，59 条：46 条运行 + 11 条变异 + 2 条元测试） |
 | **T10** | R8 CLI | `harness/cli/*`、`pyproject.toml` | `aicf --help` 可用；run → eval → gate 跑通 | ✅ 完成 |
 | **T11** | R8 文档 | `docs/*`、`README*.md` | 每条验收标准映射到一个测试 | ✅ 完成 |
+| **T12** | 默认路径的安全接线 | `harness/tools/{guard,standard,registry,base}.py`、`harness/agent/assembler.py` | 守卫默认挂沙箱后端；`proc.run` 走沙箱；`batch.run` 走守卫；SDK 路径默认装守卫 | ✅ 完成（`test_rc0_default_path_security.py` 13 条，修复前 12 条红） |
+| **T13** | 托管运行时接入 CLI | `harness/cli/{common,runcmd,toolcmd,sessioncmd}.py` | `aicf run` / `tool exec` 落 journal；`session resume` 能算出恢复计划 | ✅ 完成（`test_rc0_cli_session.py` 5 条，修复前 4 条红） |
+| **T14** | 记忆读回 | `harness/memory/in_memory.py`、`harness/sdk.py` | `enable_memory=True` 会写入并召回，关键词检索支持中文 | ✅ 完成（`test_rc0_memory.py` 7 条） |
+| **T15** | CI 门禁补齐 | `.github/workflows/ci.yml` | contract 与 eval 两个 job；变异层进 nightly；test job 不再误收故障层 | ✅ 完成 |
 
 ### 当前测试基线
 
 ```text
-1117 passed, 16 skipped      # 入库用例全量（CI 跑的就是这个数字）
+1142 passed, 16 skipped      # 入库用例全量（CI 跑的就是这个数字）
   46 passed, 13 skipped      # 故障注入层 tests/fault/（2.1s；跳过的 13 条是变异层，默认不跑）
+  12 passed,  1 skipped      # 变异层（RUN_MUTATION=1，约 20s）
+ 223 passed                 # 契约层 + 依赖方向（CI 的 contract job）
+  66 passed                 # 评测层（CI 的 eval job）
 ```
 
 改造前的基线是 **600 passed / 3 skipped**（本地口径；只算入库用例是 **562 / 3**）。
@@ -413,7 +420,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ### 工程
 
-- [x] 既有 600 个测试全绿（改造不破坏现有用户）—— **当前 1117 passed / 16 skipped**
+- [x] 既有 600 个测试全绿（改造不破坏现有用户）—— **当前 1142 passed / 16 skipped**
 - [x] 所有新增模块可独立 import
       （`test_rc0_contracts.py`）
 - [x] `harness` 不 import `infra` 的实现（只依赖协议）
@@ -433,9 +440,37 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
       对应用例立刻变红
       （`tests/fault/mutation/`；变异层默认不跑，需显式开启）
 
+### 默认路径也要有闸门
+
+- [x] **沙箱不是声明而已** —— `proc.run` 的 ToolSpec 声明了 `sandbox="workspace"`，
+      但 handler 曾经直接跑裸 subprocess。工作区内可用、工作区外被拦，
+      且违规进审计（`test_rc0_default_path_security.py`）
+- [x] **SDK 路径也要装守卫** —— `create_agent` 装出来的 Agent 带守卫，
+      策略 / 审批 / 沙箱 / 审计 / 幂等都在默认路径上生效
+- [x] **没有旁路** —— `batch.run` 曾经直接调 handler，绕过整条链路；
+      现在内层调用也走注册表
+- [x] **CLI 落 journal** —— `aicf run` 与 `aicf tool exec` 的工具意图写进
+      托管运行时，`aicf session resume` 能算出「哪些事我可能已经做过了」
+
 ---
 
-## 十、相关文档
+## 十、rc0 仍然欠着的（诚实清单）
+
+| 欠账 | 现状 | 归期 |
+|---|---|---|
+| 不可删审计存储没接线 | 守卫发 `audit.denied` / `audit.tool_call` 事件，进 trace 与 trace 导出；`infra/observability/audit.py` 的 `AuditStore`（不可删）**没有生产调用点** | rc1 |
+| 控制面 | 没有 `infra/control/`，没有 AgentArtifact、生命周期、成本账本、BYO 纳管 | rc1 |
+| Agent 身份与委托 | `infra/auth/base.py` 只有用户态 `uid + scopes`；`spawn_agent` 不校验子 Agent 的 scope | rc1 |
+| 多执行架构 | `ExecutionKernel` 协议已定，只有 `ReactKernel` 一个实现；Workflow / Planner 未写 | rc1 |
+| 线上抽样与 Bad Case 回流 | `record_badcase` 只是存储通道，没有自动回流链路 | rc2 |
+| 故障迁移与弹性 | 只有单机语义：实例可替换、状态不丢；跨机接管未做 | rc2 |
+
+> 这张表不是 TODO 清单，是**对外承诺与代码现状的差**。
+> 面试或对外宣讲时，能主动说出这一张表，比声称「全都有」可信得多。
+
+---
+
+## 十一、相关文档
 
 | 文档 | 内容 |
 |---|---|

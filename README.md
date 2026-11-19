@@ -147,14 +147,22 @@ It depends on `aicf-core` and nothing else.
 
 ## Status
 
-`aicf-core` is at **0.6.2**. The **1.0.0-rc0** milestone is in progress and its
-definition of done is three executable claims:
+`aicf-core` is at **1.0.0rc0**. The definition of done for rc0 is three
+executable claims, and all three hold (each one is pinned to a test):
 
 1. an agent that is `kill -9`'d once still resumes and produces the right answer;
 2. every tool call was either approved or refused — with an audit trail;
 3. the run can be scored by a ≥30-case dataset and produce a four-gate report.
 
-The plan, the acceptance criteria and the status of each workstream live in
+**Those guarantees hold on the default paths.** An agent built with
+`create_agent` comes with a guard, `proc.run` executes inside a workspace
+sandbox, and both the SDK and the CLI write the tool intents into the journal
+— so after a crash the runtime can tell which side effects may already have
+happened.
+
+Next is **rc1**: the control plane (agent artifacts and their lifecycle), the
+workflow and planner kernels, and agent identity with delegation. The plan, the
+acceptance criteria and the status of each workstream live in
 [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md).
 
 ---

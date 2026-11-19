@@ -235,6 +235,19 @@ audit.delegation{from, to, scopes}
 - 环境变量 `AICF_SECURITY_MODE=strict|legacy` 控制默认模式，
   默认 `strict`（新安装）
 
+### 默认路径现在挂的是新路径
+
+`create_agent` 与 `aicf` 装出来的 Agent **默认带守卫**，
+`ToolGuard` 也**默认挂一个沙箱后端**（`RestrictedSandbox`，
+探测到强隔离后端时可以换成 `NamespacedSandbox`）。
+
+这意味着：
+
+- `proc.run` 在工作区沙箱里跑 —— 声明了 `sandbox="workspace"` 就要真的兑现；
+- 没有沙箱后端时，工具会打显著告警而不是「假装自己在沙箱里」；
+- 想退回旧行为：`AICF_SECURITY_MODE=legacy`，或把守卫摘掉
+  （`registry.detach_guard()`）。
+
 **legacy 直连路径在 1.0.0 正式版移除。** 每个版本公告会点名还在用 legacy 的地方。
 
 ---
