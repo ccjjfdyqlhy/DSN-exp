@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, AsyncGenerator, Callable, Iterator, List, Optional, Union
 
 from .agent.assembler import AgentAssembler, AgentSpec, AssembledAgent
@@ -63,12 +64,14 @@ class Agent:
         budget_config: Optional[dict] = None,
         enable_toolbox: bool = False,
         enable_memory: bool = False,
+        memory_k: int = 5,
         mcp: Optional[Union[list, dict, str]] = None,
         deps: Optional[Any] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
         self.conversation = Conversation()
+        self.memory_k = memory_k
 
         # 构建 ToolRegistry
         self.tool_registry = ToolRegistry()
@@ -137,7 +140,6 @@ class Agent:
         errors = await self._assembled.setup_mcp()
         if errors:
             # 单服务器失败不阻断 Agent（对应服务器工具不可用），只暴露状态
-            import logging
             logging.getLogger("harness.sdk").warning("MCP 预热部分失败: %s", errors)
         self._mcp_ready = True
 
@@ -177,29 +179,75 @@ class Agent:
 
     # ── 对话接口（带多轮会话记忆） ──
 
+    def _memory_store(self):
+        """The memory store the assembler created, or None.
+
+        The store lives in the runtime because that is where the port is
+        resolved from. None means the agent runs without memory.
+        """
+        try:
+            return self._assembled.runtime.get("memory")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _recall(self, message: str) -> list:
+        """Build the memory block for this turn.
+
+        Empty when the agent has no memory or nothing matches. The block
+        goes in front of the conversation so the model reads it before the
+        current request.
+        """
+        store = self._memory_store()
+        if store is None:
+            return []
+        try:
+            hits = store.search(message, k=self.memory_k)
+        except Exception as error:  # noqa: BLE001
+            logging.getLogger("harness.sdk").warning(
+                f'memory recall failed: {error}')
+            return []
+        if not hits:
+            return []
+        lines = '\n'.join(f'- {hit.text}' for hit in hits)
+        return [ChatMessage.system(f'Relevant memory:\n{lines}')]
+
+    def _remember(self, message: str, reply: str) -> None:
+        """Store the turn so the next one can recall it."""
+        store = self._memory_store()
+        if store is None:
+            return
+        try:
+            store.add_text(message, role='user')
+            store.add_text(reply, role='assistant')
+        except Exception as error:  # noqa: BLE001
+            logging.getLogger("harness.sdk").warning(
+                f'memory write failed: {error}')
+
     def chat(self, message: str) -> str:
         """同步多轮对话：追加用户输入，运行 Agent 循环，追加助手回复，返回结果文本。"""
         self._ensure_mcp_ready_sync()
         self.conversation.add(ChatMessage.user(message))
-        msgs = list(self.conversation.messages)
+        msgs = self._recall(message) + list(self.conversation.messages)
         result: AgentRunResult = self._assembled.loop.run(msgs, system_prompt=self.system_prompt_text)
         self.conversation.add(ChatMessage.assistant(result.reply))
+        self._remember(message, result.reply)
         return result.reply
 
     async def chat_async(self, message: str) -> str:
         """异步多轮对话。"""
         await self._ensure_mcp_ready()
         self.conversation.add(ChatMessage.user(message))
-        msgs = list(self.conversation.messages)
+        msgs = self._recall(message) + list(self.conversation.messages)
         result: AgentRunResult = await self._assembled.loop.run_async(msgs, system_prompt=self.system_prompt_text)
         self.conversation.add(ChatMessage.assistant(result.reply))
+        self._remember(message, result.reply)
         return result.reply
 
     async def chat_stream(self, message: str) -> AsyncGenerator[StreamEvent, None]:
         """异步流式多轮对话：yield 实时事件（round_start, delta, tool_call, tool_result, reply, done）。"""
         await self._ensure_mcp_ready()
         self.conversation.add(ChatMessage.user(message))
-        msgs = list(self.conversation.messages)
+        msgs = self._recall(message) + list(self.conversation.messages)
         final_reply = ""
         async for event in self._assembled.loop.run_stream(msgs, system_prompt=self.system_prompt_text):
             if event.kind == "done":
@@ -207,6 +255,7 @@ class Agent:
             yield event
         if final_reply:
             self.conversation.add(ChatMessage.assistant(final_reply))
+            self._remember(message, final_reply)
 
     # ── 单次任务执行（无状态） ──
 
@@ -227,7 +276,7 @@ class Agent:
 #: （temperature / timeout / max_tokens / max_retries …），因此签名不需要列全。
 _AGENT_OPTIONS = (
     "max_steps", "workspace", "router_config", "budget_config",
-    "enable_toolbox", "enable_memory", "mcp", "deps",
+    "enable_toolbox", "enable_memory", "memory_k", "mcp", "deps",
 )
 
 
@@ -282,6 +331,7 @@ def create_agent(
     budget_config = options.pop("budget_config", None)
     enable_toolbox = options.pop("enable_toolbox", False)
     enable_memory = options.pop("enable_memory", False)
+    memory_k = options.pop("memory_k", 5)
     mcp = options.pop("mcp", None)
     deps = options.pop("deps", None)
 
@@ -319,6 +369,7 @@ def create_agent(
         budget_config=budget_config,
         enable_toolbox=enable_toolbox,
         enable_memory=enable_memory,
+        memory_k=memory_k,
         mcp=mcp,
         deps=deps,
     )
