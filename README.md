@@ -147,7 +147,7 @@ It depends on `aicf-core` and nothing else.
 
 ## Status
 
-`aicf-core` is at **1.0.0rc0**. The definition of done for rc0 is three
+`aicf-core` is at **1.0.0rc2**. The definition of done for rc0 is three
 executable claims, and all three hold (each one is pinned to a test):
 
 1. an agent that is `kill -9`'d once still resumes and produces the right answer;
@@ -159,6 +159,11 @@ executable claims, and all three hold (each one is pinned to a test):
 sandbox, and both the SDK and the CLI write the tool intents into the journal
 — so after a crash the runtime can tell which side effects may already have
 happened.
+
+**rc2** adds where the state of an application lives: a generic document
+store, a state directory outside the project, and a sandbox write level that
+holds. The release note is
+[docs/releases/v1.0.0rc2.md](docs/releases/v1.0.0rc2.md).
 
 Next is **rc1**: the control plane (agent artifacts and their lifecycle), the
 workflow and planner kernels, and agent identity with delegation. The plan, the
