@@ -80,7 +80,7 @@ split.
 | `orchestrator/dynamic_router.py` | 端点可用性学习 | `DynamicRouter` `MonitorStore` |
 | `resources/` | 异构资源池（ASR/TTS/VLM） | `ResourcePool` `ResourceLease` `ResourceSpec` |
 | `policy/` | 可插拔行为策略 | `ModelRouter` `TokenMeter` `TokenBudget` `DurationPredictor` `CacheWarmer` `RetryPolicy` |
-| `store/` | 持久化 | `SqliteStore` `SessionStore` `MigrationRunner` |
+| `store/` | 持久化 | `SqliteStore` `SessionStore` `MigrationRunner` `DocumentStore` |
 | `tasks/` | 任务抽象与调度 | `Task` `TaskExecutorRegistry` `TaskScheduler` `AsyncTaskStore` |
 | `gateway/` | Web 网关适配 | `IGateway` `FlaskGateway` |
 | `auth/` | 认证 | `APIKeyManager` `SessionManager` `TOTP` `UserStore` |
@@ -190,6 +190,32 @@ class IChatClient(Protocol):
 （`content` / `tool_calls` / `usage` / `timings` / `reasoning`）。
 
 ---
+
+## 4.5 where the state lives: the document store and the no-state-in-the-project rule
+
+**The problem**: applications keep their state as json files next to the
+project they are working on (`.harness_todo.json`, `predictor.json`,
+`wires.json`). So "which project did I start the app in" decides "which
+repository grew a few files", and that repository is the one the agent is
+editing. A repository is for code; those files were never code.
+
+**Two rules**:
+
+1. **The state does not land in the project.** The engine's default moved
+   from `<cwd>/sessions/agent.db` to a user level directory (`state_dir()`
+   in `harness/paths.py`: `$AICF_HOME` or `~/.aicf`). An app that wants
+   somewhere else passes its own path. This is the default, not a forced
+   isolation.
+2. **Structured state goes into the database.** `infra/store/documents.py`
+   holds the generic **document store** (`DocumentStore`): one json
+   document, read whole and written whole, with the bytes in the
+   application's own database instead of in the project. `TodoStore(
+   backend=...)` in `harness/todo.py` and `DurationPredictor.load/save(
+   backend=...)` in `infra/policy/predictor.py` both use it.
+
+**Why it lives in infra**: the only allowed dependency direction is
+`harness -> infra`, and `infra` must not import `harness`. A generic
+interface both layers can use has to sit on the infra side.
 
 ## 五、上下文保底：最近对话永不丢失
 

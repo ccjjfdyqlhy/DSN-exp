@@ -174,6 +174,14 @@ class ShellSessions:
 
         spec = getattr(context, 'tool_spec', None)
         network = getattr(spec, 'network', None) or 'none'
+        # 工具自己声明的沙箱档位决定请求的路径口径：
+        #   readonly  工作目录只读 —— 不把它算成可写根
+        #   workspace 工作目录可写 —— 写边界由后端的可写根决定
+        #   none      没有边界 —— 工作目录照旧可写
+        # 不在这里判断，是因为「这条命令准不准写」是**声明**的事：
+        # 同一份声明在策略、审批、审计三处都读得到。
+        level = str(getattr(spec, 'sandbox', '') or '')
+        read_only = level == 'readonly'
         request = SandboxRequest(
             cmd=[command],
             workspace_id=getattr(context, 'workspace_id', '') or '',
@@ -181,10 +189,11 @@ class ShellSessions:
             env={},
             stdin=None,
             network=network,
-            readonly_paths=(),
-            writable_paths=(workdir,) if workdir else (),
+            readonly_paths=(workdir,) if (read_only and workdir) else (),
+            writable_paths=() if read_only else ((workdir,) if workdir else ()),
             cwd=workdir,
             shell=True,
+            cwd_writable=not read_only,
         )
         prepare = getattr(backend, 'prepare', None)
         if prepare is None:

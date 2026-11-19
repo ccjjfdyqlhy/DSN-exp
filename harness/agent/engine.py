@@ -32,6 +32,7 @@ from ..conversation import (
 from ..images import MARKER_RE, image_marker
 from ..tools.context import ToolContext, pop_context, push_context
 from ..tools.registry import ManagedToolRegistry
+from ..paths import state_file
 from ..transcript import (
     DbSessionStore, LAST_SESSION, SessionPayload, SessionStore, TranscriptItem,
 )
@@ -115,8 +116,10 @@ class ConversationEngine:
         self._cwd = cwd
         # persistence defaults to the sqlite route (infra.store under the
         # hood); the json store stays available and duck-types the same
+        # 默认落点**不在工作目录里**：引擎的运行时状态不该在
+        # 「agent 正在改的那个项目」里留下文件。
         self._store = store or DbSessionStore(
-            db_path=os.path.join(self._cwd or '.', 'sessions', 'agent.db'))
+            db_path=str(state_file('sessions', 'agent.db')))
         self.config = config or EngineConfig()
         self._model = model or ModelInfo()
         # sub-agent tool allowlist: None means every registered tool

@@ -192,10 +192,19 @@ class TodoStore:
             ``{"version": 1, "plans": [...]}``.  A legacy bare list of items
             (the shape the old ``project.todo`` tool wrote) is read as a
             single finished-by-hand plan instead of being discarded.
+        backend: optional document store (``infra.store.DocumentStore``).
+            When given, the plan lives **in that store** instead of in a
+            file -- which is how an app keeps its state out of the project
+            directory it is working on.  The file route stays for tools and
+            for tests that want a file they can look at.
+        key: the document key to use when a backend is given.
     """
 
-    def __init__(self, path: str | os.PathLike[str] | None = None) -> None:
+    def __init__(self, path: str | os.PathLike[str] | None = None, *,
+                 backend: Any = None, key: str = "todo.plan") -> None:
         self.path = Path(path) if path is not None else None
+        self._backend = backend
+        self._key = str(key)
         self._plans: dict[str, TodoPlan] = {}
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._lock = threading.RLock()
@@ -203,7 +212,7 @@ class TodoStore:
         self.revision = 0
         # finished plans kept in the file before the oldest are dropped
         self.max_plans = 20
-        if self.path is not None:
+        if self.path is not None or self._backend is not None:
             self.load()
 
     # ── listeners ───────────────────────────────────────────
@@ -395,7 +404,22 @@ class TodoStore:
                     "plans": [plan.to_dict() for plan in self._plans.values()]}
 
     def load(self) -> None:
-        """Read the file (silently, once) -- an unreadable file stays on disk."""
+        """Read the plan (silently, once).
+
+        The backend route comes first: an app that keeps its state in a
+        database has no file to read.  An unreadable file stays on disk.
+        """
+        if self._backend is not None:
+            try:
+                raw = self._backend.load(self._key)
+            except Exception as error:  # noqa: BLE001 - a bad store must not
+                logger.warning("todo store %s is unreadable: %s",
+                               self._key, error)
+                return
+            if not isinstance(raw, dict):
+                return
+            self._adopt(raw)
+            return
         if self.path is None or not self.path.exists():
             return
         try:
@@ -403,6 +427,10 @@ class TodoStore:
         except (OSError, ValueError) as error:
             logger.warning("todo store %s is unreadable: %s", self.path, error)
             return
+        self._adopt(raw)
+
+    def _adopt(self, raw: Any) -> None:
+        """Take a raw document as the current state."""
         with self._lock:
             self._plans.clear()
             if isinstance(raw, list):
@@ -420,11 +448,19 @@ class TodoStore:
                 self._recount(plan)
 
     def save(self) -> None:
-        if self.path is None:
-            return
         with self._lock:
             self._trim()
-            payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+            document = self.to_dict()
+        if self._backend is not None:
+            try:
+                self._backend.save(self._key, document)
+            except Exception as error:  # noqa: BLE001 - a broken store must
+                logger.warning("todo store %s could not be saved: %s",
+                               self._key, error)
+            return
+        if self.path is None:
+            return
+        payload = json.dumps(document, ensure_ascii=False, indent=2)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp = tempfile.mkstemp(dir=str(self.path.parent),
                                     prefix=f".{self.path.name}.",

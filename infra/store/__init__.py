@@ -4,5 +4,9 @@
 from .base import IStore, Migration, MigrationRunner
 from .sqlite import SqliteStore
 from .chat_store import SessionStore
+from .documents import (DocumentStore, MemoryDocumentStore,
+                        SqliteDocumentStore, document_store)
 
-__all__ = ["IStore", "Migration", "MigrationRunner", "SqliteStore", "SessionStore"]
+__all__ = ["DocumentStore", "IStore", "MemoryDocumentStore", "Migration",
+           "MigrationRunner", "SqliteDocumentStore", "SqliteStore",
+           "SessionStore", "document_store"]

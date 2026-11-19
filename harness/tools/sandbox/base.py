@@ -35,6 +35,7 @@ class SandboxRequest:
     cwd            工作目录
     shell          是否用 shell 解释命令
     max_output     输出截断阈值（字符数）
+    cwd_writable   工作目录本身是否可写（只读档为 False）
     """
 
     cmd: list[str] = field(default_factory=list)
@@ -48,6 +49,7 @@ class SandboxRequest:
     cwd: str = ''
     shell: bool = False
     max_output: int = 100_000
+    cwd_writable: bool = True
 
 
 @dataclass

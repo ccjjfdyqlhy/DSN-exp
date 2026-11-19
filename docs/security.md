@@ -166,6 +166,31 @@ class ToolSpec:
 - **网络**：档位 + 域名 allowlist；出网请求经统一出口记录
 - **进程**：子进程树清理收进沙箱内部，工具不再自己 `killpg`
 
+### the write levels (the tool's own declaration decides)
+
+A tool declares with `ToolSpec.sandbox` which boundary it needs, and the
+shell tool turns that declaration into the path rules of its request:
+
+| `spec.sandbox` | the path rules of the request |
+|---|---|
+| `readonly` | the working directory goes to `readonly_paths`, `cwd_writable=False` |
+| `workspace` | the working directory goes to `writable_paths` |
+| `none` / `isolated` | the working directory stays writable |
+
+**Why the working directory is a writable root by default**: it is the
+workspace of the turn, and a model writing into its own workspace is
+normal work, not something to block.
+
+**Why `cwd_writable` has to exist**: that convenience rule turns a
+read-only project back into a writable one, so the write boundary would
+be theatre. `PathPolicy.cwd_writable` and `SandboxRequest.cwd_writable`
+are the switch that turns it off, and the read-only level turns it off.
+
+**Where the declaration changes**: the tool's declaration changes, not
+the backend's behaviour, because the policy, the approval and the audit
+all read that one declaration. `ToolSpec` is a frozen dataclass, so a
+new level means a new spec (`dataclasses.replace`), not a field write.
+
 ---
 
 ## 六、身份与凭据

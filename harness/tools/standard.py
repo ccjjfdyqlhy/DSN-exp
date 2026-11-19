@@ -549,10 +549,27 @@ def tool_project_todo(deps: ToolDeps):
     _lock = threading.Lock()
     default_status = "pending"
 
+    def _backend():
+        """应用注入的文档存储（没有就退回文件）。
+
+        注入文档存储的理由和别处一样：``.harness_todo.json`` 落在
+        **工作区**里 —— 也就是 agent 正在改的那个项目 —— 是一份纯粹的
+        垃圾文件。应用给一份文档存储，待办就跟着应用的状态走。
+        """
+        return (deps.extra or {}).get("todo_store")
+
+    def _key() -> str:
+        return str((deps.extra or {}).get("todo_key", "todo.items"))
+
     def _path() -> Path:
         return Path(deps.workspace) / ".harness_todo.json"
 
     def load() -> list[dict]:
+        backend = _backend()
+        if backend is not None:
+            document = backend.load(_key())
+            items = (document or {}).get("items")
+            return [item for item in (items or []) if isinstance(item, dict)]
         path = _path()
         if not path.exists():
             return []
@@ -565,6 +582,10 @@ def tool_project_todo(deps: ToolDeps):
         return [item for item in items if isinstance(item, dict)]
 
     def save(items: list[dict]) -> None:
+        backend = _backend()
+        if backend is not None:
+            backend.save(_key(), {"version": 1, "items": list(items)})
+            return
         path = _path()
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp = tempfile.mkstemp(dir=str(path.parent),

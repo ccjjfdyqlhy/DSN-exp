@@ -71,11 +71,18 @@ class PathPolicy:
     readonly  允许读、**不允许写**的根
     writable  允许读写的根（工作区一般在这里）
     system_read 允许读的系统目录（解释器、动态库…），永远只读
+    cwd_writable  工作目录本身算不算可写根
+
+    ``cwd_writable`` 是「只读工作区」这件事的开关：
+    默认 True（工作目录天然可写），但只读档必须把它关掉 ——
+    否则「工作目录额外算一个可写根」这条便利规则会把只读档
+    变成可写档，写边界形同虚设。
     """
 
     readonly: tuple[str, ...] = ()
     writable: tuple[str, ...] = ()
     system_read: tuple[str, ...] = DEFAULT_SYSTEM_READ_PATHS
+    cwd_writable: bool = True
 
     # ── 派生 ───────────────────────────────────────────
     def read_roots(self, base: str = '', cwd: str = '') -> tuple[str, ...]:
@@ -97,9 +104,10 @@ class PathPolicy:
 
         cwd 额外算一个可写根：工作目录就是这一轮的工作区，
         模型往自己的工作区里写文件是正常操作，不该拦。
+        只读档（``cwd_writable=False``）不算 —— 见字段说明。
         """
         roots = [real_path(p, base) for p in self.writable]
-        if cwd:
+        if cwd and self.cwd_writable:
             roots.append(real_path(cwd, base))
         return tuple(_dedupe(roots))
 

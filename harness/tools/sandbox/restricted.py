@@ -569,8 +569,10 @@ class RestrictedSandbox:
             base = PathPolicy(system_read=system)
         readonly = tuple(base.readonly) + tuple(req.readonly_paths)
         writable = tuple(base.writable) + tuple(req.writable_paths)
+        # 工作目录是否算可写根由请求说了算（只读档要求它不可写）。
+        cwd_writable = base.cwd_writable and req.cwd_writable
         return PathPolicy(readonly=readonly, writable=writable,
-                           system_read=system)
+                           system_read=system, cwd_writable=cwd_writable)
 
     # ── 主入口 ───────────────────────────────────────────
     def prepare(self, req: SandboxRequest) -> PreparedCommand:

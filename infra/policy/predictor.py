@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 class DurationPredictor:
@@ -87,16 +87,39 @@ class DurationPredictor:
                    w3=data.get("w3", 0.0), b=data.get("b", 2.0),
                    n=data.get("n", 0), **kw)
 
-    def save(self, path: Optional[str] = None) -> None:
+    def save(self, path: Optional[str] = None, *,
+             backend: Any = None, key: str = "policy.predictor") -> None:
+        """写下预测状态。
+
+        两条路：``backend``（文档存储）优先 —— 状态进数据库，
+        不在项目目录里留 JSON；没有 backend 才写文件。
+        """
+        document = self.to_dict()
+        if backend is not None:
+            try:
+                backend.save(key, document)
+                return
+            except Exception:      # noqa: BLE001 - 存不上就退回文件
+                pass
         p = Path(path) if path else (self.state_dir / "predictor.json"
                                      if self.state_dir else None)
         if p is None:
             return
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2))
+        p.write_text(json.dumps(document, ensure_ascii=False, indent=2))
 
     @classmethod
-    def load(cls, path: Optional[str] = None, **kw) -> "DurationPredictor":
+    def load(cls, path: Optional[str] = None, *,
+             backend: Any = None, key: str = "policy.predictor",
+             **kw) -> "DurationPredictor":
+        """读回预测状态（文件或文档存储）。"""
+        if backend is not None:
+            try:
+                document = backend.load(key)
+                if isinstance(document, dict) and document:
+                    return cls.from_dict(document, **kw)
+            except Exception:      # noqa: BLE001 - 读不到就用默认值
+                pass
         if path and Path(path).exists():
             try:
                 return cls.from_dict(json.loads(Path(path).read_text()), **kw)
