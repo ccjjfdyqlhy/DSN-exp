@@ -110,6 +110,26 @@ def build_model(*, model: str = '', base_url: str = '', api_key: str = '',
     return StubChatClient(model=model or 'stub', respond=respond)
 
 
+def build_runtime(db_path: str, session_id: str):
+    """Open the managed runtime for a CLI command.
+
+    Returns (runtime, store). The caller closes the store.
+
+    The runtime is what makes a run resumable: without it the guard has
+    nowhere to write the tool intents, so a crashed run repeats its side
+    effects on the next attempt.
+    """
+    from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+    from infra.store.sqlite import SqliteStore
+
+    store = SqliteStore(db_path)
+    migrate_runtime(store)
+    port = SqliteRuntimeStore(store)
+    runtime = ManagedRuntime(port, session_id=session_id)
+    runtime.start_session(session_id=session_id)
+    return runtime, store
+
+
 def security_mode(default: str = 'strict') -> str:
     """读 AICF_SECURITY_MODE 环境变量。
 
@@ -126,6 +146,7 @@ __all__ = [
     'ToolCatalog',
     'build_model',
     'build_registry',
+    'build_runtime',
     'eprint',
     'out_json',
     'read_json',

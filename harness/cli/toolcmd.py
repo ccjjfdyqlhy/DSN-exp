@@ -14,7 +14,14 @@ import asyncio
 import json
 from typing import Any
 
-from .common import ToolCatalog, build_registry, eprint, out_json, security_mode
+from .common import (
+    ToolCatalog,
+    build_registry,
+    build_runtime,
+    eprint,
+    out_json,
+    security_mode,
+)
 
 
 def cmd_list(args: Any) -> int:
@@ -80,11 +87,15 @@ def cmd_exec(args: Any) -> int:
                   ApprovalDecision.deny(by='cli', reason='CLI 未开启 --yes')),
         timeout=args.approval_timeout)
 
+    runtime, store = build_runtime(args.db, args.name)
     guard = ToolGuard(policy=engine, approval=approval, mode=mode,
-                      identity=None)
+                      identity=None, runtime=runtime, session_id=args.name)
     registry.attach_guard(guard)
 
-    result = asyncio.run(registry.execute_async(args.name, call_args))
+    try:
+        result = asyncio.run(registry.execute_async(args.name, call_args))
+    finally:
+        store.close()
     payload = {
         'tool': args.name,
         'success': result.success,

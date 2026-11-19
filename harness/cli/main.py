@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument('--run-id', default='', help='运行 id')
     run.add_argument('--session-id', default='', help='会话 id')
     run.add_argument('--case-id', default='', help='关联的评测 case id')
+    run.add_argument('--db', default='aicf.db', help='运行时数据库')
     run.add_argument('--json', action='store_true', help='输出 JSON')
 
     # ── eval ─────────────────────────────────────────────
@@ -89,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help='自动批准需要审批的调用')
     tool_exec.add_argument('--approval-timeout', type=float, default=30.0)
     tool_exec.add_argument('--include', action='append', default=[])
+    tool_exec.add_argument('--db', default='aicf.db', help='运行时数据库')
     tool_exec.add_argument('--json', action='store_true')
 
     # ── session ──────────────────────────────────────────

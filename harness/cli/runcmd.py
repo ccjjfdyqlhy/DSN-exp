@@ -15,9 +15,8 @@ from typing import Any
 
 from harness.kernel import KernelContext, ReactKernel
 from harness.kernel.capability import CapabilitySet
-from harness.runtime_client import NullRuntimeClient
 
-from .common import build_model, build_registry, eprint, out_json
+from .common import build_model, build_registry, build_runtime, eprint, out_json
 
 
 def cmd_run(args: Any) -> int:
@@ -52,8 +51,9 @@ def cmd_run(args: Any) -> int:
         resolver=(lambda req: ApprovalDecision.approve(by='cli', reason='--yes')
                   if args.yes else
                   ApprovalDecision.deny(by='cli', reason='CLI 未开启 --yes')))
+    runtime, store = build_runtime(args.db, session_id)
     guard = ToolGuard(policy=engine, approval=approval, telemetry=collector,
-                      session_id=session_id, turn_id=run_id)
+                      runtime=runtime, session_id=session_id, turn_id=run_id)
     registry.attach_guard(guard)
 
     from infra.orchestrator.base import ChatMessage
@@ -65,13 +65,20 @@ def cmd_run(args: Any) -> int:
         tools=registry,
         model=model,
         telemetry=collector,
-        runtime=NullRuntimeClient(),
+        runtime=runtime,
         caps=CapabilitySet(),
         max_steps=args.max_steps,
     )
     started = time.time()
-    result = asyncio.run(kernel.run(ctx))
-    duration_ms = (time.time() - started) * 1000
+    try:
+        runtime.start_turn(turn_id=run_id, input={'text': args.input})
+        result = asyncio.run(kernel.run(ctx))
+        runtime.finish_turn(status=('succeeded' if result.status == 'done'
+                                     else 'failed'),
+                             stop_reason=result.stop_reason)
+    finally:
+        duration_ms = (time.time() - started) * 1000
+        store.close()
 
     trace = {
         'trace_id': run_id,

@@ -54,24 +54,24 @@ def cmd_list(args: Any) -> int:
 def cmd_resume(args: Any) -> int:
     store = _open_store(args.db)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from infra.runtime import SqliteRuntimeStore, recover
         runtime_store = SqliteRuntimeStore(store)
-        plan = runtime_store.recovery_plan(args.session_id)
+        # recover() is a pure read: looking at the recovery state must not
+        # write anything into the journal.
+        plan = recover(runtime_store, args.session_id)
     except Exception as error:  # noqa: BLE001
         eprint(f'恢复失败: {error}')
         return 2
     finally:
         store.close()
 
-    payload = plan.to_dict() if hasattr(plan, 'to_dict') else {
-        'session_id': args.session_id, 'replayable': [], 'unknown': [],
-    }
+    payload = plan.summary()
     if args.json:
         out_json(payload)
         return 0
     print(f'会话 {args.session_id} 的恢复计划：')
     replayable = payload.get('replayable') or []
-    unknown = payload.get('unknown') or []
+    unknown = payload.get('unknown_outcomes') or []
     print(f'  可安全重放: {len(replayable)}')
     for item in replayable:
         print(f'    - {item.get("tool", "?")}')
