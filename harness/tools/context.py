@@ -27,6 +27,9 @@ class ToolContext:
     #: 沙箱后端。工具需要起子进程时从这里拿 —— 由 ToolGuard 注入。
     #: 没有它时工具自己起进程（legacy 行为）。
     sandbox: Any = None
+    #: 本次调用的工具契约（ToolSpec）。由 ToolGuard 注入，
+    #: 工具据此读到自己声明的副作用等级与网络档位。
+    tool_spec: Any = None
     #: 本次调用产生的**结构化违规记录**。
     #:
     #: 为什么要有这个通道：沙箱拒绝执行时，工具需要给模型一句人能读的
@@ -56,6 +59,15 @@ def current_context() -> ToolContext:
         context = ToolContext()
         _CURRENT.set(context)
     return context
+
+
+def current_sandbox() -> Any:
+    """Return the sandbox backend the guard injected for this call.
+
+    None means no backend is attached, so the tool runs with the current
+    user's permissions. Callers must treat that as a degraded path and say so.
+    """
+    return getattr(current_context(), 'sandbox', None)
 
 
 def current_deps() -> Any:

@@ -115,9 +115,11 @@ def security_mode(default: str = 'strict') -> str:
 
     strict（默认）= 策略 + 审批 + 沙箱 + 审计；
     legacy         = 直连（迁移期）。
+
+    实现放在 harness.tools.guard —— 「安全模式有几个取值」只有一个答案。
     """
-    value = (os.environ.get('AICF_SECURITY_MODE') or default).strip().lower()
-    return value if value in ('strict', 'legacy') else default
+    from ..tools.guard import default_security_mode
+    return default_security_mode(default)
 
 
 __all__ = [

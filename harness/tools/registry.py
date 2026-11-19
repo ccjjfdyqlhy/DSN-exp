@@ -9,14 +9,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from ..filediff import FileDiff, format_diff_for_model, make_file_diff, snapshot_file
-from .base import Tool, ToolRegistry, ToolResult
+from .base import Tool, ToolRegistry, ToolResult, run_sync
 from .context import resolve_path
 
 logger = logging.getLogger("harness.tools.registry")
@@ -54,22 +53,6 @@ class AnnotatedTool(Tool):
     read_only: bool = False
     vision_only: bool = False
     snapshot: bool = False
-
-
-def run_sync(coro):
-    """在同步上下文里跑一个协程。
-
-    优先用 asyncio.run；但如果当前线程已经在跑事件循环（asyncio.run 会
-    抛 RuntimeError），就另起一个线程跑 —— 同步工具入口（比如控制台的
-    ``registry.execute``）完全可能在事件循环里被调用。
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
 
 
 class ManagedToolRegistry(ToolRegistry):

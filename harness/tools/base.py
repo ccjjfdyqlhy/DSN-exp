@@ -23,6 +23,22 @@ _WIRE_SAFE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _WIRE_SEP = "__"
 
 
+def run_sync(coro):
+    """Run a coroutine from synchronous code.
+
+    asyncio.run refuses to start inside a running loop, and the sync tool
+    entry points can be called from one. The thread fallback keeps those
+    callers working instead of raising.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def to_wire_name(name: str) -> str:
     """把内部工具名转成 provider 可接受的 function 名（file.read → file__read）。"""
     if not name:
@@ -125,11 +141,17 @@ class Tool:
     spec: Optional[ToolSpec] = None
 
     def run(self, **params) -> ToolResult:
+        """Call the handler from synchronous code.
+
+        An async handler is bridged instead of refused. The synchronous entry
+        points (registry.execute, batch.run) are part of the public surface,
+        and refusing there only moves the failure to the caller.
+        """
         try:
             if inspect.iscoroutinefunction(self.handler):
-                raise TypeError(
-                    f"工具 {self.name} 的 handler 是 async 函数，请用 await run_async()")
-            result = self.handler(**params)
+                result = run_sync(self.run_async(**params))
+            else:
+                result = self.handler(**params)
         except Exception as e:  # noqa: BLE001
             return ToolResult.fail(str(e))
         return result if isinstance(result, ToolResult) else ToolResult.ok(result)

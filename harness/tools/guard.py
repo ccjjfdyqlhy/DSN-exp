@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from ..approval.events import (
 from ..policy.base import PolicyDecision
 from ..runtime_client import NullRuntimeClient, ToolIntent, UnknownOutcomeError
 from .base import Tool, ToolResult
+from .sandbox.restricted import RestrictedSandbox
 from .spec import ToolSpec
 
 logger = logging.getLogger("harness.tools.guard")
@@ -54,6 +56,16 @@ SecurityMode = str
 
 STRICT_MODE = 'strict'
 LEGACY_MODE = 'legacy'
+
+
+def default_security_mode(default: str = STRICT_MODE) -> str:
+    """Read the AICF_SECURITY_MODE environment variable.
+
+    strict (the default) = policy + approval + sandbox + audit
+    legacy                = direct calls, for the migration period only
+    """
+    value = (os.environ.get('AICF_SECURITY_MODE') or default).strip().lower()
+    return value if value in (STRICT_MODE, LEGACY_MODE) else default
 
 
 def args_digest(args: Any) -> str:
@@ -145,7 +157,10 @@ class ToolGuard:
         # 两处各判一次迟早会不一致，而且会让「改策略却没生效」很难查。
         self.policy = policy
         self.approval = approval
-        self.sandbox = sandbox
+        # A guard without a backend would run every command with the current
+        # user's permissions while the tool spec still claims a sandbox. The
+        # default keeps the declared boundary real for every guarded call.
+        self.sandbox = sandbox if sandbox is not None else RestrictedSandbox()
         self.telemetry = telemetry
         self.runtime = runtime or NullRuntimeClient()
         self.identity = identity
@@ -291,6 +306,17 @@ class ToolGuard:
                     'violation': str(violation.get('code', '')),
                     'detail': str(violation.get('detail', '')),
                 })
+            # A blocked call is not a successful call. The tool may have
+            # returned a payload that says otherwise, so the guard decides
+            # what the caller sees.
+            codes = ', '.join(str(v.get('code', '')) for v in violations)
+            result = ToolResult(
+                success=False,
+                output=result.output,
+                error=f'工具 {tool.name} 被沙箱拒绝（{codes}）',
+                status='error',
+                hint='请在允许的范围内重试，或改用其他工具。',
+            )
 
         # 7. 结果落 journal + 审计
         self.runtime.record_tool_result(key, result, effect=spec.effect)
@@ -302,7 +328,8 @@ class ToolGuard:
             'success': result.success,
             'error': result.error or '',
         })
-        self._audit_call(tool, spec, decision, duration_ms, result, approved)
+        self._audit_call(tool, spec, decision, duration_ms, result, approved,
+                          args)
         return GuardResult(result=result, decision=decision, approved=approved,
                            degraded=degraded,
                            duration_ms=duration_ms)
@@ -397,6 +424,11 @@ class ToolGuard:
         original_violations = getattr(ctx, 'violations', None)
         if self.sandbox is not None:
             setattr(ctx, 'sandbox', self.sandbox)
+        # The spec travels with the call so the tool can read its own declared
+        # network level. Without it a tool that honours the allowlist has no
+        # way to know which level was declared.
+        original_spec = getattr(ctx, 'tool_spec', None)
+        ctx.tool_spec = self.spec_for(tool)
         # violations 通道**总是**注入，不只在挂了沙箱时 ——
         # 工具可以自己发现违规（不只是沙箱会拒），审计通道不该取决于
         # 有没有配沙箱后端。
@@ -415,6 +447,7 @@ class ToolGuard:
                         pass
                 else:
                     setattr(ctx, 'sandbox', original)
+            ctx.tool_spec = original_spec
             if violations is not None:
                 if had_violations:
                     setattr(ctx, 'violations', original_violations)
@@ -466,12 +499,14 @@ class ToolGuard:
 
     def _audit_call(self, tool: Tool, spec: ToolSpec, decision: PolicyDecision,
                     duration_ms: float, result: ToolResult,
-                    approved: bool) -> None:
+                    approved: bool, args: dict[str, Any]) -> None:
         self._emit('audit.tool_call', {
             'identity': getattr(self.identity, 'uid', '') or '',
             'tool': tool.name,
             'version': spec.version,
-            'args_digest': args_digest({'__none__': True}),
+            # The digest has to describe the real arguments, otherwise the
+            # audit cannot answer whether two calls were the same request.
+            'args_digest': args_digest(args),
             'effect': spec.effect,
             'sandbox': spec.sandbox,
             'decision': 'approved' if approved else 'auto',

@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -32,7 +33,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .base import Tool, ToolRegistry, ToolResult
+from .context import current_sandbox
 from .spec import ToolSpec
+
+logger = logging.getLogger("harness.tools.standard")
 
 NL = chr(10)
 
@@ -341,28 +345,109 @@ def tool_code_locate_symbol(deps: ToolDeps):
 
 # ── 进程工具 ──
 
-def tool_proc_run(deps: ToolDeps):
-    def run(command: str, timeout: int = 30, cwd: str = ""):
-        try:
-            proc = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
-                timeout=timeout, cwd=cwd or deps.workspace,
-            )
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"命令超时（>{timeout}s）",
-                    "timed_out": True}
-        except OSError as e:
-            return {"success": False, "error": str(e)}
-        out = proc.stdout or ""
-        err = proc.stderr or ""
-        if len(out) > deps.max_output_chars:
-            out = out[:deps.max_output_chars] + f"{NL}...[输出截断]"
+def _run_proc_legacy(command: str, timeout: int, workdir: str, deps: ToolDeps):
+    """Run the command with the current user's permissions.
+
+    This is the path taken when no sandbox backend is attached. It has no
+    path boundary and no environment whitelist, so the caller warns before
+    using it.
+    """
+    try:
+        proc = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=timeout, cwd=workdir,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": f"命令超时（>{timeout}s）",
+                "timed_out": True}
+    except OSError as e:
+        return {"success": False, "error": str(e)}
+    out = proc.stdout or ""
+    err = proc.stderr or ""
+    if len(out) > deps.max_output_chars:
+        out = out[:deps.max_output_chars] + f"{NL}...[输出截断]"
+    return {
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "stdout": out,
+        "stderr": err[: min(len(err), deps.max_output_chars // 2)],
+    }
+
+
+async def _run_proc_sandboxed(backend: Any, command: str, timeout: int,
+                              workdir: str, deps: ToolDeps):
+    """Run the command through the sandbox backend.
+
+    The backend decides the boundary: it checks the paths and the network
+    target before the process starts, and reports a denial through the
+    violation channel the guard reads.
+    """
+    from .context import current_context
+    from .sandbox.base import SandboxRequest
+
+    ctx = current_context()
+    spec = getattr(ctx, 'tool_spec', None)
+    request = SandboxRequest(
+        cmd=[command],
+        workspace_id=getattr(ctx, 'workspace_id', '') or '',
+        timeout=float(timeout),
+        env={},
+        stdin=None,
+        network=getattr(spec, 'network', None) or 'none',
+        readonly_paths=(),
+        writable_paths=(workdir,) if workdir else (),
+        cwd=workdir,
+        shell=True,
+        max_output=deps.max_output_chars,
+    )
+    result = await backend.run(request)
+    if result.violation:
         return {
-            "success": proc.returncode == 0,
-            "exit_code": proc.returncode,
-            "stdout": out,
-            "stderr": err[: min(len(err), deps.max_output_chars // 2)],
+            "success": False,
+            "error": f"sandbox denied the command ({result.violation})",
+            "violation": result.violation,
+            "backend": result.backend,
+            "degraded": bool(result.degraded),
+            "stderr": result.stderr,
         }
+    out = result.stdout or ""
+    if result.truncated:
+        out += f"{NL}...[output truncated]"
+    err = result.stderr or ""
+    return {
+        "success": result.exit_code == 0,
+        "exit_code": result.exit_code,
+        "stdout": out,
+        "stderr": err[: min(len(err), deps.max_output_chars // 2)],
+        "backend": result.backend,
+        "degraded": bool(result.degraded),
+        "timed_out": bool(result.timed_out),
+    }
+
+
+def tool_proc_run(deps: ToolDeps):
+    """Run a shell command inside the sandbox the guard injected.
+
+    The backend owns the boundary. Without one the command still runs, but
+    with the current user's permissions, so the legacy path warns instead of
+    pretending it was contained.
+    """
+    legacy_warned = False
+
+    async def run(command: str, timeout: int = 30, cwd: str = ""):
+        nonlocal legacy_warned
+        workdir = cwd or deps.workspace
+        backend = current_sandbox()
+        if backend is None:
+            if not legacy_warned:
+                legacy_warned = True
+                logger.warning(
+                    'proc.run has no sandbox backend: the command runs with '
+                    'the current user permissions (no path boundary, no '
+                    'environment whitelist)')
+            return _run_proc_legacy(command, timeout, workdir, deps)
+        return await _run_proc_sandboxed(backend, command, timeout, workdir,
+                                         deps)
     return run
 
 
@@ -587,8 +672,12 @@ def tool_batch_run(deps: ToolDeps):
 
     每个 item 可以是 dict（作为 fn 的参数）或标量（转为 {"value": item}）。
     逐项收集 success/status/error/hint，聚合返回。
+
+    内层调用走注册表的 execute_async —— 也就是走守卫。
+    直接调 tool.run 会绕过策略、审批、沙箱与审计，
+    于是 batch.run(fn='proc.run') 就成了一条没有边界的旁路。
     """
-    def run(items: list, fn: str = ""):
+    async def run(items: list, fn: str = ""):
         reg = deps.tool_registry
         if not fn:
             return {"success": False, "error": "缺少 fn（要批量调用的工具名）",
@@ -604,19 +693,15 @@ def tool_batch_run(deps: ToolDeps):
         results = []
         for i, item in enumerate(items or []):
             params = item if isinstance(item, dict) else {"value": item}
-            if hasattr(tool, "run"):
-                tr = tool.run(**params)
-                results.append({
-                    "index": i,
-                    "success": tr.success,
-                    "status": tr.status,
-                    "output": tr.output,
-                    "error": tr.error,
-                    "hint": tr.hint,
-                })
-            else:
-                results.append({"index": i, "success": False,
-                                "error": "工具无 run 方法"})
+            tr = await reg.execute_async(fn, params)
+            results.append({
+                "index": i,
+                "success": tr.success,
+                "status": tr.status,
+                "output": tr.output,
+                "error": tr.error,
+                "hint": tr.hint,
+            })
         ok_count = sum(1 for r in results if r["success"])
         return {
             "success": True,
