@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 import os
 import threading
 from dataclasses import dataclass, field
@@ -43,6 +44,8 @@ class ToolContext:
     session_id: str = ''
     turn_id: str = ''
 
+
+logger = logging.getLogger(__name__)
 
 _CURRENT: contextvars.ContextVar[ToolContext | None] = contextvars.ContextVar(
     'harness_tool_context', default=None)
@@ -83,7 +86,19 @@ def push_context(context: ToolContext):
 
 
 def pop_context(token) -> None:
-    _CURRENT.reset(token)
+    """Restore the context a push replaced.
+
+    A token can only be reset in the context it was created in.  When a turn
+    is cancelled while a tool call is in flight (the session is closing while
+    an approval is pending, for instance), the cleanup can run in another
+    context -- and the old code turned that into a failed turn with a
+    "was created in a different Context" traceback.  Losing the restore is
+    harmless; failing the turn over it is not.
+    """
+    try:
+        _CURRENT.reset(token)
+    except ValueError:
+        logger.debug('tool context token belongs to another context; skipped')
 
 
 def resolve_path(path: str) -> str:
