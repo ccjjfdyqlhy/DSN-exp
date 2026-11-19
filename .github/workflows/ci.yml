@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, "harness-refactor"]
+    branches: [main, "harness-refactor", "fix/**"]
   pull_request:
   # L4 故障注入层（策划案 §8.1 / §8.2）每夜跑一次：
   # 它会真的 kill -9 / SIGKILL 子进程，不适合每次提交都跑。
@@ -36,7 +36,11 @@ jobs:
 
       - name: test
         # testpaths in pyproject.toml limits collection to tests/.
-        run: python -m pytest -q tests/
+        # The fault and mutation layers are excluded here: they belong to
+        # the nightly job below.
+        run: >-
+          python -m pytest -q tests/
+          -m "not known_broken and not fault and not mutation"
 
   build:
     runs-on: ubuntu-latest
@@ -70,4 +74,52 @@ jobs:
           pip install pytest pytest-asyncio
 
       - name: fault injection (kill -9 / duplicate delivery / corrupt checkpoint)
-        run: python -m pytest -q tests/fault/
+        run: python -m pytest -q tests/fault/ -m "not mutation"
+
+      - name: mutation guards (remove a protection, expect the test to fail)
+        # The mutation layer proves the test suite has teeth: it removes a
+        # protection and expects the matching test to turn red.
+        env:
+          RUN_MUTATION: "1"
+        run: python -m pytest -q tests/fault/mutation/
+
+  contract:
+    # L2 契约层（策划案 §8.1）：端口实现的一致性。
+    # 换沙箱后端、换 store、换 evaluator 时，这一层必须先红。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[mcp,anthropic,socks]"
+          pip install pytest pytest-asyncio
+      - name: contract and dependency direction
+        run: >-
+          python -m pytest -q
+          tests/test_rc0_contracts.py
+          tests/test_rc0_dependency_direction.py
+
+  eval:
+    # L5 评测层（策划案 §8.1）：数据集 + 评估器 + 四闸门。
+    # 这是「每次改动都能被评估」这条承诺的门禁。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[mcp,anthropic,socks]"
+          pip install pytest pytest-asyncio
+      - name: dataset, evaluator and the four gates
+        run: python -m pytest -q tests/test_rc0_eval.py
+      - name: the evaluation cli is wired
+        run: |
+          python -m harness.cli.main eval --dataset basic --help > /dev/null
+          python -m harness.cli.main gate --help > /dev/null
