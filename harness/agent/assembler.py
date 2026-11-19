@@ -27,13 +27,16 @@ from typing import Any, Optional
 
 from infra.models.base import IChatClient, IEmbeddingClient
 from infra.runtime import Runtime
-from ..tools import Tool, ToolRegistry
+from ..tools import Tool
 from ..tools.function_tool import tool_from_function
+from ..tools.guard import ToolGuard, default_security_mode
+from ..tools.registry import ManagedToolRegistry
 from ..tools.toolbox import ToolboxManager
 from ..tools.standard import ToolDeps, install_standard_tools
 from ..memory import InMemoryStore, MemoryEntry
 from ..conversation import Conversation, ConversationManager
 from infra.policy import ModelRouter, ModelConfig, TokenMeter, TokenBudget, DurationPredictor
+from infra.policy.engine import RulePolicyEngine
 from ..prompts import PromptEngine
 from .loop import AgentLoop
 
@@ -54,6 +57,10 @@ class AgentSpec:
     workspace: Optional[str] = None
     tool_deps: Optional[dict] = None         # ToolDeps 额外注入
     mcp: Optional[dict] = None               # 外部 MCP 工具源: {"servers": [...]} | {"config": "path.yaml"}
+    security_policy: Any = None              # 准入策略引擎（注入后覆盖默认策略）
+    security_approval: Any = None            # 审批代理（注入后 effectful 工具需要审批）
+    security_sandbox: Any = None             # 沙箱后端（None = 用守卫默认档）
+    security_mode: str = ""                  # strict | legacy；空 = 读环境变量
 
 
 class AssembledAgent:
@@ -161,7 +168,7 @@ class AgentAssembler:
     def assemble(self, spec: AgentSpec) -> AssembledAgent:
         # 1) 运行时
         runtime = Runtime(name=spec.name)
-        tools = ToolRegistry()
+        tools = ManagedToolRegistry()
         runtime.register("tools", tools)
 
         # 2) 标准工具集
@@ -254,7 +261,29 @@ class AgentAssembler:
             memory = InMemoryStore(self.embedding_client)
             runtime.register("memory", memory)
 
-        # 8) Agent 循环
+        # 8) 安全守卫
+        #
+        # 为什么 SDK 路径也必须挂守卫：没有它，create_agent 给模型的
+        # 是「当前用户权限 + 无审计 + 无幂等」的工具表 —— 沙箱里那句
+        # 「工具声明了 sandbox=workspace」根本没人兑现。
+        #
+        # 默认策略是「注册即授权」：应用开发者显式注册了哪些工具，
+        # 模型就能用哪些；越界的部分由沙箱收住，每次调用留下审计与幂等键。
+        # 注入 approval 代理时，effectful 工具改为需要审批 ——
+        # 没人能回答审批问题时不能把调用全堵死。
+        policy = spec.security_policy
+        if policy is None:
+            policy = RulePolicyEngine(
+                auto_approve_risk=('low' if spec.security_approval is not None
+                                   else 'high'))
+        guard = ToolGuard(policy=policy,
+                          approval=spec.security_approval,
+                          sandbox=spec.security_sandbox,
+                          mode=spec.security_mode or default_security_mode())
+        tools.attach_guard(guard)
+        runtime.register("guard", guard)
+
+        # 9) Agent 循环
         loop = AgentLoop(self.client, tools, max_steps=spec.max_steps,
                          toolbox=toolbox, deps=deps)
         runtime.register("loop", loop)
