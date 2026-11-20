@@ -8,6 +8,64 @@
 
 ---
 
+## [Unreleased]
+
+把「可度量」这根支柱从**装饰**变成**真的可判定**。
+
+### 修复
+
+- **随包数据集里的工具断言有 26 条落不到真实注册表上。**
+  `aicf/harness/datasets/basic.yaml` 写的是抽象能力名（`fs.read` / `calc.eval` /
+  `web.search` …），而框架注册的工具叫 `file.read` / `web.fetch` —— 评测集刻意
+  不绑定具体实现，但**没人把抽象名落到真实工具上**。后果不是「用例失败」，
+  而是**用例永远不可能通过**，且失败原因会被误读成「模型没调用工具」。
+
+  现在由 `aicf/infra/eval/tool_vocab.py` 的 `TOOL_NAME_ALIASES` 统一绑定：
+  `fs.read → file.read`、`fs.write → file.write`、`fs.list → file.list`、
+  `fs.stat → file.read`（框架没有 stat，知道文件多大只能读出来自己数）、
+  `fs.delete → file.edit`、`shell.exec → proc.run`、`web.search → web.fetch`、
+  `web.fetch → web.fetch`、`json.parse → text.extract_json`。
+  评测集本身一个抽象名都没改 —— 换实现时只改词表右边那一列。
+
+- **六条用例断言了当前实现里不存在的工具**，已改为断言**结果**而非工具名：
+  `sum_two_numbers` / `unit_conversion` / `date_arithmetic`（框架没有注册纯计算
+  工具）、`choose_stat_tool` / `read_then_compute`（同因）、
+  `prefer_search_over_fetch`（原本要求 `web.search` 又禁止 `web.fetch`，
+  而现在 `web.search` 就落到 `web.fetch` —— **自相矛盾**，改为
+  「本地能回答时不要瞎出网」）。`search_then_answer` 改为只断言「去取了外部
+  信息」，不断言答案文本（答案取决于网络，离线不可判定）。
+
+- **回声输出会被算成通过。** 桩模型把输入原样吐回来时，如果期望内容恰好出现在
+  输入里（例：输入「200 的 10% 是多少」、期望输出含「20」），`output_contains`
+  会**假通过** —— 一个什么都没答的模型拿到了通过。现在评测器识别「输出 = 输入
+  （可带 `[stub]` 标记与标点）」这一种回声，并判它不满足
+  `output_contains` / `output_matches`。
+
+### 新增
+
+- **工具词表与绑定层** `aicf/infra/eval/tool_vocab.py`：抽象名 → 真实工具名
+  的唯一入口，`resolve_tool_names()` / `matches_tool_call()`。
+- **守卫测试** `tests/test_eval_dataset_bindings.py`：断言
+  ① 评测集里出现的每个工具名都能落到至少一个真实注册的工具上；
+  ② 词表的每个绑定目标都真实存在；
+  ③ 同一条用例不会「要求 A 又禁止 A 的绑定目标」；
+  ④ 用例 id 唯一。
+  这条测试**跑在修复前的代码上会红**（它指出 5 条幽灵工具断言 + 1 条自相矛盾
+  的用例）—— 1.0.0 之前 `tests/test_rc0_eval.py` 里的
+  `test_every_case_in_basic_dataset_is_satisfiable` 抓不到这个问题，
+  因为它**用数据集自己的抽象名造轨迹、再拿抽象名去比对，是循环论证**。
+
+### 变更
+
+- **CI 的 eval 作业现在真的跑一次评测与闸门**，而不是只跑 `--help`。
+  1.0.0 之前那一步是 `eval --dataset basic --help`，于是「随包数据集能不能真的
+  用」从来没被验证过 —— 这正是坏包能连发 6 个版本而没人发现的原因。
+  新步骤会真跑 `eval` 与 `gate`、产出 `run.json` / `gate.json`，并断言
+  「40 条用例全部读到 + 4 道闸门全部产出」。用例未通过属预期（离线桩模型不调
+  工具），但**崩溃（Traceback）必须让 CI 变红**。
+
+---
+
 ## [1.0.0] — 2026-11-20
 
 第一个「装出来就能用」的正式版。

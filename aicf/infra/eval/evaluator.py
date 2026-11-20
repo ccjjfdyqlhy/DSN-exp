@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
 from .dataset import COMPARISON_ASSERTIONS, COMPARISON_OPS, EvalCase, EvalDataset
 from .evaluators.agent_trajectory import AgentTrajectoryEvaluator, TrajectoryFinding
+from .tool_vocab import matches_tool_call, resolve_tool_names
 from .trace_store import Trace
 
 logger = logging.getLogger("aicf.infra.eval.evaluator")
@@ -38,6 +39,38 @@ CATEGORY_RUN = "run"
 #: 自定义断言函数的签名：(trace, case) -> True | False | str(失败说明)
 #: 也允许 (trace, case, params) -> ...，params 来自 assert_fn 的 params 字段。
 AssertFn = Callable[..., Union[bool, str]]
+
+#: 桩模型/回声式实现会在输出前面挂一个标记（`[stub] …`）。
+#: 去掉它之后，剩下的就是「模型原样把输入吐回来」。
+_ECHO_MARKER = re.compile(r"^\s*\[[^\]]{0,24}\]\s*")
+
+
+def is_pure_echo(output: str, trace_input: str) -> bool:
+    """这次输出是不是只是把输入回显了一遍。
+
+    为什么要有这个判断：
+    评测集的 ``output_contains`` 断言的是「答案里出现了某个内容」。
+    如果模型什么都没做、只是把输入原样吐回来，那么当期望内容恰好
+    出现在输入里时（例：输入「200 的 10% 是多少」，期望输出含「20」）
+    这条断言会被**假通过** —— 一个什么都没答的模型拿到了通过。
+
+    桩模型正是这种行为（输出 `[stub] <input>`），所以本地离线跑评测时
+    会看到一批「莫名其妙通过」的用例。那不是能力，是回声。
+
+    判定刻意收得很紧，只有「输出 = 输入（可带标记与标点）」才算回声：
+    正常作答即使引用了输入，也不该被判成回声。
+    """
+    o = _ECHO_MARKER.sub("", output or "").strip()
+    i = (trace_input or "").strip()
+    if not o or not i:
+        return False
+    if o == i:
+        return True
+    if o.startswith(i):
+        # 输出 = 输入 + 一点标点/空白 → 仍然算回声
+        tail = o[len(i):].strip()
+        return not tail.strip(" .,;:!?。，；：！？、")
+    return False
 
 
 @dataclass
@@ -525,7 +558,9 @@ class Evaluator:
         if kind == "tool_called":
             names = [value] if isinstance(value, str) else list(value)
             called = trace.called_tools
-            missing = [n for n in names if n not in called]
+            # 评测集写的是抽象能力名（fs.read），要落到真实注册表上比对
+            # （file.read）—— 见 tool_vocab.py。
+            missing = [n for n in names if not matches_tool_call(n, called)]
             if missing:
                 return Violation(
                     rule=kind,
@@ -533,12 +568,23 @@ class Evaluator:
                     message=f"{where}没有调用工具: {', '.join(missing)}",
                     expected=list(names),
                     actual=trace.tool_names,
-                    detail={"missing": missing},
+                    detail={"missing": missing,
+                            "expected_real": {n: list(resolve_tool_names(n))
+                                              for n in missing}},
                 )
             return None
         if kind == "output_contains":
             items = [value] if isinstance(value, str) else list(value)
             output = trace.output or ""
+            if is_pure_echo(output, trace.input):
+                return Violation(
+                    rule=kind,
+                    category=category,
+                    message=f"{where}输出只是把输入回显了一遍，不算作答",
+                    expected=list(items),
+                    actual=output[:500],
+                    detail={"echo": True},
+                )
             missing = [s for s in items if s not in output]
             if missing:
                 return Violation(
@@ -553,6 +599,15 @@ class Evaluator:
         if kind == "output_matches":
             items = [value] if isinstance(value, str) else list(value)
             output = trace.output or ""
+            if is_pure_echo(output, trace.input):
+                return Violation(
+                    rule=kind,
+                    category=category,
+                    message=f"{where}输出只是把输入回显了一遍，不算作答",
+                    expected=list(items),
+                    actual=output[:500],
+                    detail={"echo": True},
+                )
             unmatched = [s for s in items if not re.search(s, output)]
             if unmatched:
                 return Violation(
@@ -577,7 +632,8 @@ class Evaluator:
             return None
         if kind == "forbid_tools":
             names = [value] if isinstance(value, str) else list(value)
-            used = [n for n in names if n in trace.called_tools]
+            # 禁止的是「这一类工具」：禁 fs.delete 也就等于禁 file.edit。
+            used = [n for n in names if matches_tool_call(n, trace.called_tools)]
             if used:
                 return Violation(
                     rule=kind,

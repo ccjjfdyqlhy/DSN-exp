@@ -96,6 +96,13 @@ from .trace_store import (
     trace_from_events,
     write_trace_jsonl,
 )
+from .tool_vocab import (
+    TOOL_NAME_ALIASES,
+    is_abstract_tool_name,
+    matches_tool_call,
+    resolve_all,
+    resolve_tool_names,
+)
 
 __all__ = [
     # dataset

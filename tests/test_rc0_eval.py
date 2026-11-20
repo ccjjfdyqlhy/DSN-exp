@@ -35,6 +35,7 @@ from aicf.infra.eval import (
     TraceStore,
     ToolCall,
     Violation,
+    resolve_tool_names,
     aggregate_metrics,
     build_experiment,
     capture_run_version,
@@ -211,11 +212,12 @@ def _trace(**kwargs) -> Trace:
 
 def test_tool_called_assertion():
     ev = Evaluator()
+    # 断言写抽象名 fs.read，真实调用是 file.read —— 两者必须能对上。
     case = _case(expect=[{"tool_called": "fs.read"}])
-    ok = ev.evaluate_case(case, _trace(tool_calls=[ToolCall(name="fs.read", result="x")]))
+    ok = ev.evaluate_case(case, _trace(tool_calls=[ToolCall(name="file.read", result="x")]))
     assert ok.passed and ok.failed_rules == []
 
-    bad = ev.evaluate_case(case, _trace(tool_calls=[ToolCall(name="fs.write", result="x")]))
+    bad = ev.evaluate_case(case, _trace(tool_calls=[ToolCall(name="file.write", result="x")]))
     assert not bad.passed
     assert "tool_called" in bad.failed_rules
 
@@ -244,8 +246,9 @@ def test_forbid_tools_assertion_is_a_security_rule():
     from aicf.infra.eval.gate import SECURITY_RULES
 
     ev = Evaluator()
+    # 禁 fs.delete（→ file.edit）也要能拦住真实调用 file.edit 的轨迹。
     case = _case(expect=[{"forbid_tools": ["fs.delete"]}])
-    result = ev.evaluate_case(case, _trace(tool_calls=[ToolCall(name="fs.delete", result="x")]))
+    result = ev.evaluate_case(case, _trace(tool_calls=[ToolCall(name="file.edit", result="x")]))
     assert not result.passed
     assert "forbid_tools" in result.failed_rules
     assert "forbid_tools" in SECURITY_RULES
@@ -345,10 +348,11 @@ def test_run_result_aggregates():
         {"id": "c", "group": "g2", "expect": [{"tool_called": "fs.read"}]},
     ]})
     ev = Evaluator()
+    # 断言写抽象名 fs.read，轨迹里是真实调用 file.read。
     traces = {
-        "a": _trace(trace_id="ta", tool_calls=[ToolCall(name="fs.read", result="x")],
+        "a": _trace(trace_id="ta", tool_calls=[ToolCall(name="file.read", result="x")],
                     usage={"input_tokens": 5, "output_tokens": 5}),
-        "b": _trace(trace_id="tb", tool_calls=[ToolCall(name="fs.read", result="x")]),
+        "b": _trace(trace_id="tb", tool_calls=[ToolCall(name="file.read", result="x")]),
     }
     run = ev.evaluate_run(dataset, traces, run_id="run1")
     assert isinstance(run, RunResult)
@@ -463,8 +467,14 @@ def _compliant_trace(case: EvalCase) -> Trace:
             if kind == "tool_called":
                 names = [value] if isinstance(value, str) else list(value)
                 for n in names:
-                    if n not in tools:
-                        tools.append(n)
+                    # 评测集写的是抽象能力名（fs.read），真实 agent 调用的是
+                    # 注册表里的名字（file.read）—— 绑定表见 infra/eval/tool_vocab.py。
+                    # 这里必须落成真实名，否则造出来的轨迹证明不了任何事：
+                    # 用抽象名造轨迹、再拿去比对抽象名，是循环论证
+                    #（1.0.0 之前那 26 条幽灵工具断言一直没被发现，就是这个原因）。
+                    for real in resolve_tool_names(n):
+                        if real not in tools:
+                            tools.append(real)
             elif kind == "output_contains":
                 items = [value] if isinstance(value, str) else list(value)
                 plain.extend(items)

@@ -137,8 +137,50 @@ jobs:
           pip install -e ".[mcp,anthropic,socks]"
           pip install pytest pytest-asyncio
       - name: dataset, evaluator and the four gates
-        run: python -m pytest -q tests/test_rc0_eval.py
-      - name: the evaluation cli is wired
         run: |
-          python -m aicf.harness.cli.main eval --dataset basic --help > /dev/null
-          python -m aicf.harness.cli.main gate --help > /dev/null
+          python -m pytest -q tests/test_rc0_eval.py
+          # 评测集里的工具名必须能落到真实注册表上。
+          # 1.0.0 之前 basic.yaml 有 26 条断言指向不存在的工具，
+          # 而 test_rc0_eval.py 抓不到 —— 因为它用数据集自己的抽象名造轨迹，
+          # 再拿抽象名去比对，是循环论证。这条测试补上缺的那一半。
+          python -m pytest -q tests/test_eval_dataset_bindings.py
+
+      - name: the evaluation cli really runs (not just --help)
+        run: |
+          set -uo pipefail
+          mkdir -p traces
+          # 真跑一次：不是 --help —— 要真的把随包数据集读进来、打分、出报告，
+          # 再把报告喂给闸门。1.0.0 之前这一步只跑 --help，
+          # 于是「随包数据集能不能真的用」从来没被验证过。
+          #
+          # 退出码非 0 是预期的：离线桩模型不会调工具，数据集用例本来就过不了
+          # （README「九十秒」里也是这么说的）。这里要验的是**链路通**，
+          # 所以只放过「用例没过」，崩溃（Traceback）必须让 CI 变红。
+          rc=0
+          python -m aicf.harness.cli.main eval --dataset basic \
+              --traces traces/ --out run.json > eval.log 2>&1 || rc=$?
+          if grep -q "Traceback" eval.log; then cat eval.log; exit 1; fi
+          echo "eval 退出码 $rc（用例未通过属预期）"
+          cat eval.log | tail -5
+
+          rc=0
+          python -m aicf.harness.cli.main gate --run run.json --out gate.json > gate.log 2>&1 || rc=$?
+          if grep -q "Traceback" gate.log; then cat gate.log; exit 1; fi
+          echo "gate 退出码 $rc（闸门未通过属预期）"
+          cat gate.log | tail -6
+
+          # 链路通的判据：两个产物都在，且都覆盖了全部用例与四道闸门。
+          python - <<'PY'
+          import json
+
+          run = json.load(open("run.json", encoding="utf-8"))
+          gate = json.load(open("gate.json", encoding="utf-8"))
+
+          total = int(run["aggregate"]["total_cases"])
+          assert total == len(run["results"]), (total, len(run["results"]))
+          assert total > 0, "评测集一条用例都没读到 —— 随包数据集没装上？"
+          assert len(gate["outcomes"]) == 4, gate["outcomes"]
+          assert {o["name"] for o in gate["outcomes"]} == {
+              "quality", "regression", "cost", "safety"}, gate["outcomes"]
+          print(f"eval/gate 链路 OK：{total} 条用例，4 道闸门")
+          PY
