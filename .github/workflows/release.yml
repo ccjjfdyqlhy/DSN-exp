@@ -50,10 +50,22 @@ jobs:
           python -m pytest -q tests/
 
       - name: build
-        run: python -m build
+        # 清掉陈旧产物：setuptools 会把 build/lib 里已有的东西一起打进 wheel，
+        # 上一次重构前的 build/ 残留会让 wheel 里混进已删除的顶层包。
+        run: |
+          rm -rf build dist
+          python -m build
 
       - name: check the metadata
         run: twine check dist/*
+
+      - name: wheel smoke gate (the installed package must actually work)
+        # 这一步是 0.6.2 的教训：那版**成功发布到了 PyPI**，但包里没有
+        # console_scripts、没有随包数据集，README 上每条命令都是
+        # command not found。源码树里的测试全绿也发现不了 —— 测的是源码，
+        # 不是用户真正装到的那份字节。
+        # 这里装进一个全新的虚拟环境，按 README 的说法去用它。
+        run: python scripts/wheel_smoke.py
 
       - name: publish to pypi
         uses: pypa/gh-action-pypi-publish@release/v1
