@@ -7,6 +7,7 @@
 #   gate     出四闸门报告
 #   tool     工具目录 / 手工执行
 #   session  会话列表 / 从 journal 恢复
+#   artifact Agent 资产的校验 / 目录 / 发布 / 回滚（策划案 §5.4）
 #
 # 设计原则：
 #   - 默认离线可用（不配 API key 也能跑通 run → eval → gate）
@@ -19,20 +20,22 @@ import argparse
 import sys
 from typing import Any, Optional, Sequence
 
-from . import evalcmd, runcmd, sessioncmd, toolcmd
+from . import artifactcmd, evalcmd, runcmd, sessioncmd, toolcmd
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='aicf',
         description='AICF 命令行 —— 安全、幂等、可评测地跑一次长任务')
-    parser.add_argument('--version', action='store_true',
+    parser.add_argument('--version', action='store_true', dest='show_version',
                         help='打印版本号并退出')
     sub = parser.add_subparsers(dest='command')
 
     # ── run ──────────────────────────────────────────────
     run = sub.add_parser('run', help='跑一次 agent，落一份 trace')
     run.add_argument('input', nargs='?', default='', help='用户输入')
+    run.add_argument('--artifact', default='',
+                     help='Agent 声明（agent.yaml）：kernel/工具/模型按声明装配')
     run.add_argument('--input', dest='input_opt', default='',
                      help='用户输入（与位置参数等价）')
     run.add_argument('--trace', default='', help='trace 输出路径（JSONL）')
@@ -40,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument('--base-url', default='', help='OpenAI 兼容端点')
     run.add_argument('--api-key', default='', help='API key（默认读环境变量）')
     run.add_argument('--max-steps', type=int, default=4, help='最大执行步数')
+    run.add_argument('--kernel', default='',
+                     help='执行架构（react/workflow/planner）；--artifact 声明优先')
     run.add_argument('--include', action='append', default=[],
                      help='只启用某些工具组（可重复）')
     run.add_argument('--deny-tool', action='append', default=[],
@@ -68,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument('--run', required=True, help='运行结果文件')
     gate.add_argument('--baseline', default='', help='baseline 运行结果文件')
     gate.add_argument('--out', default='', help='报告输出路径')
+    gate.add_argument('--db', default='',
+                      help='报告落库位置（发布迁移从这里查报告；默认 aicf.db）')
     gate.add_argument('--json', action='store_true', help='输出 JSON')
 
     # ── tool ─────────────────────────────────────────────
@@ -104,6 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
     session_resume.add_argument('--db', default='aicf.db', help='运行时数据库')
     session_resume.add_argument('--json', action='store_true')
 
+    # ── artifact ─────────────────────────────────────────
+    artifactcmd.register(sub)
+
     return parser
 
 
@@ -117,7 +127,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         code = exit_code.code
         return code if isinstance(code, int) else (0 if code is None else 1)
 
-    if getattr(args, 'version', False):
+    if getattr(args, 'show_version', False):
         import harness
         print(harness.__version__)
         return 0
@@ -149,6 +159,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return sessioncmd.cmd_resume(args)
         print('用法: aicf session {list|resume} ...')
         return 2
+    if command == 'artifact':
+        func = getattr(args, 'func', None)
+        if func is None:
+            print('用法: aicf artifact {validate|show|list|history|publish|rollback} ...')
+            return 2
+        return func(args)
 
     parser.print_help()
     return 0

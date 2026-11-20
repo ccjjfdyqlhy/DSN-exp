@@ -3,6 +3,10 @@
 #
 # 这条命令是整条链路的入口：run → eval → gate。
 # 每次 run 产出一个 trace.jsonl（策划案 §5.4），评测消费的就是它。
+#
+# `--artifact agents/xxx.yaml`（策划案 §5.4 `aicf run <artifact.yaml>`）：
+# kernel / 工具 / 模型按声明装配 —— 「一种声明，多处消费」（§4.5.1），
+# 命令行跑的配置与评测、发布看到的是同一份。
 
 from __future__ import annotations
 
@@ -19,7 +23,33 @@ from harness.kernel.capability import CapabilitySet
 from .common import build_model, build_registry, build_runtime, eprint, out_json
 
 
+def _apply_artifact(args: Any) -> None:
+    """按 artifact 声明改写 run 参数（命令行显式给的值优先）。"""
+    if not getattr(args, 'artifact', ''):
+        return
+    from infra.control.artifact import ArtifactError, load_artifact, parse_tool_ref
+
+    try:
+        artifact = load_artifact(args.artifact)
+    except ArtifactError as error:
+        raise SystemExit(f'Error: {error}')
+    # 执行架构（策划案 §4.1.3）：换架构只改 spec.kernel；
+    # 命令行显式 --kernel 优先于声明（显式覆盖是调试的合法需求）
+    if not getattr(args, 'kernel', ''):
+        args.kernel = artifact.spec_kernel
+    # 工具：版本引用 → include 名单（引用了不存在的工具会在
+    # build_registry 的 include 过滤里表现为「工具表变短」，
+    # 守卫按最严格档拦住误用 —— 这正是版本引用的意义）
+    if not args.include:
+        args.include = [parse_tool_ref(ref)[0] for ref in artifact.spec_tools]
+    # 模型：primary；命令行显式给了 model 就以命令行为准
+    if not args.model and artifact.spec_model.primary:
+        args.model = artifact.spec_model.primary
+    args.artifact_loaded = artifact
+
+
 def cmd_run(args: Any) -> int:
+    _apply_artifact(args)
     registry = build_registry(include=args.include or None)
     model = build_model(model=args.model, base_url=args.base_url,
                         api_key=args.api_key)
@@ -52,12 +82,23 @@ def cmd_run(args: Any) -> int:
                   if args.yes else
                   ApprovalDecision.deny(by='cli', reason='CLI 未开启 --yes')))
     runtime, store = build_runtime(args.db, session_id)
+    # 不可删审计（策划案 §4.4.7）：run 路径的 audit.* 事件落独立存储。
+    from infra.observability.audit import AuditLog
+    audit_log = AuditLog()
     guard = ToolGuard(policy=engine, approval=approval, telemetry=collector,
-                      runtime=runtime, session_id=session_id, turn_id=run_id)
+                      runtime=runtime, audit=audit_log,
+                      session_id=session_id, turn_id=run_id)
     registry.attach_guard(guard)
 
     from infra.orchestrator.base import ChatMessage
-    kernel = ReactKernel(client=model, tools=registry, max_steps=args.max_steps)
+    from harness.kernel import kernel_by_name
+    kernel_name = str(getattr(args, 'kernel', '') or 'react').lower()
+    kernel_cls = kernel_by_name(kernel_name)
+    if kernel_cls is None:
+        eprint(f'Error: 未知执行架构 {kernel_name!r}（可选: react/workflow/planner）')
+        return 2
+    kernel = kernel_cls(client=model, tools=registry, max_steps=args.max_steps) \
+        if kernel_cls is ReactKernel else kernel_cls()
     ctx = KernelContext(
         session_id=session_id,
         turn_id=run_id,

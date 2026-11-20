@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -167,6 +168,15 @@ def cmd_gate(args: Any) -> int:
     if args.out:
         path = write_json(args.out, payload)
         print(f'gate 报告 → {path}')
+    # 报告同时落 eval_gate_report 表（策划案 §4.5.2）：控制面的发布迁移
+    # （aicf artifact publish --gate <id>）要能查到它并校验 verdict。
+    # 存不进去不阻断 —— 报告文件仍然可用，只是发布时要给文件里的 id。
+    if payload.get('id'):
+        try:
+            from infra.eval.trace_store import TraceStore
+            TraceStore(_gate_db_path(args)).save_gate_report(payload)
+        except Exception as error:  # noqa: BLE001
+            eprint(f'（gate 报告未能落库：{error}）')
     if args.json:
         out_json(payload)
     else:
@@ -183,6 +193,14 @@ def cmd_gate(args: Any) -> int:
                     summary = summary or str(first.get('message', ''))
             print(f'  [{mark}] {name}: {summary}')
     return 0 if report.passed else 1
+
+
+def _gate_db_path(args: Any) -> str:
+    """gate 报告落库的位置：与运行时同库（eval/runtime 的表同文件起步）。"""
+    db = getattr(args, 'db', '')
+    if db:
+        return db
+    return os.environ.get('AICF_DB') or 'aicf.db'
 
 
 def _load_run(source: str) -> dict:
