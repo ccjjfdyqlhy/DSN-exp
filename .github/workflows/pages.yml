@@ -13,8 +13,10 @@ on:
       - 'docs/site/**'
       # 徽章上的测试数要跟着代码走：改了代码或测试，数字可能变，
       # 所以这两条路径也触发重建（只重建站点，不发布包）。
+      # scripts/ 也要带上 —— 生成徽章 JSON 的脚本就在那儿。
       - 'aicf/**'
       - 'tests/**'
+      - 'scripts/**'
   workflow_dispatch:
 
 permissions:
