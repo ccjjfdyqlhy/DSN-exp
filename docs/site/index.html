@@ -297,7 +297,7 @@ aicf eval --dataset basic \
         <p>认业务 → 属于 <code>aicf-ui</code> 仓库；关心消息与工具 → <code>aicf/harness</code>；只管进程/HTTP/显存/磁盘/密钥 → <code>aicf/infra</code>。</p>
       </div>
       <div class="rule">
-        <h3>规则二：<code>infra/eval</code> 与 <code>infra/runtime</code> 不得 import harness</h3>
+        <h3>规则二：<code>aicf/infra/eval</code> 与 <code>aicf/infra/runtime</code> 不得 import <code>aicf.harness</code></h3>
         <p>评测层只认自己定义的 <code>Trace</code> / <code>ToolCall</code>，由 <code>trace_from_events()</code> 做只读适配。</p>
       </div>
       <div class="rule">
@@ -411,7 +411,7 @@ aicf eval --dataset basic \
       <table class="migration-table">
         <thead>
           <tr>
-            <th>旧（&lt;= 0.6.x）</th>
+            <th>旧（1.0.0 之前）</th>
             <th class="col-arrow"></th>
             <th>新（1.0.0+）</th>
           </tr>
@@ -449,13 +449,20 @@ aicf eval --dataset basic \
         <p class="expected">顶层名字不再被占用，因此不会和别的项目里的 <code>harness</code> / <code>infra</code> 撞车。</p>
       </div>
       <div class="card">
-        <h3>不变的三个东西</h3>
+        <h3>三个名字，本来就不同</h3>
         <ul class="plain-list">
-          <li>安装名：<code>pip install aicf-core</code></li>
-          <li>命令入口：<code>aicf</code></li>
-          <li>仓库地址：<a href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">github.com/ccjjfdyqlhy/aicf-core</a></li>
+          <li>分发名（pip）：<code>aicf-core</code></li>
+          <li>import 名（Python）：<code>aicf.*</code></li>
+          <li>命令行入口：<code>aicf</code></li>
         </ul>
-        <p class="expected">只有 Python 里的 import 路径变了，配置文件与命令行参数不受影响。</p>
+        <p class="expected">
+          分发名不叫 <code>aicf</code>，是因为 PyPI 上这个名字与本项目过于相似、申请会被拒；
+          import 不叫顶层 <code>harness</code> / <code>infra</code>，是因为那两个名字已经让给别人了。
+          变的只有 Python 里的 import 路径，命令行参数与配置文件不受影响。
+        </p>
+        <p class="expected">
+          仓库地址：<a href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">github.com/ccjjfdyqlhy/aicf-core</a>
+        </p>
       </div>
     </div>
   </div>
