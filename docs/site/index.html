@@ -512,7 +512,7 @@ aicf eval --dataset basic \
 (function () {
   // 站点发布到 GitHub Pages 时，发布范围只有 docs/site/，仓库里 docs/*.md 不在站点内。
   // 这里保留源码里的相对链接（../architecture.md），只在 github.io 上把它改写到 GitHub 对应文件。
-  if (location.hostname.slice(-8) === 'github.io') {
+  if (location.hostname.endsWith('github.io')) {
     var base = 'https://github.com/ccjjfdyqlhy/aicf-core/blob/main/docs/';
     Array.prototype.forEach.call(document.querySelectorAll('a[href]'), function (a) {
       var href = a.getAttribute('href') || '';
