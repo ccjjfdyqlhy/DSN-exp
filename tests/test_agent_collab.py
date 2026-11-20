@@ -87,6 +87,31 @@ async def _wait_completed(record, timeout=5.0):
     await asyncio.wait_for(poll(), timeout)
 
 
+async def _wait_activity_settled(manager, quiet=0.05, timeout=2.0):
+    """等在途的活动通知全部落地，再去断言「空闲时会超时」。
+
+    子 Agent 的完成通知分两步送达：先改状态（``_wait_completed`` 等的就是
+    这个），再 ``_touch()`` 把活动版本 +1。后一步没有等到，于是机器一忙，
+    它就可能在 wait_agent 取完快照之后才落地 —— 那一次等待会把「已经发生过
+    的事」当成「新活动」，测试随机变红（CI 上表现为 3.12 红、其它版本绿）。
+
+    这里等到活动版本连续 quiet 秒不再变化，才认为 manager 真的闲下来。
+    这不是把断言放松：断言仍然是「空闲时必须超时」，只是先把「空闲」这件事
+    变成可判定的。
+    """
+    deadline = time.monotonic() + timeout
+    last = manager._activity_version
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+        current = manager._activity_version
+        if current != last:
+            last = current
+            stable_since = time.monotonic()
+        elif time.monotonic() - stable_since >= quiet:
+            return
+
+
 def test_spawn_delivers_update_to_parent_mailbox():
     client = ScriptedClient(_rounds())
     registry = _registry()
@@ -447,6 +472,7 @@ def test_wait_agent_wakes_up_when_activity_happens():
         # let the child finish first: its completion is activity too
         await _wait_idle(record.engine)
         await _wait_completed(record)
+        await _wait_activity_settled(manager)
 
         # an idle manager times out instead of hanging
         text, _, error = await asyncio.to_thread(
