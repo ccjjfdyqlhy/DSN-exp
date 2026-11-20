@@ -1,0 +1,21 @@
+# policies/network.yaml — 网络访问控制（策划案 §4.4.6 的网络面）。
+#
+# 这个文件不是给 RulePolicyEngine 的（它管的是工具准入），
+# 它是 WorkspaceSpec.net_allowlist 的**声明来源**：
+#   WorkspaceSpec.from_dict(yaml.safe_load(...))
+#   WorkspaceManager.allocate(session_id, spec=spec)
+#
+# 沙箱里的出网请求按这个白名单判定；白名单外的域名被拦并记 net:deny
+# （策划案 §8.2 用例 5）。
+
+net: allowlist
+allowlist:
+  - pypi.org
+  - files.pythonhosted.org
+  - huggingface.co
+  - api.openai.com
+  - api.deepseek.com
+  - open.bigmodel.cn
+
+# 声明了 full 也不会被本文件放行 —— full 档必须由部署配置显式给出
+# （策划案 §3.3.5：降级不静默，放宽也一样）。

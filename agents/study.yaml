@@ -1,0 +1,35 @@
+# agents/study.yaml — study 助手的 Agent Artifact（策划案 §6.1 示例之二）。
+#
+# 与 research.yaml 的差别只在执行架构与工具面：
+# 同一份 agent.yaml 换 `spec.kernel` 就换执行架构（策划案 §7.2 C1 的
+# 验收标准），业务代码不动。
+
+apiVersion: aicf.dev/v1
+kind: Agent
+metadata:
+  name: study-assistant
+  owner: team-study
+  version: 0.2.0
+  labels:
+    scene: study
+spec:
+  kernel: planner              # Planner-Executor：先出计划再按步执行
+  model:
+    primary: glm-4.6
+    fallback: [deepseek-chat]
+    capability_request: [tool_calls, reasoning]
+  context:
+    layers: [L0, L1, L2]
+    budget: 64000
+  tools:
+    - fs.read@1.0
+    - web.fetch@1.0
+  policies:
+    approval: []
+    network: allowlist
+    sandbox: workspace
+  runtime:
+    deployment: {replicas: 1, strategy: rolling}
+    workspace: {fs: workspace, net: allowlist}
+  cost_model:
+    per_1k_tokens: {input: 0.004, output: 0.012}

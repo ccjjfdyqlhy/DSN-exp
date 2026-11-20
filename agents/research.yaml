@@ -1,0 +1,41 @@
+# agents/research.yaml — research-assistant 的 Agent Artifact（策划案 §4.5.1）
+#
+# 一份声明，多处消费：
+#   - 部署：spec.runtime.deployment
+#   - 评测：Experiment / RunVersion 冻结的就是这份内容
+#   - 成本：spec.cost_model 的单价进控制面账本
+#   - 命令行：`aicf run --artifact agents/research.yaml`
+#
+# 工具用版本引用（shell@v1）而非名字引用（§4.4.2）：
+# 上游升级不打断线上 —— 线上跑的永远是声明时的那个版本。
+
+apiVersion: aicf.dev/v1
+kind: Agent
+metadata:
+  name: research-assistant
+  owner: team-research
+  version: 0.4.2
+  labels:
+    scene: research
+spec:
+  kernel: react
+  model:
+    primary: deepseek-chat
+    fallback: [glm-4.6, local/qwen3-8b]
+    capability_request: [tool_calls]
+  context:
+    layers: [L0, L1, L2]        # L3 需要显式授权，这里不开
+    budget: 128000
+  tools:
+    - fs.read@1.0
+    - fs.write@1.0
+    - proc.run@1.0
+  policies:
+    approval: [proc.run@1.0]    # shell 类调用必须等审批
+    network: allowlist
+    sandbox: workspace
+  runtime:
+    deployment: {replicas: 1, strategy: rolling}
+    workspace: {fs: workspace, net: allowlist}
+  cost_model:
+    per_1k_tokens: {input: 0.002, output: 0.008}
