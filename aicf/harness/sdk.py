@@ -67,6 +67,7 @@ class Agent:
         memory_k: int = 5,
         mcp: Optional[Union[list, dict, str]] = None,
         deps: Optional[Any] = None,
+        security_audit: Optional[bool] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
@@ -111,6 +112,9 @@ class Agent:
             tool_deps=_deps_to_mapping(deps),
             memory=enable_memory,
             mcp=mcp_spec,
+            # 安全开关显式传递（None = 走 AgentSpec 默认 True）。
+            # security_audit=False 时记忆退回普通实现 —— 这必须是显式选择。
+            security_audit=True if security_audit is None else bool(security_audit),
         )
 
         assembler = AgentAssembler(self.client)
@@ -277,6 +281,7 @@ class Agent:
 _AGENT_OPTIONS = (
     "max_steps", "workspace", "router_config", "budget_config",
     "enable_toolbox", "enable_memory", "memory_k", "mcp", "deps",
+    "security_audit",
 )
 
 
@@ -333,6 +338,7 @@ def create_agent(
     enable_memory = options.pop("enable_memory", False)
     memory_k = options.pop("memory_k", 5)
     mcp = options.pop("mcp", None)
+    security_audit = options.pop("security_audit", None)
     deps = options.pop("deps", None)
 
     budget_cap = options.pop("budget_cap", None)
@@ -372,4 +378,5 @@ def create_agent(
         memory_k=memory_k,
         mcp=mcp,
         deps=deps,
+        security_audit=security_audit,
     )

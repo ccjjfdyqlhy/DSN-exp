@@ -259,7 +259,18 @@ class AgentAssembler:
         # 7) 记忆
         memory = None
         if spec.memory:
-            memory = InMemoryStore(self.embedding_client)
+            base_memory = InMemoryStore(self.embedding_client)
+            # 可审计记忆（roadmap 段 4）：愿景里「持久记忆的可审计」。
+            # security_audit=True（默认）时用两级模型包装 ——
+            # 每次写入自动留证据（Source）+ 解释（Artifact），并落
+            # audit.memory_write；召回结果过证据闸门（被撤回 / 证据
+            # 被篡改 / 证据缺失的一律不注入）。audit 对象第 8 步才创建，
+            # 这里晚绑定（写入发生在对话期，装配期没有记忆写入）。
+            if spec.security_audit:
+                from ..memory.provenance import ProvenanceMemoryStore
+                memory = ProvenanceMemoryStore(base_memory)
+            else:
+                memory = base_memory
             runtime.register("memory", memory)
 
         # 8) 安全守卫
@@ -293,6 +304,11 @@ class AgentAssembler:
         runtime.register("guard", guard)
         if audit_log is not None:
             runtime.register("audit_log", audit_log)
+            # 记忆写入也进审计轨（roadmap 段 4）：与守卫共用同一个
+            # 不可删 AuditStore，audit.memory_write 与 audit.tool_call
+            # 在同一条审计轨上可对账。
+            if memory is not None and hasattr(memory, 'attach_audit'):
+                memory.attach_audit(audit_log)
 
         # 9) Agent 循环
         loop = AgentLoop(self.client, tools, max_steps=spec.max_steps,
