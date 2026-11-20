@@ -146,25 +146,35 @@ def check_eval_dataset(venv_python: Path) -> tuple[bool, str]:
     return True, "aicf eval 读到了随包数据集 basic"
 
 
-def check_public_import(venv_python: Path) -> tuple[bool, str]:
-    """README 给的公开 import 路径必须真的能 import。"""
+def check_public_import(venv_python: Path, cwd: Path) -> tuple[bool, str]:
+    """README 给的公开 import 路径必须真的能 import。
+
+    同样在中性目录里跑：仓库根目录下 import 会命中源码树，而不是装出来的包。
+    """
     code = (
         "from aicf.harness import create_agent, tool;"
         "from aicf.infra.models.base import IChatClient;"
         "import aicf; print(aicf.__version__)"
     )
-    code_rc, out, err = _run([str(venv_python), "-c", code])
+    code_rc, out, err = _run([str(venv_python), "-c", code], cwd=str(cwd))
     if code_rc != 0:
         return False, f"公开 import 失败：{(err or out).strip()[:300]}"
     return True, f"公开 import 正常（aicf.__version__ = {out.strip()}）"
 
 
-def check_installed_metadata(venv_python: Path, expected_version: str) -> tuple[bool, str]:
-    """已安装发行版的元数据版本必须与 pyproject 一致。"""
+def check_installed_metadata(venv_python: Path, expected_version: str,
+                            cwd: Path) -> tuple[bool, str]:
+    """已安装发行版的元数据版本必须与 pyproject 一致。
+
+    注意 cwd：``python -c`` 会把当前目录放进 sys.path[0]。如果这段代码跑在
+    仓库根目录，本地构建残留的 ``aicf_core.egg-info``（版本可能是旧的）会
+    遮蔽 venv 里真正的 dist-info，读出一个**假的不一致**。闸门会误报，
+    误报的闸门等于没有闸门 —— 所以这段必须在一个中性目录里跑。
+    """
     code, out, err = _run([
         str(venv_python), "-c",
         "import importlib.metadata as m; print(m.version('aicf-core'))",
-    ])
+    ], cwd=str(cwd))
     if code != 0:
         return False, f"读不到已安装版本：{(err or out).strip()[:200]}"
     installed = out.strip()
@@ -237,11 +247,16 @@ def main() -> int:
         return 1
     print("-" * 68)
 
+    # 中性工作目录：既不是仓库根（那里有源码树和本地 egg-info），
+    # 也不是用户目录 —— 闸门要验的是「装出来的包」，不是「当前目录里的东西」。
+    neutral = Path(tmpdir) / "workdir"
+    neutral.mkdir(parents=True, exist_ok=True)
+
     for name, fn in [
-        ("已安装版本一致", lambda: check_installed_metadata(venv_python, expected)),
+        ("已安装版本一致", lambda: check_installed_metadata(venv_python, expected, neutral)),
         ("aicf --version / tool list", lambda: check_installed_cli(venv_python, expected)),
         ("aicf eval 能读随包数据集", lambda: check_eval_dataset(venv_python)),
-        ("公开 import 路径", lambda: check_public_import(venv_python)),
+        ("公开 import 路径", lambda: check_public_import(venv_python, neutral)),
     ]:
         ok, detail = fn()
         print(f"{'PASS' if ok else 'FAIL'}  {name:<24} {detail}")
