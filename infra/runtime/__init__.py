@@ -74,6 +74,10 @@ from .idempotency import ResultCache, args_digest, canonical_args, idempotency_k
 from .recovery import RecoveryPlan, ReplayableCall, UnknownOutcome, recover
 from .managed import ManagedRuntime, ToolOutcome, UnknownOutcomeError
 from .migrations import RUNTIME_MIGRATIONS, migrate_runtime
+from .scheduler import (DEFAULT_LEASE_TTL, DeploymentScheduler, Lease,
+                        LeaseHeldError, RUNTIME_LEASE_MIGRATIONS, migrate_lease)
+from .isolation import (IsolationError, Workspace, WorkspaceManager,
+                        WorkspaceSpec, contains_path)
 
 __all__ = [
     # DI 容器（历史 API）
@@ -100,4 +104,10 @@ __all__ = [
     'recover', 'RecoveryPlan', 'UnknownOutcome', 'ReplayableCall',
     # 迁移
     'RUNTIME_MIGRATIONS', 'migrate_runtime',
+    # 部署租约与接管（rc2 P1）
+    'DEFAULT_LEASE_TTL', 'DeploymentScheduler', 'Lease', 'LeaseHeldError',
+    'RUNTIME_LEASE_MIGRATIONS', 'migrate_lease',
+    # 工作区隔离（rc2 P3）
+    'IsolationError', 'Workspace', 'WorkspaceManager', 'WorkspaceSpec',
+    'contains_path',
 ]
