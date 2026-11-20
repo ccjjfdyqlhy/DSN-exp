@@ -68,6 +68,8 @@ class Agent:
         mcp: Optional[Union[list, dict, str]] = None,
         deps: Optional[Any] = None,
         security_audit: Optional[bool] = None,
+        runtime: Optional[Any] = None,
+        embedding_client: Optional[Any] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
@@ -115,9 +117,11 @@ class Agent:
             # 安全开关显式传递（None = 走 AgentSpec 默认 True）。
             # security_audit=False 时记忆退回普通实现 —— 这必须是显式选择。
             security_audit=True if security_audit is None else bool(security_audit),
+            runtime=runtime,
+            embedding_client=embedding_client,
         )
 
-        assembler = AgentAssembler(self.client)
+        assembler = AgentAssembler(self.client, embedding_client=embedding_client)
         self._assembled: AssembledAgent = assembler.assemble(self.spec)
         # MCP 惰性预热标志：首个异步入口（chat_async/run_async/chat_stream）触发
         self._mcp_ready = False
@@ -281,7 +285,7 @@ class Agent:
 _AGENT_OPTIONS = (
     "max_steps", "workspace", "router_config", "budget_config",
     "enable_toolbox", "enable_memory", "memory_k", "mcp", "deps",
-    "security_audit",
+    "security_audit", "runtime", "embedding_client",
 )
 
 
@@ -339,6 +343,8 @@ def create_agent(
     memory_k = options.pop("memory_k", 5)
     mcp = options.pop("mcp", None)
     security_audit = options.pop("security_audit", None)
+    runtime = options.pop("runtime", None)
+    embedding_client = options.pop("embedding_client", None)
     deps = options.pop("deps", None)
 
     budget_cap = options.pop("budget_cap", None)
@@ -379,4 +385,6 @@ def create_agent(
         mcp=mcp,
         deps=deps,
         security_audit=security_audit,
+        runtime=runtime,
+        embedding_client=embedding_client,
     )

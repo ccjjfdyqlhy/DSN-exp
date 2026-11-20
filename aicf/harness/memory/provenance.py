@@ -236,7 +236,9 @@ class ProvenanceMemoryStore:
                  clock: Callable[[], float] | None = None,
                  author: str = 'agent'):
         from .in_memory import InMemoryStore
-        self._backend = backend or InMemoryStore()
+        # an empty InMemoryStore is falsy (it defines __len__), so `backend or`
+        # would silently drop the caller's configured backend -- check for None
+        self._backend = backend if backend is not None else InMemoryStore()
         self._audit = audit
         self._gate = gate or EvidenceGate()
         self.disclosure = disclosure or DisclosureMatrix()

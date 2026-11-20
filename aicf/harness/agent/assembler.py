@@ -62,6 +62,8 @@ class AgentSpec:
     security_sandbox: Any = None             # 沙箱后端（None = 用守卫默认档）
     security_mode: str = ""                  # strict | legacy；空 = 读环境变量
     security_audit: bool = True              # 不可删审计存储（§4.4.7；False = 仅 trace 面）
+    runtime: Any = None                      # ManagedRuntime: tool intents land in the journal; None = no idempotency
+    embedding_client: Any = None             # embedding backend for semantic recall; None = assembler-level client or none
 
 
 class AssembledAgent:
@@ -259,7 +261,7 @@ class AgentAssembler:
         # 7) 记忆
         memory = None
         if spec.memory:
-            base_memory = InMemoryStore(self.embedding_client)
+            base_memory = InMemoryStore(spec.embedding_client or self.embedding_client)
             # 可审计记忆（roadmap 段 4）：愿景里「持久记忆的可审计」。
             # security_audit=True（默认）时用两级模型包装 ——
             # 每次写入自动留证据（Source）+ 解释（Artifact），并落
@@ -299,6 +301,7 @@ class AgentAssembler:
                           approval=spec.security_approval,
                           sandbox=spec.security_sandbox,
                           audit=audit_log,
+                          runtime=spec.runtime,
                           mode=spec.security_mode or default_security_mode())
         tools.attach_guard(guard)
         runtime.register("guard", guard)
