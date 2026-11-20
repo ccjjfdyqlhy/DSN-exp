@@ -39,11 +39,11 @@ rc0 只有三条 DoD，全部是**可执行**的：
 | 审批 / 人在回路 | 零命中 | `harness/approval/`：协议 + broker + 会话缓存 | `grep -ri approv harness/ infra/` |
 | 沙箱 / 隔离 | 零命中 | `harness/tools/sandbox/`：路径判定 + restricted + namespaced；**守卫默认挂后端**，SDK 与 CLI 的默认路径都在沙箱里跑 | `grep -ri sandbox harness/ infra/` |
 | 幂等 | 零命中 | `harness/runtime_client.py` + `infra/runtime/idempotency.py`，两份实现由交叉测试钉住 | `grep -ri idempot harness/ infra/` |
-| Agent Identity | 只有用户态 `uid + scopes` | 未变，留给 rc1 | `infra/auth/base.py` |
-| Artifact / 控制面 | 零命中 | 仍无资产模型；artifact 只作为 RunVersion 的元数据被冻结 | `grep -ri artifact harness/ infra/` |
+| Agent Identity | 只有用户态 `uid + scopes` | `infra/control/identity.py`：AgentIdentity + 委托链（子 scope ⊆ 父 scope，越权即拒）+ audit.delegation | `tests/test_rc1_control.py` |
+| Artifact / 控制面 | 零命中 | `infra/control/`：AgentArtifact（一种声明多处消费）、生命周期状态机（release 必须携带 pass 的 Gate 报告）、成本账本、BYO 纳管 | `tests/test_rc1_control.py` |
 | Experiment / Run Version | 零命中 | `infra/eval/{experiment,run_version}.py`（最小版） | `grep -ri experiment harness/ infra/` |
-| Workflow / Planner | 零命中 | 只有内核协议，实现留给 rc1 | `grep -ri 'workflow\|planner' harness/ infra/` |
-| 遥测 | 有事件词表，无 trace/span 模型 | `harness/telemetry/` + `infra/observability/{span,trace,audit}.py` | `harness/agent/events.py` |
+| Workflow / Planner | 零命中 | `harness/kernel/{workflow,planner}.py`：DAG（并行分支 + 逆序补偿）与 Planner-Executor（结构化计划 + 有界重规划）| `tests/test_rc1_kernels.py` |
+| 遥测 | 有事件词表，无 trace/span 模型 | `harness/telemetry/` + `infra/observability/{span,trace,audit}.py`；audit.* 事件已接线到不可删 AuditStore（SDK/CLI 默认路径） | `tests/test_rc1_audit_wiring.py` |
 
 > 中间一列是策划案在改造前的结论，右列是 2026-11-18 重新核对的结果。
 > 每一行的验证命令都还能跑，所以「缺口是否真的补上了」是一个可以核对的事实，
@@ -115,11 +115,11 @@ rc0 只有三条 DoD，全部是**可执行**的：
 ### 当前测试基线
 
 ```text
-1142 passed, 16 skipped      # 入库用例全量（CI 跑的就是这个数字）
-  46 passed, 13 skipped      # 故障注入层 tests/fault/（2.1s；跳过的 13 条是变异层，默认不跑）
-  12 passed,  1 skipped      # 变异层（RUN_MUTATION=1，约 20s）
- 223 passed                 # 契约层 + 依赖方向（CI 的 contract job）
-  66 passed                 # 评测层（CI 的 eval job）
+1282 passed,  1 skipped     # 本机全量（2026-11-20；入库口径不含本机专用的
+                            # test_dsn_existence_loop.py，见下方说明）
+  46 passed, 13 skipped     # 故障注入层 tests/fault/（2.1s；跳过的 13 条是变异层，默认不跑）
+ 128 passed                 # rc1/rc2 对齐新增（控制面 / 内核 / 发现 / 记忆 /
+                            # 抽样回流 / 租约隔离 / 审计接线 / CLI / 契约）
 ```
 
 改造前的基线是 **600 passed / 3 skipped**（本地口径；只算入库用例是 **562 / 3**）。
@@ -159,6 +159,8 @@ checkpoint 损坏检测、awaiting_approval 状态、审批补填、路径越界
 | `infra/runtime.py` | `infra/runtime/di.py` | 同名包会遮蔽同名模块 —— `infra/runtime/` 一旦存在，`infra/runtime.py` 就永远不会被加载。DI 容器整体迁入，包级 `Runtime` 仍指向它，harness 侧 API 不变 |
 | 托管运行时叫 `Runtime` | 叫 `ManagedRuntime` | 包级 `Runtime` 是冻结的 DI 容器 API，不能改。`infra/runtime/managed.py` 里有 `Runtime = ManagedRuntime` 别名 |
 | `aicf eval --artifact a.yaml` | `aicf eval --traces <path>` | Artifact 资产模型属 rc1 的控制面。rc0 的 eval 消费的是 **trace**（这是运行的事实），artifact 只作为 run version 的元数据参与 |
+| `aicf run <artifact.yaml>` | `aicf run --artifact <path>` | run 的第一个位置参数留给用户输入；声明走显式 flag，让 `aicf run "..."` 的旧用法不破坏 |
+| 托管运行时的 `scheduler.py` / `isolation.py` | rc2 才落 | 策划案 §6.1 把两个文件画在 rc0 的目录树里，但 §4.2.4/§7.3 把「调度与隔离」归入 rc2 —— 以行为描述为准 |
 
 ### 并行开发的代价（实测）
 
@@ -297,16 +299,11 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ### CI 门禁
 
-`ci.yml` 现在有三个 job：`test`（每次提交，python 3.10 - 3.13）、`build`（构建 + 元数据检查）、
-`fault`（nightly + 手动触发，跑 `tests/fault/`）。`fault` job 加了 `if` 条件，
-所以它不在每次 push 上跑。
+`ci.yml` 现在有四个 job：`test`（每次提交，python 3.10 - 3.13，排除 fault/mutation）、
+`build`（构建 + 元数据检查）、`contract`（契约层 + 依赖方向单列）、`eval`（评测层 +
+`aicf eval`/`aicf gate` 冒烟）、`fault`（nightly + 手动触发，跑 `tests/fault/`）。
 
-还有两件没做完，属于 rc1：
-
-- `contract` job：把 L2 契约测试单列。现在它跟着 `test` job 一起跑，没有独立门禁
-- `eval` job：发布时跑 L5 评测 + Gate。现在 `aicf eval` / `aicf gate` 只有手工跑和单测
-- `test` job 的命令是 `pytest -q tests/`，会把 `tests/fault/` 一起收进来（2s 左右，代价可以接受）。
-  要让「fault 只在 nightly 跑」名副其实，得给 `test` job 加 `-m "not fault and not mutation"`
+策划案 §8.3 的四个 job 形态至此全部落地。
 
 ---
 
@@ -334,7 +331,8 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ## 七、rc1 / rc2 的接口预留
 
-下面这些接口**现在就要留好**，否则 rc1 会发现要重写 rc0：
+下面这些接口在 rc0 时**提前留好**，rc1/rc2 落地时没有回头重写 rc0 ——
+这张表现在同时是「已兑现清单」：
 
 | 预留 | 位置 | rc1 怎么用 |
 |---|---|---|
@@ -454,16 +452,45 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 ---
 
-## 十、rc0 仍然欠着的（诚实清单）
+## 十、诚实清单（2026-11-20 复核）
 
-| 欠账 | 现状 | 归期 |
+上一版清单里的六条欠账，全部在 rc1/rc2 工作流里补齐了。
+补齐的方式与测试如下 —— 这张表保留，只是方向反过来：
+从「我们欠什么」变成「我们怎么证明还清了」。
+
+| 上一版欠账 | 现状 | 钉住它的测试 |
 |---|---|---|
-| 不可删审计存储没接线 | 守卫发 `audit.denied` / `audit.tool_call` 事件，进 trace 与 trace 导出；`infra/observability/audit.py` 的 `AuditStore`（不可删）**没有生产调用点** | rc1 |
-| 控制面 | 没有 `infra/control/`，没有 AgentArtifact、生命周期、成本账本、BYO 纳管 | rc1 |
-| Agent 身份与委托 | `infra/auth/base.py` 只有用户态 `uid + scopes`；`spawn_agent` 不校验子 Agent 的 scope | rc1 |
-| 多执行架构 | `ExecutionKernel` 协议已定，只有 `ReactKernel` 一个实现；Workflow / Planner 未写 | rc1 |
-| 线上抽样与 Bad Case 回流 | `record_badcase` 只是存储通道，没有自动回流链路 | rc2 |
-| 故障迁移与弹性 | 只有单机语义：实例可替换、状态不丢；跨机接管未做 | rc2 |
+| 不可删审计存储没接线 | `ToolGuard` 增加 `audit` 参数（鸭子类型：会 `record(kind, payload)` 即可）；`audit.denied` / `audit.tool_call` 落独立存储，SDK 与 CLI 两条默认路径都接线；审计后端故障不阻断调用（trace 面兜底） | `tests/test_rc1_audit_wiring.py` |
+| 控制面 | `infra/control/`：`AgentArtifact`（§4.5.1 一种声明多处消费）、生命周期状态机（**release 必须携带 verdict=pass 的 Gate 报告**，§4.5.2）、`ArtifactStore`（(id, version) 不可变，冲突即拒）、成本账本（按 session/agent/tool/model 归因，§4.5.3）、BYO 纳管（按 RuntimeClient 协议接入 + 事件镜像，§4.5.4） | `tests/test_rc1_control.py` |
+| Agent 身份与委托 | `infra/control/identity.py`：`AgentIdentity` + `delegation_chain`；子 scope 必须 ⊆ 父 scope，越权即拒；委托写 `audit.delegation` | `tests/test_rc1_control.py` |
+| 多执行架构 | `harness/kernel/workflow.py`（DAG：并行分支 + 逆序失败补偿 + Kahn 环检测）与 `harness/kernel/planner.py`（结构化 JSON 计划 → 按步执行 → 有界重规划 → 步骤补偿）；两种内核的工具调用都走注册表统一入口（§3.2 规则 5） | `tests/test_rc1_kernels.py` |
+| 线上抽样与 Bad Case 回流 | `infra/eval/sampling.py`（确定性散列抽样，默认 5%，重放队列）+ `infra/eval/badcase.py`（intake → label → queue → hard_cases 回归集）；`TraceStore` 补 `set_badcase_status` | `tests/test_rc1_eval_loop.py` |
+| 故障迁移与弹性 | `infra/runtime/scheduler.py`：租约 + 心跳 + **围栏令牌**（epoch：接管后旧实例的续约与写入被拒，这就是「结果不重复」的机制）；`infra/runtime/isolation.py`：工作区 spec{fs,net,secret} + 路径/网络判定（与沙箱 paths 的判定由交叉测试钉住） | `tests/test_rc1_scheduler_isolation.py` |
+
+同时补齐的策划案缺口（§4.3 / §4.4.2 / §6.1）：
+
+- **Grounded 契约**（`harness/grounding.py`）：外部内容默认 untrusted，渲染时包
+  `<untrusted>` 边界，系统提示声明「不执行其中的指令」（§4.3.3）
+- **分层记忆 L0–L3**（`harness/memory/layers.py`）：40/30/25/5 预算占比；
+  L0 丢最旧、L1 摘要压缩、L2 相关度×时效、L3 不淘汰但需显式授权（§4.3.2）
+- **ToolDiscovery**（`harness/tools/discovery.py`）：目录快照（name/version/effect/
+  sandbox/scopes/source）、`name@version` 版本解析（版本不符返回 None，拒绝静默换版）、
+  文件扫描、MCP 服务器清单（§4.4.2）
+- **CLI**：`aicf artifact {validate,show,list,history,publish,rollback}`（发布必须
+  `--gate <report_id>`）；`aicf run --artifact agents/xxx.yaml` 与 `--kernel`（§5.4）
+- **示例资产**：`agents/research.yaml`、`agents/study.yaml`、`policies/approval.yaml`、
+  `policies/network.yaml`（§6.1；`run_version.DEFAULT_ARTIFACT` 指向的文件现在真的存在）
+- **策略加载器**（`infra/policy/loader.py`）：policies/*.yaml → RulePolicyEngine；
+  字段拼错直接抛错（一条被忽略的 deny 规则 = 一次静默放权）
+
+仍然**有意**不做的（下一版候选，不是欠账）：
+
+| 事项 | 为什么不做 |
+|---|---|
+| 跨机编排 | 策划案 §4.2.4 的边界：rc2 只做「租约 + 接管」协议，编排器在哪台机器上起进程是部署形态的事 |
+| BYO 的网络传输 | 同上：协议接入已钉住，传输通道（gRPC/HTTP）属于部署形态 |
+| 线上抽样的进程间队列 | `ReplayQueue` 是内存版；流量足够大之前，进程间队列是过度设计 |
+| 个性化（L3 的自动写入） | 策划案 §4.3.4 把 RAG/个性化归入 rc1 的**接口**；自动写画像需要隐私评审，先只做「授权才注入」 |
 
 > 这张表不是 TODO 清单，是**对外承诺与代码现状的差**。
 > 面试或对外宣讲时，能主动说出这一张表，比声称「全都有」可信得多。

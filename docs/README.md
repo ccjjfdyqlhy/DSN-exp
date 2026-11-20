@@ -45,6 +45,7 @@ docs/app-development.md  -> write a new application
 | [security.md](security.md) | the security model: tool contracts, admission, approval, sandbox, identity, audit | touching anything that can cause side effects |
 | [runtime.md](runtime.md) | the managed runtime: journal, checkpoint, idempotency, recovery | touching session state or resume behaviour |
 | [evaluation.md](evaluation.md) | the evaluation loop: dataset language, four gates, run versions, regression | touching anything that changes agent behaviour |
+| [control-plane.md](control-plane.md) | the control plane: artifacts, lifecycle, cost ledger, BYO adoption, agent identity, leases | publishing an artifact or attributing cost |
 | [harness.md](harness.md) | agent loop control flow and events, `AgentSpec`, tools, context trimming, hooks, learning subsystem | changing agent behavior |
 | [skills.md](skills.md) | skill directory layout, `skill.yaml`, capability injection, load-time validation, `skill.env`, runtime api | writing a skill |
 | [infra.md](infra.md) | orchestrator layers, scheduler, providers, resource pool, policy, store, finetune subsystem, device gate | changing models, resources or storage |
