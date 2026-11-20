@@ -36,7 +36,7 @@ def test_cli_setup_fills_the_three_kernel_ports(tmp_path: Path):
         from aicf.harness.approval.base import ApprovalRequest
 
         decision = asyncio.run(ports['approval'].request(
-            ApprovalRequest(tool='file.edit', args_preview='{}')))
+            ApprovalRequest(id='w4-req-1', tool='file.edit', args_preview='{}')))
         assert decision is not None
     finally:
         store.close()
