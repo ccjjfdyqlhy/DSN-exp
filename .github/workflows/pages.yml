@@ -17,6 +17,8 @@ on:
       - 'aicf/**'
       - 'tests/**'
       - 'scripts/**'
+      # workflow 自己也改了，得重建一次（否则改了半天不生效）。
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -52,8 +54,7 @@ jobs:
           pip install -e ".[mcp,anthropic,socks]"
           pip install pytest pytest-asyncio
           python -m pytest -q tests/ -m "not known_broken and not fault and not mutation" > pytest.log 2>&1 || true
-          python scripts/write_tests_badge.py pytest.log > docs/site/tests.json
-          cat docs/site/tests.json
+          python scripts/write_tests_badge.py pytest.log --out docs/site/tests.json
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

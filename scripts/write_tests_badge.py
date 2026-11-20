@@ -8,7 +8,9 @@ README 顶部的 CI badge 只说明「绿了没绿」，看不出这套东西到
 
 用法：
     python -m pytest -q tests/ > pytest.log 2>&1 || true
-    python scripts/write_tests_badge.py pytest.log > docs/site/tests.json
+    python scripts/write_tests_badge.py pytest.log --out docs/site/tests.json
+
+不给 --out 时打到 stdout（方便管道）。
 
 输出是 shields.io 的 endpoint 契约（schemaVersion 1）：
     {"schemaVersion": 1, "label": "tests", "message": "1288 passed", "color": "brightgreen"}
@@ -72,18 +74,33 @@ def build_badge(counts: dict[str, int]) -> dict[str, str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2:
-        print("用法: write_tests_badge.py <pytest 输出文件>", file=sys.stderr)
+    args = argv[1:]
+    out: Path | None = None
+    if "--out" in args:
+        i = args.index("--out")
+        if i + 1 >= len(args):
+            print("--out 后面要跟文件名", file=sys.stderr)
+            return 2
+        out = Path(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    if not args:
+        print("用法: write_tests_badge.py <pytest 输出文件> [--out <json 文件>]",
+              file=sys.stderr)
         return 2
-    path = Path(argv[1])
+    path = Path(args[0])
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         print(f"读不到 {path}: {exc}", file=sys.stderr)
         text = ""
     badge = build_badge(parse_summary(text))
-    json.dump(badge, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
+    payload = json.dumps(badge, ensure_ascii=False)
+    if out is None:
+        print(payload)
+        return 0
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(payload + "\n", encoding="utf-8")
+    print(payload)
     return 0
 
 
