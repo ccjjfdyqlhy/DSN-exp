@@ -64,6 +64,11 @@ class AgentSpec:
     security_audit: bool = True              # 不可删审计存储（§4.4.7；False = 仅 trace 面）
     runtime: Any = None                      # ManagedRuntime: tool intents land in the journal; None = no idempotency
     embedding_client: Any = None             # embedding backend for semantic recall; None = assembler-level client or none
+    memory_mode: str = "off"                 # off | layered: layered routes recall through the L0-L3 budget view
+    memory_budget: int = 12000               # total chars the layered view may inject per turn
+    memory_budgets: Optional[dict] = None    # per-layer ratio overrides (must sum to 1.0)
+    profile_authorized: Any = None           # L3 disclosure gate; None = L3 never injects (fail-closed)
+    session_store: Any = None                # app-provided SessionStore for the memory_port registration
 
 
 class AssembledAgent:
@@ -274,6 +279,13 @@ class AgentAssembler:
             else:
                 memory = base_memory
             runtime.register("memory", memory)
+            # the MemoryStorePort has a framework default now (W3.2): apps that
+            # speak the port resolve something real instead of a dangling protocol
+            from ..memory.session_port import SessionMemoryStore
+            runtime.register("memory_port", SessionMemoryStore(
+                session_store=spec.session_store,
+                recall=base_memory,
+                embedding_client=spec.embedding_client or self.embedding_client))
 
         # 8) 安全守卫
         #

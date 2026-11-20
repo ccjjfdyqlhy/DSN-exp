@@ -5,6 +5,7 @@
 
 from .base import MemoryEntry, IMemoryStore, MemoryStorePort
 from .in_memory import InMemoryStore
+from .persistent import SqliteVectorMemory
 from .provenance import (
     DisclosureMatrix,
     DisclosureRule,
@@ -13,6 +14,14 @@ from .provenance import (
     MemorySource,
     ProvenanceMemoryStore,
 )
+from .session_port import SessionMemoryStore
+from .topic import (
+    DriftTopicDetector,
+    TopicDecision,
+    TopicDetectorPort,
+    TopicManager,
+    TopicRecord,
+)
 from .vector import VectorIndex, cosine_similarity, pack_embedding, unpack_embedding
 
 __all__ = [
@@ -20,6 +29,13 @@ __all__ = [
     "IMemoryStore",
     "MemoryStorePort",
     "InMemoryStore",
+    "SqliteVectorMemory",
+    "SessionMemoryStore",
+    "DriftTopicDetector",
+    "TopicDecision",
+    "TopicDetectorPort",
+    "TopicManager",
+    "TopicRecord",
     "DisclosureMatrix",
     "DisclosureRule",
     "EvidenceGate",

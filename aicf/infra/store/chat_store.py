@@ -15,6 +15,19 @@ from .base import Migration, MigrationRunner
 from .sqlite import SqliteStore
 
 _MIGRATIONS = [
+    Migration("002_memory_vectors", lambda c: c.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS memory_vectors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            text TEXT NOT NULL,
+            role TEXT DEFAULT 'user',
+            meta TEXT DEFAULT '{}',
+            vec BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )),
     Migration("001_sessions", lambda c: c.executescript(
         """
         CREATE TABLE IF NOT EXISTS sessions (
@@ -201,3 +214,45 @@ class SessionStore:
         if sid:
             self.store.execute("UPDATE sessions SET summary = ? WHERE id = ?",
                                (summary[:200], sid))
+
+    # ── Memory vectors (W3.3) ───────────────────────────
+    #
+    # Persistent embeddings for long-term recall: the float vectors ride in
+    # BLOBs via pack_embedding / unpack_embedding, similarity is plain
+    # cosine at read time (fine at the few-thousand-row scale).
+    # Rows come back as plain dicts -- this is the infra layer, it does not
+    # know harness MemoryEntry; the harness-side wrapper converts.
+
+    def save_vector(self, text: str, vector: list[float], *,
+                    role: str = 'user', meta: Optional[dict] = None,
+                    session_id: Optional[str] = None) -> None:
+        from aicf.infra.vector import pack_embedding
+
+        sid = session_id or self._session_id
+        self.store.execute(
+            "INSERT INTO memory_vectors (session_id, text, role, meta, vec, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, text, role, json.dumps(meta or {}, ensure_ascii=False),
+             pack_embedding(vector), _now()))
+
+    def similar_vectors(self, query_vector: list[float], *,
+                        k: int = 5) -> list[dict]:
+        from aicf.infra.vector import unpack_embedding, cosine_similarity
+
+        rows = self.store.execute(
+            "SELECT text, role, meta, vec FROM memory_vectors ORDER BY id DESC")
+        scored = []
+        for r in rows:
+            score = cosine_similarity(query_vector, unpack_embedding(r["vec"]))
+            scored.append((score, r))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [{"text": r["text"], "role": r["role"],
+                 "meta": dict(json.loads(r["meta"] or "{}"), score=score)}
+                for score, r in scored[:max(1, k)]]
+
+    def count_vectors(self) -> int:
+        rows = self.store.execute("SELECT COUNT(*) AS c FROM memory_vectors")
+        return int(rows[0]["c"]) if rows else 0
+
+    def clear_vectors(self) -> None:
+        self.store.execute("DELETE FROM memory_vectors")
