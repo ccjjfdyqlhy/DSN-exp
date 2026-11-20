@@ -43,8 +43,8 @@ class CapabilitySet:
     context_window: int = 128_000
 
     @classmethod
-    def negotiate(cls, model: Any, requested: "CapabilitySet | None" = None
-                 ) -> "CapabilitySet":
+    def negotiate(cls, model: Any, requested: CapabilitySet | None = None
+                 ) -> CapabilitySet:
         """按模型的真实能力收敛请求。
 
         model 可以是：
@@ -59,7 +59,7 @@ class CapabilitySet:
             return want
         return want.intersect(declared)
 
-    def intersect(self, other: "CapabilitySet") -> "CapabilitySet":
+    def intersect(self, other: CapabilitySet) -> CapabilitySet:
         """取两份能力的交集（更保守的那一份）。"""
         return CapabilitySet(
             tool_calls=self.tool_calls and other.tool_calls,
@@ -73,7 +73,7 @@ class CapabilitySet:
             context_window=min(self.context_window, other.context_window),
         )
 
-    def with_tool_calls(self, enabled: bool) -> "CapabilitySet":
+    def with_tool_calls(self, enabled: bool) -> CapabilitySet:
         return replace(self, tool_calls=enabled)
 
     def to_dict(self) -> dict:

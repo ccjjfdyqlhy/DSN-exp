@@ -103,10 +103,10 @@ class ExecutionKernel(Protocol):
 
 
 __all__ = [
+    'CapabilitySet',
     'ExecutionKernel',
     'KernelContext',
     'KernelResult',
     'KernelSpec',
     'KernelStatus',
-    'CapabilitySet',
 ]

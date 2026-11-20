@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from ..agent.loop import AgentLoop
 from ..runtime_client import NullRuntimeClient
@@ -34,7 +34,7 @@ class ReactKernel:
     def __init__(self, *, client: Any = None, tools: Any = None,
                  adapter: Any = None, max_steps: int = 8,
                  max_output_chars: int = 6000,
-                 max_seconds: Optional[float] = None,
+                 max_seconds: float | None = None,
                  on_progress: Any = None, on_tool_error: Any = None,
                  toolbox: Any = None, on_usage: Any = None,
                  deps: Any = None, version: str = '1.0'):
@@ -94,7 +94,7 @@ class ReactKernel:
         try:
             result = await loop.run_async(list(ctx.input),
                                           system_prompt=ctx.system_prompt)
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.exception('ReAct 内核执行失败')
             return KernelResult(status='failed', stop_reason=str(error),
                                  text=str(error))
