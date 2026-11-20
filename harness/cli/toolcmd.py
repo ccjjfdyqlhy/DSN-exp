@@ -88,8 +88,12 @@ def cmd_exec(args: Any) -> int:
         timeout=args.approval_timeout)
 
     runtime, store = build_runtime(args.db, args.name)
+    # 不可删审计（策划案 §4.4.7）：手工执行也落审计，不留旁路。
+    from infra.observability.audit import AuditLog
+    audit_log = AuditLog()
     guard = ToolGuard(policy=engine, approval=approval, mode=mode,
-                      identity=None, runtime=runtime, session_id=args.name)
+                      identity=None, runtime=runtime, audit=audit_log,
+                      session_id=args.name)
     registry.attach_guard(guard)
 
     try:

@@ -61,6 +61,7 @@ class AgentSpec:
     security_approval: Any = None            # 审批代理（注入后 effectful 工具需要审批）
     security_sandbox: Any = None             # 沙箱后端（None = 用守卫默认档）
     security_mode: str = ""                  # strict | legacy；空 = 读环境变量
+    security_audit: bool = True              # 不可删审计存储（§4.4.7；False = 仅 trace 面）
 
 
 class AssembledAgent:
@@ -276,12 +277,22 @@ class AgentAssembler:
             policy = RulePolicyEngine(
                 auto_approve_risk=('low' if spec.security_approval is not None
                                    else 'high'))
+        # 不可删审计（策划案 §4.4.7）：守卫的 audit.* 事件在这里落独立存储。
+        # AuditLog 不挂 telemetry —— trace 面的扇出由守卫自己的 telemetry 口
+        # 负责，两边各管各的（同流但独立存储）。
+        audit_log = None
+        if spec.security_audit:
+            from infra.observability.audit import AuditLog
+            audit_log = AuditLog()
         guard = ToolGuard(policy=policy,
                           approval=spec.security_approval,
                           sandbox=spec.security_sandbox,
+                          audit=audit_log,
                           mode=spec.security_mode or default_security_mode())
         tools.attach_guard(guard)
         runtime.register("guard", guard)
+        if audit_log is not None:
+            runtime.register("audit_log", audit_log)
 
         # 9) Agent 循环
         loop = AgentLoop(self.client, tools, max_steps=spec.max_steps,

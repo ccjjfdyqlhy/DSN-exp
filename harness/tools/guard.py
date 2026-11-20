@@ -147,6 +147,7 @@ class ToolGuard:
                  telemetry: Any = None,
                  runtime: Any = None,
                  identity: Any = None,
+                 audit: Any = None,
                  mode: SecurityMode = STRICT_MODE,
                  session_id: str = '',
                  turn_id: str = '',
@@ -164,6 +165,12 @@ class ToolGuard:
         self.telemetry = telemetry
         self.runtime = runtime or NullRuntimeClient()
         self.identity = identity
+        #: 不可删审计存储（策划案 §4.4.7「同流但独立存储、不可被业务删除」）。
+        #: 鸭子类型契约：只要提供 ``record(kind, payload)`` 一个方法 ——
+        #: infra.observability.audit.AuditLog 满足它。audit.* 事件在这里
+        #: 落独立存储；telemetry 面的 trace 扇出不因此重复（AuditLog
+        #: 构造时不挂 telemetry，trace 由守卫自己的 telemetry 口负责）。
+        self.audit = audit
         self.mode = mode
         self.session_id = session_id
         self.turn_id = turn_id
@@ -300,6 +307,14 @@ class ToolGuard:
                     'violation': str(violation.get('code', '')),
                 })
                 self._emit('audit.denied', {
+                    'identity': getattr(self.identity, 'uid', '') or '',
+                    'tool': tool.name,
+                    'reason': 'sandbox',
+                    'violation': str(violation.get('code', '')),
+                    'detail': str(violation.get('detail', '')),
+                })
+                self._record_audit({
+                    'kind': 'audit.denied',
                     'identity': getattr(self.identity, 'uid', '') or '',
                     'tool': tool.name,
                     'reason': 'sandbox',
@@ -474,6 +489,21 @@ class ToolGuard:
         except Exception:  # noqa: BLE001
             logger.exception('遥测事件发送失败: %s', kind)
 
+    def _record_audit(self, payload: dict[str, Any]) -> None:
+        """把一条 audit.* 事件落进**不可删**的独立存储（§4.4.7）。
+
+        与 _emit（trace 面）并行调用：trace 会被轮转清理，审计不会 ——
+        「审计可被业务删除 = 没有审计」。审计存储故障**不阻断调用**：
+        丢进 trace 的审计仍在（同流），把拒绝升级成故障会让
+        「策略判定」被「审计可用性」劫持。
+        """
+        if self.audit is None:
+            return
+        try:
+            self.audit.record(payload.get('kind', ''), dict(payload))
+        except Exception:  # noqa: BLE001
+            logger.exception('审计存储写入失败（trace 面的审计仍在）')
+
     def _emit_denied(self, tool: Tool, decision: PolicyDecision) -> None:
         """审计：一次被拒绝的调用。
 
@@ -482,6 +512,13 @@ class ToolGuard:
         让复盘时能按原因分组。
         """
         self._emit('audit.denied', {
+            'identity': getattr(self.identity, 'uid', '') or '',
+            'tool': tool.name,
+            'reason': decision.reason,
+            'detail': decision.detail,
+        })
+        self._record_audit({
+            'kind': 'audit.denied',
             'identity': getattr(self.identity, 'uid', '') or '',
             'tool': tool.name,
             'reason': decision.reason,
@@ -500,7 +537,7 @@ class ToolGuard:
     def _audit_call(self, tool: Tool, spec: ToolSpec, decision: PolicyDecision,
                     duration_ms: float, result: ToolResult,
                     approved: bool, args: dict[str, Any]) -> None:
-        self._emit('audit.tool_call', {
+        call_audit = {
             'identity': getattr(self.identity, 'uid', '') or '',
             'tool': tool.name,
             'version': spec.version,
@@ -512,7 +549,9 @@ class ToolGuard:
             'decision': 'approved' if approved else 'auto',
             'duration': duration_ms,
             'outcome': 'ok' if result.success else 'error',
-        })
+        }
+        self._emit('audit.tool_call', call_audit)
+        self._record_audit({'kind': 'audit.tool_call', **call_audit})
 
     def _blocked_result(self, tool: Tool,
                         decision: PolicyDecision) -> ToolResult:
