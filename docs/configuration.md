@@ -131,6 +131,30 @@ never load.
 - 依赖官方 SDK：`pip install "mcp>=1.2"`（未装时仅外部 MCP 不可用）；
 - 接入语义与惰性连接的设计见 [harness.md §4.5](harness.md)。
 
+### 2.10 资源策略档：随时可用 vs 显存（`AICF_RESOURCE_PROFILE`）
+
+愿景里写了「随时可用」，但 IdleReaper 默认会在闲置后卸载 ASR/TTS ——
+用户安静 15 分钟，第一次开口就要等模型重新加载。三档把取舍摆在明面上：
+
+| 档位 | 行为 | 代价 |
+|---|---|---|
+| `resident` | 永不自动卸载 | 显存一直占着（ASR/TTS ≈3.8G + decision 16.5G） |
+| `balanced` | 各资源按自己的配置来（**默认**） | 现状行为，不改变任何独立配置 |
+| `eco` | tts/asr 闲置 600s、vlm/decision 闲置 300s 即卸 | 每次冷启动重新加载 |
+
+优先级：`AICF_RESOURCE_PROFILE` 环境变量 > `~/.aicf/resource_profile`
+配置文件 > 默认 balanced。CLI 查看/切换：
+
+```bash
+aicf resources profile                 # 看当前档位、来源、每类资源超时
+aicf resources profile --set resident  # 写配置文件（环境变量会赢过它）
+```
+
+代码路径：`aicf/infra/resources/profiles.py`（`apply_profile` 在
+`pool.enable_idle_shutdown()` 时自动应用）。验收见
+`tests/test_resource_profiles.py`：resident 档下 reaper 永不回收，
+第一次语音请求没有冷启动延迟。
+
 ---
 
 ## 三、配置生效路径速查

@@ -521,8 +521,15 @@ class ResourcePool(ModelScheduler):
         只有在 :class:`ResourceSpec` 上设置了 ``idle_timeout > 0`` 的资源
         才会被回收；其余资源不受影响。
 
+        启用前先应用资源策略档（roadmap 段 6）：resident（永不卸载）/
+        eco（激进回收）会**全局覆盖**各资源的 idle_timeout；
+        balanced（默认，未配置时）不动任何配置 —— 各资源的独立设置继续有效。
+
         :param interval: 后台检查周期（秒）。
         """
+        from .profiles import apply_profile, resolve_profile
+
+        apply_profile(self, resolve_profile())
         if self._idle_reaper is None:
             from .idle import IdleReaper
 

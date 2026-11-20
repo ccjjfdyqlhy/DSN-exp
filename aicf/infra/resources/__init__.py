@@ -31,6 +31,13 @@ from .launch_modes import (
     resolve_conda_exe,
 )
 from .idle import IdleReaper
+from .profiles import (
+    ResourceProfile,
+    apply_profile,
+    describe_profile,
+    resolve_profile,
+    save_profile,
+)
 
 __all__ = [
     "ResourceKind",
@@ -43,6 +50,11 @@ __all__ = [
     "LaunchMode",
     "LaunchSpec",
     "IdleReaper",
+    "ResourceProfile",
+    "apply_profile",
+    "describe_profile",
+    "resolve_profile",
+    "save_profile",
     "resolve_conda_exe",
     "conda_root",
     "conda_env_dir",
