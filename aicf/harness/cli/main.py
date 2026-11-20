@@ -10,6 +10,7 @@
 #   session   会话列表 / 从 journal 恢复
 #   resources 资源策略档：随时可用 vs 显存（resident/balanced/eco）
 #   learn     从 trace 构建监督微调数据集（learning/finetune 的第二消费者）
+#   finetune  训练作业与晋级：learn 产出的数据集在这里变成生效的适配器（W7）
 #   artifact  Agent 资产的校验 / 目录 / 发布 / 回滚（策划案 §5.4）
 #
 # 设计原则：
@@ -23,7 +24,7 @@ import argparse
 import sys
 from typing import Any, Optional, Sequence
 
-from . import artifactcmd, evalcmd, initcmd, learncmd, runcmd, resourcescmd, sessioncmd, toolcmd
+from . import artifactcmd, evalcmd, finetunecmd, initcmd, learncmd, runcmd, resourcescmd, sessioncmd, toolcmd
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,8 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── resources ────────────────────────────────────────
     resourcescmd.register(sub)
 
-    # ── learn ────────────────────────────────────────────
+    # ── learn / finetune ─────────────────────────────────
     learncmd.register(sub)
+    finetunecmd.register(sub)
 
     # ── artifact ─────────────────────────────────────────
     artifactcmd.register(sub)
@@ -198,6 +200,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return resourcescmd.cmd_profile(args)
         print('用法: aicf resources profile [--set resident|balanced|eco]')
         return 2
+    if command == 'finetune':
+        func = getattr(args, 'func', None)
+        if func is None:
+            print('用法: aicf finetune {submit|status|promote|rollback|active}')
+            return 2
+        return func(args)
     if command == 'learn':
         func = getattr(args, 'func', None)
         if func is None:

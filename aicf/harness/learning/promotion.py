@@ -37,12 +37,17 @@ class PromotionPolicy:
     min_samples: int = 20
     #: 是否要求本地判官层也参与（避免只靠规则就上线）。
     require_local_judge: bool = True
+    #: 接受 infra/eval 的 Gate 报告作为晋级依据（W7）。learning.evaluator 的
+    #: 分层分数没有生产者（CLI 用的是 infra/eval），门槛要求它就是死锁 ——
+    #: 打开这个开关后，一份 verdict=pass 的四闸门报告即可替代分层分数。
+    accept_gate_report: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "min_score": self.min_score,
             "min_samples": self.min_samples,
             "require_local_judge": self.require_local_judge,
+            "accept_gate_report": self.accept_gate_report,
         }
 
 
@@ -75,9 +80,15 @@ class PromotionManager:
 
     # ── 评测 ──
 
-    def evaluate_candidate(self, job_id: str, score: float, samples: int,
-                           *, layers: Optional[dict] = None) -> PromotionDecision:
-        """按门槛判断一个候选能不能进暂存区。"""
+    def evaluate_candidate(self, job_id: str, score: float = 0.0, samples: int = 0,
+                           *, layers: Optional[dict] = None,
+                           gate_report: Optional[dict] = None) -> PromotionDecision:
+        """按门槛判断一个候选能不能进暂存区。
+
+        gate_report 是 infra/eval 的 Gate 报告（to_dict 形状）：policy 开了
+        accept_gate_report 时，verdict=pass 的报告就是完整的晋级依据 ——
+        四闸门（质量/安全/成本/回归）比单层分数是更强的证据。
+        """
         decision = PromotionDecision(score=score, samples=samples)
         job = self._store.get_job(job_id)
         if job is None:
@@ -85,6 +96,14 @@ class PromotionManager:
             return decision
         if job.state != JobState.SUCCEEDED:
             decision.reason = f"作业未成功: {job.state.value}"
+            return decision
+        if gate_report is not None and self.policy.accept_gate_report:
+            if not gate_report.get("passed"):
+                decision.reason = "Gate 报告未通过，不予晋级"
+                return decision
+            decision.allowed = True
+            decision.reason = "Gate 报告通过（quality/safety/regression/cost）"
+            decision.stages = ["candidate", "staged"]
             return decision
         if samples < self.policy.min_samples:
             decision.reason = f"样本数不足（{samples} < {self.policy.min_samples}）"
@@ -105,10 +124,12 @@ class PromotionManager:
 
     def promote(self, job_id: str, slot: str, *, score: Optional[float] = None,
                 samples: Optional[int] = None, layers: Optional[dict] = None,
+                gate_report: Optional[dict] = None,
                 force: bool = False) -> dict[str, Any]:
         """把作业的适配器晋级为槽位的生效版本。
 
-        force=True 时跳过门槛（用于紧急修复场景），但会在返回值里标注。
+        force=True 时跳过门槛（用于紧急修复场景），但会在返回值里标注；
+        gate_report 走 accept_gate_report 通道，同样免 score/samples。
         """
         job = self._store.get_job(job_id)
         if job is None:
@@ -117,10 +138,13 @@ class PromotionManager:
             raise ValueError(f"作业未成功，不能晋级: {job_id} ({job.state.value})")
 
         decision = None
-        if not force:
+        if not force and gate_report is None:
             if score is None or samples is None:
                 raise ValueError("晋级必须提供 score 与 samples（或使用 force=True）")
-            decision = self.evaluate_candidate(job_id, score, samples, layers=layers)
+        if not force:
+            decision = self.evaluate_candidate(job_id, score or 0.0, samples or 0,
+                                               layers=layers,
+                                               gate_report=gate_report)
             if not decision.allowed:
                 raise ValueError(f"不满足晋级门槛: {decision.reason}")
 
