@@ -59,15 +59,15 @@ def build_badge(counts: dict[str, int]) -> dict[str, str]:
     passed = counts.get("passed", 0)
     failed = counts.get("failed", 0) + counts.get("error", 0)
     if not counts:
-        return {"schemaVersion": "1", "label": "tests",
+        return {"schemaVersion": 1, "label": "tests",
                 "message": "unknown", "color": "lightgrey"}
     if failed:
-        return {"schemaVersion": "1", "label": "tests",
+        return {"schemaVersion": 1, "label": "tests",
                 "message": f"{failed} failed", "color": "red"}
     if passed == 0:
-        return {"schemaVersion": "1", "label": "tests",
+        return {"schemaVersion": 1, "label": "tests",
                 "message": "unknown", "color": "lightgrey"}
-    return {"schemaVersion": "1", "label": "tests",
+    return {"schemaVersion": 1, "label": "tests",
             "message": f"{passed} passed", "color": "brightgreen"}
 
 
