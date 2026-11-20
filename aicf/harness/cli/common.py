@@ -78,6 +78,28 @@ def build_registry(include: Optional[list[str]] = None,
     return registry
 
 
+def attach_project_tools(registry: ManagedToolRegistry, *,
+                         quiet: bool = False) -> int:
+    """把当前目录 ./tools/ 下的项目本地工具挂进注册表（`aicf init` 的约定）。
+
+    只认带标记文件（tools/.aicf_tools）的目录 —— 世界上有一堆项目的
+    顶层 tools/ 是构建脚本，未经声明就执行别人的代码不可接受。
+    加载失败 / 重名 → 逐条报告到 stderr，不阻断其它工具。
+    返回成功挂载的数量。
+    """
+    local_dir = Path.cwd() / 'tools'
+    from aicf.harness.tools.local import attach_local_tools, is_project_tools_dir
+
+    if not is_project_tools_dir(local_dir):
+        return 0
+
+    def report(message: str) -> None:
+        if not quiet:
+            eprint(f'[aicf] {message}')
+
+    return attach_local_tools(registry, local_dir, on_error=report)
+
+
 def build_model(*, model: str = '', base_url: str = '', api_key: str = '',
                 prompt: str = ''):
     """建一个模型客户端。
@@ -144,6 +166,7 @@ def security_mode(default: str = 'strict') -> str:
 
 __all__ = [
     'ToolCatalog',
+    'attach_project_tools',
     'build_model',
     'build_registry',
     'build_runtime',

@@ -16,6 +16,7 @@ from typing import Any
 
 from .common import (
     ToolCatalog,
+    attach_project_tools,
     build_registry,
     build_runtime,
     eprint,
@@ -26,6 +27,9 @@ from .common import (
 
 def cmd_list(args: Any) -> int:
     registry = build_registry(include=args.include or None)
+    found = attach_project_tools(registry)
+    if found:
+        eprint(f'[aicf] 已从 ./tools/ 装载 {found} 个项目本地工具')
     rows = ToolCatalog(registry).entries()
     if args.json:
         out_json(rows)
@@ -54,6 +58,7 @@ def cmd_exec(args: Any) -> int:
         return 2
 
     registry = build_registry(include=args.include or None)
+    attach_project_tools(registry)
     tool = registry.get(args.name)
     if tool is None:
         eprint(f'工具不存在: {args.name}')

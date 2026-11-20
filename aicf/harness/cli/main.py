@@ -2,15 +2,18 @@
 # `aicf` 命令行入口。
 #
 # 子命令：
-#   run      跑一次 agent，落 trace
-#   eval     拿 dataset + trace 打分
-#   gate     出四闸门报告
-#   tool     工具目录 / 手工执行
-#   session  会话列表 / 从 journal 恢复
-#   artifact Agent 资产的校验 / 目录 / 发布 / 回滚（策划案 §5.4）
+#   init      生成空白 Agent 骨架（接入点已接好，生成后立刻能跑）
+#   run       跑一次 agent，落 trace（--dataset 跑整个数据集）
+#   eval      拿 dataset + trace 打分（--group 只评子集）
+#   gate      出四闸门报告
+#   tool      工具目录 / 手工执行
+#   session   会话列表 / 从 journal 恢复
+#   resources 资源策略档：随时可用 vs 显存（resident/balanced/eco）
+#   learn     从 trace 构建监督微调数据集（learning/finetune 的第二消费者）
+#   artifact  Agent 资产的校验 / 目录 / 发布 / 回滚（策划案 §5.4）
 #
 # 设计原则：
-#   - 默认离线可用（不配 API key 也能跑通 run → eval → gate）
+#   - 默认离线可用（不配 API key 也能跑通 init → run → eval → gate）
 #   - 机器可读：--json 输出结构化结果
 #   - 失败方向一致：策略拒绝 / 审批超时 / 沙箱拦截都返回非 0 退出码
 
@@ -20,7 +23,7 @@ import argparse
 import sys
 from typing import Any, Optional, Sequence
 
-from . import artifactcmd, evalcmd, runcmd, sessioncmd, toolcmd
+from . import artifactcmd, evalcmd, initcmd, learncmd, runcmd, resourcescmd, sessioncmd, toolcmd
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,12 +57,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument('--run-id', default='', help='运行 id')
     run.add_argument('--session-id', default='', help='会话 id')
     run.add_argument('--case-id', default='', help='关联的评测 case id')
+    run.add_argument('--dataset', default='',
+                     help='跑整个数据集（每个用例一轮、一条 trace），如 offline')
+    run.add_argument('--trace-dir', default='traces',
+                     help='数据集模式下 trace 输出目录（默认 traces/）')
+    run.add_argument('--workspace', default='.aicf-workspace',
+                     help='数据集 setup 文件写入的工作区目录')
     run.add_argument('--db', default='aicf.db', help='运行时数据库')
     run.add_argument('--json', action='store_true', help='输出 JSON')
 
     # ── eval ─────────────────────────────────────────────
     evaluate = sub.add_parser('eval', help='对一批 trace 打分')
     evaluate.add_argument('--dataset', required=True, help='数据集路径')
+    evaluate.add_argument('--group', action='append', default=[],
+                          help='只评某几组（可重复、可逗号分隔，如 --group refusal,safety）')
     evaluate.add_argument('--traces', default='', help='trace 文件或目录')
     evaluate.add_argument('--artifact', default='', help='Agent 声明文件')
     evaluate.add_argument('--model', default='', help='模型名（进 run version）')
@@ -111,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
     session_resume.add_argument('--db', default='aicf.db', help='运行时数据库')
     session_resume.add_argument('--json', action='store_true')
 
+    # ── init ─────────────────────────────────────────────
+    initcmd.register(sub)
+
+    # ── resources ────────────────────────────────────────
+    resourcescmd.register(sub)
+
+    # ── learn ────────────────────────────────────────────
+    learncmd.register(sub)
+
     # ── artifact ─────────────────────────────────────────
     artifactcmd.register(sub)
 
@@ -159,6 +179,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return sessioncmd.cmd_resume(args)
         print('用法: aicf session {list|resume} ...')
         return 2
+    if command == 'init':
+        func = getattr(args, 'func', None)
+        if func is None:
+            print('用法: aicf init [项目名]')
+            return 2
+        return func(args)
+    if command == 'resources':
+        if args.resources_command == 'profile':
+            return resourcescmd.cmd_profile(args)
+        print('用法: aicf resources profile [--set resident|balanced|eco]')
+        return 2
+    if command == 'learn':
+        func = getattr(args, 'func', None)
+        if func is None:
+            print('用法: aicf learn --traces <path> [--out dir]')
+            return 2
+        return func(args)
     if command == 'artifact':
         func = getattr(args, 'func', None)
         if func is None:
