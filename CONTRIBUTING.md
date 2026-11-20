@@ -73,8 +73,8 @@ entries, and do not `git add -f` past the pre-commit hook.
 - f-strings, not `%` or `.format()`
 - no bare `except:`; catch the narrowest exception that can be handled;
   let errors propagate when there is nothing to do
-- no secrets in the diff, ever. provider keys live in the encrypted
-  local config, never in code or tests
+- no secrets in the diff, ever. provider keys come from the environment
+  (`OPENAI_API_KEY`) or from the caller, never from the repo
 
 ## layering rules for the engine
 
@@ -108,10 +108,10 @@ changes under `aicf/harness/` are the sensitive ones:
 
 ## releases
 
-maintainer-only. `python -m build`, verify the wheel contains only
-`harness` and `infra`, then publish (twine with an api token, or the
-tag-driven trusted publishing flow). bump the version in
-`pyproject.toml` in the release commit.
+maintainer-only. `python -m build`, verify the wheel contains only the
+top-level `aicf` package (`scripts/wheel_smoke.py` is that gate), then
+publish (twine with an api token, or the tag-driven trusted publishing
+flow). bump the version in `pyproject.toml` in the release commit.
 
 the pending publisher on pypi must point at this repository under its
 current name (`aicf-core`); it was renamed from `DSN-exp` when the

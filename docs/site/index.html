@@ -57,7 +57,7 @@
     </p>
 
     <ul class="promise-strip">
-      <li><span class="tag">Safe</span>策略闸门 · 人审批 · 沙箱 · 未决即拒绝</li>
+      <li><span class="tag">Safe</span>策略闸门 · 人审批 · 路径口径 · 未决即拒绝</li>
       <li><span class="tag">Idempotent</span>kill -9 可恢复 · 副作用不重放</li>
       <li><span class="tag">Measurable</span>trace → dataset 打分 → 四闸门报告</li>
     </ul>
@@ -86,7 +86,8 @@
             <td class="col-promise"><span class="tag tag-strong">Safe</span></td>
             <td>
               每个工具调用都过<strong>策略闸门</strong>；有副作用的工具需要<strong>人批准</strong>；
-              在<strong>沙箱</strong>内执行；<strong>未决即拒绝</strong>（deny-by-default）。
+              起进程的工具在执行前查路径与出网目标（<strong>不是</strong> OS 级隔离，
+              也没有容器 / 微虚机）；<strong>未决即拒绝</strong>（deny-by-default）。
             </td>
             <td class="col-check">
               <pre class="mini" data-lang="bash"><code>aicf tool exec proc.run \
@@ -147,7 +148,7 @@ aicf gate --run run.json --out gate.json</code></pre>
       <li>
         <div class="step-head">
           <span class="step-no">02</span>
-          <h3>看工具目录：副作用等级、沙箱档位、所需授权范围</h3>
+          <h3>看工具目录：副作用等级、声明的写口径、所需授权范围</h3>
         </div>
         <pre data-lang="bash"><code>aicf tool list</code></pre>
         <p class="expected">先知道每个工具能干什么，再决定让 agent 用哪些。</p>
@@ -339,7 +340,7 @@ aicf eval --dataset basic \
           </tr>
           <tr>
             <td><a href="../security.md"><code>security.md</code></a></td>
-            <td>安全模型：工具契约、准入、审批、沙箱、身份、审计</td>
+            <td>安全模型：工具契约、准入、审批、沙箱档位、身份、审计</td>
             <td class="col-when">要动任何有副作用的东西</td>
           </tr>
           <tr>

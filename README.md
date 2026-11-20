@@ -24,7 +24,7 @@ Most agent frameworks assume the process lives. This one assumes it will not.
 
 | | The claim | How you can check it |
 |---|---|---|
-| **Safe** | Every tool call goes through a policy gate, an approval step when the tool has side effects, and a sandbox. Anything undecided is **denied**. | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → refused |
+| **Safe** | Every tool call goes through a policy gate and, when the tool has side effects, an approval step. Anything undecided is **denied**. A tool that starts a process is checked before it runs — path scope, network target, `ulimit`s, environment whitelist — but it still runs with the operator's privileges: there is **no OS-level sandbox** (no container / micro-vm) yet. | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → refused |
 | **Idempotent** | A crashed run can be resumed without repeating side effects. `effectful` calls are never auto-replayed. | `pytest tests/fault/` — real `kill -9` in a subprocess |
 | **Measurable** | Every run produces a trace; every change is scored against a dataset and stopped by a four-gate report. | `aicf eval` → `aicf gate` |
 
@@ -37,7 +37,7 @@ pip install aicf-core
 ```
 
 ```bash
-# 1. What does each tool actually do? Effect level, sandbox tier, required scopes.
+# 1. What does each tool actually do? Effect level, declared write level, required scopes.
 aicf tool list
 
 # 2. Try to run a shell. It has side effects — so it waits for a human.
@@ -190,10 +190,11 @@ The definition of done for rc0 is three executable claims, and all three hold
 3. the run can be scored by a ≥30-case dataset and produce a four-gate report.
 
 **Those guarantees hold on the default paths.** An agent built with
-`create_agent` comes with a guard, `proc.run` executes inside a workspace
-sandbox, and both the SDK and the CLI write the tool intents into the journal
-— so after a crash the runtime can tell which side effects may already have
-happened.
+`create_agent` comes with a guard, and `proc.run` runs with the operator's
+privileges but scoped to the workspace — a path check before the process
+starts, `ulimit`s and an environment whitelist, not an OS-level sandbox.
+Both the SDK and the CLI write the tool intents into the journal — so after a
+crash the runtime can tell which side effects may already have happened.
 
 **1.0.0** closes the six items the rc0 roadmap listed as missing: the control
 plane, the workflow and planner kernels, agent identity with delegation, the
@@ -204,10 +205,10 @@ layers under one top-level package (`aicf.harness` / `aicf.infra` — see
 proves the installed wheel works. The release note is
 [docs/releases/v1.0.0.md](docs/releases/v1.0.0.md).
 
-What is left is the isolated sandbox (a container or a micro vm) and the
-deployment matters: the cross machine orchestration and the transport of the
-runtime you bring yourself. The plan, the acceptance criteria and the status
-of each workstream live in
+What is left is OS-level isolation (a container or a micro vm — the
+`isolated` backend tier is not built) and the deployment matters: the cross
+machine orchestration and the transport of the runtime you bring yourself.
+The plan, the acceptance criteria and the status of each workstream live in
 [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md).
 
 ---
@@ -229,7 +230,7 @@ python -m pytest -q tests/
 |---|---|
 | Know what 1.0.0-rc0 is doing and how it is verified | [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md) |
 | Learn the module map and dependency rules | [docs/architecture.md](docs/architecture.md) |
-| Understand the security model (deny-by-default, approval, sandbox, audit) | [docs/security.md](docs/security.md) |
+| Understand the security model (deny-by-default, approval, sandbox tiers, audit) | [docs/security.md](docs/security.md) |
 | Understand the managed runtime (journal, checkpoint, idempotency, recovery) | [docs/runtime.md](docs/runtime.md) |
 | Understand the evaluation loop (dataset, gates, run versions, regression) | [docs/evaluation.md](docs/evaluation.md) |
 | Use the core as a library | [docs/sdk_guide.md](docs/sdk_guide.md) |

@@ -35,25 +35,50 @@ prefer to stay anonymous.
 
 in scope:
 
-- the `aicf-core` distribution itself: the `harness` and `infra` packages
-  (agent engine, tool execution, session storage, model clients)
+- the `aicf-core` distribution itself: the `aicf.harness` and `aicf.infra`
+  packages (agent engine, tool execution, session storage, model clients)
 - the published pypi artifacts
 
 out of scope:
 
 - vulnerabilities in dependencies (report upstream, but you may still
   open a private report if a dependency is mishandled here)
-- the adcode client repository (separate project)
+- the `aicf-ui` web console repository (separate project)
 - anything requiring a compromised local machine or shell access to the
   operator's account
 
 ## posture notes
 
-- provider api keys are stored encrypted (`~/.adcode/config.json`,
-  keyring-backed) and are never logged or sent anywhere except the
-  configured provider endpoint
+what this package does protect:
+
+- every tool call goes through the deny-by-default policy gate, and a tool
+  that declares no contract is treated as the strictest one
+- effectful and destructive tools need a human approval; an approval
+  timeout counts as a denial, not a pass
+- a tool that starts a process is checked before it starts: the path scope
+  the tool declared (`readonly` keeps the working directory read-only,
+  `workspace` makes it writable), the network target, and `ulimit`s; the
+  child gets an environment whitelist instead of `os.environ`
+- every call leaves a record in the undeletable audit store - it is on by
+  default and can only be dropped explicitly (`security_audit=False`, which
+  keeps the trace face alone)
+
+what it does not protect:
+
+- **tools run with the operator's privileges by design: there is no
+  OS-level sandbox** - no container, no micro vm, no dropped privileges.
+  the shipped backend tier is `restricted` (subprocess + ulimits + a
+  pre-flight path check); it reports `degraded` because it checks, it does
+  not contain. the `isolated` tier (container / micro vm) is not built yet
+- the path check is lexical - it reads the command line before the process
+  starts, it does not confine the process afterwards
+- do not point the agent at untrusted workloads without understanding that
+  `proc.run`, `file.write` and `file.edit` act on real files
+- provider api keys are not stored by this package: there is no key store
+  and no encrypted config file. the key comes from the environment
+  (`OPENAI_API_KEY`) or from the caller (`create_agent(api_key=...)`), and
+  anything written to a trace, an event or the audit log goes through the
+  single redaction gate first
 - session databases and image stores live under the user data directory
-  and are never committed; `local/` is machine-local by policy
-- tools run with the operator's privileges by design: there is no
-  sandbox. do not point the agent at untrusted workloads without
-  understanding that `bash`, `write` and `edit` act on real files
+  (`$AICF_HOME`, else `~/.aicf`) and are never committed; `local/` is
+  machine-local by policy

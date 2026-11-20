@@ -37,7 +37,7 @@ rc0 只有三条 DoD，全部是**可执行**的：
 | 核心代码量 | `aicf/harness/` 20.8k 行 + `aicf/infra/` 16.6k 行 | `aicf/harness/` 26.1k 行 + `aicf/infra/` 24.1k 行 | `find harness infra -name '*.py' \| xargs wc -l` |
 | 测试基线 | 600 passed / 3 skipped | 1142 passed / 16 skipped（只算入库用例） | `pytest -q tests/` |
 | 审批 / 人在回路 | 零命中 | `aicf/harness/approval/`：协议 + broker + 会话缓存 | `grep -ri approv aicf/harness/ aicf/infra/` |
-| 沙箱 / 隔离 | 零命中 | `aicf/harness/tools/sandbox/`：路径判定 + restricted + namespaced；**守卫默认挂后端**，SDK 与 CLI 的默认路径都在沙箱里跑 | `grep -ri sandbox aicf/harness/ aicf/infra/` |
+| 沙箱 / 隔离 | 零命中 | `aicf/harness/tools/sandbox/`：路径判定 + restricted + namespaced；**守卫默认挂后端**，SDK 与 CLI 的默认路径都走沙箱后端（restricted 档：执行前判定 + ulimit + 环境变量白名单，**不是** OS 级隔离） | `grep -ri sandbox aicf/harness/ aicf/infra/` |
 | 幂等 | 零命中 | `aicf/harness/runtime_client.py` + `aicf/infra/runtime/idempotency.py`，两份实现由交叉测试钉住 | `grep -ri idempot aicf/harness/ aicf/infra/` |
 | Agent Identity | 只有用户态 `uid + scopes` | `aicf/infra/control/identity.py`：AgentIdentity + 委托链（子 scope ⊆ 父 scope，越权即拒）+ audit.delegation | `tests/test_rc1_control.py` |
 | Artifact / 控制面 | 零命中 | `aicf/infra/control/`：AgentArtifact（一种声明多处消费）、生命周期状态机（release 必须携带 pass 的 Gate 报告）、成本账本、BYO 纳管 | `tests/test_rc1_control.py` |
@@ -107,7 +107,7 @@ rc0 只有三条 DoD，全部是**可执行**的：
 | **T9** | R7 故障注入测试 | `tests/fault/*` | §8.2 的 7 条用例全部可自动运行 | ✅ 完成（7/7，59 条：46 条运行 + 11 条变异 + 2 条元测试） |
 | **T10** | R8 CLI | `aicf/harness/cli/*`、`pyproject.toml` | `aicf --help` 可用；run → eval → gate 跑通 | ✅ 完成 |
 | **T11** | R8 文档 | `docs/*`、`README*.md` | 每条验收标准映射到一个测试 | ✅ 完成 |
-| **T12** | 默认路径的安全接线 | `aicf/harness/tools/{guard,standard,registry,base}.py`、`aicf/harness/agent/assembler.py` | 守卫默认挂沙箱后端；`proc.run` 走沙箱；`batch.run` 走守卫；SDK 路径默认装守卫 | ✅ 完成（`test_rc0_default_path_security.py` 13 条，修复前 12 条红） |
+| **T12** | 默认路径的安全接线 | `aicf/harness/tools/{guard,standard,registry,base}.py`、`aicf/harness/agent/assembler.py` | 守卫默认挂沙箱后端（restricted 档）；`proc.run` 走沙箱后端的判定与限制；`batch.run` 走守卫；SDK 路径默认装守卫 | ✅ 完成（`test_rc0_default_path_security.py` 13 条，修复前 12 条红） |
 | **T13** | 托管运行时接入 CLI | `aicf/harness/cli/{common,runcmd,toolcmd,sessioncmd}.py` | `aicf run` / `tool exec` 落 journal；`session resume` 能算出恢复计划 | ✅ 完成（`test_rc0_cli_session.py` 5 条，修复前 4 条红） |
 | **T14** | 记忆读回 | `aicf/harness/memory/in_memory.py`、`aicf/harness/sdk.py` | `enable_memory=True` 会写入并召回，关键词检索支持中文 | ✅ 完成（`test_rc0_memory.py` 7 条） |
 | **T15** | CI 门禁补齐 | `.github/workflows/ci.yml` | contract 与 eval 两个 job；变异层进 nightly；test job 不再误收故障层 | ✅ 完成 |

@@ -24,7 +24,7 @@
 
 | | 承诺 | 你可以怎么验证 |
 |---|---|---|
-| **安全** | 每一次工具调用都过策略闸门；有副作用的要人点头；要进沙箱。**判定不出来就是拒绝。** | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → 被拒 |
+| **安全** | 每一次工具调用都过策略闸门；有副作用的要人点头。**判定不出来就是拒绝。** 会起进程的工具在启动前先被检查一遍（路径口径、出网目标、ulimit、环境变量白名单），但它仍以**操作者的权限**运行：**还没有 OS 级沙箱**（无容器 / 微虚机）。 | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → 被拒 |
 | **幂等** | 崩了能恢复，且不重复产生副作用。`effectful` 的调用**绝不**自动重放。 | `pytest tests/fault/` —— 子进程里真的 `kill -9` |
 | **可评测** | 每次运行产出 trace；每次改动都被数据集打分，并被四闸门报告拦住。 | `aicf eval` → `aicf gate` |
 
@@ -37,7 +37,7 @@ pip install aicf-core
 ```
 
 ```bash
-# 1. 每个工具到底能干什么？副作用等级、沙箱档位、需要的授权范围。
+# 1. 每个工具到底能干什么？副作用等级、声明的写口径、需要的授权范围。
 aicf tool list
 
 # 2. 试着跑个 shell。它有副作用 —— 所以要等人点头。
@@ -184,8 +184,9 @@ rc0 的完成定义是三条**可执行**的断言，三条都已达成（每条
 3. 这次运行能被一个 ≥30 case 的数据集打分，并产出一份四闸门报告。
 
 **默认路径上这些保证是成立的**：`create_agent` 装出来的 Agent 带守卫，
-`proc.run` 在工作区沙箱里跑，SDK 与 CLI 都会把工具意图写进 journal，
-所以一次崩溃之后能算出「哪些事我可能已经做过了」。
+`proc.run` 以操作者的权限运行，但口径限定在工作区 —— 启动前查路径、
+加 ulimit、只透传白名单里的环境变量，**不是** OS 级沙箱。SDK 与 CLI
+都会把工具意图写进 journal，所以一次崩溃之后能算出「哪些事我可能已经做过了」。
 
 **1.0.0** 把 rc0 清单上欠的六条都补齐了：控制面、Workflow / Planner 执行内核、
 Agent 身份与委托授权、线上抽样与 bad case 回流、调度器与工作区隔离，以及
@@ -194,7 +195,7 @@ Agent 身份与委托授权、线上抽样与 bad case 回流、调度器与工�
 真的能用」的发布闸门。发布说明见
 [docs/releases/v1.0.0.md](docs/releases/v1.0.0.md)。
 
-还差的是强隔离沙箱（容器 / 微虚机），以及属于部署形态而不是欠账的几件：
+还差的是 OS 级隔离（容器 / 微虚机 —— `isolated` 档还没建），以及属于部署形态而不是欠账的几件：
 跨机编排、BYO 的传输通道。计划、验收标准与每条工作流的状态都在
 [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md)。
 
@@ -217,7 +218,7 @@ python -m pytest -q tests/
 |---|---|
 | 知道 1.0.0-rc0 在做什么、怎么验收 | [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md) |
 | 搞懂模块地图与依赖规则 | [docs/architecture.md](docs/architecture.md) |
-| 搞懂安全模型（默认拒绝 / 审批 / 沙箱 / 审计） | [docs/security.md](docs/security.md) |
+| 搞懂安全模型（默认拒绝 / 审批 / 沙箱档位 / 审计） | [docs/security.md](docs/security.md) |
 | 搞懂托管运行时（journal / checkpoint / 幂等 / 恢复） | [docs/runtime.md](docs/runtime.md) |
 | 搞懂评测闭环（数据集 / 闸门 / run version / 回归） | [docs/evaluation.md](docs/evaluation.md) |
 | 把核心当库用 | [docs/sdk_guide.md](docs/sdk_guide.md) |

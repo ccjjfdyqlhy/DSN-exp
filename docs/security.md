@@ -153,9 +153,13 @@ class ToolSpec:
 
 检测不到强隔离后端时**不报错阻断**，但必须：
 
-- `SandboxResult.degraded = True`
-- 事件与审计里标注 `sandbox_degraded`
-- 上层策略可以选择「降级即拒绝」
+- `SandboxResult.degraded = True`（`restricted` 档恒为 True，工具把
+  这个标志回给调用方 —— `proc.run` 的返回体里就有它）
+- 被沙箱拒绝时，违规记录带 `degraded` 标志，守卫以 `reason='sandbox'`
+  落 `tool_blocked` 与 `audit.denied`
+- 「降级即拒绝」是**上层策略的选择权**，但当前策略引擎还没有这个开关，
+  事件词表里的 `sandbox_degraded` 也还没有生产者 —— 现状是「降级可见」，
+  不是「降级可拒」
 
 **绝不允许「以为自己在沙箱里」。** 这条是硬要求：
 一个不知道自己没被隔离的沙箱，比没有沙箱更危险。
@@ -163,8 +167,12 @@ class ToolSpec:
 ### 路径与网络
 
 - **文件**：路径先 `resolve` 再判前缀，防 `../` 与符号链接逃逸
-- **网络**：档位 + 域名 allowlist；出网请求经统一出口记录
-- **进程**：子进程树清理收进沙箱内部，工具不再自己 `killpg`
+- **网络**：档位 + 域名 allowlist；**判出来就不放行**，并记 `net:deny`
+  （restricted 档没有断网能力 —— 命令自己直连 IP 拦不住，只能靠审批与
+  事后审计兜）
+- **进程**：一次性执行（`proc.run`）的进程树由沙箱回收，且只对**子进程自己
+  的**进程组发信号（发之前先校验 pgid 不是调用者的）；会话式 shell 工具仍
+  自己收自己的进程树
 
 ### the write levels (the tool's own declaration decides)
 
@@ -214,9 +222,10 @@ class AgentIdentity:
 
 ### 脱敏只有一个出口
 
-`aicf.harness.telemetry.exporter.redact()` 是**唯一**的脱敏实现，
-`aicf/infra/observability/audit.py` 直接 re-export 它，并有测试断言两者是同一个函数
-（`audit_redact is exporter_redact`）。
+`aicf/infra/observability/redact.py` 的 `redact()` 是**唯一**的脱敏实现，
+`aicf/harness/telemetry/exporter.py` 与 `aicf/infra/observability/audit.py`
+都直接 re-export 它，并有测试断言三者指向同一个函数
+（`audit_redact is exporter_redact is infra_redact`）。
 
 理由：脱敏逻辑散落在各处时，最先漏掉的一定是某个不起眼的分支。
 
@@ -263,17 +272,21 @@ audit.delegation{from, to, scopes}
 ### 默认路径现在挂的是新路径
 
 `create_agent` 与 `aicf` 装出来的 Agent **默认带守卫**，
-`ToolGuard` 也**默认挂一个沙箱后端**（`RestrictedSandbox`，
-探测到强隔离后端时可以换成 `NamespacedSandbox`）。
+`ToolGuard` **默认挂 `RestrictedSandbox`**（降级档：子进程 + ulimit +
+路径白名单 + 环境变量白名单）。强隔离档要**显式装配**才换上 ——
+`NamespacedSandbox` 与 `detect_best_backend()` 都不在默认路径上。
 
 这意味着：
 
-- `proc.run` 在工作区沙箱里跑 —— 声明了 `sandbox="workspace"` 就要真的兑现；
+- `proc.run` 以操作者的权限运行，但口径限定在工作区：启动前查路径与
+  出网目标，加 ulimit，环境变量走白名单。**这不是 OS 级隔离** ——
+  进程没有被关进任何容器或命名空间；检查是**执行前**的，不是**关住进程**的；
 - 没有沙箱后端时，工具会打显著告警而不是「假装自己在沙箱里」；
 - 想退回旧行为：`AICF_SECURITY_MODE=legacy`，或把守卫摘掉
   （`registry.detach_guard()`）。
 
-**legacy 直连路径在 1.0.0 正式版移除。** 每个版本公告会点名还在用 legacy 的地方。
+**legacy 直连路径在 1.0.0 里仍然存在** —— `AICF_SECURITY_MODE=legacy`
+就能打开它（无审批、无审计、无幂等保护）。
 
 ---
 
