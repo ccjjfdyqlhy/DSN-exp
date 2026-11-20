@@ -106,9 +106,10 @@ class AssembledAgent:
           * 每轮之后检查预算，超限会触发 TokenBudget 的 on_exceed 回调。
         """
         mode = self.router.select(task_type, self.budget.pressure()) if self.router else ""
-        loop = self.loop
-        if mode and hasattr(loop, "client"):
-            pass  # 路由选择由调用方结合 client 工厂使用
+        if mode and self.meter is not None:
+            # the router's choice prices this turn (W8): the selected mode is
+            # now the meter's pricing tier instead of a discarded value
+            self.meter.set_pricing(mode)
         result = loop.run([__import__("aicf.infra.models.base", fromlist=["ChatMessage"]).ChatMessage.user(message)])
         # usage 已由 on_usage 回调在每轮实时记账，这里只需做超限检查
         if self.budget is not None:

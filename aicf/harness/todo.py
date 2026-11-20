@@ -1,4 +1,10 @@
 # harness/todo.py
+
+# ── 与标准工具 project.todo 的边界（W8 注记）──────────────
+# TodoStore（本文件，plans/事件/持久化，aicf-dsn 在用）与标准工具
+# tool_project_todo（扁平 list 格式）是两套模型。收敛方向见
+# plans/wiring-completion.md W8：标准工具迁到本格式，或明确两套
+# 的使用边界；本注记先把这个事实写在两边的文件头上。
 # Todo plans: the state behind "what is this agent working through".
 #
 # Moved here from an application plugin and its store. The plan/item model,

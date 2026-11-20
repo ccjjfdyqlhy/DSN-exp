@@ -55,8 +55,11 @@ class LocalApprovalBroker:
         self.cache = cache if cache is not None else ApprovalCache()
         self.telemetry = telemetry
         self.session_id = session_id
-        # 待决请求：id → (request, future)
-        self._pending: dict[str, tuple[ApprovalRequest, asyncio.Future]] = {}
+        # 待决请求：id → (request, future)；future 可为 None —— 恢复路径
+        # （重启后的线程）可能还没有事件循环，_await_decision 时再挂
+        self._pending: dict[str, tuple[ApprovalRequest, asyncio.Future | None]] = {}
+        # future 还没挂上时先到的决策，_await_decision 时取走
+        self._resolved: dict[str, ApprovalDecision] = {}
 
     # ── 主入口 ────────────────────────────────────────────
     async def request(self, req: ApprovalRequest) -> ApprovalDecision:
@@ -127,6 +130,10 @@ class LocalApprovalBroker:
         if entry is None:
             return False
         _request, future = entry
+        if future is None:
+            # 恢复路径还没进事件循环：决策先存下，等待时取走
+            self._resolved[request_id] = decision
+            return True
         if not future.done():
             future.set_result(decision)
         return True
@@ -143,7 +150,19 @@ class LocalApprovalBroker:
         """
         if request.id in self._pending:
             return
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        # expires_at is written by the guard but was never enforced on this
+        # path (W8): a restored request past its deadline must not come back
+        # to life -- re-arming would grant a stale approval window
+        expires_at = float(getattr(request, 'expires_at', 0.0) or 0.0)
+        if expires_at and expires_at <= time.time():
+            self._pending.pop(request.id, None)
+            self._emit('approval_expired', {'request_id': request.id,
+                                            'tool': getattr(request, 'tool', '')})
+            return
+        try:
+            future: asyncio.Future | None = asyncio.get_event_loop().create_future()
+        except RuntimeError:
+            future = None  # no loop in this thread yet; armed at await time
         self._pending[request.id] = (request, future)
 
     # ── 内部 ──────────────────────────────────────────────
@@ -157,7 +176,10 @@ class LocalApprovalBroker:
             return ApprovalDecision.deny(by='auto-deny',
                                         reason='resolver 返回了非法结果')
 
-        # 无 resolver → 挂起等回填
+        # 无 resolver → 挂起等回填；恢复路径可能已经先交了决策
+        resolved = self._resolved.pop(req.id, None)
+        if resolved is not None:
+            return resolved
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending[req.id] = (req, future)
@@ -172,6 +194,7 @@ class LocalApprovalBroker:
 
     def _discard(self, request_id: str) -> None:
         self._pending.pop(request_id, None)
+        self._resolved.pop(request_id, None)
 
     def _emit(self, kind: str, payload: dict) -> None:
         if self.telemetry is None:

@@ -152,3 +152,22 @@ def test_gate_fail_feeds_badcase_and_from_badcases(tmp_path: Path):
     run2 = json.loads(out_path.read_text(encoding='utf-8'))
     assert run2['results'], 'the labelled badcase became a case'
     assert run2['results'][0]['case_id'].startswith('hard_bc_t1_')
+
+
+def test_restored_expired_request_is_not_rearmed():
+    import time as _time
+
+    from aicf.harness.approval.broker import LocalApprovalBroker
+    from aicf.harness.approval.base import ApprovalRequest
+
+    broker = LocalApprovalBroker()
+    expired = ApprovalRequest(id='expired-1', tool='proc.run',
+                              args_preview='{}',
+                              expires_at=_time.time() - 10)
+    broker.restore_pending(expired)
+    assert broker.pending() == []  # an expired request must not come back
+
+    live = ApprovalRequest(id='live-1', tool='proc.run', args_preview='{}',
+                           expires_at=_time.time() + 300)
+    broker.restore_pending(live)
+    assert [r.id for r in broker.pending()] == ['live-1']

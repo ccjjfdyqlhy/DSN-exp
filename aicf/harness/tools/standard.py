@@ -535,6 +535,8 @@ def tool_project_summary(deps: ToolDeps):
     return run
 
 
+# 边界注记（W8）：这是扁平 list 格式的标准工具；框架里另有功能更全的
+# TodoStore（harness/todo.py，plans/事件/持久化）。两套格式的收敛在 W8。
 def tool_project_todo(deps: ToolDeps):
     """轻量待办文件（.harness_todo.json）：Agent 可读写的任务清单。
 
