@@ -31,7 +31,6 @@ def test_identity_reaches_the_audit_trail(tmp_path: Path):
     from aicf.harness.tools.function_tool import tool_from_function
     from aicf.harness.tools.spec import ToolSpec
     from aicf.infra.control.identity import AgentIdentity
-    from aicf.infra.observability.audit import AuditStore
 
     t = tool_from_function(lambda: 'ok', name='fs.read')
     t.spec = ToolSpec(name='fs.read', effect='pure')
@@ -43,10 +42,9 @@ def test_identity_reaches_the_audit_trail(tmp_path: Path):
     result = asyncio.run(registry.execute_async('fs.read', {}))
     assert result.success
 
-    store = AuditStore()
+    store = guard.audit.store  # the same append-only store the guard wrote to
     records = [r for r in store.of_kind('audit.tool_call')
-               if getattr(r, 'payload', {}).get('identity') == 'bot-1'
-               or (isinstance(r, dict) and r.get('identity') == 'bot-1')]
+               if getattr(r, 'payload', {}).get('identity') == 'bot-1']
     assert records, 'the audit record must carry the agent identity'
 
 
