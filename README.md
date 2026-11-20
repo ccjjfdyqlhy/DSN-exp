@@ -71,6 +71,15 @@ cases are missing.
 pip install aicf-core
 ```
 
+> **Check what you got.** Mirrors lag behind PyPI by minutes to hours, and
+> releases before `1.0.0` were broken (no `aicf` command). If `aicf --version`
+> prints `0.6.x`, your mirror is still serving an old release — install from
+> PyPI directly:
+>
+> ```bash
+> pip install -U --index-url https://pypi.org/simple aicf-core
+> ```
+
 That is the whole library — the agent kernel and the model/tool/runtime layer.
 It has **no application code and no UI**: the web console lives in its own repository
 ([`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui)).

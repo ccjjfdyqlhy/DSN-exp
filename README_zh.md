@@ -70,6 +70,14 @@ aicf gate --run run.json --out gate.json
 pip install aicf-core
 ```
 
+> **先确认装到了哪个版本**：镜像同步会比 PyPI 慢几分钟到几小时，而 1.0.0
+> 之前的版本是**坏的**（没有 `aicf` 命令）。如果 `aicf --version` 打出
+> `0.6.x`，说明你的镜像还在发旧版本 —— 直接从官方源装：
+>
+> ```bash
+> pip install -U --index-url https://pypi.org/simple aicf-core
+> ```
+
 装完就是整个库——Agent 内核 + 模型/工具/运行时层。
 **不含任何应用代码和界面**：Web 控制台在独立的仓库里（见下表）。
 
