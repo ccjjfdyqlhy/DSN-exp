@@ -172,8 +172,9 @@ It depends on `aicf-core` and nothing else.
 
 ## Status
 
-`aicf-core` is at **1.0.0rc3**. The definition of done for rc0 is three
-executable claims, and all three hold (each one is pinned to a test):
+`aicf-core` is at **1.0.0** — the first release that installs and runs.
+The definition of done for rc0 is three executable claims, and all three hold
+(each one is pinned to a test):
 
 1. an agent that is `kill -9`'d once still resumes and produces the right answer;
 2. every tool call was either approved or refused — with an audit trail;
@@ -185,11 +186,14 @@ sandbox, and both the SDK and the CLI write the tool intents into the journal
 — so after a crash the runtime can tell which side effects may already have
 happened.
 
-**rc3** closes the six items the rc0 roadmap listed as missing: the control
+**1.0.0** closes the six items the rc0 roadmap listed as missing: the control
 plane, the workflow and planner kernels, agent identity with delegation, the
 sampling loop with bad case feedback, the scheduler with the workspace
-isolation, and the audit trail the business cannot delete. The release note is
-[docs/releases/v1.0.0rc3.md](docs/releases/v1.0.0rc3.md).
+isolation, and the audit trail the business cannot delete. It also moves both
+layers under one top-level package (`aicf.harness` / `aicf.infra` — see
+[Migrating](#migrating-from--100rc3) above) and adds the release gate that
+proves the installed wheel works. The release note is
+[docs/releases/v1.0.0.md](docs/releases/v1.0.0.md).
 
 What is left is the isolated sandbox (a container or a micro vm) and the
 deployment matters: the cross machine orchestration and the transport of the

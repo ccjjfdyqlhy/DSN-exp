@@ -27,7 +27,7 @@ pip install -e ".[mcp,anthropic,socks]"   # 从源码装（含 MCP / Anthropic /
 pip install -e .                            # 只要内核的话，最小依赖即可
 ```
 
-或者直接从 PyPI 装（**当前发布版是 1.0.0rc3**）：
+或者直接从 PyPI 装（**当前发布版是 1.0.0**）：
 
 ```bash
 pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
@@ -58,7 +58,7 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 ### 1.4 确认装好了
 
 ```bash
-python3 -c "import aicf; print('aicf', aicf.__version__)"           # 期望 1.0.0rc3
+python3 -c "import aicf; print('aicf', aicf.__version__)"           # 期望 1.0.0
 python3 -c "from aicf.harness import create_agent; print('harness ok')"
 python3 -c "import aicf.infra; print('infra ok')"
 python3 -m pytest -q tests/                                          # 跑测试
