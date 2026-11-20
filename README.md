@@ -47,14 +47,21 @@ aicf tool exec proc.run --args '{"command":"rm -rf /"}' --policy strict
 # 3. Run one turn. It leaves a trace.
 aicf run "summarize this repo" --trace trace.jsonl
 
-# 4. Score it against a dataset (shipped with the package).
-aicf eval --dataset basic --traces trace.jsonl --out run.json
+# 4. Score a dataset (it ships with the package). Traces are matched to cases
+#    by --case-id, so a dataset run records one trace per case:
+#      aicf run "<input>" --case-id <case_id> --trace traces/<case_id>.jsonl
+aicf eval --dataset basic --traces traces/ --out run.json
 
 # 5. Stop the release if anything regressed, got too expensive, or broke a rule.
 aicf gate --run run.json --out gate.json
 ```
 
 No API key required for any of the above — it runs offline against a stub model.
+
+One honest caveat: the stub model never calls a tool, so the dataset cases
+**do not pass locally**. `aicf gate` is a CI device: it expects one trace per
+case (that is what `--case-id` is for) and blocks a release whose critical
+cases are missing.
 
 ---
 
@@ -81,12 +88,30 @@ pip install "aicf-core[all]"           # everything
 
 ---
 
+## Migrating from ≤ 1.0.0rc3
+
+`1.0.0` moves both layers under one top-level package. The reason is practical:
+`harness` and `infra` are **already taken on PyPI**, and a library should not
+squat on someone else's name inside your environment.
+
+| Before (≤ 1.0.0rc3) | Now (1.0.0+) |
+|---|---|
+| `from harness import create_agent` | `from aicf.harness import create_agent` |
+| `from harness.tools import ToolRegistry` | `from aicf.harness.tools import ToolRegistry` |
+| `from infra.models.base import IChatClient` | `from aicf.infra.models.base import IChatClient` |
+
+Distribution, CLI and import name now line up: `pip install aicf-core` →
+the `aicf` command → `import aicf.harness`. (`from aicf import create_agent`
+works too — it is the same symbol, forwarded lazily.)
+
+---
+
 ## Just want to write an agent? Five symbols.
 
 ```python
-from harness import create_agent, tool   # the three you write with
-from harness.tools import ToolRegistry   # when you manage tools yourself
-from infra.models.base import IChatClient # the model interface
+from aicf.harness import create_agent, tool   # the three you write with
+from aicf.harness.tools import ToolRegistry   # when you manage tools yourself
+from aicf.infra.models.base import IChatClient # the model interface
 ```
 
 | Symbol | What it is |
@@ -98,7 +123,7 @@ from infra.models.base import IChatClient # the model interface
 | `IChatClient` | the model interface — implement it to plug in your own backend |
 
 ```python
-from harness import create_agent, tool
+from aicf.harness import create_agent, tool
 
 @tool
 def add(a: int, b: int) -> int:
@@ -118,7 +143,7 @@ print(result)                        # the result is string-like
 
 Any OpenAI-compatible endpoint works. For a local model, point `base_url` at your
 `llama-server` / LM Studio, or hand `create_agent` a client
-(`infra.orchestrator.LlamaCppChat`, `LMStudioChat`, `OpenAICompatClient`, …).
+(`aicf.infra.orchestrator.LlamaCppChat`, `LMStudioChat`, `OpenAICompatClient`, …).
 
 ---
 
@@ -127,10 +152,10 @@ Any OpenAI-compatible endpoint works. For a local model, point `base_url` at you
 Two layers, dependencies pointing **downward only**:
 
 ```
-harness/   Agent core    turn loop · tools · context · memory · pipeline · sessions · SDK
-   │                      knows nothing about any product
-   ▼
-infra/     Infra         model routing · resource pool · storage · gateway · auth · policy
+aicf/harness/   Agent core    turn loop · tools · context · memory · pipeline · sessions · SDK
+    │                        knows nothing about any product
+    ▼
+aicf/infra/     Infra         model routing · resource pool · storage · gateway · auth · policy
 ```
 
 ```

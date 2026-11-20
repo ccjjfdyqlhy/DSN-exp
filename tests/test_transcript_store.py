@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from harness.transcript import (
+from aicf.harness.transcript import (
     DbSessionStore, LAST_SESSION, SESSION_VERSION, SessionPayload,
     SessionStore, TranscriptItem, new_session_name,
 )
@@ -199,11 +199,11 @@ def test_db_store_rewind_helpers_match_the_json_store(tmp_path):
 def test_engine_persists_through_the_db_store(tmp_path):
     import asyncio
 
-    from infra.orchestrator.stub import StubChatClient
-    from harness.agent import ConversationEngine, EngineConfig, ModelInfo
-    from harness.transcript import SessionStore
+    from aicf.infra.orchestrator.stub import StubChatClient
+    from aicf.harness.agent import ConversationEngine, EngineConfig, ModelInfo
+    from aicf.harness.transcript import SessionStore
 
-    from harness.tools.registry import ManagedToolRegistry
+    from aicf.harness.tools.registry import ManagedToolRegistry
 
     client = StubChatClient(responses=[], model='stub')
     store = _db_store(tmp_path)

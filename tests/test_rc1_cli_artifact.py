@@ -9,14 +9,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from harness.cli.main import main
+from aicf.harness.cli.main import main
 
 #: 仓库根（agents/ 示例文件的锚点）
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _gate(db_path, report_id='gate-1', verdict='pass'):
-    from infra.eval.trace_store import TraceStore
+    from aicf.infra.eval.trace_store import TraceStore
     TraceStore(db_path).save_gate_report(
         {'id': report_id, 'run_version_id': 'rv_x', 'verdict': verdict,
          'created_at': 1.0})
@@ -59,8 +59,8 @@ def test_cli_publish_blocks_on_missing_or_failing_gate(tmp_path):
                  '--gate', 'gate-bad', '--db', db])
     assert code == 1
     # 失败的发布不落任何资产
-    from infra.control import ArtifactStore
-    from infra.store.sqlite import SqliteStore
+    from aicf.infra.control import ArtifactStore
+    from aicf.infra.store.sqlite import SqliteStore
     assert ArtifactStore(SqliteStore(db)).list_artifacts() == []
 
 
@@ -114,7 +114,7 @@ def test_gate_report_persists_and_gates_publish(tmp_path, capsys):
     trace = tmp_path / 'trace.jsonl'
     run_json = tmp_path / 'run.json'
     gate_json = tmp_path / 'gate.json'
-    dataset = ROOT / 'harness' / 'datasets' / 'basic.yaml'
+    dataset = ROOT / 'aicf' / 'harness' / 'datasets' / 'basic.yaml'
 
     # 只有 1 个 case 有 trace → 质量闸门 fail（预期）
     main(['run', 'demo', '--trace', str(trace), '--case-id', 'demo',
@@ -127,7 +127,7 @@ def test_gate_report_persists_and_gates_publish(tmp_path, capsys):
     assert report['verdict'] == 'fail'
 
     # 报告已落库（publish 才能查到它）
-    from infra.eval.trace_store import TraceStore
+    from aicf.infra.eval.trace_store import TraceStore
     stored = TraceStore(db).get_gate_report(report['id'])
     assert stored is not None and stored['verdict'] == 'fail'
 
@@ -149,7 +149,7 @@ def test_cli_list_starts_empty(tmp_path, capsys):
 
 
 def test_cli_run_accepts_artifact_and_kernel_flags():
-    from harness.cli.main import build_parser
+    from aicf.harness.cli.main import build_parser
     parser = build_parser()
     args = parser.parse_args(['run', 'hi', '--artifact', 'agents/study.yaml'])
     assert args.artifact == 'agents/study.yaml'
@@ -159,8 +159,8 @@ def test_cli_run_accepts_artifact_and_kernel_flags():
 
 def test_run_artifact_assembly_applies_the_declaration():
     """--artifact 把声明里的 kernel / 工具 / 模型装配进 run 参数。"""
-    from harness.cli.main import build_parser
-    from harness.cli.runcmd import _apply_artifact
+    from aicf.harness.cli.main import build_parser
+    from aicf.harness.cli.runcmd import _apply_artifact
     root = ROOT
     args = build_parser().parse_args(
         ['run', 'hi', '--artifact', str(root / 'agents' / 'research.yaml')])

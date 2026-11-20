@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.cli.main import main
+from aicf.harness.cli.main import main
 
 
 def _run(argv, capsys):
@@ -27,10 +27,10 @@ def test_help_exits_cleanly(capsys):
 
 
 def test_version_prints_the_package_version(capsys):
-    import harness
+    import aicf.harness
     code, out, _err = _run(['--version'], capsys)
     assert code == 0
-    assert harness.__version__ in out
+    assert aicf.harness.__version__ in out
 
 
 def test_tool_list_shows_the_catalog(capsys):
@@ -125,9 +125,9 @@ def test_run_to_eval_to_gate_chain(tmp_path, capsys):
     trace = tmp_path / 'trace.jsonl'
     run_json = tmp_path / 'run.json'
     gate_json = tmp_path / 'gate.json'
-    dataset = (Path(__file__).resolve().parent.parent / 'harness' / 'datasets'
+    dataset = (Path(__file__).resolve().parent.parent / 'aicf' / 'harness' / 'datasets'
                / 'basic.yaml')
-    assert dataset.exists(), 'harness/datasets/basic.yaml 必须存在'
+    assert dataset.exists(), 'aicf/harness/datasets/basic.yaml 必须存在'
 
     code, _out, _err = _run(
         ['run', '你好', '--trace', str(trace), '--case-id', 'demo'], capsys)
@@ -152,7 +152,7 @@ def test_run_to_eval_to_gate_chain(tmp_path, capsys):
 
 
 def test_eval_without_traces_scores_zero(tmp_path, capsys):
-    dataset = (Path(__file__).resolve().parent.parent / 'harness' / 'datasets'
+    dataset = (Path(__file__).resolve().parent.parent / 'aicf' / 'harness' / 'datasets'
                / 'basic.yaml')
     code, out, _err = _run(['eval', '--dataset', str(dataset)], capsys)
     assert code == 1

@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from harness.cli.main import main
+from aicf.harness.cli.main import main
 
 
 def _run(argv, capsys):
@@ -27,9 +27,9 @@ def _runtime_with_a_half_done_call(db_path):
     That is the state a crash leaves behind: the side effect happened, the
     result was never written.
     """
-    from infra.runtime import (EFFECT_EFFECTFUL, ManagedRuntime,
+    from aicf.infra.runtime import (EFFECT_EFFECTFUL, ManagedRuntime,
                                SqliteRuntimeStore, migrate_runtime)
-    from infra.store.sqlite import SqliteStore
+    from aicf.infra.store.sqlite import SqliteStore
 
     store = SqliteStore(str(db_path))
     migrate_runtime(store)
@@ -42,7 +42,7 @@ def _runtime_with_a_half_done_call(db_path):
 
 
 def _intent(tool: str, effect: str):
-    from harness.runtime_client import ToolIntent
+    from aicf.harness.runtime_client import ToolIntent
 
     return ToolIntent(session_id='s-crash', turn_seq=0, tool=tool,
                       tool_version='1.0', idempotency_key='key-' + tool,

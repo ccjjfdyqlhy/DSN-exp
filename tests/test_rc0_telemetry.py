@@ -53,7 +53,7 @@ def feed(collector, events) -> None:
 # ── 1. 向后兼容 ─────────────────────────────────────────
 def test_existing_event_kinds_are_untouched():
     """既有 kind 一个都不能少 —— 改词表就是改公共 API。"""
-    from harness.agent.events import EVENT_KINDS
+    from aicf.harness.agent.events import EVENT_KINDS
     for kind in ('turn_start', 'status', 'thinking_delta', 'thinking_end',
                  'text_delta', 'text_end', 'tool_start', 'tool_output',
                  'tool_end', 'usage', 'notice', 'error', 'interrupted',
@@ -66,13 +66,13 @@ def test_existing_event_kinds_are_untouched():
 
 
 def test_trace_fields_are_exactly_three_optional_ones():
-    from harness.agent.events import TRACE_FIELDS
+    from aicf.harness.agent.events import TRACE_FIELDS
     assert TRACE_FIELDS == ('trace_id', 'span_id', 'seq')
 
 
 def test_consumer_tolerates_events_without_trace_fields():
     """旧生产者不带 trace_id/span_id/seq 时，消费方不能报错。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     assert collector._errors == []
@@ -81,7 +81,7 @@ def test_consumer_tolerates_events_without_trace_fields():
 
 def test_stamp_adds_optional_fields_without_overwriting():
     """盖章只补缺失的：已经盖好的章不能被后来者覆盖。"""
-    from harness.telemetry.span import stamp
+    from aicf.harness.telemetry.span import stamp
     stamped = stamp({'trace_id': 'keep-me', 'x': 1}, trace_id='other', seq=7)
     assert stamped['trace_id'] == 'keep-me'
     assert stamped['seq'] == 7
@@ -90,7 +90,7 @@ def test_stamp_adds_optional_fields_without_overwriting():
 
 def test_stamp_without_context_adds_nothing():
     """没有上下文时不能补空串 —— 空串会被下游当成「有 id 但 id 是空的」。"""
-    from harness.telemetry.span import stamp
+    from aicf.harness.telemetry.span import stamp
     stamped = stamp({'x': 1})
     assert 'trace_id' not in stamped
     assert 'span_id' not in stamped
@@ -98,8 +98,8 @@ def test_stamp_without_context_adds_nothing():
 
 
 def test_trace_scope_sets_and_restores_context():
-    from harness.telemetry.base import current_span_id, current_trace_id
-    from harness.telemetry.span import trace_scope
+    from aicf.harness.telemetry.base import current_span_id, current_trace_id
+    from aicf.harness.telemetry.span import trace_scope
     with trace_scope('t-1', 's-1') as ctx:
         assert ctx.trace_id == 't-1'
         assert current_trace_id.get() == 't-1'
@@ -110,8 +110,8 @@ def test_trace_scope_sets_and_restores_context():
 
 def test_trace_scope_restores_on_exception():
     """异常路径也必须恢复上下文，否则会污染下一个任务。"""
-    from harness.telemetry.base import current_trace_id
-    from harness.telemetry.span import trace_scope
+    from aicf.harness.telemetry.base import current_trace_id
+    from aicf.harness.telemetry.span import trace_scope
     with pytest.raises(RuntimeError):
         with trace_scope('t-1', 's-1'):
             raise RuntimeError('boom')
@@ -119,8 +119,8 @@ def test_trace_scope_restores_on_exception():
 
 
 def test_span_scope_nests_parent_ids():
-    from harness.telemetry.base import current_span_id
-    from harness.telemetry.span import span_scope, start_span
+    from aicf.harness.telemetry.base import current_span_id
+    from aicf.harness.telemetry.span import span_scope, start_span
 
     class Collector:
         def emit(self, kind, payload):
@@ -135,7 +135,7 @@ def test_span_scope_nests_parent_ids():
 # ── 2. 事件扇出成 span ──────────────────────────────────
 def test_trace_covers_the_five_required_span_kinds():
     """R5 验收：model_call / tool_call / usage / latency / approval 五类。"""
-    from infra.observability.trace import SPAN_KINDS, TraceCollector
+    from aicf.infra.observability.trace import SPAN_KINDS, TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     kinds = collector.kinds()
@@ -144,7 +144,7 @@ def test_trace_covers_the_five_required_span_kinds():
 
 
 def test_trace_spans_share_one_trace_id():
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     spans = collector.spans()
@@ -153,7 +153,7 @@ def test_trace_spans_share_one_trace_id():
 
 
 def test_tool_call_span_carries_tool_and_duration():
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     tools = [s for s in collector.spans() if s.kind == 'tool_call']
@@ -163,7 +163,7 @@ def test_tool_call_span_carries_tool_and_duration():
 
 
 def test_approval_span_records_decision():
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     approvals = [s for s in collector.spans() if s.kind == 'approval']
@@ -174,7 +174,7 @@ def test_approval_span_records_decision():
 
 
 def test_approval_denied_is_marked_denied():
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('approval_request', {'id': 'ap-1', 'tool': 'shell'})
     collector.emit('approval_decision', {'id': 'ap-1', 'tool': 'shell',
@@ -185,7 +185,7 @@ def test_approval_denied_is_marked_denied():
 
 def test_approval_timeout_is_denied_not_approved():
     """审批超时 = 拒绝（fail-closed）。当成同意就是安全事故。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('approval_request', {'id': 'ap-1', 'tool': 'shell'})
     collector.emit('approval_timeout', {'id': 'ap-1', 'tool': 'shell'})
@@ -195,7 +195,7 @@ def test_approval_timeout_is_denied_not_approved():
 
 
 def test_usage_span_keeps_token_metrics():
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     usages = [s for s in collector.spans() if s.kind == 'usage']
@@ -206,7 +206,7 @@ def test_usage_span_keeps_token_metrics():
 
 def test_latency_span_carries_milliseconds():
     """耗时统一归一成毫秒：harness 的 duration 是秒，混用会让 trace 全错。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     latencies = [s for s in collector.spans() if s.kind == 'latency']
@@ -217,7 +217,7 @@ def test_latency_span_carries_milliseconds():
 
 def test_events_with_seq_are_deduplicated():
     """重复投递（journal 重放）按 seq 去重，不然会重复计费。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('usage', {'seq': 1, 'input_tokens': 10})
     collector.emit('usage', {'seq': 1, 'input_tokens': 10})
@@ -226,16 +226,16 @@ def test_events_with_seq_are_deduplicated():
 
 def test_unknown_event_kind_is_ignored_not_fatal():
     """事件词表会继续长：不认识的事件不能把 trace 采集器搞崩。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('some_future_kind', {'whatever': 1})
     assert collector._errors == []
 
 
 def test_span_handle_events_are_ingested():
-    """harness.telemetry.base.SpanHandle 发出的 span_end 要能被收下。"""
-    from infra.observability.trace import TraceCollector
-    from harness.telemetry.span import start_span
+    """aicf.harness.telemetry.base.SpanHandle 发出的 span_end 要能被收下。"""
+    from aicf.infra.observability.trace import TraceCollector
+    from aicf.harness.telemetry.span import start_span
     collector = TraceCollector()
     with start_span(collector, 'manual', kind='model_call'):
         pass
@@ -246,7 +246,7 @@ def test_span_handle_events_are_ingested():
 
 
 def test_build_trace_helper():
-    from infra.observability.trace import build_trace
+    from aicf.infra.observability.trace import build_trace
     collector = build_trace(sample_events())
     assert collector.spans()
     assert collector._errors == []
@@ -254,7 +254,7 @@ def test_build_trace_helper():
 
 # ── 3. JSONL 导出 ───────────────────────────────────────
 def test_run_produces_one_jsonl_trace_file(tmp_path):
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     path = tmp_path / 'trace.jsonl'
     collector = TraceCollector(run_id='run-1')
     feed(collector, sample_events())
@@ -271,7 +271,7 @@ def test_run_produces_one_jsonl_trace_file(tmp_path):
 
 
 def test_jsonl_roundtrip_and_bad_lines_are_skipped(tmp_path):
-    from harness.telemetry.exporter import read_jsonl, write_jsonl
+    from aicf.harness.telemetry.exporter import read_jsonl, write_jsonl
     path = tmp_path / 'x.jsonl'
     write_jsonl(path, [{'a': 1}, {'b': '值'}])
     with open(path, 'a', encoding='utf-8') as fh:
@@ -281,7 +281,7 @@ def test_jsonl_roundtrip_and_bad_lines_are_skipped(tmp_path):
 
 
 def test_trace_exporter_writes_jsonl(tmp_path):
-    from harness.telemetry.exporter import TraceExporter
+    from aicf.harness.telemetry.exporter import TraceExporter
     path = tmp_path / 'trace.jsonl'
     with TraceExporter(path) as exporter:
         exporter.write_event('usage', {'input_tokens': 5})
@@ -293,7 +293,7 @@ def test_trace_exporter_writes_jsonl(tmp_path):
 
 # ── 4. 统一脱敏 ─────────────────────────────────────────
 def test_redact_replaces_sensitive_values():
-    from harness.telemetry.exporter import redact
+    from aicf.harness.telemetry.exporter import redact
     out = redact({'user': 'bob', 'password': 'hunter2',
                   'nested': {'api_key': 'k-1'}, 'list': [{'token': 't'}]})
     assert out['user'] == 'bob'
@@ -303,28 +303,28 @@ def test_redact_replaces_sensitive_values():
 
 
 def test_redact_does_not_mutate_input():
-    from harness.telemetry.exporter import redact
+    from aicf.harness.telemetry.exporter import redact
     source = {'password': 'hunter2'}
     redact(source)
     assert source['password'] == 'hunter2'
 
 
 def test_redact_hides_credential_shaped_values():
-    from harness.telemetry.exporter import redact
+    from aicf.harness.telemetry.exporter import redact
     assert redact('sk-abcdef123456') == '***'
     assert redact('hello world') == 'hello world'
 
 
 def test_redact_is_the_single_implementation():
     """审计与 trace 导出必须用**同一个** redact —— 分散实现必然漏改一处。"""
-    from harness.telemetry.exporter import redact as exporter_redact
-    from infra.observability.audit import redact as audit_redact
+    from aicf.harness.telemetry.exporter import redact as exporter_redact
+    from aicf.infra.observability.audit import redact as audit_redact
     assert audit_redact is exporter_redact
 
 
 def test_trace_export_redacts_tool_args(tmp_path):
     """工具参数可能带密钥，落盘前必须脱敏。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     path = tmp_path / 'trace.jsonl'
     collector = TraceCollector()
     collector.emit('tool_start', {'call_id': 'c1', 'name': 'http',
@@ -339,7 +339,7 @@ def test_trace_export_redacts_tool_args(tmp_path):
 
 def test_args_digest_keeps_only_hash_and_length():
     """args_digest 只存哈希与长度 —— 不放明文。"""
-    from infra.observability.audit import args_digest
+    from aicf.infra.observability.audit import args_digest
     digest = args_digest({'cmd': 'rm -rf /', 'password': 'hunter2'})
     text = json.dumps(digest)
     assert 'hunter2' not in text
@@ -351,25 +351,25 @@ def test_args_digest_keeps_only_hash_and_length():
 
 def test_args_digest_is_stable_across_key_order():
     """键序不同的同一组参数必须算出同一个摘要，否则没法比对两次调用。"""
-    from infra.observability.audit import args_digest
+    from aicf.infra.observability.audit import args_digest
     assert (args_digest({'a': 1, 'b': 2})['sha256']
             == args_digest({'b': 2, 'a': 1})['sha256'])
 
 
 def test_args_digest_differs_for_different_args():
-    from infra.observability.audit import args_digest
+    from aicf.infra.observability.audit import args_digest
     assert args_digest({'a': 1})['sha256'] != args_digest({'a': 2})['sha256']
 
 
 # ── 5. 审计 ─────────────────────────────────────────────
 def test_audit_event_vocabulary():
-    from infra.observability.audit import AUDIT_KINDS
+    from aicf.infra.observability.audit import AUDIT_KINDS
     assert AUDIT_KINDS == ('audit.tool_call', 'audit.denied',
                            'audit.secret_access', 'audit.delegation')
 
 
 def test_audit_tool_call_has_the_agreed_fields():
-    from infra.observability.audit import AuditLog
+    from aicf.infra.observability.audit import AuditLog
     log = AuditLog()
     record = log.tool_call(identity='agent:1', tool='shell', version='3',
                            args={'cmd': 'ls', 'password': 'x'},
@@ -384,7 +384,7 @@ def test_audit_tool_call_has_the_agreed_fields():
 
 
 def test_audit_denied_records_reason():
-    from infra.observability.audit import DENY_REASONS, AuditLog
+    from aicf.infra.observability.audit import DENY_REASONS, AuditLog
     log = AuditLog()
     for reason in DENY_REASONS:
         record = log.denied(reason, tool='shell')
@@ -393,7 +393,7 @@ def test_audit_denied_records_reason():
 
 
 def test_audit_secret_access_and_delegation():
-    from infra.observability.audit import AuditLog
+    from aicf.infra.observability.audit import AuditLog
     log = AuditLog()
     secret = log.secret_access('vault://prod/db', tool='http')
     assert secret.payload['credential_ref'] == 'vault://prod/db'
@@ -406,8 +406,8 @@ def test_audit_secret_access_and_delegation():
 
 def test_audit_flows_in_the_same_stream_as_business_events():
     """审计与业务事件**同流**：trace 里能看到审计发生过。"""
-    from infra.observability.audit import AuditLog
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.audit import AuditLog
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     log = AuditLog(telemetry=collector)
     log.tool_call(identity='agent:1', tool='shell', args={'cmd': 'ls'},
@@ -419,8 +419,8 @@ def test_audit_flows_in_the_same_stream_as_business_events():
 
 def test_audit_is_stored_independently_of_business_events():
     """独立存储：清掉 trace 不影响审计。"""
-    from infra.observability.audit import AuditLog
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.audit import AuditLog
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     log = AuditLog(telemetry=collector)
     log.denied('policy', tool='shell')
@@ -431,7 +431,7 @@ def test_audit_is_stored_independently_of_business_events():
 
 def test_audit_cannot_be_deleted_by_business_code():
     """审计可被业务删除 = 没有审计。"""
-    from infra.observability.audit import AuditImmutableError, AuditLog
+    from aicf.infra.observability.audit import AuditImmutableError, AuditLog
     log = AuditLog()
     log.denied('policy')
     with pytest.raises(AuditImmutableError):
@@ -440,7 +440,7 @@ def test_audit_cannot_be_deleted_by_business_code():
 
 def test_audit_store_has_no_delete_api():
     """存储层干脆不提供删除入口 —— 想删也删不掉。"""
-    from infra.observability.audit import AuditStore
+    from aicf.infra.observability.audit import AuditStore
     store = AuditStore()
     for forbidden in ('delete', 'remove', 'clear', 'truncate', 'pop'):
         assert not hasattr(store, forbidden), forbidden
@@ -448,14 +448,14 @@ def test_audit_store_has_no_delete_api():
 
 def test_audit_purge_requires_positive_retention():
     """唯一的删除路径必须显式给出正留存时长。"""
-    from infra.observability.audit import AuditStore
+    from aicf.infra.observability.audit import AuditStore
     store = AuditStore()
     with pytest.raises(ValueError):
         store.purge_expired(retention_seconds=0)
 
 
 def test_audit_records_are_serialisable():
-    from infra.observability.audit import AuditLog
+    from aicf.infra.observability.audit import AuditLog
     log = AuditLog()
     log.secret_access('vault://x', tool='http')
     data = log.records()[0].to_dict()
@@ -464,7 +464,7 @@ def test_audit_records_are_serialisable():
 
 def test_audit_export_writes_its_own_file(tmp_path):
     """独立存储的落盘形态：审计文件与业务 trace 文件分开。"""
-    from infra.observability.audit import AuditLog
+    from aicf.infra.observability.audit import AuditLog
     path = tmp_path / 'audit.jsonl'
     log = AuditLog()
     log.denied('sandbox', tool='shell')
@@ -476,7 +476,7 @@ def test_audit_export_writes_its_own_file(tmp_path):
 
 
 def test_audit_rejects_non_audit_kinds():
-    from infra.observability.audit import AuditLog
+    from aicf.infra.observability.audit import AuditLog
     log = AuditLog()
     with pytest.raises(ValueError):
         log.record('tool_start', {})
@@ -485,7 +485,7 @@ def test_audit_rejects_non_audit_kinds():
 # ── 6. 追溯性与收尾 ─────────────────────────────────────
 def test_producer_seq_is_kept_in_span_attrs():
     """trace 要能对回事件流：生产方的 seq 记进 span attrs。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('usage', {'seq': 7, 'input_tokens': 1})
     usage = [s for s in collector.spans() if s.kind == 'usage'][0]
@@ -494,7 +494,7 @@ def test_producer_seq_is_kept_in_span_attrs():
 
 def test_trace_record_seqs_are_unique():
     """trace 文件自己的 seq 必须唯一 —— 消费方会拿它去重。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     feed(collector, sample_events())
     seqs = [r['seq'] for r in collector.records()]
@@ -503,7 +503,7 @@ def test_trace_record_seqs_are_unique():
 
 def test_export_events_writes_one_file(tmp_path):
     """一次 run → 一个 trace.jsonl（最短路径）。"""
-    from infra.observability.trace import export_events
+    from aicf.infra.observability.trace import export_events
     path = tmp_path / 'trace.jsonl'
     written = export_events(sample_events(), path)
     assert written > 0
@@ -511,8 +511,8 @@ def test_export_events_writes_one_file(tmp_path):
 
 
 def test_add_span_records_a_span_directly():
-    from harness.telemetry.base import Span, new_trace_id
-    from infra.observability.trace import TraceCollector
+    from aicf.harness.telemetry.base import Span, new_trace_id
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.add_span(Span(trace_id=new_trace_id(), span_id='s1',
                             name='manual', kind='tool_call'))
@@ -521,7 +521,7 @@ def test_add_span_records_a_span_directly():
 
 def test_unfinished_run_span_is_marked_incomplete():
     """没收尾的 span 要标出来 —— 否则 trace 里看起来像「还在跑」。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('run_started', {'run_id': 'r'})
     collector.close()
@@ -532,8 +532,8 @@ def test_unfinished_run_span_is_marked_incomplete():
 
 def test_audit_inherits_current_trace_context():
     """审计默认挂在当前 trace 上 —— 审计要能回答「属于哪次运行」。"""
-    from infra.observability.audit import AuditLog
-    from harness.telemetry.span import trace_scope
+    from aicf.infra.observability.audit import AuditLog
+    from aicf.harness.telemetry.span import trace_scope
     log = AuditLog()
     with trace_scope('t-9', 's-9'):
         record = log.denied('policy')
@@ -543,7 +543,7 @@ def test_audit_inherits_current_trace_context():
 
 def test_span_semantics_events_are_accepted():
     """生产方直接发「已经是 span 语义」的事件时也要收下。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('model_call', {'duration': 0.3})
     collector.emit('tool_call', {'tool': 'shell', 'duration': 0.1})
@@ -558,7 +558,7 @@ def test_span_semantics_events_are_accepted():
 
 def test_other_span_kinds_are_not_dropped():
     """context_build / memory 也是 §4.1.6 列出的 span —— 不能丢。"""
-    from infra.observability.trace import TraceCollector
+    from aicf.infra.observability.trace import TraceCollector
     collector = TraceCollector()
     collector.emit('context_build', {'tokens': 100})
     collector.emit('memory', {'items': 3})
@@ -573,11 +573,11 @@ def test_harness_telemetry_is_a_thin_shell_over_infra():
     两边各写一份 Span / redact 就会**静默分叉** —— 一处改了另一处没改，
     运行时才炸。所以这里把「同一个对象」钉死。
     """
-    import harness.telemetry as ht
-    from infra.observability import span as iso
+    import aicf.harness.telemetry as ht
+    from aicf.infra.observability import span as iso
     # 注意：模块名 redact 与函数名 redact 同名，import 时必须从模块里取，
-    # 否则 `import infra.observability.redact as x` 拿到的是函数（同名遮蔽）。
-    from infra.observability.redact import (redact as infra_redact,
+    # 否则 `import aicf.infra.observability.redact as x` 拿到的是函数（同名遮蔽）。
+    from aicf.infra.observability.redact import (redact as infra_redact,
                                             redact_dict as infra_redact_dict,
                                             write_jsonl as infra_write_jsonl,
                                             read_jsonl as infra_read_jsonl)
@@ -597,15 +597,15 @@ def test_harness_telemetry_is_a_thin_shell_over_infra():
 
 
 def test_audit_redact_is_the_same_object_as_the_infra_one():
-    from infra.observability.audit import redact as audit_redact
-    from infra.observability.redact import redact as infra_redact
+    from aicf.infra.observability.audit import redact as audit_redact
+    from aicf.infra.observability.redact import redact as infra_redact
     assert audit_redact is infra_redact
 
 
 def test_telemetry_port_protocol_stays_in_the_kernel():
     """TelemetryPort 是内核对外的契约 —— 定义必须留在 harness 侧。"""
-    import harness.telemetry.base as htb
-    from harness.telemetry import TelemetryPort
+    import aicf.harness.telemetry.base as htb
+    from aicf.harness.telemetry import TelemetryPort
     assert TelemetryPort is htb.TelemetryPort
     assert 'class TelemetryPort' in open(htb.__file__, encoding='utf-8').read()
 
@@ -615,7 +615,7 @@ def test_infra_does_not_import_harness():
     import ast
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
-    for path in sorted((root / 'infra').rglob('*.py')):
+    for path in sorted((root / 'aicf' / 'infra').rglob('*.py')):
         tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
         for node in tree.body:          # 只看模块顶层
             names = []
@@ -624,5 +624,5 @@ def test_infra_does_not_import_harness():
             elif isinstance(node, ast.ImportFrom) and not node.level:
                 names = [node.module or '']
             for name in names:
-                assert not (name == 'harness' or name.startswith('harness.')), (
+                assert not (name == 'aicf.harness' or name.startswith('aicf.harness.')), (
                     f'{path.relative_to(root)} 在模块级依赖了 {name}')

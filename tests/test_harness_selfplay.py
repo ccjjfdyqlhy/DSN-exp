@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from harness.learning import selfplay as selfplay_module
-from harness.learning.dataset_builder import DatasetBuilder
-from harness.learning.selfplay import (
+from aicf.harness.learning import selfplay as selfplay_module
+from aicf.harness.learning.dataset_builder import DatasetBuilder
+from aicf.harness.learning.selfplay import (
     DROP_CLIENT_ERROR,
     DROP_DUPLICATE,
     DROP_EMPTY,
@@ -38,7 +38,7 @@ from harness.learning.selfplay import (
     SelfPlayGenerator,
     Situation,
 )
-from infra.orchestrator.base import ChatResponse
+from aicf.infra.orchestrator.base import ChatResponse
 
 # ════════════════════════════════════════════════════════════════════════════
 # 假客户端
@@ -481,7 +481,7 @@ def test_user_data_situation_is_rejected_for_remote_client():
 
 def test_works_with_real_stub_client():
     """与真实的 IChatClient 实现（StubChatClient）对得上：消息能正常传过去。"""
-    from infra.orchestrator.stub import StubChatClient
+    from aicf.infra.orchestrator.stub import StubChatClient
 
     client = StubChatClient(responses=[ChatResponse(content="真实客户端也能产出回答内容")])
     report = _gen(client).generate([Situation(prompt="情境")])

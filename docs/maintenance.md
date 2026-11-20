@@ -14,9 +14,9 @@
    ↓ 它认识业务语义吗？
      认识 → the application repository
    ↓ 它只是通用的检索算法吗？
-     是   → harness/memory/
+     是   → aicf/harness/memory/
    ↓ 它需要新的向量模型接口吗？
-     需要 → infra/orchestrator/（新增 IEmbeddingClient 实现）
+     需要 → aicf/infra/orchestrator/（新增 IEmbeddingClient 实现）
 ```
 
 **判断口诀**：`infra` 管资源，`harness` 管思考，`aicf-ui` 仓管场景。
@@ -28,16 +28,16 @@
 | 场景 | 并存的实现 |
 |---|---|
 | Agent 门面 | `AgentRuntime` / `AgentAssembler` / `sdk.Agent` |
-| 模型客户端 | `infra.orchestrator.*` |
-| 语义缓存 | `infra/cache.py`，框架内无真实消费者 |
-| 记忆 | `harness/memory/` 抽象，应用可注入实现 |
+| 模型客户端 | `aicf.infra.orchestrator.*` |
+| 语义缓存 | `aicf/infra/cache.py`，框架内无真实消费者 |
+| 记忆 | `aicf/harness/memory/` 抽象，应用可注入实现 |
 
 **动手前的自检**：在你打算修改的函数上打一个断点或加一条 `logger.warning`，
 实际跑一遍，确认它真的被调用了。这能省掉大量「改完没反应」的时间。
 
 ### 1.3 读懂已有注释
 
-**本仓库的注释就是缺陷数据库。** `infra/` 目录实测 **0 个** `TODO`/`FIXME`——
+**本仓库的注释就是缺陷数据库。** `aicf/infra/` 目录实测 **0 个** `TODO`/`FIXME`——
 不是因为没问题，而是因为所有历史 bug 都被写成长篇中文注释贴在代码旁，
 格式大致是：
 
@@ -61,14 +61,14 @@
 回填 assistant 的 `tool_calls` 时若用了内部点号名，会对强校验 `^[a-zA-Z0-9_-]+$`
 的 provider 直接 400。
 
-涉及：`harness/tools/base.py:24-49`、`harness/agent/adapters.py:82-88`、`loop.py:214`。
+涉及：`aicf/harness/tools/base.py:24-49`、`aicf/harness/agent/adapters.py:82-88`、`loop.py:214`。
 
 ### 2.2 tool 消息必须有前置 assistant(tool_calls)
 
 几乎所有 chat_template 都要求 `role=tool` 的消息紧跟在含 `tool_calls` 的
 `assistant` 消息之后。任何剪裁上下文、合并历史的代码都要维持这个配对。
 
-`ThreeZoneContext` 有专门的清洗逻辑（`harness/agent/context.py:68-81`），
+`ThreeZoneContext` 有专门的清洗逻辑（`aicf/harness/agent/context.py:68-81`），
 **新增上下文处理时请复用它，不要另写一套**。
 
 ### 2.3 `reasoning_content` 必须随 assistant 回传
@@ -77,7 +77,7 @@ DeepSeek reasoner 一类模型要求把思考链原样带回。丢掉会报错�
 
 ### 2.4 同步 handler 返回 coroutine 时要补 await
 
-`Tool.run_async` 里有一个补 await 的分支（`harness/tools/base.py:141-147`）。
+`Tool.run_async` 里有一个补 await 的分支（`aicf/harness/tools/base.py:141-147`）。
 这不是冗余——swarm 黑板曾经因为缺这一步而「工具报成功但副作用没发生」。
 
 ### 2.5 `max_steps <= 0` 表示不限制
@@ -86,7 +86,7 @@ DeepSeek reasoner 一类模型要求把思考链原样带回。丢掉会报错�
 
 ### 2.6 插件按 priority 升序调度
 
-`PluginManager` 是**值小者先执行**（`harness/pipeline/manager.py:132`）。
+`PluginManager` 是**值小者先执行**（`aicf/harness/pipeline/manager.py:132`）。
 this ordering is inherited and the rest of the harness already matches it.
 **改成降序会静默改变十几个插件的执行顺序。**
 
@@ -97,7 +97,7 @@ this ordering is inherited and the rest of the harness already matches it.
 
 ### 2.8 模型子进程必须走指定线程
 
-`Popen` 必须经 `_popen_on_launch_thread`（`infra/orchestrator/local_engine.py:61`）。
+`Popen` 必须经 `_popen_on_launch_thread`（`aicf/infra/orchestrator/local_engine.py:61`）。
 原因：`PR_SET_PDEATHSIG` 绑定发起 fork 的线程，在事件循环线程池里起进程会导致
 loop 关闭时模型被误杀。
 
@@ -112,16 +112,16 @@ loop 关闭时模型被误杀。
 
 | 你改了什么 | 必须同时检查 |
 |---|---|
-| `harness/agent/loop.py` | `run_async` **和** `run_stream` 两条路径；`run_rounds` 契约 |
-| `harness/tools/*` | schema 与执行逻辑是否都更新；wire 名编解码 |
-| `harness/pipeline/*` | 8 个 HookPoint 的消费方；插件 priority 顺序 |
-| `infra/orchestrator/*` | `ModelScheduler` 锁；`_ACTIVE_LAUNCHERS`；状态自愈 |
-| `infra/*` 的 import | 是否引入了 `harness`（逆向依赖红线） |
+| `aicf/harness/agent/loop.py` | `run_async` **和** `run_stream` 两条路径；`run_rounds` 契约 |
+| `aicf/harness/tools/*` | schema 与执行逻辑是否都更新；wire 名编解码 |
+| `aicf/harness/pipeline/*` | 8 个 HookPoint 的消费方；插件 priority 顺序 |
+| `aicf/infra/orchestrator/*` | `ModelScheduler` 锁；`_ACTIVE_LAUNCHERS`；状态自愈 |
+| `aicf/infra/*` 的 import | 是否引入了 `harness`（逆向依赖红线） |
 | `aicf-ui 仓的 aicf_ui/server.py` | 新路由必须在 SPA catch-all **之前**注册 |
 | `aicf-ui 仓的 aicf_ui/agent.py` | `chat_stream` **和** `chat_invoke` 两份分支逻辑 |
 | `aicf-ui` 前端 | 必须 `npm run build`，否则后端读的还是旧 `static/` |
-| `harness/context_assembly.py` | 改动 `plan()` 前先读 `_fold_trailing_tools` 的注释——最近对话的保底逻辑依赖 `SEG_TAIL` 语义 |
-| `infra/policy/router.py` | 改 `select()` 优先级前注意 `switch()` 会设置 `_explicitly_selected` 锁定档位 |
+| `aicf/harness/context_assembly.py` | 改动 `plan()` 前先读 `_fold_trailing_tools` 的注释——最近对话的保底逻辑依赖 `SEG_TAIL` 语义 |
+| `aicf/infra/policy/router.py` | 改 `select()` 优先级前注意 `switch()` 会设置 `_explicitly_selected` 锁定档位 |
 
 ---
 

@@ -7,7 +7,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from infra.orchestrator import (
+from aicf.infra.orchestrator import (
     ChatMessage,
     ChatResponse,
     IChatClient,

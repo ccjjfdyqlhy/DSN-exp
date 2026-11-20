@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from harness.conversation import (
+from aicf.harness.conversation import (
     ManagedConversation, PROMPT_VERSION, StablePrefix, TokenBudget,
     TokenBudgetExceeded, messages_need_repair, repair_messages,
     stream_compact, structured_summary,
@@ -139,7 +139,7 @@ def test_apply_compaction_bumps_generation_and_archives():
     assert conversation.committed[0]['content'].startswith('<conversation_summary>')
     # the summary is not a transcript turn (turn_starts skips it), but the
     # kept turn still starts cleanly after it
-    from harness.transcript import SessionStore
+    from aicf.harness.transcript import SessionStore
     assert SessionStore.turn_starts(conversation.committed) == [1]
 
 

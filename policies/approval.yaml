@@ -7,7 +7,7 @@
 #   4. 风险阈值自动放行（auto_approve_risk）
 #   5. 默认拒绝 → 人工审批
 #
-# 消费：`infra/policy/loader.py::load_policy_file('policies/approval.yaml')`
+# 消费：`aicf/infra/policy/loader.py::load_policy_file('policies/approval.yaml')`
 #       → RulePolicyEngine，装配进 ToolGuard。
 #
 # fail-closed 是硬约束：这里的任何一条规则写错，加载器直接抛错，

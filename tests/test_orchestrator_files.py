@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from infra.orchestrator.files import (
+from aicf.infra.orchestrator.files import (
     FilesUploader, file_reference_rejected, references_file, response_status,
 )
 

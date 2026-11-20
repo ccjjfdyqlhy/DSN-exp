@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import pytest
 
-from infra.observability.trace import TraceCollector
-from infra.policy.token_meter import TokenMeter
-from infra.runtime import EFFECT_PURE, Journal
+from aicf.infra.observability.trace import TraceCollector
+from aicf.infra.policy.token_meter import TokenMeter
+from aicf.infra.runtime import EFFECT_PURE, Journal
 
 #: L4 故障注入层（策划案 §8.1 / §8.2）
 pytestmark = pytest.mark.fault

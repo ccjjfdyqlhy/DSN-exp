@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from infra.orchestrator import LlamaServerConfig, ModelOrchestrator
-from infra.orchestrator.local_chat import OpenAICompatChat
+from aicf.infra.orchestrator import LlamaServerConfig, ModelOrchestrator
+from aicf.infra.orchestrator.local_chat import OpenAICompatChat
 
 
 class _FakeLauncher:

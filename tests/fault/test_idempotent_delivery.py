@@ -20,17 +20,17 @@ import asyncio
 
 import pytest
 
-from harness.policy.base import PolicyRule
-from harness.tools.base import Tool
-from harness.tools.guard import ToolGuard
-from harness.tools.spec import ToolSpec
-from infra.policy.engine import RulePolicyEngine
-from infra.runtime import (
+from aicf.harness.policy.base import PolicyRule
+from aicf.harness.tools.base import Tool
+from aicf.harness.tools.guard import ToolGuard
+from aicf.harness.tools.spec import ToolSpec
+from aicf.infra.policy.engine import RulePolicyEngine
+from aicf.infra.runtime import (
     EFFECT_EFFECTFUL,
     ManagedRuntime,
     idempotency_key,
 )
-from infra.store.sqlite import SqliteStore
+from aicf.infra.store.sqlite import SqliteStore
 
 from faultkit import ENV_COUNTER, ENV_DB, run_child
 
@@ -43,8 +43,8 @@ CHILD_TRIPLE_DELIVERY = '''
 db = os.environ['FAULT_DB']
 counter = os.environ['FAULT_COUNTER']
 
-from infra.store.sqlite import SqliteStore
-from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+from aicf.infra.store.sqlite import SqliteStore
+from aicf.infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
 
 store = SqliteStore(db)
 migrate_runtime(store)
@@ -145,7 +145,7 @@ def test_redelivery_after_restart_still_runs_side_effect_once(
     # ── 重启：换一个运行时实例（内存里什么都没有）────────
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from aicf.infra.runtime import SqliteRuntimeStore
 
         port = SqliteRuntimeStore(store)
         resumed = ManagedRuntime(port, session_id='s1')

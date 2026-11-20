@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from infra.policy.loader import PolicyFileError, load_policy_file, policy_from_dict
+from aicf.infra.policy.loader import PolicyFileError, load_policy_file, policy_from_dict
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,21 +18,21 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_new_infra_packages_import_standalone():
     """所有新增包都必须能单独 import 并通过冒烟（策划案 §6.2）。"""
     import importlib
-    for name in ('infra.control', 'infra.control.artifact',
-                 'infra.control.lifecycle', 'infra.control.store',
-                 'infra.control.cost', 'infra.control.identity',
-                 'infra.control.adoption',
-                 'infra.eval.sampling', 'infra.eval.badcase',
-                 'infra.runtime.scheduler', 'infra.runtime.isolation',
-                 'infra.policy.loader'):
+    for name in ('aicf.infra.control', 'aicf.infra.control.artifact',
+                 'aicf.infra.control.lifecycle', 'aicf.infra.control.store',
+                 'aicf.infra.control.cost', 'aicf.infra.control.identity',
+                 'aicf.infra.control.adoption',
+                 'aicf.infra.eval.sampling', 'aicf.infra.eval.badcase',
+                 'aicf.infra.runtime.scheduler', 'aicf.infra.runtime.isolation',
+                 'aicf.infra.policy.loader'):
         importlib.import_module(name)
 
 
 def test_harness_kernel_new_modules_import_standalone():
     import importlib
-    for name in ('harness.kernel.workflow', 'harness.kernel.planner',
-                 'harness.tools.discovery', 'harness.grounding',
-                 'harness.memory.layers'):
+    for name in ('aicf.harness.kernel.workflow', 'aicf.harness.kernel.planner',
+                 'aicf.harness.tools.discovery', 'aicf.harness.grounding',
+                 'aicf.harness.memory.layers'):
         importlib.import_module(name)
 
 
@@ -42,12 +42,12 @@ def test_control_plane_modules_never_import_harness_at_runtime():
     import importlib
     import sys
     before = set(sys.modules)
-    importlib.import_module('infra.control')
-    importlib.import_module('infra.eval.sampling')
-    importlib.import_module('infra.eval.badcase')
-    importlib.import_module('infra.runtime.scheduler')
+    importlib.import_module('aicf.infra.control')
+    importlib.import_module('aicf.infra.eval.sampling')
+    importlib.import_module('aicf.infra.eval.badcase')
+    importlib.import_module('aicf.infra.runtime.scheduler')
     dragged = {m for m in set(sys.modules) - before
-               if m == 'harness' or m.startswith('harness.')}
+               if m == 'aicf.harness' or m.startswith('aicf.harness.')}
     assert not dragged, f'infra 模块把 harness 拖进了运行时: {sorted(dragged)}'
 
 
@@ -58,18 +58,18 @@ def test_state_dir_convention_is_pinned_across_layers(monkeypatch, tmp_path):
     （与幂等键同一模式：两份实现，一条交叉测试。）
     """
     monkeypatch.setenv('AICF_HOME', str(tmp_path / 'custom-home'))
-    from harness.paths import state_dir
+    from aicf.harness.paths import state_dir
     assert state_dir() == tmp_path / 'custom-home'
 
-    from infra.runtime.isolation import WorkspaceManager
+    from aicf.infra.runtime.isolation import WorkspaceManager
     manager = WorkspaceManager()
     assert str(manager._base).startswith(str(tmp_path / 'custom-home'))
 
 
 def test_default_state_dir_is_the_user_home(monkeypatch):
     monkeypatch.delenv('AICF_HOME', raising=False)
-    from harness.paths import state_dir
-    from infra.runtime.isolation import WorkspaceManager
+    from aicf.harness.paths import state_dir
+    from aicf.infra.runtime.isolation import WorkspaceManager
     assert str(WorkspaceManager()._base).startswith(str(state_dir()))
 
 
@@ -84,7 +84,7 @@ def test_policy_loader_builds_a_rule_engine():
         'auto_approve_risk': 'medium',
         'allow_readonly': True,
     })
-    from harness.tools.spec import ToolSpec
+    from aicf.harness.tools.spec import ToolSpec
     # deny 规则生效
     decision = engine.admit('proc.run', spec=ToolSpec(name='proc.run'))
     assert not decision.allowed and decision.reason == 'policy'
@@ -116,7 +116,7 @@ def test_shipped_policy_files_load(tmp_path):
     import yaml
     data = yaml.safe_load((ROOT / 'policies' / 'network.yaml').read_text(
         encoding='utf-8'))
-    from infra.runtime.isolation import WorkspaceSpec
+    from aicf.infra.runtime.isolation import WorkspaceSpec
     spec = WorkspaceSpec.from_dict({
         'net': data['net'], 'net_allowlist': data['allowlist']})
     assert spec.net == 'allowlist'
@@ -125,7 +125,7 @@ def test_shipped_policy_files_load(tmp_path):
 
 
 def manager_net_check(spec, host):
-    from infra.runtime.isolation import Workspace, WorkspaceManager
+    from aicf.infra.runtime.isolation import Workspace, WorkspaceManager
     manager = WorkspaceManager(base='/tmp/rc1-policy-check')
     ws = Workspace(id='w', session_id='s', root='/tmp/rc1-policy-check/s',
                    spec=spec)

@@ -22,7 +22,7 @@
 
 ## P0-1. 收束轮的角色序列非法
 
-**位置**：`harness/agent/loop.py:515-519`
+**位置**：`aicf/harness/agent/loop.py:515-519`
 
 **现象**：Agent 达到 `max_steps` 且最后一轮仍在调用工具时，用户看到的是
 占位文本「…[已达到步数上限，且未能生成收束答复…]」，而不是总结。
@@ -46,7 +46,7 @@ tool 消息必须紧跟在含 `tool_calls` 的 assistant 之后，`tool → user
 
 ## P0-2. EventBus 异步订阅失效
 
-**位置**：`harness/pipeline/events.py:22` 与 `:64`
+**位置**：`aicf/harness/pipeline/events.py:22` 与 `:64`
 
 **现象**：通过 `EventBus.subscribe()` 注册的 **async** 处理器，在同步 `publish()`
 时收不到事件（或收到后副作用不生效），日志里只有一条含糊的「事件 X 处理器异常」。
@@ -67,7 +67,7 @@ def publish(self, event, payload=None):
 ```text
 事件 x 处理器异常
 Traceback (most recent call last):
-  File "harness/pipeline/events.py", line 65, in publish
+  File "aicf/harness/pipeline/events.py", line 65, in publish
     _bus_tasks.add(task)
 NameError: name '_bus_tasks' is not defined
 ```
@@ -79,7 +79,7 @@ NameError: name '_bus_tasks' is not defined
 
 ## P0-6. `killpg(0)` 误杀宿主进程（2026-10-20 修复）
 
-**位置**：`infra/orchestrator/local_engine.py::kill_process_tree`
+**位置**：`aicf/infra/orchestrator/local_engine.py::kill_process_tree`
 
 **现象**：跑 `pytest tests/test_harness_strata.py` 时，**pytest 进程被自己的
 SIGTERM 打死**（exit 143）；日志尾部只剩「已终止」，连外层 shell 进程组一起带走。
@@ -131,7 +131,7 @@ atexit 的 `_cleanup_active_launchers()` → `launcher.stop()` →
 
 ## P1-1. Token 经济闭环未接入
 
-**位置**：`harness/agent/assembler.py:74-83`
+**位置**：`aicf/harness/agent/assembler.py:74-83`
 
 `AgentSpec` 接收 `router` / `budget`，`AgentAssembler` 也真的构造了
 `ModelRouter` / `TokenMeter` / `TokenBudget` / `DurationPredictor` 并注册进 Runtime。
@@ -158,14 +158,14 @@ def run(self, message):
 
 | 能力 | 位置 | 说明 |
 |---|---|---|
-| `SpeculativePrefetch` / `PrefetchPlaceholders` | `harness/agent/context.py` | 符号预取与 FETCH 协议，全仓仅定义处 |
-| `FileWatcher` | `harness/codegraph/watcher.py` | 文件变更监听 |
-| `ImportResolver` | `harness/codegraph/imports.py` | import 路径映射 |
-| `OutputFilter` | `harness/pipeline/filters.py` | ANSI/时间戳/UUID 过滤，未接入回喂链路 |
-| `SwarmRuntime` | `harness/agent/swarm.py` | 群组共识，应用层零引用 |
-| `create_agent` / `Agent` | `harness/sdk.py` | 仅测试使用，应用层不调用 |
-| `SemanticCache` | `infra/cache.py` | 仅被 `harness/__init__` 重导出，无其他消费者 |
-| `EventLogger` | `infra/observability/core.py` | 全仓无调用者，且是逆向依赖 |
+| `SpeculativePrefetch` / `PrefetchPlaceholders` | `aicf/harness/agent/context.py` | 符号预取与 FETCH 协议，全仓仅定义处 |
+| `FileWatcher` | `aicf/harness/codegraph/watcher.py` | 文件变更监听 |
+| `ImportResolver` | `aicf/harness/codegraph/imports.py` | import 路径映射 |
+| `OutputFilter` | `aicf/harness/pipeline/filters.py` | ANSI/时间戳/UUID 过滤，未接入回喂链路 |
+| `SwarmRuntime` | `aicf/harness/agent/swarm.py` | 群组共识，应用层零引用 |
+| `create_agent` / `Agent` | `aicf/harness/sdk.py` | 仅测试使用，应用层不调用 |
+| `SemanticCache` | `aicf/infra/cache.py` | 仅被 `aicf/harness/__init__` 重导出，无其他消费者 |
+| `EventLogger` | `aicf/infra/observability/core.py` | 全仓无调用者，且是逆向依赖 |
 
 **建议**：这不是必须修的 bug，但它们让「框架能力」的描述容易夸大。
 文档中应如实标注状态，或在 README 里区分「已接入」与「可选用」。
@@ -176,12 +176,12 @@ def run(self, message):
 
 | 字段 | 位置 | 实际情况 |
 |---|---|---|
-| `ContextBudget.tail_rounds` / `max_open_topics` | `harness/context_assembly.py` | `plan()` **从不读取**，仅构造时赋值 |
-| `ContextGatherer.MAX_FILE_SIZE` | `harness/context_gatherer.py` | 常量定义但未使用 |
+| `ContextBudget.tail_rounds` / `max_open_topics` | `aicf/harness/context_assembly.py` | `plan()` **从不读取**，仅构造时赋值 |
+| `ContextGatherer.MAX_FILE_SIZE` | `aicf/harness/context_gatherer.py` | 常量定义但未使用 |
 | `@grep` 的 glob 参数 | 同上 | 能解析但不生效 |
-| `AsyncTaskStore._ttl` | `infra/tasks/async_store.py` | 声明后从未使用 |
-| `ToolResult.data` | `harness/tools/base.py` | `AgentLoop` 打包结果时**丢弃** `data` 字段 |
-| `AgentSpec.tools` 的 list 形式 | `harness/agent/assembler.py:118` | 只识别字面量 `standard`，其余元素静默忽略 |
+| `AsyncTaskStore._ttl` | `aicf/infra/tasks/async_store.py` | 声明后从未使用 |
+| `ToolResult.data` | `aicf/harness/tools/base.py` | `AgentLoop` 打包结果时**丢弃** `data` 字段 |
+| `AgentSpec.tools` 的 list 形式 | `aicf/harness/agent/assembler.py:118` | 只识别字面量 `standard`，其余元素静默忽略 |
 
 **这类问题的危害**：读者按名字以为能力存在，排查时浪费大量时间。
 建议统一处理：要么实现，要么删除，要么在字段旁注明「预留」。
@@ -192,9 +192,9 @@ def run(self, message):
 
 | 路径 | 位置 | 记忆语义 |
 |---|---|---|
-| `AgentAssembler` | `harness/agent/assembler.py` | 注入 `InMemoryStore` 但不使用 |
-| `AgentRuntime` | `harness/agent_runtime.py` | 记忆**只写不读**（写入后从不进入上下文） |
-| `sdk.Agent` | `harness/sdk.py` | 内部其实走 `AgentAssembler` |
+| `AgentAssembler` | `aicf/harness/agent/assembler.py` | 注入 `InMemoryStore` 但不使用 |
+| `AgentRuntime` | `aicf/harness/agent_runtime.py` | 记忆**只写不读**（写入后从不进入上下文） |
+| `sdk.Agent` | `aicf/harness/sdk.py` | 内部其实走 `AgentAssembler` |
 
 applications also add their own facades on top, so the full set is larger than
 the three core entry points.
@@ -212,15 +212,15 @@ that one entry point describes the whole product.
 
 ---
 
-## P1-6. `infra.models` 兼容 shim 的隐性导入顺序
+## P1-6. `aicf.infra.models` 兼容 shim 的隐性导入顺序
 
-`infra/models/` 下只有一个 `__init__.py`，它把 `infra.orchestrator.*` 镜像进
+`aicf/infra/models/` 下只有一个 `__init__.py`，它把 `aicf.infra.orchestrator.*` 镜像进
 `sys.modules`。因此：
 
-- `from infra.models.base import X` **只有在 `infra.models` 已被导入过时才成立**；
-- 它没有映射 `infra.models.router`，覆盖并不完整。
+- `from aicf.infra.models.base import X` **只有在 `aicf.infra.models` 已被导入过时才成立**；
+- 它没有映射 `aicf.infra.models.router`，覆盖并不完整。
 
-**建议**：新代码一律写 `infra.orchestrator.*`；适时删除 shim。
+**建议**：新代码一律写 `aicf.infra.orchestrator.*`；适时删除 shim。
 
 ---
 
@@ -230,8 +230,8 @@ that one entry point describes the whole product.
 
 | 文件 | 依赖 | 风险评估 |
 |---|---|---|
-| `infra/observability/core.py:12` | `from harness.pipeline.events import EventBus` | `EventLogger` 全仓无调用者，**可直接删除** |
-| `infra/cache.py:10` | `from harness.memory.vector import VectorIndex` | 与 `harness/memory/vector.py:13` 反向依赖 `infra.models.base` **构成循环**；`SemanticCache` 无真实消费者，**可整体移出或删除** |
+| `aicf/infra/observability/core.py:12` | `from aicf.harness.pipeline.events import EventBus` | `EventLogger` 全仓无调用者，**可直接删除** |
+| `aicf/infra/cache.py:10` | `from aicf.harness.memory.vector import VectorIndex` | 与 `aicf/harness/memory/vector.py:13` 反向依赖 `aicf.infra.models.base` **构成循环**；`SemanticCache` 无真实消费者，**可整体移出或删除** |
 
 两者指向的都是没有消费者的代码，**斩断成本很低**。
 
@@ -244,12 +244,12 @@ that one entry point describes the whole product.
 | 文件 | 指数 | 最复杂函数 |
 |---|---:|---|
 | `aicf-ui 仓的 aicf_ui/server.py` | 48.64 | `_produce_sse` (72)、`chat_completions` (57) |
-| `infra/orchestrator/anthropic.py` | 45.35 | `_split_system` (34) |
+| `aicf/infra/orchestrator/anthropic.py` | 45.35 | `_split_system` (34) |
 | `aicf-ui 仓的 aicf_ui/agent.py` | 41.98 | `chat_stream` (64) |
-| `harness/agent/loop.py` | 40.46 | `run_stream` (49) |
+| `aicf/harness/agent/loop.py` | 40.46 | `run_stream` (49) |
 
 **改动这些函数前请先补测试。** the console repository owns the two largest
-files. inside this repository, `harness/agent/loop.py::run_stream` is the first
+files. inside this repository, `aicf/harness/agent/loop.py::run_stream` is the first
 target.
 
 ---
@@ -274,9 +274,9 @@ behaved this way).
 ## P2-3. 命名与日志不一致
 
 - `ModelProfile.llama_config` 被 Strata 复用（字段名说 llama，实际装 Strata 配置）；
-- logger 名五花八门：`ModelOrchestrator` / `harness-scheduler` / `infra.anthropic`，
+- logger 名五花八门：`ModelOrchestrator` / `harness-scheduler` / `aicf.infra.anthropic`，
   `infra` 层大量残留 harness 命名；
-- 文件头注释与真实路径不符（`infra/orchestrator/base.py:1` 写成 `infra/models/base.py`，而该文件并不存在）；
+- 文件头注释与真实路径不符（`aicf/infra/orchestrator/base.py:1` 写成 `aicf/infra/models/base.py`，而该文件并不存在）；
 - `used_slots` 在 `ModelOrchestrator` 与 `ResourcePool` 里**语义不同**。
 
 ---
@@ -293,19 +293,19 @@ behaved this way).
 
 | 原级别 | 问题 | 修复位置 | 状态 |
 |---|---|---|---|
-| P0-1 | 收束轮角色序列非法 | `harness/agent/loop.py::_fold_trailing_tools` | ✅ 已修 |
-| P0-2 | EventBus 异步订阅失效 | `harness/pipeline/events.py` | ✅ 已修 |
+| P0-1 | 收束轮角色序列非法 | `aicf/harness/agent/loop.py::_fold_trailing_tools` | ✅ 已修 |
+| P0-2 | EventBus 异步订阅失效 | `aicf/harness/pipeline/events.py` | ✅ 已修 |
 | P0-3 | 测试文件硬编码凭据 | `tests/test_chat_with_user.py` | ✅ 代码已改，**凭据需轮换** |
-| P0-4 | 显式切换被自动降级覆盖 | `infra/policy/router.py` | ✅ 已修 |
-| P0-5 | 收束轮回复重复拼接 | `harness/agent/loop.py` | ✅ 已修 |
+| P0-4 | 显式切换被自动降级覆盖 | `aicf/infra/policy/router.py` | ✅ 已修 |
+| P0-5 | 收束轮回复重复拼接 | `aicf/harness/agent/loop.py` | ✅ 已修 |
 | P1-1 | Token 经济闭环未接入 | `AgentLoop.on_usage` + `assembler._record_usage` | ✅ 已接入 |
-| P1-7 | 两处逆向依赖 | `infra/cache.py`、`infra/observability/core.py` | ✅ 已斩断 |
+| P1-7 | 两处逆向依赖 | `aicf/infra/cache.py`、`aicf/infra/observability/core.py` | ✅ 已斩断 |
 | P1-3 | 声明但不生效的字段 | `AsyncTaskStore.ttl`、`ContextGatherer` | ✅ 已实现 |
-| P1-6 | `infra.models` shim | `infra/models/__init__.py` | ✅ 已重写 |
-| P2 | 管线计时断裂 | `harness/pipeline/pipeline.py` | ✅ 已修 |
+| P1-6 | `aicf.infra.models` shim | `aicf/infra/models/__init__.py` | ✅ 已重写 |
+| P2 | 管线计时断裂 | `aicf/harness/pipeline/pipeline.py` | ✅ 已修 |
 | P2 | dsn_ui 不读 .env | `aicf-ui 仓的 aicf_ui/dotenv_boot.py` | ✅ 已修 |
-| P2 | APIKeyManager 存明文 | `infra/auth/api_key.py` | ✅ 已修 |
-| **P0-6** | **`killpg(0)` 误杀宿主进程** | `infra/orchestrator/local_engine.py` | ✅ 已修 |
+| P2 | APIKeyManager 存明文 | `aicf/infra/auth/api_key.py` | ✅ 已修 |
+| **P0-6** | **`killpg(0)` 误杀宿主进程** | `aicf/infra/orchestrator/local_engine.py` | ✅ 已修 |
 
 ### ⚠️ 仍需人工处理
 

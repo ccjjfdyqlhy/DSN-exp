@@ -1,6 +1,6 @@
 # mcp_servers.yaml — 外部 MCP（Model Context Protocol）工具源声明
 #
-# 用途：把外部 MCP 服务器的工具接入 harness 的 ToolRegistry，
+# 用途：把外部 MCP 服务器的工具接入 aicf.harness 的 ToolRegistry，
 #       工具以 mcp.<服务器名>.<工具名> 命名空间注册，Agent 可直接调用。
 #
 # 使用方式（三选一）：

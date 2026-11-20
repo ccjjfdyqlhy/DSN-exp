@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness import Agent
-from harness.tools import MCPManager, MCPServerConfig, ToolRegistry, to_wire_name
-from harness.tools.toolbox import RegistryIndexSource, ToolboxManager
+from aicf.harness import Agent
+from aicf.harness.tools import MCPManager, MCPServerConfig, ToolRegistry, to_wire_name
+from aicf.harness.tools.toolbox import RegistryIndexSource, ToolboxManager
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -211,7 +211,7 @@ def test_allowlist_blocklist():
 
 def test_call_timeout_returns_retry(monkeypatch):
     # 外层超时余量调小，避免单测白等 5 秒（见 mcp.py 的 _OUTER_TIMEOUT_MARGIN）
-    monkeypatch.setattr("harness.tools.mcp._OUTER_TIMEOUT_MARGIN", 0.2)
+    monkeypatch.setattr("aicf.harness.tools.mcp._OUTER_TIMEOUT_MARGIN", 0.2)
     session = FakeSession(tools=[_remote_tool("slow")], delay=2.0)
     mgr = StubManager([_stdio_cfg("srv", call_timeout=0.1)], {"srv": session})
     reg = ToolRegistry()
@@ -329,7 +329,7 @@ class _ScriptedClient:
         self.turn = 0
 
     async def invoke(self, messages, tools=None):
-        from infra.models.base import ChatResponse, ToolCall
+        from aicf.infra.models.base import ChatResponse, ToolCall
         self.turn += 1
         if self.turn == 1:
             return ChatResponse(content="", tool_calls=[
@@ -369,7 +369,7 @@ def test_sdk_agent_mcp_end_to_end():
 
 
 def test_sdk_create_agent_mcp_params():
-    from harness import create_agent
+    from aicf.harness import create_agent
 
     agent = create_agent("m", api_key="k",
                          mcp_servers=[{"name": "s1", "command": "x"}],
@@ -382,7 +382,7 @@ def test_sdk_create_agent_mcp_params():
 
 
 def test_assembler_mcp_spec_shapes():
-    from harness.agent.assembler import AgentAssembler, AgentSpec
+    from aicf.harness.agent.assembler import AgentAssembler, AgentSpec
 
     client = _ScriptedClient("mcp.s.a", {})
     # dict 形式
@@ -397,7 +397,7 @@ def test_assembler_mcp_spec_shapes():
 
 
 def test_setup_mcp_noop_without_mcp():
-    from harness.agent.assembler import AgentAssembler, AgentSpec
+    from aicf.harness.agent.assembler import AgentAssembler, AgentSpec
 
     client = _ScriptedClient("x", {})
     assembled = AgentAssembler(client).assemble(AgentSpec(name="t"))

@@ -20,7 +20,7 @@ import threading
 
 import pytest
 
-from infra.runtime import (
+from aicf.infra.runtime import (
     EFFECT_EFFECTFUL,
     EFFECT_IDEMPOTENT,
     EFFECT_PURE,
@@ -39,7 +39,7 @@ from infra.runtime import (
     normalize_effect,
     recover,
 )
-from infra.store.sqlite import SqliteStore
+from aicf.infra.store.sqlite import SqliteStore
 
 
 # ── 夹具 ──────────────────────────────────────────────
@@ -104,7 +104,7 @@ def test_args_digest_is_stable_and_short():
 # ── 交叉测试：infra 与 harness 的幂等键必须逐字一致 ──────
 
 def test_canonical_args_matches_harness_implementation():
-    from harness.runtime_client import canonical_args as harness_canonical
+    from aicf.harness.runtime_client import canonical_args as harness_canonical
 
     for args in (None, {}, {'a': 1, 'b': 2}, {'b': 2, 'a': 1},
                  {'x': [1, 2, {'k': 'v'}]}, 'text', 42, {'n': None}):
@@ -121,37 +121,37 @@ def test_canonical_args_matches_harness_implementation():
 def test_idempotency_key_matches_harness_implementation(session_id, turn_seq,
                                                         tool, args):
     """infra 与 harness 各写一份公式 —— 用交叉测试钉死它们不会漂移。"""
-    from harness.runtime_client import idempotency_key as harness_key
+    from aicf.harness.runtime_client import idempotency_key as harness_key
 
     assert idempotency_key(session_id, turn_seq, tool, args) == \
         harness_key(session_id, turn_seq, tool, args)
 
 
 def test_reordered_args_produce_identical_key_in_both_implementations():
-    from harness.runtime_client import idempotency_key as harness_key
+    from aicf.harness.runtime_client import idempotency_key as harness_key
 
     left = idempotency_key('s1', 0, 'calc', {'a': 1, 'b': 2})
     right = harness_key('s1', 0, 'calc', {'b': 2, 'a': 1})
     assert left == right
 
 
-# ── 依赖方向：infra 不得 import harness ────────────────
+# ── 依赖方向：infra 不得 import aicf.harness ────────────────
 
 def test_infra_runtime_does_not_import_harness():
     """依赖规则：infra 在下、harness 在上，反向依赖被禁止。
 
-    幂等键公式因此各写一份（靠交叉测试钉死），而不是让 infra 去 import harness。
+    幂等键公式因此各写一份（靠交叉测试钉死），而不是让 infra 去 import aicf.harness。
     """
     import pathlib
 
-    import infra.runtime as pkg
+    import aicf.infra.runtime as pkg
 
     root = pathlib.Path(pkg.__file__).parent
     for path in sorted(root.glob('*.py')):
         source = path.read_text(encoding='utf-8')
         for line in source.splitlines():
             stripped = line.strip()
-            assert not stripped.startswith(('import harness', 'from harness')), \
+            assert not stripped.startswith(('import aicf.harness', 'from harness')), \
                 f'{path.name} 反向依赖了 harness: {stripped}'
 
 
@@ -408,7 +408,7 @@ def test_effect_levels_are_classified_conservatively():
 
 def test_record_tool_intent_accepts_harness_tool_intent(runtime, port):
     """Kernel 侧传 harness.runtime_client.ToolIntent，运行时照样能记。"""
-    from harness.runtime_client import ToolIntent
+    from aicf.harness.runtime_client import ToolIntent
 
     key = idempotency_key('s1', 0, 'pay', {'amount': 1})
     intent = ToolIntent(session_id='s1', turn_seq=0, tool='pay',
@@ -468,7 +468,7 @@ def test_checkpoint_prune_is_optional_for_ports_without_it():
 
 def test_record_tool_intent_refuses_pending_effectful_replay(runtime, port):
     """即使调用方绕过 execute_tool，执行前那道门也会拦住重复副作用。"""
-    from infra.runtime import UnknownOutcomeError
+    from aicf.infra.runtime import UnknownOutcomeError
 
     key = runtime.idempotency_key('s1', 0, 'pay', {'amount': 1})
     runtime.record_tool_intent(_intent('s1', 0, 'pay', key, EFFECT_EFFECTFUL))
@@ -499,11 +499,11 @@ def test_record_tool_intent_after_completed_call_is_allowed(runtime, port):
 def test_unknown_outcome_error_carries_cross_layer_marker(runtime, port):
     """跨层识别标记：两侧的异常类都必须带 ``unknown_outcome``。
 
-    infra 不能 import harness（依赖规则），所以跨层只能靠**属性标记**互相认出。
+    infra 不能 import aicf.harness（依赖规则），所以跨层只能靠**属性标记**互相认出。
     认不出时上层按「拒绝」处理（安全默认）—— 所以这个标记必须两侧都在。
     """
-    from infra.runtime import UnknownOutcomeError
-    from harness.runtime_client import UnknownOutcomeError as HarnessUnknownOutcomeError
+    from aicf.infra.runtime import UnknownOutcomeError
+    from aicf.harness.runtime_client import UnknownOutcomeError as HarnessUnknownOutcomeError
 
     assert getattr(UnknownOutcomeError, 'unknown_outcome', False) is True
     assert getattr(HarnessUnknownOutcomeError, 'unknown_outcome', False) is True
@@ -528,7 +528,7 @@ def test_recovery_resumes_the_unfinished_turn(runtime, port):
 
 def test_recovery_keeps_awaiting_approval_turn(runtime, port):
     """策划案 §8.2 用例 3：审批期间进程退出 → 重启后仍是 awaiting_approval。"""
-    from infra.runtime import TurnStatus
+    from aicf.infra.runtime import TurnStatus
 
     turn = runtime.start_turn(2, input={'q': 'needs approval'})
     turn.status = TurnStatus.AWAITING_APPROVAL.value
@@ -580,7 +580,7 @@ def test_sqlite_runtime_store_implements_store_port(port):
 
 
 def test_managed_runtime_implements_runtime_client_protocol(runtime):
-    from harness.runtime_client import RuntimeClient
+    from aicf.harness.runtime_client import RuntimeClient
 
     assert isinstance(runtime, RuntimeClient)
 
@@ -592,7 +592,7 @@ def test_managed_runtime_idempotency_key_matches_protocol(runtime):
 
 def test_di_container_still_importable_from_package():
     """infra/runtime.py → infra/runtime/di.py 迁移后，历史 API 不能变。"""
-    from infra.runtime import Runtime
+    from aicf.infra.runtime import Runtime
 
     container = Runtime(name='x')
     container.register('svc', 1)
@@ -605,8 +605,8 @@ def test_multiple_processes_append_without_seq_collision(tmp_path):
     writer = textwrap.dedent(f'''
         import os, sys
         sys.path.insert(0, {os.getcwd()!r})
-        from infra.store.sqlite import SqliteStore
-        from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+        from aicf.infra.store.sqlite import SqliteStore
+        from aicf.infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
         store = SqliteStore({db!r})
         migrate_runtime(store)
         rt = ManagedRuntime(SqliteRuntimeStore(store), session_id='s1')
@@ -638,8 +638,8 @@ def test_process_crash_leaves_intent_and_recovery_refuses_to_replay(tmp_path):
     child = textwrap.dedent(f'''
         import os, sys
         sys.path.insert(0, {os.getcwd()!r})
-        from infra.store.sqlite import SqliteStore
-        from infra.runtime import (ManagedRuntime, SqliteRuntimeStore,
+        from aicf.infra.store.sqlite import SqliteStore
+        from aicf.infra.runtime import (ManagedRuntime, SqliteRuntimeStore,
                                    migrate_runtime, idempotency_key)
         store = SqliteStore({db!r})
         migrate_runtime(store)

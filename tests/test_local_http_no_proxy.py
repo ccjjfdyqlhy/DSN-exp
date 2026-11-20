@@ -16,8 +16,8 @@ import threading
 import pytest
 import requests
 
-from infra.orchestrator.base import local_http_session
-from infra.orchestrator.local_engine import LocalServerLauncher
+from aicf.infra.orchestrator.base import local_http_session
+from aicf.infra.orchestrator.local_engine import LocalServerLauncher
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):

@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from infra.eval import (
+from aicf.infra.eval import (
     HARD_CASE_GROUP,
     EvalCase,
     ReplayQueue,
     SessionSampler,
     TraceStore,
 )
-from infra.eval.badcase import (
+from aicf.infra.eval.badcase import (
     STATUS_DISMISSED,
     STATUS_LABELLED,
     STATUS_NEW,
@@ -121,7 +121,7 @@ def test_intake_to_label_to_queue_to_dataset():
 def test_only_labelled_cases_can_enter_the_regression_set():
     intake = _intake()
     bid = intake.intake(session_id='s1', trace_id='t', reason='x')
-    from infra.eval.badcase import LabelledBadCase
+    from aicf.infra.eval.badcase import LabelledBadCase
     raw = LabelledBadCase(id=bid, session_id='s1', trace_id='t', reason='x',
                           status=STATUS_NEW)
     with pytest.raises(ValueError):

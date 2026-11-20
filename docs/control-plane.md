@@ -9,10 +9,10 @@
 
 | 问题 | 载体 | 存储 |
 |---|---|---|
-| 这个 Agent 的声明是什么？ | `AgentArtifact`（`infra/control/artifact.py`） | `control_artifact` |
-| 它现在处于生命周期的哪一步？ | `ArtifactStore.transition`（`infra/control/lifecycle.py`） | `control_lifecycle_event` |
-| 它花了多少钱？ | `CostLedger`（`infra/control/cost.py`） | `control_cost_ledger` |
-| 外部框架的进程怎么纳管？ | `ByoRegistry`（`infra/control/adoption.py`） | 内存登记 |
+| 这个 Agent 的声明是什么？ | `AgentArtifact`（`aicf/infra/control/artifact.py`） | `control_artifact` |
+| 它现在处于生命周期的哪一步？ | `ArtifactStore.transition`（`aicf/infra/control/lifecycle.py`） | `control_lifecycle_event` |
+| 它花了多少钱？ | `CostLedger`（`aicf/infra/control/cost.py`） | `control_cost_ledger` |
+| 外部框架的进程怎么纳管？ | `ByoRegistry`（`aicf/infra/control/adoption.py`） | 内存登记 |
 
 表结构按策划案 §5.1 原样建（迁移 id `rc1_control_001`），
 存储走 `IStore` —— 换 Postgres 不动上层。
@@ -22,7 +22,7 @@
 `agents/research.yaml` 是活的示例。同一份 yaml 同时是：
 
 - **部署描述**（`spec.runtime.deployment`）
-- **评测配置**（`RunVersion` 冻结的就是这份内容，`infra/eval/run_version.py`）
+- **评测配置**（`RunVersion` 冻结的就是这份内容，`aicf/infra/eval/run_version.py`）
 - **成本归因维度**（`spec.cost_model.per_1k_tokens` → `price_tokens()`）
 - **命令行装配**（`aicf run --artifact agents/research.yaml`）
 
@@ -46,11 +46,11 @@ DRAFT ──review──▶ REVIEWING ──approve──▶ APPROVED ──rele
    `VersionConflictError`；改声明 = 升版本。
 
 回滚只回退一步（`RELEASED/ROLLED_OUT → ROLLED_BACK`），与
-`harness/learning/promotion.py` 的既定语义一致。
+`aicf/harness/learning/promotion.py` 的既定语义一致。
 
 ## AgentIdentity 与委托
 
-`infra/control/identity.py`。与 `infra/auth/base.py` 的用户态 `Identity`
+`aicf/infra/control/identity.py`。与 `aicf/infra/auth/base.py` 的用户态 `Identity`
 不混用：一个回答「哪个人在操作」，一个回答「哪个 Agent 拿着什么权限」。
 
 - 子 Agent 的 scope 必须是**父 scope 的子集**，越权直接抛 `DelegationError`
@@ -82,12 +82,12 @@ aicf artifact rollback research-assistant 0.4.2 --reason "回归"
 
 ## 租约与工作区（部署侧的伙伴模块）
 
-- `infra/runtime/scheduler.py`：写租约 + 心跳 + **围栏令牌**。接管把
+- `aicf/infra/runtime/scheduler.py`：写租约 + 心跳 + **围栏令牌**。接管把
   epoch 加一，旧实例的续约与携带旧 epoch 的写入都会被拒 ——
   这就是「实例可替换、结果不重复」的机制。
-- `infra/runtime/isolation.py`：工作区 spec{fs, net, secret}。
+- `aicf/infra/runtime/isolation.py`：工作区 spec{fs, net, secret}。
   路径判定（resolve 后判前缀，防 `../` 与 symlink）与
-  `harness/tools/sandbox/paths.py` 由交叉测试钉住结论一致。
+  `aicf/harness/tools/sandbox/paths.py` 由交叉测试钉住结论一致。
 
 ## 测试
 

@@ -11,10 +11,10 @@ import time
 
 import pytest
 
-from harness.agent.collab import AgentManager
-from harness.agent.engine import ConversationEngine
-from harness.agent.engine_config import AgentSettings, EngineConfig, ModelInfo
-from harness.tools.registry import AnnotatedTool, ManagedToolRegistry
+from aicf.harness.agent.collab import AgentManager
+from aicf.harness.agent.engine import ConversationEngine
+from aicf.harness.agent.engine_config import AgentSettings, EngineConfig, ModelInfo
+from aicf.harness.tools.registry import AnnotatedTool, ManagedToolRegistry
 
 
 class ScriptedClient:
@@ -144,7 +144,7 @@ def test_send_message_and_list():
         manager = AgentManager(client=client, registry=registry, model=_model())
         manager.attach(root)
         # simulate a child record without running a turn
-        from harness.agent.collab import AgentRecord, PENDING_INIT
+        from aicf.harness.agent.collab import AgentRecord, PENDING_INIT
         child_engine = ConversationEngine(
             client=client, registry=registry, cwd='.', model=_model(),
             agent_name='helper')
@@ -213,7 +213,7 @@ def test_wait_agent_reports_activity():
                                   model=_model(), system_provider=lambda: 'sys')
         manager = AgentManager(client=client, registry=registry, model=_model())
         manager.attach(root)
-        from harness.agent.collab import AgentRecord, RUNNING
+        from aicf.harness.agent.collab import AgentRecord, RUNNING
         child_engine = ConversationEngine(
             client=client, registry=registry, cwd='.', model=_model(),
             agent_name='busy')

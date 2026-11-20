@@ -47,14 +47,20 @@ aicf tool exec proc.run --args '{"command":"rm -rf /"}' --policy strict
 # 3. 跑一轮，留下 trace。
 aicf run "总结一下这个仓库" --trace trace.jsonl
 
-# 4. 用数据集打分（数据集随包分发）。
-aicf eval --dataset basic --traces trace.jsonl --out run.json
+# 4. 用数据集打分（数据集随包分发）。trace 按 --case-id 与用例对齐，
+#    所以跑一遍数据集就是「每个用例一条 trace」：
+#      aicf run "<输入>" --case-id <case_id> --trace traces/<case_id>.jsonl
+aicf eval --dataset basic --traces traces/ --out run.json
 
 # 5. 任何回归、成本超标或安全违规都会拦住发布。
 aicf gate --run run.json --out gate.json
 ```
 
 上面每一步都**不需要 API key** —— 走桩模型离线可跑。
+
+一句实话：桩模型不会调工具，所以数据集用例**在本地不会通过**。
+`aicf gate` 是 CI 用的闸门：它要求每个用例都有一条 trace（这就是 `--case-id` 的用途），
+关键用例缺失时会拦住发布。
 
 ---
 
@@ -80,12 +86,28 @@ pip install "aicf-core[all]"           # 全都要
 
 ---
 
+## 从 ≤ 1.0.0rc3 迁移
+
+1.0.0 把两层收进同一个顶层包。原因很实际：`harness` 和 `infra` 这两个名字
+**在 PyPI 上已经被人占了** —— 框架不该把别人的名字装进你的环境。
+
+| 旧（≤ 1.0.0rc3） | 新（1.0.0+） |
+|---|---|
+| `from harness import create_agent` | `from aicf.harness import create_agent` |
+| `from harness.tools import ToolRegistry` | `from aicf.harness.tools import ToolRegistry` |
+| `from infra.models.base import IChatClient` | `from aicf.infra.models.base import IChatClient` |
+
+分发名、命令行、import 名现在对齐了：`pip install aicf-core` → `aicf` 命令 →
+`import aicf.harness`（`from aicf import create_agent` 也一样，是懒加载转发）。
+
+---
+
 ## 只想写个 Agent？五个符号。
 
 ```python
-from harness import create_agent, tool   # 你真正会写的三个
-from harness.tools import ToolRegistry   # 自己管工具时才需要
-from infra.models.base import IChatClient # 模型接口
+from aicf.harness import create_agent, tool   # 你真正会写的三个
+from aicf.harness.tools import ToolRegistry   # 自己管工具时才需要
+from aicf.infra.models.base import IChatClient # 模型接口
 ```
 
 | 符号 | 是什么 |
@@ -97,7 +119,7 @@ from infra.models.base import IChatClient # 模型接口
 | `IChatClient` | 模型接口 —— 实现它就能接自己的后端 |
 
 ```python
-from harness import create_agent, tool
+from aicf.harness import create_agent, tool
 
 @tool
 def add(a: int, b: int) -> int:
@@ -117,7 +139,7 @@ print(result)                        # 结果表现得像字符串
 
 任何 OpenAI 兼容端点都行。本地模型把 `base_url` 指向你的
 `llama-server` / LM Studio，或者直接给 `create_agent` 传一个客户端
-（`infra.orchestrator.LlamaCppChat`、`LMStudioChat`、`OpenAICompatClient` …）。
+（`aicf.infra.orchestrator.LlamaCppChat`、`LMStudioChat`、`OpenAICompatClient` …）。
 
 ---
 
@@ -126,10 +148,10 @@ print(result)                        # 结果表现得像字符串
 两层，依赖**单向向下**：
 
 ```
-harness/   Agent 核心    轮次循环 · 工具协议 · 上下文 · 记忆 · 管线 · 会话 · SDK
-   │                      不知道任何产品概念
-   ▼
-infra/     基础设施      模型路由 · 资源池 · 存储 · 网关 · 认证 · 策略
+aicf/harness/   Agent 核心     turn loop · 工具 · 上下文 · 记忆 · 管线 · 会话 · SDK
+    │                        不认识任何业务语义
+    ▼
+aicf/infra/     基础设施层    模型路由 · 资源池 · 存储 · 网关 · 认证 · 策略
 ```
 
 ```

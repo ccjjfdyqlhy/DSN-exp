@@ -12,15 +12,15 @@ import asyncio
 
 import pytest
 
-from harness.approval.base import ApprovalDecision, ApprovalRequest
-from harness.policy.base import PolicyRule
-from harness.runtime_client import NullRuntimeClient
-from harness.tools.base import Tool, ToolRegistry
-from harness.tools.guard import ToolGuard, args_digest
-from harness.tools.registry import ManagedToolRegistry
-from harness.tools.spec import ToolSpec
-from infra.auth.base import Identity
-from infra.policy.engine import RulePolicyEngine, compute_risk
+from aicf.harness.approval.base import ApprovalDecision, ApprovalRequest
+from aicf.harness.policy.base import PolicyRule
+from aicf.harness.runtime_client import NullRuntimeClient
+from aicf.harness.tools.base import Tool, ToolRegistry
+from aicf.harness.tools.guard import ToolGuard, args_digest
+from aicf.harness.tools.registry import ManagedToolRegistry
+from aicf.harness.tools.spec import ToolSpec
+from aicf.infra.auth.base import Identity
+from aicf.infra.policy.engine import RulePolicyEngine, compute_risk
 
 
 # ── 夹具 ────────────────────────────────────────────────
@@ -229,7 +229,7 @@ def test_registry_without_guard_still_works():
 
 def test_agent_loop_uses_the_registry_entry_point():
     """AgentLoop 必须走注册表入口，否则 guard 形同虚设。"""
-    from harness.agent.loop import AgentLoop
+    from aicf.harness.agent.loop import AgentLoop
 
     registry = make_registry(CountingTool(name='shell',
                                           spec=ToolSpec(name='shell')))
@@ -264,7 +264,7 @@ def test_tool_without_spec_is_treated_as_strictest():
 
 
 def test_read_only_tool_gets_narrow_spec():
-    from harness.tools.registry import AnnotatedTool
+    from aicf.harness.tools.registry import AnnotatedTool
     tool = AnnotatedTool(name='fs.read', description='d',
                          handler=lambda: 'x', read_only=True)
     guard = ToolGuard(policy=RulePolicyEngine())
@@ -276,7 +276,7 @@ def test_read_only_tool_gets_narrow_spec():
 # ── 幂等 ────────────────────────────────────────────────
 def test_idempotent_tool_is_not_executed_twice():
     """同一幂等键重复投递 → 副作用只发生一次。"""
-    from harness.runtime_client import ToolIntent
+    from aicf.harness.runtime_client import ToolIntent
 
     class Cache(NullRuntimeClient):
         def __init__(self):
@@ -309,7 +309,7 @@ def test_args_digest_does_not_leak_plaintext():
 
 
 def test_preview_truncates_and_hides_nothing_but_length():
-    from harness.tools.guard import preview_args
+    from aicf.harness.tools.guard import preview_args
     text = preview_args({'a': 'x' * 1000})
     assert len(text) < 500
     assert '…' in text
@@ -333,7 +333,7 @@ def test_guard_does_not_execute_when_the_outcome_is_unknown():
     写结果」，如果它不理会托管运行时在**执行前**抛出的
     UnknownOutcomeError，就等于给「重复扣款」开了后门。
     """
-    from harness.runtime_client import UnknownOutcomeError
+    from aicf.harness.runtime_client import UnknownOutcomeError
 
     class RefusingRuntime(NullRuntimeClient):
         def record_tool_intent(self, intent):
@@ -374,11 +374,11 @@ def test_guard_treats_a_runtime_write_failure_as_a_denial():
 
 
 def test_unknown_outcome_marker_is_recognised_across_layers():
-    """infra 侧的异常靠标记属性被 harness 认出（infra 不能 import harness）。"""
-    from harness.runtime_client import UnknownOutcomeError
+    """infra 侧的异常靠标记属性被 harness 认出（infra 不能 import aicf.harness）。"""
+    from aicf.harness.runtime_client import UnknownOutcomeError
     assert getattr(UnknownOutcomeError('x'), 'unknown_outcome', False) is True
     try:
-        from infra.runtime.managed import UnknownOutcomeError as InfraError
+        from aicf.infra.runtime.managed import UnknownOutcomeError as InfraError
     except Exception:  # pragma: no cover - runtime 包可能还没就位
         return
     assert getattr(InfraError.__new__(InfraError), 'unknown_outcome', False) is True
@@ -400,7 +400,7 @@ def test_policy_denial_emits_an_audit_denied_event():
 
 
 def test_scope_denial_is_audited_with_the_scope_reason():
-    from infra.auth.base import Identity
+    from aicf.infra.auth.base import Identity
     collector = Collector()
     identity = Identity(uid='u1', scopes=['fs.read'])
     spec = ToolSpec(name='fs.write', scopes=('fs.write',), effect='idempotent')
@@ -438,7 +438,7 @@ def test_sandbox_violation_is_audited_and_the_tool_still_runs():
                              spec=ToolSpec(name='proc.run', effect='effectful'))
 
         async def run_async(self, **params):
-            from harness.tools.context import current_context
+            from aicf.harness.tools.context import current_context
             context = current_context()
             violations = getattr(context, 'violations', None)
             if violations is not None:

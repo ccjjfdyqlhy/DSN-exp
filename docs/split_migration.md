@@ -20,7 +20,7 @@ the console depends on the library, and the library depends on nothing above it.
 
 | repository | contents | install | internal dependency |
 |---|---|---|---|
-| [`aicf-core`](https://github.com/ccjjfdyqlhy/aicf-core) | `harness/` and `infra/` | `pip install aicf-core` | none |
+| [`aicf-core`](https://github.com/ccjjfdyqlhy/aicf-core) | `aicf/harness/` and `aicf/infra/` | `pip install aicf-core` | none |
 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | web console | `pip install -e .` | aicf-core |
 
 `aicf-core` 1.0.0rc3 is the current release. while a version is unpublished, install
@@ -56,7 +56,7 @@ to the user home directory or to a path from the environment:
 | `<repo>/apps/dsn_ui/data/` | `~/.aicf/ui/data/` or `DSN_UI_DATA_DIR` | console data |
 | `<repo>/.env` | `AICF_ENV_FILE`, then `./.env`, then `~/.aicf/ui/.env` | searched in order |
 
-`harness/personality` used to hardcode an application card directory. it now
+`aicf/harness/personality` used to hardcode an application card directory. it now
 looks in `AICF_CHARACTER_CARDS_DIR`, then next to the package, then at the
 repository root.
 
@@ -73,7 +73,7 @@ python -m aicf_ui.server --port 8888
 ### using the sdk
 
 ```python
-from harness import Agent
+from aicf.harness import Agent
 ```
 
 the import is unchanged. only the install source changed.

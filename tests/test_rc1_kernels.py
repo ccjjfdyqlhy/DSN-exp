@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from harness.kernel import (
+from aicf.harness.kernel import (
     KernelContext,
     PlannerKernel,
     ReactKernel,
@@ -23,10 +23,10 @@ from harness.kernel import (
     parse_plan,
     validate_workflow,
 )
-from harness.kernel.planner import PlanError
-from harness.tools.base import Tool, ToolResult
-from harness.tools.registry import ManagedToolRegistry
-from infra.orchestrator.base import ChatResponse
+from aicf.harness.kernel.planner import PlanError
+from aicf.harness.tools.base import Tool, ToolResult
+from aicf.harness.tools.registry import ManagedToolRegistry
+from aicf.infra.orchestrator.base import ChatResponse
 
 
 class FakeClient:
@@ -185,7 +185,7 @@ def test_workflow_runs_parallel_branches():
                      args={'text': '{a}'}, depends_on=('a', 'b')),
     ], max_concurrency=2)
     c = ctx(FakeClient(reply='', parallel=True), tools)
-    from harness.kernel import CapabilitySet
+    from aicf.harness.kernel import CapabilitySet
     c.caps = CapabilitySet(parallel_tool_calls=True)   # 请求并行 → 协商后仍并行
     result = asyncio.run(kernel.run(c))
     assert result.status == 'done'
@@ -217,8 +217,8 @@ def test_workflow_retries_then_compensates_in_reverse():
 
 def test_workflow_tool_calls_go_through_the_guard():
     """策划案 §3.2 规则 5：Workflow 的工具调用也必须走统一入口。"""
-    from harness.policy.base import PolicyDecision
-    from harness.tools.guard import ToolGuard
+    from aicf.harness.policy.base import PolicyDecision
+    from aicf.harness.tools.guard import ToolGuard
 
     class Deny:
         def admit(self, tool, args=None, spec=None, identity=None):
@@ -266,7 +266,7 @@ def test_workflow_kernel_describe_declares_parallel_support():
 
 
 def test_workflow_satisfies_the_execution_kernel_protocol():
-    from harness.kernel.base import ExecutionKernel
+    from aicf.harness.kernel.base import ExecutionKernel
     assert isinstance(WorkflowKernel(), ExecutionKernel)
     assert isinstance(PlannerKernel(), ExecutionKernel)
 
@@ -360,8 +360,8 @@ def test_planner_compensates_completed_steps_on_final_failure():
 
 
 def test_planner_tool_calls_go_through_the_guard():
-    from harness.policy.base import PolicyDecision
-    from harness.tools.guard import ToolGuard
+    from aicf.harness.policy.base import PolicyDecision
+    from aicf.harness.tools.guard import ToolGuard
 
     class Deny:
         def admit(self, tool, args=None, spec=None, identity=None):

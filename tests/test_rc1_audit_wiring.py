@@ -10,11 +10,11 @@ import asyncio
 
 import pytest
 
-from harness.policy.base import PolicyDecision
-from harness.tools.base import Tool, ToolResult
-from harness.tools.guard import ToolGuard
-from harness.tools.registry import ManagedToolRegistry
-from infra.observability.audit import AuditImmutableError, AuditLog
+from aicf.harness.policy.base import PolicyDecision
+from aicf.harness.tools.base import Tool, ToolResult
+from aicf.harness.tools.guard import ToolGuard
+from aicf.harness.tools.registry import ManagedToolRegistry
+from aicf.infra.observability.audit import AuditImmutableError, AuditLog
 
 
 def echo_tool():
@@ -138,13 +138,13 @@ def test_audit_records_survive_a_trace_export_round_trip():
 def test_sdk_default_path_attaches_an_audit_log():
     """SDK 装配路径默认带不可删审计（assembler 的接线）。"""
 
-    from harness.agent.assembler import AgentAssembler, AgentSpec
+    from aicf.harness.agent.assembler import AgentAssembler, AgentSpec
 
     class DummyClient:
         model = 'dummy'
 
         def invoke(self, messages, tools=None, **kwargs):
-            from infra.orchestrator.base import ChatResponse
+            from aicf.infra.orchestrator.base import ChatResponse
             return ChatResponse(content='ok')
 
         def stream(self, messages, tools=None, **kwargs):

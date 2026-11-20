@@ -12,13 +12,13 @@ import asyncio
 
 import pytest
 
-from harness.approval.base import ApprovalDecision
-from harness.approval.broker import LocalApprovalBroker
-from harness.policy.base import PolicyRule
-from harness.tools.base import Tool, ToolRegistry, ToolResult
-from harness.tools.guard import ToolGuard
-from harness.tools.registry import ManagedToolRegistry
-from harness.tools.standard import ToolDeps, install_standard_tools
+from aicf.harness.approval.base import ApprovalDecision
+from aicf.harness.approval.broker import LocalApprovalBroker
+from aicf.harness.policy.base import PolicyRule
+from aicf.harness.tools.base import Tool, ToolRegistry, ToolResult
+from aicf.harness.tools.guard import ToolGuard
+from aicf.harness.tools.registry import ManagedToolRegistry
+from aicf.harness.tools.standard import ToolDeps, install_standard_tools
 
 
 def build_registry(tmp_path, **kwargs) -> ManagedToolRegistry:
@@ -100,8 +100,8 @@ def test_sandbox_denial_marks_the_call_failed(tmp_path):
 # ── the SDK path has to be guarded too ──────────────────────────────
 
 def test_sdk_path_attaches_a_guard(tmp_path):
-    from harness import create_agent
-    from infra.models.stub import StubChatClient
+    from aicf.harness import create_agent
+    from aicf.infra.models.stub import StubChatClient
 
     agent = create_agent(client=StubChatClient(responses=[]),
                          tools="standard",
@@ -113,8 +113,8 @@ def test_sdk_path_attaches_a_guard(tmp_path):
 
 
 def test_sdk_path_sandboxes_proc_run(tmp_path):
-    from harness import create_agent
-    from infra.models.stub import StubChatClient
+    from aicf.harness import create_agent
+    from aicf.infra.models.stub import StubChatClient
 
     agent = create_agent(client=StubChatClient(responses=[]),
                          tools="standard",
@@ -137,7 +137,7 @@ def test_batch_run_goes_through_the_guard(tmp_path):
     That skipped the policy, the approval, the sandbox and the audit, so
     batch.run(fn='proc.run') was a side door into the host.
     """
-    from infra.policy.engine import RulePolicyEngine
+    from aicf.infra.policy.engine import RulePolicyEngine
 
     registry = ManagedToolRegistry()
     deps = ToolDeps(workspace=str(tmp_path), tool_registry=registry)
@@ -171,7 +171,7 @@ def test_guard_injects_the_tool_spec(tmp_path):
                              handler=self._run)
 
         async def _run(self):
-            from harness.tools.context import current_context
+            from aicf.harness.tools.context import current_context
             spec = getattr(current_context(), "tool_spec", None)
             seen.append(getattr(spec, "network", None))
             return ToolResult.ok("done")
@@ -244,7 +244,7 @@ def test_registry_execute_runs_an_async_handler():
 
 @pytest.mark.parametrize("mode", ["strict", "legacy"])
 def test_security_mode_reads_the_environment(mode, monkeypatch):
-    from harness.tools.guard import default_security_mode
+    from aicf.harness.tools.guard import default_security_mode
 
     monkeypatch.setenv("AICF_SECURITY_MODE", mode)
     assert default_security_mode() == mode

@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from infra.finetune.base import JobState, TrainJob, TrainSpec
-from infra.finetune.store import FinetuneStore
-from harness.learning.dataset_builder import DatasetBuilder, Trajectory
-from harness.learning.evaluator import EvalPolicy, Evaluator, RuleEvaluator
-from harness.learning.promotion import PromotionManager, PromotionPolicy
-from harness.learning.teacher import (
+from aicf.infra.finetune.base import JobState, TrainJob, TrainSpec
+from aicf.infra.finetune.store import FinetuneStore
+from aicf.harness.learning.dataset_builder import DatasetBuilder, Trajectory
+from aicf.harness.learning.evaluator import EvalPolicy, Evaluator, RuleEvaluator
+from aicf.harness.learning.promotion import PromotionManager, PromotionPolicy
+from aicf.harness.learning.teacher import (
     TeacherBoundaryError,
     TeacherConfig,
     TeacherRefiner,
@@ -305,7 +305,7 @@ def test_promotion_force_bypasses_gate():
 
 def test_evaluate_batch_groups_by_source():
     """自生成样本与真实对话的分数要分开统计，不能混成一个平均分。"""
-    from harness.learning.evaluator import Evaluator, EvalPolicy
+    from aicf.harness.learning.evaluator import Evaluator, EvalPolicy
 
     ev = Evaluator(policy=EvalPolicy(threshold=0.9, hard_gate=True))
     records = [
@@ -342,7 +342,7 @@ def test_evaluate_batch_groups_by_source():
 
 
 def test_evaluate_batch_empty_and_missing_source():
-    from harness.learning.evaluator import Evaluator
+    from aicf.harness.learning.evaluator import Evaluator
 
     ev = Evaluator()
     empty = ev.evaluate_batch([])

@@ -34,16 +34,16 @@ rc0 只有三条 DoD，全部是**可执行**的：
 
 | 项 | 改造前 | 现在（2026-11-18 复核） | 怎么验证 |
 |---|---|---|---|---|
-| 核心代码量 | `harness/` 20.8k 行 + `infra/` 16.6k 行 | `harness/` 26.1k 行 + `infra/` 24.1k 行 | `find harness infra -name '*.py' \| xargs wc -l` |
+| 核心代码量 | `aicf/harness/` 20.8k 行 + `aicf/infra/` 16.6k 行 | `aicf/harness/` 26.1k 行 + `aicf/infra/` 24.1k 行 | `find harness infra -name '*.py' \| xargs wc -l` |
 | 测试基线 | 600 passed / 3 skipped | 1142 passed / 16 skipped（只算入库用例） | `pytest -q tests/` |
-| 审批 / 人在回路 | 零命中 | `harness/approval/`：协议 + broker + 会话缓存 | `grep -ri approv harness/ infra/` |
-| 沙箱 / 隔离 | 零命中 | `harness/tools/sandbox/`：路径判定 + restricted + namespaced；**守卫默认挂后端**，SDK 与 CLI 的默认路径都在沙箱里跑 | `grep -ri sandbox harness/ infra/` |
-| 幂等 | 零命中 | `harness/runtime_client.py` + `infra/runtime/idempotency.py`，两份实现由交叉测试钉住 | `grep -ri idempot harness/ infra/` |
-| Agent Identity | 只有用户态 `uid + scopes` | `infra/control/identity.py`：AgentIdentity + 委托链（子 scope ⊆ 父 scope，越权即拒）+ audit.delegation | `tests/test_rc1_control.py` |
-| Artifact / 控制面 | 零命中 | `infra/control/`：AgentArtifact（一种声明多处消费）、生命周期状态机（release 必须携带 pass 的 Gate 报告）、成本账本、BYO 纳管 | `tests/test_rc1_control.py` |
-| Experiment / Run Version | 零命中 | `infra/eval/{experiment,run_version}.py`（最小版） | `grep -ri experiment harness/ infra/` |
-| Workflow / Planner | 零命中 | `harness/kernel/{workflow,planner}.py`：DAG（并行分支 + 逆序补偿）与 Planner-Executor（结构化计划 + 有界重规划）| `tests/test_rc1_kernels.py` |
-| 遥测 | 有事件词表，无 trace/span 模型 | `harness/telemetry/` + `infra/observability/{span,trace,audit}.py`；audit.* 事件已接线到不可删 AuditStore（SDK/CLI 默认路径） | `tests/test_rc1_audit_wiring.py` |
+| 审批 / 人在回路 | 零命中 | `aicf/harness/approval/`：协议 + broker + 会话缓存 | `grep -ri approv aicf/harness/ aicf/infra/` |
+| 沙箱 / 隔离 | 零命中 | `aicf/harness/tools/sandbox/`：路径判定 + restricted + namespaced；**守卫默认挂后端**，SDK 与 CLI 的默认路径都在沙箱里跑 | `grep -ri sandbox aicf/harness/ aicf/infra/` |
+| 幂等 | 零命中 | `aicf/harness/runtime_client.py` + `aicf/infra/runtime/idempotency.py`，两份实现由交叉测试钉住 | `grep -ri idempot aicf/harness/ aicf/infra/` |
+| Agent Identity | 只有用户态 `uid + scopes` | `aicf/infra/control/identity.py`：AgentIdentity + 委托链（子 scope ⊆ 父 scope，越权即拒）+ audit.delegation | `tests/test_rc1_control.py` |
+| Artifact / 控制面 | 零命中 | `aicf/infra/control/`：AgentArtifact（一种声明多处消费）、生命周期状态机（release 必须携带 pass 的 Gate 报告）、成本账本、BYO 纳管 | `tests/test_rc1_control.py` |
+| Experiment / Run Version | 零命中 | `aicf/infra/eval/{experiment,run_version}.py`（最小版） | `grep -ri experiment aicf/harness/ aicf/infra/` |
+| Workflow / Planner | 零命中 | `aicf/harness/kernel/{workflow,planner}.py`：DAG（并行分支 + 逆序补偿）与 Planner-Executor（结构化计划 + 有界重规划）| `tests/test_rc1_kernels.py` |
+| 遥测 | 有事件词表，无 trace/span 模型 | `aicf/harness/telemetry/` + `aicf/infra/observability/{span,trace,audit}.py`；audit.* 事件已接线到不可删 AuditStore（SDK/CLI 默认路径） | `tests/test_rc1_audit_wiring.py` |
 
 > 中间一列是策划案在改造前的结论，右列是 2026-11-18 重新核对的结果。
 > 每一行的验证命令都还能跑，所以「缺口是否真的补上了」是一个可以核对的事实，
@@ -96,20 +96,20 @@ rc0 只有三条 DoD，全部是**可执行**的：
 
 | 任务 | 交付物 | 主要文件 | 验收标准 | 状态 |
 |---|---|---|---|---|
-| **T1** | 共享契约层 | `harness/tools/spec.py`、`harness/policy/base.py`、`harness/approval/base.py`、`harness/tools/sandbox/base.py`、`harness/telemetry/base.py`、`harness/runtime_client.py`、`harness/agent/events.py` | 所有新模块可独立 import；**不 import infra**；既有测试全绿 | ✅ 完成 |
-| **T2** | R1 ToolSpec + 准入策略 + 统一入口 | `infra/policy/engine.py`、`harness/tools/guard.py`、`harness/tools/registry.py`、`harness/tools/base.py`、`harness/tools/standard.py` | 未声明 sandbox 的工具按最严格档；越权调用被拒并记审计；默认不挂 guard 时旧用法不受影响 | ✅ 完成 |
-| **T3** | R3 沙箱 | `harness/tools/sandbox/{paths,restricted,namespaced}.py`、`harness/tools/shell.py` | 路径逃逸被拦；出网被拦；降级时 `degraded=True` 可见 | ✅ 完成 |
-| **T4** | R4 托管运行时 | `infra/runtime/*` | 幂等键稳定；journal seq 单调；恢复不重复执行 `pure` 工具；`effectful` 标 `unknown_outcome` | ✅ 完成 |
-| **T5** | R6 评测闭环 | `infra/eval/*`、`harness/datasets/basic.yaml` | ≥30 case 可跑；四闸门报告；安全闸门 0 容忍；`infra/eval` 不 import `harness` | ✅ 完成（40 case / 7 分组） |
-| **T6** | R2 审批链路 | `harness/approval/{broker,session,events}.py` | 超时 = 拒绝；会话级放行缓存；等待期间进程退出可恢复补填 | ✅ 完成 |
-| **T7** | R5 遥测标准化 | `harness/telemetry/*`、`infra/observability/{trace,audit}.py` | 既有事件 kind 不变；JSONL trace；统一 `redact()` | ✅ 完成 |
-| **T8** | 执行内核 SPI | `harness/kernel/*` | `ExecutionKernel` 协议；能力协商收敛；旧 `AgentLoop` API 不破坏 | ✅ 完成 |
+| **T1** | 共享契约层 | `aicf/harness/tools/spec.py`、`aicf/harness/policy/base.py`、`aicf/harness/approval/base.py`、`aicf/harness/tools/sandbox/base.py`、`aicf/harness/telemetry/base.py`、`aicf/harness/runtime_client.py`、`aicf/harness/agent/events.py` | 所有新模块可独立 import；**不 import aicf.infra**；既有测试全绿 | ✅ 完成 |
+| **T2** | R1 ToolSpec + 准入策略 + 统一入口 | `aicf/infra/policy/engine.py`、`aicf/harness/tools/guard.py`、`aicf/harness/tools/registry.py`、`aicf/harness/tools/base.py`、`aicf/harness/tools/standard.py` | 未声明 sandbox 的工具按最严格档；越权调用被拒并记审计；默认不挂 guard 时旧用法不受影响 | ✅ 完成 |
+| **T3** | R3 沙箱 | `aicf/harness/tools/sandbox/{paths,restricted,namespaced}.py`、`aicf/harness/tools/shell.py` | 路径逃逸被拦；出网被拦；降级时 `degraded=True` 可见 | ✅ 完成 |
+| **T4** | R4 托管运行时 | `aicf/infra/runtime/*` | 幂等键稳定；journal seq 单调；恢复不重复执行 `pure` 工具；`effectful` 标 `unknown_outcome` | ✅ 完成 |
+| **T5** | R6 评测闭环 | `aicf/infra/eval/*`、`aicf/harness/datasets/basic.yaml` | ≥30 case 可跑；四闸门报告；安全闸门 0 容忍；`aicf/infra/eval` 不 import `harness` | ✅ 完成（40 case / 7 分组） |
+| **T6** | R2 审批链路 | `aicf/harness/approval/{broker,session,events}.py` | 超时 = 拒绝；会话级放行缓存；等待期间进程退出可恢复补填 | ✅ 完成 |
+| **T7** | R5 遥测标准化 | `aicf/harness/telemetry/*`、`aicf/infra/observability/{trace,audit}.py` | 既有事件 kind 不变；JSONL trace；统一 `redact()` | ✅ 完成 |
+| **T8** | 执行内核 SPI | `aicf/harness/kernel/*` | `ExecutionKernel` 协议；能力协商收敛；旧 `AgentLoop` API 不破坏 | ✅ 完成 |
 | **T9** | R7 故障注入测试 | `tests/fault/*` | §8.2 的 7 条用例全部可自动运行 | ✅ 完成（7/7，59 条：46 条运行 + 11 条变异 + 2 条元测试） |
-| **T10** | R8 CLI | `harness/cli/*`、`pyproject.toml` | `aicf --help` 可用；run → eval → gate 跑通 | ✅ 完成 |
+| **T10** | R8 CLI | `aicf/harness/cli/*`、`pyproject.toml` | `aicf --help` 可用；run → eval → gate 跑通 | ✅ 完成 |
 | **T11** | R8 文档 | `docs/*`、`README*.md` | 每条验收标准映射到一个测试 | ✅ 完成 |
-| **T12** | 默认路径的安全接线 | `harness/tools/{guard,standard,registry,base}.py`、`harness/agent/assembler.py` | 守卫默认挂沙箱后端；`proc.run` 走沙箱；`batch.run` 走守卫；SDK 路径默认装守卫 | ✅ 完成（`test_rc0_default_path_security.py` 13 条，修复前 12 条红） |
-| **T13** | 托管运行时接入 CLI | `harness/cli/{common,runcmd,toolcmd,sessioncmd}.py` | `aicf run` / `tool exec` 落 journal；`session resume` 能算出恢复计划 | ✅ 完成（`test_rc0_cli_session.py` 5 条，修复前 4 条红） |
-| **T14** | 记忆读回 | `harness/memory/in_memory.py`、`harness/sdk.py` | `enable_memory=True` 会写入并召回，关键词检索支持中文 | ✅ 完成（`test_rc0_memory.py` 7 条） |
+| **T12** | 默认路径的安全接线 | `aicf/harness/tools/{guard,standard,registry,base}.py`、`aicf/harness/agent/assembler.py` | 守卫默认挂沙箱后端；`proc.run` 走沙箱；`batch.run` 走守卫；SDK 路径默认装守卫 | ✅ 完成（`test_rc0_default_path_security.py` 13 条，修复前 12 条红） |
+| **T13** | 托管运行时接入 CLI | `aicf/harness/cli/{common,runcmd,toolcmd,sessioncmd}.py` | `aicf run` / `tool exec` 落 journal；`session resume` 能算出恢复计划 | ✅ 完成（`test_rc0_cli_session.py` 5 条，修复前 4 条红） |
+| **T14** | 记忆读回 | `aicf/harness/memory/in_memory.py`、`aicf/harness/sdk.py` | `enable_memory=True` 会写入并召回，关键词检索支持中文 | ✅ 完成（`test_rc0_memory.py` 7 条） |
 | **T15** | CI 门禁补齐 | `.github/workflows/ci.yml` | contract 与 eval 两个 job；变异层进 nightly；test job 不再误收故障层 | ✅ 完成 |
 
 ### 当前测试基线
@@ -154,10 +154,10 @@ checkpoint 损坏检测、awaiting_approval 状态、审批补填、路径越界
 
 | 策划案 | 实际 | 为什么 |
 |---|---|---|
-| `apps/aicf_cli/` | `harness/cli/` | 仓库已完成「收敛为纯库」的拆分，`apps/` 已 gitignore。CLI 是核心库的门面，要随 `pip install aicf-core` 一起可用 |
-| `datasets/basic.yaml` | `harness/datasets/basic.yaml` | 顶层 `datasets` 作为可 import 的包会污染全局命名空间，且与 HuggingFace 的 `datasets` 同名。放进 `harness/` 后既是包数据又不抢名字 |
-| `infra/runtime.py` | `infra/runtime/di.py` | 同名包会遮蔽同名模块 —— `infra/runtime/` 一旦存在，`infra/runtime.py` 就永远不会被加载。DI 容器整体迁入，包级 `Runtime` 仍指向它，harness 侧 API 不变 |
-| 托管运行时叫 `Runtime` | 叫 `ManagedRuntime` | 包级 `Runtime` 是冻结的 DI 容器 API，不能改。`infra/runtime/managed.py` 里有 `Runtime = ManagedRuntime` 别名 |
+| `apps/aicf_cli/` | `aicf/harness/cli/` | 仓库已完成「收敛为纯库」的拆分，`apps/` 已 gitignore。CLI 是核心库的门面，要随 `pip install aicf-core` 一起可用 |
+| `datasets/basic.yaml` | `aicf/harness/datasets/basic.yaml` | 顶层 `datasets` 作为可 import 的包会污染全局命名空间，且与 HuggingFace 的 `datasets` 同名。放进 `aicf/harness/` 后既是包数据又不抢名字 |
+| `aicf/infra/runtime.py` | `aicf/infra/runtime/di.py` | 同名包会遮蔽同名模块 —— `aicf/infra/runtime/` 一旦存在，`aicf/infra/runtime.py` 就永远不会被加载。DI 容器整体迁入，包级 `Runtime` 仍指向它，harness 侧 API 不变 |
+| 托管运行时叫 `Runtime` | 叫 `ManagedRuntime` | 包级 `Runtime` 是冻结的 DI 容器 API，不能改。`aicf/infra/runtime/managed.py` 里有 `Runtime = ManagedRuntime` 别名 |
 | `aicf eval --artifact a.yaml` | `aicf eval --traces <path>` | Artifact 资产模型属 rc1 的控制面。rc0 的 eval 消费的是 **trace**（这是运行的事实），artifact 只作为 run version 的元数据参与 |
 | `aicf run <artifact.yaml>` | `aicf run --artifact <path>` | run 的第一个位置参数留给用户输入；声明走显式 flag，让 `aicf run "..."` 的旧用法不破坏 |
 | 托管运行时的 `scheduler.py` / `isolation.py` | rc2 才落 | 策划案 §6.1 把两个文件画在 rc0 的目录树里，但 §4.2.4/§7.3 把「调度与隔离」归入 rc2 —— 以行为描述为准 |
@@ -245,14 +245,14 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 - 恢复流程：`load checkpoint → replay journal → 继续 turn`；
   checkpoint 损坏时从 journal 重放
 
-> **幂等键实现有两份**（`harness/runtime_client.py` 与 `infra/runtime/idempotency.py`），
+> **幂等键实现有两份**（`aicf/harness/runtime_client.py` 与 `aicf/infra/runtime/idempotency.py`），
 > 因为依赖规则禁止 `infra` → `harness`。用一条**交叉测试**钉住两份实现一致。
 
 ### R5 · 遥测标准化
 
 - 事件词表**只增不改**：既有 kind 一个不动，只加三个可选字段
   （`trace_id` / `span_id` / `seq`），旧生产者不带它们时消费方必须容忍
-- Kernel 只发事件，**不做格式化**；`infra/observability` 负责扇出成 trace
+- Kernel 只发事件，**不做格式化**；`aicf/infra/observability` 负责扇出成 trace
 - `args_digest` 只存参数的**哈希与长度**，敏感值替换为 `***`
 - 统一 `redact()`，避免各处漏改
 
@@ -283,7 +283,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 |---|---|---|
 | L1 单元 | 纯函数与协议 | 每次提交 |
 | L2 契约 | 端口实现一致性（沙箱后端、store、evaluator 互换） | 每次提交 |
-| L3 集成 | 端到端一轮对话 + 工具（假模型 `infra/orchestrator/stub.py`） | 每次提交 |
+| L3 集成 | 端到端一轮对话 + 工具（假模型 `aicf/infra/orchestrator/stub.py`） | 每次提交 |
 | L4 故障注入 | kill -9 / 断网 / 超时 / 重复投递 | 每夜 |
 | L5 评测 | Dataset 回归 + Gate | 每次发布 |
 
@@ -336,14 +336,14 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 
 | 预留 | 位置 | rc1 怎么用 |
 |---|---|---|
-| `ExecutionKernel` 协议 | `harness/kernel/base.py` | 加 `WorkflowKernel` / `PlannerKernel`，业务代码只换类 |
-| `KernelResult.status = 'awaiting_approval'` | `harness/kernel/base.py` | rc1 的发布闸门要能挂起一个待审批的运行 |
-| `RuntimeClient` 协议 | `harness/runtime_client.py` | rc1 跨进程 / 跨机恢复，Kernel 侧不用改 |
-| `PolicyEngine` 协议 | `harness/policy/base.py` | rc1 加「按 artifact 下发策略」，实现换掉即可 |
-| `ApprovalBroker` 协议 | `harness/approval/base.py` | rc1 的 Web 控制台用异步回填形态 |
-| `Sandbox` 协议 | `harness/tools/sandbox/base.py` | rc1 加 `isolated` 后端（容器） |
-| `CapabilitySet` | `harness/kernel/capability.py` | rc1 的 Workflow 按能力选并行度 |
-| `ToolSpec.version` | `harness/tools/spec.py` | rc1 的 artifact 用**版本引用**而非名字引用 |
+| `ExecutionKernel` 协议 | `aicf/harness/kernel/base.py` | 加 `WorkflowKernel` / `PlannerKernel`，业务代码只换类 |
+| `KernelResult.status = 'awaiting_approval'` | `aicf/harness/kernel/base.py` | rc1 的发布闸门要能挂起一个待审批的运行 |
+| `RuntimeClient` 协议 | `aicf/harness/runtime_client.py` | rc1 跨进程 / 跨机恢复，Kernel 侧不用改 |
+| `PolicyEngine` 协议 | `aicf/harness/policy/base.py` | rc1 加「按 artifact 下发策略」，实现换掉即可 |
+| `ApprovalBroker` 协议 | `aicf/harness/approval/base.py` | rc1 的 Web 控制台用异步回填形态 |
+| `Sandbox` 协议 | `aicf/harness/tools/sandbox/base.py` | rc1 加 `isolated` 后端（容器） |
+| `CapabilitySet` | `aicf/harness/kernel/capability.py` | rc1 的 Workflow 按能力选并行度 |
+| `ToolSpec.version` | `aicf/harness/tools/spec.py` | rc1 的 artifact 用**版本引用**而非名字引用 |
 
 ---
 
@@ -354,7 +354,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
   （`d8ae89b`）并回到 `0.6.2` 发布（`1c8d133`）。**版本号要在 DoD 达成、
   准备发第一个 rc 的时候再跳** —— 半成品的 rc 标签比没有标签更糟。
 - rc0 达成后：`version = "1.0.0rc0"`，发 tag `v1.0.0rc0`，
-  `harness.__version__` 同步（`tests/test_version.py` 会检查三处一致）
+  `aicf.harness.__version__` 同步（`tests/test_version.py` 会检查三处一致）
 - 公开 API 冻结从 rc0 开始；新增事件 kind / ToolSpec 字段一律**只增不改**
 
 ---
@@ -391,7 +391,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 ### 幂等
 
 - [x] 幂等键对等价参数（键顺序不同）稳定
-      （`test_rc0_runtime.py`，含 harness/infra 两侧的交叉测试）
+      （`test_rc0_runtime.py`，含 aicf/harness/infra 两侧的交叉测试）
 - [x] 同一幂等键重复投递 3 次 → 副作用只发生 1 次
       （`tests/fault/test_idempotent_delivery.py`，5 例）
 - [x] `kill -9` 后恢复：`pure` 不重复执行
@@ -423,7 +423,7 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
       （`test_rc0_contracts.py`）
 - [x] `harness` 不 import `infra` 的实现（只依赖协议）
       （`test_rc0_contracts.py::test_contract_modules_do_not_import_infra`）
-- [x] `infra/eval` 不 import `harness`
+- [x] `aicf/infra/eval` 不 import `harness`
       （模块级 import 扫描 + 子进程运行期断言）
 - [x] `aicf --help` 可用；run → eval → gate 跑通
       （`test_rc0_cli.py`，已从 pip 安装验证）
@@ -461,26 +461,26 @@ Checkpoint (快照, 可丢弃)       ← 加速恢复，不是真相来源
 | 上一版欠账 | 现状 | 钉住它的测试 |
 |---|---|---|
 | 不可删审计存储没接线 | `ToolGuard` 增加 `audit` 参数（鸭子类型：会 `record(kind, payload)` 即可）；`audit.denied` / `audit.tool_call` 落独立存储，SDK 与 CLI 两条默认路径都接线；审计后端故障不阻断调用（trace 面兜底） | `tests/test_rc1_audit_wiring.py` |
-| 控制面 | `infra/control/`：`AgentArtifact`（§4.5.1 一种声明多处消费）、生命周期状态机（**release 必须携带 verdict=pass 的 Gate 报告**，§4.5.2）、`ArtifactStore`（(id, version) 不可变，冲突即拒）、成本账本（按 session/agent/tool/model 归因，§4.5.3）、BYO 纳管（按 RuntimeClient 协议接入 + 事件镜像，§4.5.4） | `tests/test_rc1_control.py` |
-| Agent 身份与委托 | `infra/control/identity.py`：`AgentIdentity` + `delegation_chain`；子 scope 必须 ⊆ 父 scope，越权即拒；委托写 `audit.delegation` | `tests/test_rc1_control.py` |
-| 多执行架构 | `harness/kernel/workflow.py`（DAG：并行分支 + 逆序失败补偿 + Kahn 环检测）与 `harness/kernel/planner.py`（结构化 JSON 计划 → 按步执行 → 有界重规划 → 步骤补偿）；两种内核的工具调用都走注册表统一入口（§3.2 规则 5） | `tests/test_rc1_kernels.py` |
-| 线上抽样与 Bad Case 回流 | `infra/eval/sampling.py`（确定性散列抽样，默认 5%，重放队列）+ `infra/eval/badcase.py`（intake → label → queue → hard_cases 回归集）；`TraceStore` 补 `set_badcase_status` | `tests/test_rc1_eval_loop.py` |
-| 故障迁移与弹性 | `infra/runtime/scheduler.py`：租约 + 心跳 + **围栏令牌**（epoch：接管后旧实例的续约与写入被拒，这就是「结果不重复」的机制）；`infra/runtime/isolation.py`：工作区 spec{fs,net,secret} + 路径/网络判定（与沙箱 paths 的判定由交叉测试钉住） | `tests/test_rc1_scheduler_isolation.py` |
+| 控制面 | `aicf/infra/control/`：`AgentArtifact`（§4.5.1 一种声明多处消费）、生命周期状态机（**release 必须携带 verdict=pass 的 Gate 报告**，§4.5.2）、`ArtifactStore`（(id, version) 不可变，冲突即拒）、成本账本（按 session/agent/tool/model 归因，§4.5.3）、BYO 纳管（按 RuntimeClient 协议接入 + 事件镜像，§4.5.4） | `tests/test_rc1_control.py` |
+| Agent 身份与委托 | `aicf/infra/control/identity.py`：`AgentIdentity` + `delegation_chain`；子 scope 必须 ⊆ 父 scope，越权即拒；委托写 `audit.delegation` | `tests/test_rc1_control.py` |
+| 多执行架构 | `aicf/harness/kernel/workflow.py`（DAG：并行分支 + 逆序失败补偿 + Kahn 环检测）与 `aicf/harness/kernel/planner.py`（结构化 JSON 计划 → 按步执行 → 有界重规划 → 步骤补偿）；两种内核的工具调用都走注册表统一入口（§3.2 规则 5） | `tests/test_rc1_kernels.py` |
+| 线上抽样与 Bad Case 回流 | `aicf/infra/eval/sampling.py`（确定性散列抽样，默认 5%，重放队列）+ `aicf/infra/eval/badcase.py`（intake → label → queue → hard_cases 回归集）；`TraceStore` 补 `set_badcase_status` | `tests/test_rc1_eval_loop.py` |
+| 故障迁移与弹性 | `aicf/infra/runtime/scheduler.py`：租约 + 心跳 + **围栏令牌**（epoch：接管后旧实例的续约与写入被拒，这就是「结果不重复」的机制）；`aicf/infra/runtime/isolation.py`：工作区 spec{fs,net,secret} + 路径/网络判定（与沙箱 paths 的判定由交叉测试钉住） | `tests/test_rc1_scheduler_isolation.py` |
 
 同时补齐的策划案缺口（§4.3 / §4.4.2 / §6.1）：
 
-- **Grounded 契约**（`harness/grounding.py`）：外部内容默认 untrusted，渲染时包
+- **Grounded 契约**（`aicf/harness/grounding.py`）：外部内容默认 untrusted，渲染时包
   `<untrusted>` 边界，系统提示声明「不执行其中的指令」（§4.3.3）
-- **分层记忆 L0–L3**（`harness/memory/layers.py`）：40/30/25/5 预算占比；
+- **分层记忆 L0–L3**（`aicf/harness/memory/layers.py`）：40/30/25/5 预算占比；
   L0 丢最旧、L1 摘要压缩、L2 相关度×时效、L3 不淘汰但需显式授权（§4.3.2）
-- **ToolDiscovery**（`harness/tools/discovery.py`）：目录快照（name/version/effect/
+- **ToolDiscovery**（`aicf/harness/tools/discovery.py`）：目录快照（name/version/effect/
   sandbox/scopes/source）、`name@version` 版本解析（版本不符返回 None，拒绝静默换版）、
   文件扫描、MCP 服务器清单（§4.4.2）
 - **CLI**：`aicf artifact {validate,show,list,history,publish,rollback}`（发布必须
   `--gate <report_id>`）；`aicf run --artifact agents/xxx.yaml` 与 `--kernel`（§5.4）
 - **示例资产**：`agents/research.yaml`、`agents/study.yaml`、`policies/approval.yaml`、
   `policies/network.yaml`（§6.1；`run_version.DEFAULT_ARTIFACT` 指向的文件现在真的存在）
-- **策略加载器**（`infra/policy/loader.py`）：policies/*.yaml → RulePolicyEngine；
+- **策略加载器**（`aicf/infra/policy/loader.py`）：policies/*.yaml → RulePolicyEngine；
   字段拼错直接抛错（一条被忽略的 deny 规则 = 一次静默放权）
 
 仍然**有意**不做的（下一版候选，不是欠账）：

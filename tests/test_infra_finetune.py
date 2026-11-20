@@ -23,19 +23,19 @@ from pathlib import Path
 
 import pytest
 
-from infra.finetune.base import JobState, SpecError, TrainJob, TrainSpec
-from infra.finetune.dataset import (
+from aicf.infra.finetune.base import JobState, SpecError, TrainJob, TrainSpec
+from aicf.infra.finetune.dataset import (
     build_sft_dataset,
     load_jsonl,
     normalize_messages,
     validate_messages,
     write_jsonl,
 )
-from infra.finetune.env import environment, resolve_python
-from infra.finetune.gguf import GGUFError, read_meta
-from infra.finetune.runner import FinetuneManager
-from infra.finetune.store import FinetuneStore
-from infra.orchestrator.scheduler import DeviceBusy, DeviceGate, ModelProfile, ModelScheduler
+from aicf.infra.finetune.env import environment, resolve_python
+from aicf.infra.finetune.gguf import GGUFError, read_meta
+from aicf.infra.finetune.runner import FinetuneManager
+from aicf.infra.finetune.store import FinetuneStore
+from aicf.infra.orchestrator.scheduler import DeviceBusy, DeviceGate, ModelProfile, ModelScheduler
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -407,7 +407,7 @@ def test_store_list_and_get():
 def test_manager_submit_failure_is_visible(tmp_path: Path, caplog):
     """训练解释器不存在时，作业必须落到 FAILED 并带原因，而不是静默挂住。"""
     # 这个用例会故意触发一次任务失败；把任务层的日志压掉，免得污染测试输出。
-    caplog.set_level(logging.CRITICAL, logger="infra.tasks")
+    caplog.set_level(logging.CRITICAL, logger="aicf.infra.tasks")
     manager = FinetuneManager(
         store=FinetuneStore(),
         python="/tmp/aicf-definitely-missing/python",
@@ -448,7 +448,7 @@ def test_manager_rejects_unsupported_architecture(tmp_path: Path, monkeypatch):
             "model_type": "foo_bar",
         }
 
-    monkeypatch.setattr("infra.finetune.runner.check_model_support", _fake_support)
+    monkeypatch.setattr("aicf.infra.finetune.runner.check_model_support", _fake_support)
     manager = FinetuneManager(
         store=FinetuneStore(),
         python="/tmp/aicf-definitely-missing/python",
@@ -467,13 +467,13 @@ def test_manager_allows_qwen35_base_but_warns(tmp_path: Path, monkeypatch, caplo
     def _fake_support(model_id, python=None):
         return {"supported": True, "kind": "ok", "model_type": "qwen3_5"}
 
-    monkeypatch.setattr("infra.finetune.runner.check_model_support", _fake_support)
+    monkeypatch.setattr("aicf.infra.finetune.runner.check_model_support", _fake_support)
     manager = FinetuneManager(
         store=FinetuneStore(),
         python="/tmp/aicf-definitely-missing/python",
         root=tmp_path,
     )
-    with caplog.at_level(logging.WARNING, logger="infra.finetune.runner"):
+    with caplog.at_level(logging.WARNING, logger="aicf.infra.finetune.runner"):
         manager.submit(_spec(output_dir=str(tmp_path / "out")))
     assert any("qwen3_5" in rec.getMessage() for rec in caplog.records)
     manager.shutdown()
@@ -484,7 +484,7 @@ def test_manager_skips_arch_gate_when_env_is_broken(tmp_path: Path, monkeypatch)
     def _fake_support(model_id, python=None):
         return {"supported": False, "kind": "env", "reason": "训练解释器不存在"}
 
-    monkeypatch.setattr("infra.finetune.runner.check_model_support", _fake_support)
+    monkeypatch.setattr("aicf.infra.finetune.runner.check_model_support", _fake_support)
     manager = FinetuneManager(
         store=FinetuneStore(),
         python="/tmp/aicf-definitely-missing/python",
@@ -496,7 +496,7 @@ def test_manager_skips_arch_gate_when_env_is_broken(tmp_path: Path, monkeypatch)
 
 
 def test_manager_promote_requires_success(tmp_path: Path, caplog):
-    caplog.set_level(logging.CRITICAL, logger="infra.tasks")
+    caplog.set_level(logging.CRITICAL, logger="aicf.infra.tasks")
     # 用不存在的解释器，让作业立刻失败——**不要真的拉起训练进程**。
     manager = FinetuneManager(
         store=FinetuneStore(),
@@ -520,8 +520,8 @@ def test_importing_finetune_does_not_import_torch():
     code = (
         "import sys;"
         "sys.path.insert(0, %r);"
-        "import infra.finetune;"
-        "import infra.finetune.runner;"
+        "import aicf.infra.finetune;"
+        "import aicf.infra.finetune.runner;"
         "assert 'torch' not in sys.modules, sorted(m for m in sys.modules if 'torch' in m)"
         % str(Path(__file__).resolve().parents[1])
     )
@@ -536,7 +536,7 @@ def test_importing_finetune_does_not_import_torch():
 # 这三条都是**实测踩出来的**（8B QLoRA 在单张 2080Ti 上 OOM 三次之后定位的），
 # 写成不变式测试是为了防止以后有人"顺手改回去"。
 
-_TRAIN_SFT = Path(__file__).resolve().parents[1] / "infra" / "finetune" / "train_sft.py"
+_TRAIN_SFT = Path(__file__).resolve().parents[1] / "aicf" / "infra" / "finetune" / "train_sft.py"
 
 
 def test_qlora_does_not_upcast_embedding_and_lm_head():
@@ -578,7 +578,7 @@ def test_cuda_visible_devices_is_set_before_torch_import():
     另外设置时机必须在 transformers 导入之前：
     transformers 的导入会触发 torch.cuda.is_available()，那一次就把 CUDA 运行时初始化了。
     """
-    from infra.finetune.runner import FinetuneManager
+    from aicf.infra.finetune.runner import FinetuneManager
 
     env = FinetuneManager._subprocess_env((1,))
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
@@ -599,7 +599,7 @@ def test_cuda_visible_devices_is_set_before_torch_import():
 
 def test_weighted_mean_semantics():
     """reward=0.9 与 reward=0.3 的样本，梯度贡献比必须是 3:1。"""
-    from infra.finetune.dataset import weighted_mean
+    from aicf.infra.finetune.dataset import weighted_mean
 
     # 两个样本逐样本 loss 相同 → 加权平均只反映权重比例
     assert weighted_mean([1.0, 1.0], [0.9, 0.3]) == pytest.approx(1.0)
@@ -614,7 +614,7 @@ def test_weighted_mean_semantics():
 
 def test_build_sft_dataset_keeps_reward_and_labels(tmp_path):
     """数据集层必须把 reward 与 incident 标签一起带到训练集里。"""
-    from infra.finetune.dataset import build_sft_dataset
+    from aicf.infra.finetune.dataset import build_sft_dataset
 
     records = [
         {"messages": [{"role": "user", "content": "在吗"},
@@ -644,7 +644,7 @@ def test_build_sft_dataset_keeps_reward_and_labels(tmp_path):
 
 def test_trajectory_carries_reward():
     """harness 层：轨迹要能带 reward，并原样写进 record。"""
-    from harness.learning.dataset_builder import DatasetBuilder
+    from aicf.harness.learning.dataset_builder import DatasetBuilder
 
     b = DatasetBuilder(out_dir="~/aicf-finetune/data/_t", val_ratio=0.0)
     assert b.from_messages(
@@ -662,7 +662,7 @@ def test_trajectory_carries_reward():
 
 def test_train_script_wires_reward_weighting():
     """训练脚本必须真的用上加权，否则 reward 只是躺在 JSONL 里。"""
-    src = (Path(__file__).resolve().parents[1] / "infra" / "finetune" / "train_sft.py").read_text(
+    src = (Path(__file__).resolve().parents[1] / "aicf" / "infra" / "finetune" / "train_sft.py").read_text(
         encoding="utf-8"
     )
     assert "_make_reward_weighted_trainer" in src

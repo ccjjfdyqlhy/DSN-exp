@@ -28,8 +28,8 @@ import asyncio
 
 import pytest
 
-from harness.tools.sandbox.base import SandboxRequest
-from harness.tools.sandbox.restricted import VIOLATION_NET_DENY
+from aicf.harness.tools.sandbox.base import SandboxRequest
+from aicf.harness.tools.sandbox.restricted import VIOLATION_NET_DENY
 
 from faultkit import SANDBOX_MISSING_REASON, sandbox_backend
 
@@ -185,13 +185,13 @@ def test_denied_network_leaves_an_audit_trail():
     工具按契约从 ToolContext 拿沙箱（由守卫注入），
     被拒后返回失败结果，守卫必须把它记成一次 audit.tool_call。
     """
-    from harness.policy.base import PolicyRule
-    from harness.runtime_client import NullRuntimeClient
-    from harness.tools.base import Tool, ToolResult
-    from harness.tools.context import current_context
-    from harness.tools.guard import ToolGuard
-    from harness.tools.spec import ToolSpec
-    from infra.policy.engine import RulePolicyEngine
+    from aicf.harness.policy.base import PolicyRule
+    from aicf.harness.runtime_client import NullRuntimeClient
+    from aicf.harness.tools.base import Tool, ToolResult
+    from aicf.harness.tools.context import current_context
+    from aicf.harness.tools.guard import ToolGuard
+    from aicf.harness.tools.spec import ToolSpec
+    from aicf.infra.policy.engine import RulePolicyEngine
 
     class Collector:
         def __init__(self):

@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from infra import net
-from infra.orchestrator.anthropic import AnthropicCompatClient, effort_thinking_budget
-from infra.orchestrator.base import resolve_effort, retrying_stream
-from infra.orchestrator.openai import OpenAICompatClient
+from aicf.infra import net
+from aicf.infra.orchestrator.anthropic import AnthropicCompatClient, effort_thinking_budget
+from aicf.infra.orchestrator.base import resolve_effort, retrying_stream
+from aicf.infra.orchestrator.openai import OpenAICompatClient
 
 
 # ── resolve_effort ───────────────────────────────────────────────────
@@ -42,7 +42,7 @@ def test_resolve_effort_no_options_returns_configured():
 # ── effort_stream_params ─────────────────────────────────────────────
 
 def test_effort_params_per_wire():
-    from infra.orchestrator.base import effort_stream_params
+    from aicf.infra.orchestrator.base import effort_stream_params
     common = dict(reasoning=True, reasoning_efforts=('low', 'medium', 'high'))
     assert effort_stream_params('chat', effort='high', **common) \
         == {'reasoning_effort': 'high'}
@@ -53,7 +53,7 @@ def test_effort_params_per_wire():
 
 
 def test_effort_params_toggle_and_cache_key():
-    from infra.orchestrator.base import effort_stream_params
+    from aicf.infra.orchestrator.base import effort_stream_params
     params = effort_stream_params(
         'chat', effort='medium', reasoning_style='toggle', reasoning_efforts=(),
         reasoning=True)
@@ -258,7 +258,7 @@ def test_openai_responses_finish_maps_incomplete_details():
 
 
 def test_chat_message_from_dict_roundtrip():
-    from infra.models.base import ChatMessage
+    from aicf.infra.models.base import ChatMessage
     raw = {'role': 'assistant', 'content': None, 'reasoning_content': 'r',
            'tool_calls': [{'id': 'c1', 'type': 'function',
                            'function': {'name': 'f', 'arguments': '{}'}}]}
@@ -313,7 +313,7 @@ def test_responses_converter_maps_file_carrying_image_parts():
 
 
 def test_anthropic_converter_maps_file_carrying_image_parts():
-    from infra.orchestrator.anthropic import AnthropicCompatClient
+    from aicf.infra.orchestrator.anthropic import AnthropicCompatClient
     system, msgs = AnthropicCompatClient._split_system([
         {'role': 'user', 'content': [
             {'type': 'text', 'text': 'look'},

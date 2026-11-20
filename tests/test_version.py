@@ -12,7 +12,7 @@ try:                          # Python 3.11+; the package still supports 3.10
 except ModuleNotFoundError:   # pragma: no cover - interpreter dependent
     tomllib = None
 
-import harness
+import aicf.harness
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,8 +29,8 @@ def _declared() -> str:
 
 
 def test_the_runtime_version_matches_the_package_metadata():
-    assert harness.__version__ == _declared(), (
-        'harness.__version__ and pyproject.toml disagree; bump both')
+    assert aicf.harness.__version__ == _declared(), (
+        'aicf.harness.__version__ and pyproject.toml disagree; bump both')
 
 
 def test_the_docs_quote_the_same_version():

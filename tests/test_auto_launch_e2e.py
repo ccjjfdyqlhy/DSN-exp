@@ -16,8 +16,8 @@ import sys
 
 import pytest
 
-from infra.orchestrator import LlamaServerConfig, ModelOrchestrator
-from infra.orchestrator.local_engine import LocalServerLauncher
+from aicf.infra.orchestrator import LlamaServerConfig, ModelOrchestrator
+from aicf.infra.orchestrator.local_engine import LocalServerLauncher
 
 #: 极简 OpenAI 兼容"引擎"：/health 返回 200，chat 返回一条 SSE 增量。
 _ENGINE_SRC = r'''

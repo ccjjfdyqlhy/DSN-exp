@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import asyncio
 
-from harness.agent.collab import AgentManager, AgentTypeSpec
-from harness.agent.engine import ConversationEngine
-from harness.agent.engine_config import AgentSettings, ModelInfo
-from harness.agent.events import EventSink
-from harness.tools.registry import ManagedToolRegistry
+from aicf.harness.agent.collab import AgentManager, AgentTypeSpec
+from aicf.harness.agent.engine import ConversationEngine
+from aicf.harness.agent.engine_config import AgentSettings, ModelInfo
+from aicf.harness.agent.events import EventSink
+from aicf.harness.tools.registry import ManagedToolRegistry
 
 
 class EchoClient:
@@ -169,7 +169,7 @@ def test_the_activity_stream_survives_the_engine_pump():
                                agent_name='child')
 
     async def main() -> None:
-        from harness.agent.collab import _forwarding_sink
+        from aicf.harness.agent.collab import _forwarding_sink
         child.sink = _forwarding_sink(child, manager)
         child.sink.emit('text_delta', {'text': 'hello'})
         child.sink.emit('tool_start', {'name': 'read'})
@@ -200,7 +200,7 @@ def test_forward_events_false_silences_the_transcript_stream():
                                agent_name='child')
 
     async def main() -> None:
-        from harness.agent.collab import _forwarding_sink
+        from aicf.harness.agent.collab import _forwarding_sink
         child.sink = _forwarding_sink(child, manager)
         child.sink.emit('agent_event', {'status': 'completed'})
         assert manager.drain_events() == []

@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from infra import net
+from aicf.infra import net
 
 
 class _EchoHandler(BaseHTTPRequestHandler):

@@ -6,9 +6,9 @@
 
 from __future__ import annotations
 
-from infra.models.base import ChatMessage
-from infra.orchestrator.anthropic import AnthropicCompatClient
-from infra.orchestrator.openai import OpenAICompatClient
+from aicf.infra.models.base import ChatMessage
+from aicf.infra.orchestrator.anthropic import AnthropicCompatClient
+from aicf.infra.orchestrator.openai import OpenAICompatClient
 
 
 # ── responses wire ──────────────────────────────────────────
@@ -124,8 +124,8 @@ class _FakeSdk:
 
 
 def _client_with(models, kind: str):
-    from infra.orchestrator.anthropic import AnthropicCompatClient
-    from infra.orchestrator.openai import OpenAICompatClient
+    from aicf.infra.orchestrator.anthropic import AnthropicCompatClient
+    from aicf.infra.orchestrator.openai import OpenAICompatClient
     if kind == 'openai':
         client = OpenAICompatClient(api_key='k', base_url='http://x/v1',
                                     model='m')

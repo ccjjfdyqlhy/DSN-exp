@@ -1,4 +1,4 @@
-# harness/ —— Agent 核心层
+# aicf/harness/ —— Agent 核心层
 
 > 读者：要修改 Agent 行为（循环、工具、上下文、管线）的维护者。
 > 这一层**不认识任何业务**：它只处理“消息进、事件出”。业务语义属于 `aicf-ui` 仓。
@@ -16,10 +16,10 @@ AgentAssembler            AgentLoop                 ToolRegistry
                         infra IChatClient         Tool.run_async()
 ```
 
-最简可用形态（来自 `harness/sdk.py`）：
+最简可用形态（来自 `aicf/harness/sdk.py`）：
 
 ```python
-from harness import create_agent, tool
+from aicf.harness import create_agent, tool
 
 @tool
 def add(a: int, b: int) -> int:
@@ -34,7 +34,7 @@ print(agent.chat("计算 123 + 456"))
 
 ## 二、AgentLoop：一次任务怎么跑完
 
-文件：`harness/agent/loop.py`
+文件：`aicf/harness/agent/loop.py`
 
 ### 2.1 三条执行路径
 
@@ -111,7 +111,7 @@ while max_steps <= 0 or step < max_steps:      # max_steps<=0 表示不限制
 
 ## 三、AgentSpec：声明式装配
 
-文件：`harness/agent/assembler.py`
+文件：`aicf/harness/agent/assembler.py`
 
 `AgentSpec` 只有 **11 个字段**，一个 spec 描述一个 Agent 的完整行为：
 
@@ -144,7 +144,7 @@ result = agent.run("帮我看看这个仓库");
 
 ## 四、工具系统
 
-文件：`harness/tools/`
+文件：`aicf/harness/tools/`
 
 ### 4.1 三个基础对象
 
@@ -175,7 +175,7 @@ result = agent.run("帮我看看这个仓库");
 启用方式：`AgentSpec(toolbox={"enabled": True})` 或 SDK 的 `enable_toolbox=True`。
 在 `AgentLoop` 里表现为每轮重算 `build_schema(activated)`。
 
-### 4.4 18 个标准工具（`harness/tools/standard.py`）
+### 4.4 18 个标准工具（`aicf/harness/tools/standard.py`）
 
 | 命名空间 | 工具 |
 |---|---|
@@ -194,7 +194,7 @@ result = agent.run("帮我看看这个仓库");
 `file.edit` 有两种定位方式：行号 `target='path:10-20'`，或内容锚点
 `target='path' + match='<old text>'`（**推荐**，抗 read 截断，且要求 match 唯一）。
 
-### 4.5 外部 MCP 工具源（`harness/tools/mcp.py`）
+### 4.5 外部 MCP 工具源（`aicf/harness/tools/mcp.py`）
 
 把外部 MCP（Model Context Protocol）服务器的工具接入 `ToolRegistry`：
 远端工具以 `mcp.<服务器名>.<工具名>` 注册，inputSchema 原样透传，
@@ -248,7 +248,7 @@ await manager.load_tools(registry)
 
 ## 五、上下文装配
 
-### 5.1 分段预算剪裁（`harness/context_assembly.py`）
+### 5.1 分段预算剪裁（`aicf/harness/context_assembly.py`）
 
 把注入上下文的东西抽象成**四类段**，各自有优先级与预算：
 
@@ -263,21 +263,21 @@ await manager.load_tools(registry)
 **新增一类上下文时，正确做法是声明一个新段**，而不是往 system prompt 里硬拼字符串——
 这样它自动获得预算安全。
 
-### 5.2 `@` 指令采集（`harness/context_gatherer.py`）
+### 5.2 `@` 指令采集（`aicf/harness/context_gatherer.py`）
 
 用户输入里的 `@req` / `@sym` / `@grep` / `@ls` / `@tree` 会被 `ContextGatherer`
 解析成结构化请求并抓取内容，注入上下文后再把指令本身从文本里去掉。
 
 ### 5.3 三区上下文与推测预取
 
-`harness/agent/context.py` 提供 `ThreeZoneContext`（system / 历史 / 当前）与
+`aicf/harness/agent/context.py` 提供 `ThreeZoneContext`（system / 历史 / 当前）与
 `SpeculativePrefetch`：模型输出 `[FETCH: ...]` 占位符时提前抓取，下一轮替换。
 
 ---
 
 ## 六、管线与插件
 
-文件：`harness/pipeline/`
+文件：`aicf/harness/pipeline/`
 
 ### 6.1 8 个 HookPoint（`base.py:18`）
 
@@ -336,7 +336,7 @@ caller depends on the current order before changing it.
 
 ## 八、学习子系统：把经历变成可训练资产
 
-> `harness/learning/` 只做**框架层**的四件事，不含任何具体应用语义
+> `aicf/harness/learning/` 只做**框架层**的四件事，不含任何具体应用语义
 > （情感、沙箱、混沌演练都属于本地实验应用，不在本仓库）。
 
 | 模块 | 职责 |
@@ -381,18 +381,18 @@ caller depends on the current order before changing it.
 数据流是单向的：
 
 ```
-agent 轨迹 ──▶ harness/learning/dataset_builder ──▶ JSONL
+agent 轨迹 ──▶ aicf/harness/learning/dataset_builder ──▶ JSONL
                                                          │
-                                    infra/finetune.FinetuneManager.submit()
+                                    aicf/infra/finetune.FinetuneManager.submit()
                                                          │
                                     训练进程（独立解释器）──▶ LoRA 适配器
                                                          │
-                                    harness/learning/evaluator 评测
+                                    aicf/harness/learning/evaluator 评测
                                                          │
-                                    harness/learning/promotion 晋级 / 回滚
+                                    aicf/harness/learning/promotion 晋级 / 回滚
 ```
 
-`harness/` 依赖 `infra/`（向下），反之不成立。
+`aicf/harness/` 依赖 `aicf/infra/`（向下），反之不成立。
 
 
 ## 九、改这一层时的检查清单

@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from harness import ToolRegistry
-from harness.tools.base import ToolResult
-from harness.tools.standard import ToolDeps, install_standard_tools
+from aicf.harness import ToolRegistry
+from aicf.harness.tools.base import ToolResult
+from aicf.harness.tools.standard import ToolDeps, install_standard_tools
 
 
 def call(reg, name, **kw):

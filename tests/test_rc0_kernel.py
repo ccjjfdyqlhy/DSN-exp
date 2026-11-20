@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from harness.kernel import (
+from aicf.harness.kernel import (
     CapabilitySet,
     ExecutionKernel,
     KernelContext,
@@ -18,8 +18,8 @@ from harness.kernel import (
     KernelSpec,
     ReactKernel,
 )
-from harness.kernel.capability import CapabilitySet as CapabilitySet2
-from harness.tools.base import Tool, ToolRegistry
+from aicf.harness.kernel.capability import CapabilitySet as CapabilitySet2
+from aicf.harness.tools.base import Tool, ToolRegistry
 
 
 class FakeClient:
@@ -34,7 +34,7 @@ class FakeClient:
 
     async def invoke(self, messages, tools=None, **kwargs):
         self.calls.append(list(messages))
-        from infra.orchestrator.base import ChatResponse
+        from aicf.infra.orchestrator.base import ChatResponse
         return ChatResponse(content=self.reply)
 
     def stream(self, messages, tools=None, **kwargs):

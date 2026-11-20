@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from infra.control import (
+from aicf.infra.control import (
     AgentArtifact,
     AgentIdentity,
     ArtifactError,
@@ -32,8 +32,8 @@ from infra.control import (
     price_tokens,
     validate_delegation,
 )
-from infra.control.lifecycle import allowed_actions
-from infra.store.sqlite import SqliteStore
+from aicf.infra.control.lifecycle import allowed_actions
+from aicf.infra.store.sqlite import SqliteStore
 
 ARTIFACT_YAML = """
 apiVersion: aicf.dev/v1
@@ -113,7 +113,7 @@ def test_example_artifacts_ship_with_the_repo():
     study = load_artifact(os.path.join(root, 'agents', 'study.yaml'))
     assert study.spec_kernel == 'planner'
     # run_version 的默认 artifact 路径必须真的存在
-    from infra.eval.run_version import DEFAULT_ARTIFACT
+    from aicf.infra.eval.run_version import DEFAULT_ARTIFACT
     assert os.path.exists(os.path.join(root, DEFAULT_ARTIFACT))
 
 
@@ -269,7 +269,7 @@ class Mirror:
 
 
 def test_byo_adoption_requires_the_runtime_client_protocol():
-    from infra.control.adoption import AdoptionError
+    from aicf.infra.control.adoption import AdoptionError
     reg = ByoRegistry()
     with pytest.raises(AdoptionError):
         reg.adopt('bad-agent', object())          # 缺协议方法
@@ -337,7 +337,7 @@ def test_delegation_chain_records_the_full_path():
 
 
 def test_delegate_records_an_audit_event():
-    from infra.observability.audit import AuditLog
+    from aicf.infra.observability.audit import AuditLog
     audit = AuditLog()
     parent = AgentIdentity(agent_id='root', scopes=('fs.read',))
     _child, payload = delegate(parent, agent_id='sub', scopes=('fs.read',),
@@ -370,7 +370,7 @@ def test_agent_identity_scope_check_helper():
     assert not ident.has_scope('net.call')
     # spawn 前校验入口与委托校验同义
     with pytest.raises(DelegationError):
-        from infra.control import check_spawn_scopes
+        from aicf.infra.control import check_spawn_scopes
         check_spawn_scopes(ident, ('net.call',))
 
 

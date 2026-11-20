@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from infra.policy import RetryPolicy
+from aicf.infra.policy import RetryPolicy
 
 
 class FlakyError(Exception):

@@ -63,7 +63,7 @@ def _patch_pending_intent() -> Callable[[], bool]:
     拆掉它之后：崩溃恢复时那次「副作用可能已经发生」的调用会被再执行一次
     —— 重复扣款 / 重复发消息。
     """
-    import infra.runtime.managed as managed
+    import aicf.infra.runtime.managed as managed
 
     original = managed.ManagedRuntime._pending_intent
     managed.ManagedRuntime._pending_intent = lambda self, key: None
@@ -76,7 +76,7 @@ def _patch_result_cache() -> Callable[[], bool]:
     保护的是：重复投递同一 tool_call 不产生第二次副作用（R7）。
     拆掉它之后：同一幂等键投递 3 次 → 工具跑 3 次 → 副作用发生 3 次。
     """
-    import infra.runtime.idempotency as idem
+    import aicf.infra.runtime.idempotency as idem
 
     original_get = idem.ResultCache.get_record
     original_result = idem.ResultCache.get_result
@@ -98,7 +98,7 @@ def _patch_checkpoint_decode() -> Callable[[], bool]:
     拆掉它之后：损坏的快照被当成可用 → 恢复从一个空状态继续 →
     已完成的工具调用被当成「没做过」→ 重复副作用。
     """
-    import infra.runtime.checkpoint as checkpoint
+    import aicf.infra.runtime.checkpoint as checkpoint
 
     original = checkpoint.CheckpointStore._decode
     checkpoint.CheckpointStore._decode = staticmethod(lambda record: record)
@@ -115,7 +115,7 @@ def _patch_journal_dedupe() -> Callable[[], bool]:
     保护的是：消费方按 seq 去重，重复投递不重复计费（用例 6 / §4.2.2）。
     拆掉它之后：同一笔 token 被计费两次 → 预算被虚耗、成本归因失真。
     """
-    import infra.runtime.journal as journal
+    import aicf.infra.runtime.journal as journal
 
     original = journal.Journal.dedupe
     journal.Journal.dedupe = staticmethod(lambda events: list(events))
@@ -133,7 +133,7 @@ def _patch_trace_seq_dedupe() -> Callable[[], bool]:
     拆掉它之后：一次模型调用在 trace 里出现两个 usage span →
     成本排查从此开始说谎。
     """
-    import infra.observability.trace as trace
+    import aicf.infra.observability.trace as trace
 
     original = trace.TraceCollector._emit
 
@@ -163,8 +163,8 @@ def _patch_path_scan() -> Callable[[], bool]:
     「from .paths import scan_path_violations」是一次**值拷贝**，
     之后改 paths 模块的属性对已经导入的名字无效。
     """
-    import harness.tools.sandbox.paths as paths
-    import harness.tools.sandbox.restricted as restricted
+    import aicf.harness.tools.sandbox.paths as paths
+    import aicf.harness.tools.sandbox.restricted as restricted
 
     original_paths = getattr(paths, 'scan_path_violations', None)
     original_backend = getattr(restricted, 'scan_path_violations', None)
@@ -187,7 +187,7 @@ def _patch_network_check() -> Callable[[], bool]:
     保护的是：network='allowlist' 时非白名单域名被拦（用例 5 / §4.4.6）。
     拆掉它之后：agent 可以把工作区里的数据 POST 到任意域名 → 数据外泄。
     """
-    import harness.tools.sandbox.restricted as restricted
+    import aicf.harness.tools.sandbox.restricted as restricted
 
     original = getattr(restricted, 'check_network', None)
     if original is None:
@@ -207,7 +207,7 @@ def _patch_awaiting_approval() -> Callable[[], bool]:
     保护的是：审批等待期间进程退出 → 重启后仍处于 awaiting_approval（用例 3）。
     拆掉它之后：重启后这次审批被当成「没发生过」→ 人在回路形同虚设。
     """
-    import infra.runtime.store as store
+    import aicf.infra.runtime.store as store
 
     original = store.SqliteRuntimeStore.last_open_turn
 
@@ -232,7 +232,7 @@ def _patch_approval_submit() -> Callable[[], bool]:
     拆掉它之后：重启后这次调用永远悬着 —— 要么等超时被拒，
     要么永远不返回。
     """
-    from harness.approval.broker import LocalApprovalBroker
+    from aicf.harness.approval.broker import LocalApprovalBroker
 
     original = LocalApprovalBroker.submit
     LocalApprovalBroker.submit = lambda self, request_id, decision: False
@@ -249,7 +249,7 @@ def _patch_approval_restore() -> Callable[[], bool]:
     保护的是：进程重启后待决的审批请求能被捞回来（用例 3）。
     拆掉它之后：审批请求的**内容**只活在内存里 → 进程一死就永久悬空。
     """
-    from harness.approval.broker import LocalApprovalBroker
+    from aicf.harness.approval.broker import LocalApprovalBroker
 
     original = LocalApprovalBroker.restore_pending
     LocalApprovalBroker.restore_pending = lambda self, request: None
@@ -267,7 +267,7 @@ def _patch_inert_thing() -> Callable[[], bool]:
     一个只会说「全部通过」的工具，比没有工具更危险 ——
     它让人误以为每条保护都有人守着。
     """
-    from harness.tools.base import Tool
+    from aicf.harness.tools.base import Tool
 
     original = Tool.to_openai_schema
     Tool.to_openai_schema = lambda self: {}

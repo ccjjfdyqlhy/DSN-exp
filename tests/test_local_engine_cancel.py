@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from infra.orchestrator.local_engine import (
+from aicf.infra.orchestrator.local_engine import (
     LaunchCancelled,
     LocalServerLauncher,
 )

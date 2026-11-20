@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from harness import Tool, ToolRegistry
-from harness.tools.toolbox import RegistryIndexSource, ToolboxManager
+from aicf.harness import Tool, ToolRegistry
+from aicf.harness.tools.toolbox import RegistryIndexSource, ToolboxManager
 
 
 def _registry(n: int = 5) -> ToolRegistry:
@@ -101,7 +101,7 @@ def test_toolbox_legacy_converter():
 
 def test_toolbox_object_calls_supported():
     """兼容 harness ToolCall 对象形态（id/name/arguments 属性）。"""
-    from infra.models.base import ToolCall
+    from aicf.infra.models.base import ToolCall
 
     m = ToolboxManager(RegistryIndexSource(_registry(2)))
     calls = [ToolCall(id="t1", name="toolbox", arguments={"ids": ["skill.demo0"]})]
@@ -115,8 +115,8 @@ def test_toolbox_agentloop_integration_smoke():
     """AgentLoop 注入 toolbox 后：首轮只发索引，激活轮次附全 schema。"""
     import asyncio
 
-    from harness.agent import AgentLoop
-    from infra.models.base import ChatMessage, ChatResponse, ToolCall
+    from aicf.harness.agent import AgentLoop
+    from aicf.infra.models.base import ChatMessage, ChatResponse, ToolCall
 
     reg = _registry(2)
     seen_schemas: list[list[dict]] = []

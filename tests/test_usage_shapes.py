@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from infra.observability.usage import UsageTracker
-from infra.policy.token_meter import TokenMeter, read_usage
+from aicf.infra.observability.usage import UsageTracker
+from aicf.infra.policy.token_meter import TokenMeter, read_usage
 
 
 def test_read_usage_understands_the_openai_shape():

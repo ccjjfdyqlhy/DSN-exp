@@ -28,14 +28,14 @@ from __future__ import annotations
 
 import pytest
 
-from infra.runtime import (
+from aicf.infra.runtime import (
     EFFECT_EFFECTFUL,
     EFFECT_PURE,
     Journal,
     ManagedRuntime,
     recover,
 )
-from infra.store.sqlite import SqliteStore
+from aicf.infra.store.sqlite import SqliteStore
 
 from faultkit import ENV_COUNTER, ENV_DB, run_child
 
@@ -50,8 +50,8 @@ CHILD_CRASH_IN_EFFECTFUL = '''
 db = os.environ['FAULT_DB']
 counter = os.environ['FAULT_COUNTER']
 
-from infra.store.sqlite import SqliteStore
-from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+from aicf.infra.store.sqlite import SqliteStore
+from aicf.infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
 
 store = SqliteStore(db)
 migrate_runtime(store)
@@ -80,8 +80,8 @@ CHILD_CRASH_IN_PURE = '''
 db = os.environ['FAULT_DB']
 counter = os.environ['FAULT_COUNTER']
 
-from infra.store.sqlite import SqliteStore
-from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+from aicf.infra.store.sqlite import SqliteStore
+from aicf.infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
 
 store = SqliteStore(db)
 migrate_runtime(store)
@@ -122,7 +122,7 @@ def test_kill9_during_effectful_tool_blocks_automatic_replay(tmp_path, db_path,
     # ── 重启：重新打开同一个库，走完整恢复流程 ────────
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from aicf.infra.runtime import SqliteRuntimeStore
 
         port = SqliteRuntimeStore(store)
 
@@ -196,7 +196,7 @@ def test_kill9_leaves_only_intent_for_the_crashed_effectful_call(tmp_path,
 
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from aicf.infra.runtime import SqliteRuntimeStore
 
         port = SqliteRuntimeStore(store)
         events = Journal(port).events('s1')
@@ -239,7 +239,7 @@ def test_kill9_during_pure_tool_is_replayable_not_unknown(tmp_path, db_path,
 
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from aicf.infra.runtime import SqliteRuntimeStore
 
         port = SqliteRuntimeStore(store)
         plan = recover(port, 's1')
@@ -292,11 +292,11 @@ def test_guard_refuses_to_replay_the_crashed_effectful_call(tmp_path, db_path,
     """
     import asyncio
 
-    from harness.policy.base import PolicyRule
-    from harness.tools.base import Tool
-    from harness.tools.guard import ToolGuard
-    from harness.tools.spec import ToolSpec
-    from infra.policy.engine import RulePolicyEngine
+    from aicf.harness.policy.base import PolicyRule
+    from aicf.harness.tools.base import Tool
+    from aicf.harness.tools.guard import ToolGuard
+    from aicf.harness.tools.spec import ToolSpec
+    from aicf.infra.policy.engine import RulePolicyEngine
 
     proc = run_child(CHILD_CRASH_IN_EFFECTFUL,
                      env={ENV_DB: db_path, ENV_COUNTER: counter.path})
@@ -305,7 +305,7 @@ def test_guard_refuses_to_replay_the_crashed_effectful_call(tmp_path, db_path,
 
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from aicf.infra.runtime import SqliteRuntimeStore
 
         port = SqliteRuntimeStore(store)
         resumed = ManagedRuntime(port, session_id='s1')

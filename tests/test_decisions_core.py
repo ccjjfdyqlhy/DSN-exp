@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from harness.decisions.core import (  # noqa: E402
+from aicf.harness.decisions.core import (  # noqa: E402
     DecisionError,
     DecisionRequest,
     build_prompt,

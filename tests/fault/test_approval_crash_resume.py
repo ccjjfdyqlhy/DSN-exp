@@ -28,15 +28,15 @@ import os
 
 import pytest
 
-from harness.approval.base import ApprovalDecision, ApprovalRequest
-from harness.approval.broker import LocalApprovalBroker
-from harness.approval.events import approval_decision_event, approval_request_event
-from harness.tools.base import Tool
-from harness.tools.guard import ToolGuard
-from harness.tools.spec import ToolSpec
-from infra.policy.engine import RulePolicyEngine
-from infra.runtime import Journal, ManagedRuntime, TurnStatus
-from infra.store.sqlite import SqliteStore
+from aicf.harness.approval.base import ApprovalDecision, ApprovalRequest
+from aicf.harness.approval.broker import LocalApprovalBroker
+from aicf.harness.approval.events import approval_decision_event, approval_request_event
+from aicf.harness.tools.base import Tool
+from aicf.harness.tools.guard import ToolGuard
+from aicf.harness.tools.spec import ToolSpec
+from aicf.infra.policy.engine import RulePolicyEngine
+from aicf.infra.runtime import Journal, ManagedRuntime, TurnStatus
+from aicf.infra.store.sqlite import SqliteStore
 
 from faultkit import ENV_COUNTER, ENV_DB, ENV_READY, spawn_child, wait_for_file
 
@@ -52,12 +52,12 @@ ready = os.environ['FAULT_READY']
 
 import asyncio
 import time
-from infra.store.sqlite import SqliteStore
-from infra.runtime import (ManagedRuntime, SqliteRuntimeStore,
+from aicf.infra.store.sqlite import SqliteStore
+from aicf.infra.runtime import (ManagedRuntime, SqliteRuntimeStore,
                            migrate_runtime)
-from harness.approval.base import ApprovalRequest
-from harness.approval.broker import LocalApprovalBroker
-from harness.approval.events import approval_request_event
+from aicf.harness.approval.base import ApprovalRequest
+from aicf.harness.approval.broker import LocalApprovalBroker
+from aicf.harness.approval.events import approval_request_event
 
 store = SqliteStore(db)
 migrate_runtime(store)
@@ -144,11 +144,11 @@ def test_process_killed_while_awaiting_approval_stays_awaiting_approval(
 
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore
+        from aicf.infra.runtime import SqliteRuntimeStore
 
         port = SqliteRuntimeStore(store)
         plan = None
-        from infra.runtime import recover
+        from aicf.infra.runtime import recover
 
         plan = recover(port, 's1')
         assert plan.pending_turn is not None, '恢复时应当找得到未完成的轮次'
@@ -194,7 +194,7 @@ def test_approval_decision_can_be_filled_in_after_restart(tmp_path, db_path,
 
     store = SqliteStore(db_path)
     try:
-        from infra.runtime import SqliteRuntimeStore, recover
+        from aicf.infra.runtime import SqliteRuntimeStore, recover
 
         port = SqliteRuntimeStore(store)
         approvals = [e for e in Journal(port).events('s1')
@@ -272,7 +272,7 @@ def test_tool_is_not_executed_while_approval_is_pending(tmp_path, db_path,
     期望：审批还挂着的时候调工具 → 被挡住，副作用计数为 0。
     实际：这条防线一旦漏了，「人在回路」就只剩形式。
     """
-    from harness.runtime_client import NullRuntimeClient
+    from aicf.harness.runtime_client import NullRuntimeClient
 
     broker = LocalApprovalBroker(timeout=5.0, session_id='s1')
 

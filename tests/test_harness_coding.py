@@ -7,7 +7,7 @@ import asyncio
 import tempfile
 import textwrap
 
-from harness.agent import (
+from aicf.harness.agent import (
     Blackboard,
     PrefetchPlaceholders,
     SpeculativePrefetch,
@@ -15,14 +15,14 @@ from harness.agent import (
     SwarmRuntime,
     ThreeZoneContext,
 )
-from harness.codegraph import GraphBuilder, find_callers, search_symbols
-from infra.models.base import ChatResponse
-from infra.models import ModelRouter  # 唯一实现在 infra.policy.router
-from infra.models.stub import StubChatClient
-from infra.observability import UsageTracker
-from harness.pipeline.filters import OutputFilter
-from infra.store import SessionStore
-from harness.tools import ToolRegistry, tool_from_function, tools_from_module
+from aicf.harness.codegraph import GraphBuilder, find_callers, search_symbols
+from aicf.infra.models.base import ChatResponse
+from aicf.infra.models import ModelRouter  # 唯一实现在 infra.policy.router
+from aicf.infra.models.stub import StubChatClient
+from aicf.infra.observability import UsageTracker
+from aicf.harness.pipeline.filters import OutputFilter
+from aicf.infra.store import SessionStore
+from aicf.harness.tools import ToolRegistry, tool_from_function, tools_from_module
 
 
 # ── function → tool ──
@@ -62,7 +62,7 @@ def test_tools_from_module():
 # ── skill loader ──
 
 def test_skill_loader_installs_package():
-    from harness.skills import SkillLoader
+    from aicf.harness.skills import SkillLoader
     loader = SkillLoader()
     reg = ToolRegistry()
     installed = loader.install_module(_sample_module(), reg, namespace="pkg")
@@ -151,7 +151,7 @@ def test_prefetch_placeholders():
 def test_session_store_roundtrip():
     store = SessionStore(db_path=":memory:")
     sid = store.create_session()
-    from infra.models.base import ChatMessage
+    from aicf.infra.models.base import ChatMessage
     store.save_messages([ChatMessage.user("hi"), ChatMessage.assistant("yo")])
     msgs = store.load_messages(sid)
     assert len(msgs) == 2 and msgs[0].content == "hi"

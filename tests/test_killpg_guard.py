@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from infra.orchestrator.local_engine import (
+from aicf.infra.orchestrator.local_engine import (
     _resolve_kill_pgid,
     kill_process_tree,
 )

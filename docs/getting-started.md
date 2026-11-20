@@ -58,16 +58,17 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 ### 1.4 确认装好了
 
 ```bash
-python3 -c "import harness; print('harness', harness.__version__)"   # 期望 1.0.0rc3
-python3 -c "import infra; print('infra ok')"
+python3 -c "import aicf; print('aicf', aicf.__version__)"           # 期望 1.0.0rc3
+python3 -c "from aicf.harness import create_agent; print('harness ok')"
+python3 -c "import aicf.infra; print('infra ok')"
 python3 -m pytest -q tests/                                          # 跑测试
 ```
 
 ### 1.5 跑一个最小 Agent
 
 ```python
-from harness import create_agent
-from harness.tools import tool_from_function
+from aicf.harness import create_agent
+from aicf.harness.tools import tool_from_function
 
 def add(a: int, b: int) -> int:
     """把两个数相加。"""

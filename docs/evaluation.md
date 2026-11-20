@@ -173,17 +173,17 @@ hash 的输入是 `version + meta + cases`，**不吃文件字节，也不吃路
 aicf run "读取 a.txt" --trace trace.jsonl --case-id read_file_returns_content
 
 # 打分
-aicf eval --dataset harness/datasets/basic.yaml --traces trace.jsonl --out run.json
+aicf eval --dataset aicf/harness/datasets/basic.yaml --traces trace.jsonl --out run.json
 
 # 出闸门报告（带 baseline 比回归）
 aicf gate --run run.json --baseline baseline.json --out gate.json
 ```
 
 ```python
-from infra.eval import (Evaluator, GateEvaluator, load_dataset,
+from aicf.infra.eval import (Evaluator, GateEvaluator, load_dataset,
                         capture_run_version)
 
-dataset = load_dataset('harness/datasets/basic.yaml')
+dataset = load_dataset('aicf/harness/datasets/basic.yaml')
 version = capture_run_version(dataset=dataset, model='deepseek-chat')
 result = Evaluator().evaluate_run(dataset, traces, run_version_id=version.id)
 report = GateEvaluator().evaluate(result, baseline)
@@ -194,19 +194,19 @@ assert report.passed
 
 ## 九、依赖方向
 
-**`infra/eval` 不 import `harness`。**
+**`aicf/infra/eval` 不 import `harness`。**
 
 评测层只认自己定义的 `Trace` / `ToolCall` 通用结构；
 harness 的事件流通过 `trace_from_events()` 适配（只读 dict）。
 
-与 `harness/learning/evaluator.py`（既有分层判官）的汇合走**应用层注入**：
+与 `aicf/harness/learning/evaluator.py`（既有分层判官）的汇合走**应用层注入**：
 
 ```python
 AgentTrajectoryEvaluator(extra_checkers=[...])
 ```
 
 有两条测试兜底这条规则：模块级 import 扫描 + 子进程运行期断言
-（`infra.eval` 不加载任何 `harness.*`）。
+（`aicf.infra.eval` 不加载任何 `harness.*`）。
 
 ---
 

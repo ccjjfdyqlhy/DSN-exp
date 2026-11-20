@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from harness import ContextGatherer, ToolDeps, ToolRegistry, install_standard_tools
-from harness.agent import (
+from aicf.harness import ContextGatherer, ToolDeps, ToolRegistry, install_standard_tools
+from aicf.harness.agent import (
     AgentAssembler,
     AgentMode,
     AgentSpec,
@@ -14,7 +14,7 @@ from harness.agent import (
     SubAgentRunner,
     SubTask,
 )
-from harness.codegraph import FileWatcher, ImportResolver
+from aicf.harness.codegraph import FileWatcher, ImportResolver
 
 
 # ── ModeState ──
@@ -41,7 +41,7 @@ def test_modes_unknown_raises():
 def test_subagent_split_and_run():
     import asyncio
 
-    from infra.models.base import ChatResponse
+    from aicf.infra.models.base import ChatResponse
 
     class FakeClient:
         model = "fake"
@@ -112,7 +112,7 @@ def test_file_watcher_detects_change(tmp_path):
 # ── AgentAssembler ──
 
 def test_assembler_smoke():
-    from infra.models.base import ChatResponse
+    from aicf.infra.models.base import ChatResponse
 
     class FakeClient:
         model = "fake"

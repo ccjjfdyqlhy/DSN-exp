@@ -20,8 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from infra.resources import ResourceKind, ResourcePool  # noqa: E402
-from infra.resources.decision_service import (  # noqa: E402
+from aicf.infra.resources import ResourceKind, ResourcePool  # noqa: E402
+from aicf.infra.resources.decision_service import (  # noqa: E402
     DECISION_RESOURCE,
     DecisionConfig,
     decision_lease,
@@ -62,8 +62,8 @@ class _FakeLauncher:
 @pytest.fixture()
 def fake_launcher(monkeypatch):
     """把 decision_service 的模型/二进制解析与 launcher 全部换掉。"""
-    from infra.decision.jev import JevModel
-    from infra.resources import decision_service as ds
+    from aicf.infra.decision.jev import JevModel
+    from aicf.infra.resources import decision_service as ds
 
     model = JevModel(
         name="jev:test",
@@ -224,8 +224,8 @@ def test_decision_service_holds_provider_context():
     """门面必须把 provider 的上下文覆盖到整个决策过程。"""
     from contextlib import contextmanager
 
-    from harness.decisions import DecisionService
-    from infra.decision.client import RawDecision
+    from aicf.harness.decisions import DecisionService
+    from aicf.infra.decision.client import RawDecision
 
     events = []
 

@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from harness.decisions.core import DecisionRequest, DecisionResult  # noqa: E402
-from harness.decisions.use_cases import (  # noqa: E402
+from aicf.harness.decisions.core import DecisionRequest, DecisionResult  # noqa: E402
+from aicf.harness.decisions.use_cases import (  # noqa: E402
     DecisionGate,
     classify,
     detect_crisis,
@@ -47,7 +47,7 @@ def _fixed(decider_type="choice", **kwargs):
         total = sum(dist.values())
         dist = {k: v / total for k, v in dist.items()}
         best = max(dist, key=dist.get)
-        from harness.decisions.core import choice_confidence
+        from aicf.harness.decisions.core import choice_confidence
         return DecisionResult(
             type="choice", answer=best, label=options.get(best, ""),
             probability=dist[best], distribution=dist,

@@ -14,19 +14,19 @@ import asyncio
 
 import pytest
 
-from harness.approval.base import ApprovalDecision, ApprovalRequest
-from harness.approval.broker import AutoDenyBroker, LocalApprovalBroker
-from harness.approval.events import (
+from aicf.harness.approval.base import ApprovalDecision, ApprovalRequest
+from aicf.harness.approval.broker import AutoDenyBroker, LocalApprovalBroker
+from aicf.harness.approval.events import (
     approval_decision_event,
     approval_request_event,
     approval_timeout_event,
 )
-from harness.approval.session import ApprovalCache
-from harness.policy.base import PolicyRule
-from harness.tools.base import Tool
-from harness.tools.guard import ToolGuard
-from harness.tools.spec import ToolSpec
-from infra.policy.engine import RulePolicyEngine
+from aicf.harness.approval.session import ApprovalCache
+from aicf.harness.policy.base import PolicyRule
+from aicf.harness.tools.base import Tool
+from aicf.harness.tools.guard import ToolGuard
+from aicf.harness.tools.spec import ToolSpec
+from aicf.infra.policy.engine import RulePolicyEngine
 
 
 class Collector:

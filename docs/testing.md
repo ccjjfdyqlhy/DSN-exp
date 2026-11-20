@@ -78,7 +78,7 @@ camera tests use a fake `cv2` object and do run.
 
 ## test layout
 
-### `harness/`
+### `aicf/harness/`
 
 | file | coverage |
 |---|---|
@@ -96,7 +96,7 @@ camera tests use a fake `cv2` object and do run.
 | `test_harness_learning.py`, `test_harness_selfplay.py`, `test_harness_probes.py` | learning loop |
 | `test_harness_utilities.py` | filediff, images, usage and transcript helpers |
 
-### `infra/`
+### `aicf/infra/`
 
 | file | coverage |
 |---|---|

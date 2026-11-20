@@ -121,5 +121,5 @@ jobs:
         run: python -m pytest -q tests/test_rc0_eval.py
       - name: the evaluation cli is wired
         run: |
-          python -m harness.cli.main eval --dataset basic --help > /dev/null
-          python -m harness.cli.main gate --help > /dev/null
+          python -m aicf.harness.cli.main eval --dataset basic --help > /dev/null
+          python -m aicf.harness.cli.main gate --help > /dev/null

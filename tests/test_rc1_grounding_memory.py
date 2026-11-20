@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from harness.grounding import (
+from aicf.harness.grounding import (
     SYSTEM_BOUNDARY_NOTICE,
     Grounded,
     grounded_system_notice,
     inject_grounded,
     render_grounded,
 )
-from harness.memory.layers import (
+from aicf.harness.memory.layers import (
     DEFAULT_LAYER_BUDGETS,
     KNOWN_LAYERS,
     LayeredMemoryView,

@@ -32,7 +32,7 @@ def _old_schema_db(tmp_path):
 
 def test_pending_column_is_added_to_old_db(tmp_path):
     """旧库补列：``pending`` 必须被加上，且已有数据不丢。"""
-    from harness.personality.evidence_accumulator import EvidenceAccumulator
+    from aicf.harness.personality.evidence_accumulator import EvidenceAccumulator
 
     path = _old_schema_db(tmp_path)
     conn = sqlite3.connect(str(path))
@@ -58,8 +58,8 @@ def test_pending_column_is_added_to_old_db(tmp_path):
 
 def test_evidence_state_survives_new_instance(tmp_path):
     """证据状态在新实例里能恢复（DB 是真源，不是内存）。"""
-    from harness.personality.evidence_accumulator import EvidenceAccumulator
-    from harness.personality.events import PerceptionRecord
+    from aicf.harness.personality.evidence_accumulator import EvidenceAccumulator
+    from aicf.harness.personality.events import PerceptionRecord
 
     path = tmp_path / "state.db"
     conn = sqlite3.connect(str(path))

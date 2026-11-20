@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import pytest
 
-from harness.filediff import FileSnapshot, format_diff_for_model, make_file_diff, snapshot_file
-from harness.images import (
+from aicf.harness.filediff import FileSnapshot, format_diff_for_model, make_file_diff, snapshot_file
+from aicf.harness.images import (
     FileIdCache, count_image_markers, estimate_marker_charge, has_image_marker,
     image_marker, iter_segments, strip_image_markers,
 )
-from harness.usage import (
+from aicf.harness.usage import (
     TokenBudget, TokenBudgetExceeded, canonical_json, effective_reserved,
     estimate_tokens, merge_usage, normalize_tool_result, normalize_usage,
 )
@@ -69,7 +69,7 @@ def test_marker_roundtrip():
 
 
 def test_estimate_marker_charge_helper():
-    from harness.images import IMAGE_TOKEN_ESTIMATE
+    from aicf.harness.images import IMAGE_TOKEN_ESTIMATE
     assert estimate_marker_charge('no markers here') == 0
     assert estimate_marker_charge(image_marker('a.png')) == IMAGE_TOKEN_ESTIMATE
 

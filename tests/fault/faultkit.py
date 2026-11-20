@@ -27,7 +27,7 @@ import textwrap
 import time
 from pathlib import Path
 
-#: 仓库根目录（子进程要 import infra / harness，必须能找到它们）
+#: 仓库根目录（子进程要 import aicf.infra / harness，必须能找到它们）
 REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
 #: 注入给子进程的环境变量前缀
@@ -162,8 +162,8 @@ def sandbox_backend(**kwargs):
     # 退化时再去子模块里找 —— 后端还在收敛，名字可能变。
     import importlib
 
-    for module_name in ('harness.tools.sandbox',
-                        'harness.tools.sandbox.restricted'):
+    for module_name in ('aicf.harness.tools.sandbox',
+                        'aicf.harness.tools.sandbox.restricted'):
         try:
             module = importlib.import_module(module_name)
         except Exception:

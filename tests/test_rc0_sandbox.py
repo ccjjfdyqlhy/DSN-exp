@@ -19,20 +19,20 @@ import os
 
 import pytest
 
-from harness.tools.sandbox import (
+from aicf.harness.tools.sandbox import (
     NamespacedSandbox,
     RestrictedSandbox,
     detect_best_backend,
     detect_capabilities,
 )
-from harness.tools.sandbox.base import SandboxRequest, SandboxResult
-from harness.tools.sandbox.paths import (
+from aicf.harness.tools.sandbox.base import SandboxRequest, SandboxResult
+from aicf.harness.tools.sandbox.paths import (
     PathPolicy,
     is_within,
     real_path,
     scan_path_violations,
 )
-from harness.tools.sandbox.restricted import (
+from aicf.harness.tools.sandbox.restricted import (
     VIOLATION_CMD_DENIED,
     VIOLATION_NET_DENY,
     VIOLATION_PATH_ESCAPE,
@@ -88,7 +88,7 @@ def test_sandbox_result_ok_property():
 
 def test_restricted_and_namespaced_satisfy_protocol():
     """两个后端都满足 Sandbox 协议（结构化检查）。"""
-    from harness.tools.sandbox.base import Sandbox
+    from aicf.harness.tools.sandbox.base import Sandbox
 
     for backend in (RestrictedSandbox(), NamespacedSandbox()):
         assert isinstance(backend, Sandbox)
@@ -270,7 +270,7 @@ def test_namespaced_degrades_without_error(monkeypatch):
 
     这是「降级而非降智」（策划案 §3.3.5）：上层可以选择「降级即拒绝」。
     """
-    import harness.tools.sandbox.namespaced as ns
+    import aicf.harness.tools.sandbox.namespaced as ns
 
     def _no_caps():
         return ns.NamespaceCapabilities()
@@ -286,7 +286,7 @@ def test_namespaced_degrades_without_error(monkeypatch):
 
 def test_probe_reports_reason_when_backend_missing(monkeypatch):
     """探测失败要能给出原因（便于排查），不是只留一个 False。"""
-    import harness.tools.sandbox.namespaced as ns
+    import aicf.harness.tools.sandbox.namespaced as ns
     monkeypatch.setattr(ns.shutil, 'which', lambda name: None)
     probe = ns.probe_bubblewrap()
     assert probe.available is False
@@ -386,8 +386,8 @@ def test_namespaced_can_write_inside_workspace(workspace):
 
 def test_shell_tool_uses_sandbox_from_context(tmp_path):
     """ToolContext.sandbox 注入后，shell 工具必须走沙箱判定。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions(sandbox=RestrictedSandbox())
     token = push_context(ToolContext(cwd=str(tmp_path)))
@@ -403,8 +403,8 @@ def test_shell_tool_uses_sandbox_from_context(tmp_path):
 
 def test_shell_tool_legacy_path_still_works(tmp_path):
     """没有沙箱时 legacy 路径仍然可用（既有行为不能破）。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions()
     token = push_context(ToolContext(cwd=str(tmp_path)))
@@ -418,8 +418,8 @@ def test_shell_tool_legacy_path_still_works(tmp_path):
 
 def test_shell_tool_normal_command_via_sandbox(tmp_path):
     """挂上沙箱后，正常命令照常能跑。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions(sandbox=RestrictedSandbox())
     token = push_context(ToolContext(cwd=str(tmp_path)))
@@ -442,8 +442,8 @@ def test_shell_tool_normal_command_via_sandbox(tmp_path):
 
 def test_shell_records_structured_violation(tmp_path):
     """沙箱拒绝时，工具要往 context.violations 里 append 结构化记录。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions(sandbox=RestrictedSandbox())
     context = ToolContext(cwd=str(tmp_path), violations=[])
@@ -463,8 +463,8 @@ def test_shell_records_structured_violation(tmp_path):
 
 def test_shell_records_network_violation(tmp_path):
     """出网被拦也要走同一条结构化通道。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions(sandbox=RestrictedSandbox())
     context = ToolContext(cwd=str(tmp_path), violations=[])
@@ -480,8 +480,8 @@ def test_shell_records_network_violation(tmp_path):
 
 def test_shell_does_not_record_violation_when_allowed(tmp_path):
     """正常执行不该产生违规记录（否则审计里全是噪音）。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions(sandbox=RestrictedSandbox())
     context = ToolContext(cwd=str(tmp_path), violations=[])
@@ -499,11 +499,11 @@ def test_sandbox_denial_reaches_audit_denied(tmp_path):
 
     这是策划案 §8.2 用例 4「被拦并记审计」的完整链路。
     """
-    from harness.approval.base import ApprovalDecision
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.guard import ToolGuard
-    from harness.tools.registry import ManagedToolRegistry
-    from harness.tools.shell import session_shell_tool
+    from aicf.harness.approval.base import ApprovalDecision
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.guard import ToolGuard
+    from aicf.harness.tools.registry import ManagedToolRegistry
+    from aicf.harness.tools.shell import session_shell_tool
 
     class _AutoApprove:
         async def request(self, request):
@@ -539,8 +539,8 @@ def test_namespaced_denial_records_violation(tmp_path):
     导致里面的一个未定义名字（record_violation 没导入）没被发现。
     「每个分支都得有人走过」比「代码看起来对」可靠。
     """
-    from harness.tools.context import ToolContext, pop_context, push_context
-    from harness.tools.shell import ShellSessions
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.shell import ShellSessions
 
     sessions = ShellSessions(sandbox=NamespacedSandbox())
     context = ToolContext(cwd=str(tmp_path), violations=[])
@@ -557,7 +557,7 @@ def test_namespaced_denial_records_violation(tmp_path):
 
 def test_namespaced_denial_via_run_records_violation(tmp_path):
     """直接用 run() 也要记违规（不能只有 shell 工具这条路记）。"""
-    from harness.tools.context import ToolContext, pop_context, push_context
+    from aicf.harness.tools.context import ToolContext, pop_context, push_context
 
     context = ToolContext(cwd=str(tmp_path), violations=[])
     token = push_context(context)

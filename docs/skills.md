@@ -3,7 +3,7 @@
 > 读者：要写一个新技能、或排查"技能不生效 / 工具调用报错"的人。
 >
 > 技能 = 一组具名工具的可装卸单元。声明式技能（YAML）由
-> `harness/skills/` 承载，应用共用同一份实现。
+> `aicf/harness/skills/` 承载，应用共用同一份实现。
 
 ---
 
@@ -22,7 +22,7 @@
 └── skill.env         # 可选：技能私有配置（KEY=VALUE）
 ```
 
-扫描规则（`harness/skills/yaml_manager.py`）：
+扫描规则（`aicf/harness/skills/yaml_manager.py`）：
 
 * 目录根部有 `skill.yaml` → 该目录本身就是一个技能；
 * 否则遍历其子目录，每个含 `skill.yaml` 的子目录是一个技能；
@@ -88,7 +88,7 @@ class HelloTool:
 
 ## 三、`module` 的三种写法
 
-`harness/skills/yaml_loader.py: resolve_tool_module_path`：
+`aicf/harness/skills/yaml_loader.py: resolve_tool_module_path`：
 
 | 写法 | 解析结果 |
 |---|---|
@@ -158,7 +158,7 @@ class HelloTool:
 
 ---
 
-## 五、加载期校验（`harness/skills/validator.py`）
+## 五、加载期校验（`aicf/harness/skills/validator.py`）
 
 技能包写错时，**加载期**就会报出具体是哪一条不对，而不是等用户调工具时炸。
 
@@ -211,7 +211,7 @@ GAOKZX_DELAY=1.2
 GAOKZX_USER_AGENT=Mozilla/5.0 ...
 ```
 
-* 加载器：`harness/skills/env_loader.py`，应用启动时扫描并写进 `os.environ`；
+* 加载器：`aicf/harness/skills/env_loader.py`，应用启动时扫描并写进 `os.environ`；
 * **已存在的环境变量优先于文件里的值**（现场配置覆盖仓库默认值）；
 * 结果同时挂在 `Skill.env` 上；
 * 格式错误（缺 `=`、空键名）会跳过该行并告警，不会整份文件失效。
@@ -243,13 +243,13 @@ the application exposes the skill management API:
 
 | 文件 | 职责 |
 |---|---|
-| `harness/skills/yaml_loader.py` | 解析 `skill.yaml` / `prompts/*.md`，生成 function-calling schema |
-| `harness/skills/yaml_manager.py` | 扫描 / 安装 / 卸载 / 重载 / 启停，收集诊断 |
-| `harness/skills/registry.py` | 工具实例、调用、提示词聚合、schema 生成、**唯一实现** |
-| `harness/skills/capabilities.py` | 能力注册表（依赖注入的唯一来源） |
-| `harness/skills/validator.py` | 加载期一致性校验 |
-| `harness/skills/env_loader.py` | `skill.env` 加载 |
-| `harness/skills/agent_bridge.py` | 技能工具 → AgentLoop 工具（同步 + 协程） |
+| `aicf/harness/skills/yaml_loader.py` | 解析 `skill.yaml` / `prompts/*.md`，生成 function-calling schema |
+| `aicf/harness/skills/yaml_manager.py` | 扫描 / 安装 / 卸载 / 重载 / 启停，收集诊断 |
+| `aicf/harness/skills/registry.py` | 工具实例、调用、提示词聚合、schema 生成、**唯一实现** |
+| `aicf/harness/skills/capabilities.py` | 能力注册表（依赖注入的唯一来源） |
+| `aicf/harness/skills/validator.py` | 加载期一致性校验 |
+| `aicf/harness/skills/env_loader.py` | `skill.env` 加载 |
+| `aicf/harness/skills/agent_bridge.py` | 技能工具 → AgentLoop 工具（同步 + 协程） |
 
 ---
 

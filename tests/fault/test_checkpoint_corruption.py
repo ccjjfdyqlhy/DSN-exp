@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from infra.runtime import (
+from aicf.infra.runtime import (
     EFFECT_PURE,
     CheckpointCorruptError,
     CheckpointStore,

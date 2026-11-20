@@ -12,7 +12,7 @@ pip install -e .        # 在仓库根目录，以可编辑模式安装
 ```
 
 ```python
-from harness import create_agent, tool, Agent
+from aicf.harness import create_agent, tool, Agent
 ```
 
 > `pip install -e .` 只安装 **框架**（`harness` + `infra`）与其最小依赖
@@ -26,7 +26,7 @@ from harness import create_agent, tool, Agent
 ### 2.1 创建 Agent
 
 ```python
-from harness import create_agent
+from aicf.harness import create_agent
 
 agent = create_agent(
     model="deepseek-chat",
@@ -57,7 +57,7 @@ print(agent.chat("我刚才说了什么？"))   # 自动维持多轮历史
 ### 2.2 定义工具
 
 ```python
-from harness import create_agent, tool
+from aicf.harness import create_agent, tool
 
 @tool
 def get_user_info(user_id: int) -> str:
@@ -82,7 +82,7 @@ schema 由**类型注解 + docstring** 自动生成。限制：`list`/`dict` 不
 
 ```python
 import asyncio
-from harness import create_agent
+from aicf.harness import create_agent
 
 agent = create_agent(model="deepseek-chat")
 
@@ -134,7 +134,7 @@ agent = create_agent(
 | `token_cap` / `budget_cap` | ⚠️ 会被组装成 `TokenBudget`，但 **AgentLoop 不检查预算** |
 
 这是诚实的状态说明。需要真正的预算控制，请在应用层自己计量
-（参考 `infra/policy/token_meter.py` 的 `TokenMeter`，手动在每轮后 `record()`）。
+（参考 `aicf/infra/policy/token_meter.py` 的 `TokenMeter`，手动在每轮后 `record()`）。
 
 ---
 
@@ -143,8 +143,8 @@ agent = create_agent(
 任何满足 `IChatClient` 协议的对象都能传进来：
 
 ```python
-from infra.orchestrator.base import IChatClient, ChatMessage, ChatResponse
-from harness import create_agent
+from aicf.infra.orchestrator.base import IChatClient, ChatMessage, ChatResponse
+from aicf.harness import create_agent
 
 class MyClient:
     model = "my-model"
@@ -166,9 +166,9 @@ agent = create_agent(client=MyClient())
 不想用 `create_agent` 时，可以自己拼装：
 
 ```python
-from harness.agent import AgentLoop
-from harness import ToolRegistry, Tool
-from infra.orchestrator import ChatMessage, OpenAICompatClient
+from aicf.harness.agent import AgentLoop
+from aicf.harness import ToolRegistry, Tool
+from aicf.infra.orchestrator import ChatMessage, OpenAICompatClient
 
 client = OpenAICompatClient(model="...", api_key="...", base_url="...")
 tools = ToolRegistry()
@@ -191,22 +191,22 @@ result = loop.run([ChatMessage.user("echo 你好")])
 
 | 想要 | 导入 |
 |---|---|
-| 上下文预算剪裁 | `from harness import ContextBudget, SegmentedContextAssembler` |
-| 模块化提示词 | `from harness import PromptEngine, PromptFragment` |
-| 标准工具集 | `from harness import install_standard_tools, ToolDeps` |
-| @ 指令采集 | `from harness import ContextGatherer` |
-| 会话管理 | `from harness import Conversation, ConversationManager` |
-| 依赖注入 | `from harness import Runtime` |
-| 配置命名空间 | `from harness import Settings` |
-| 持久化 | `from infra.store import SessionStore, SqliteStore` |
-| 用量统计 | `from infra.observability import UsageTracker` |
-| 模型路由策略 | `from infra.policy import ModelRouter, TokenMeter, TokenBudget` |
+| 上下文预算剪裁 | `from aicf.harness import ContextBudget, SegmentedContextAssembler` |
+| 模块化提示词 | `from aicf.harness import PromptEngine, PromptFragment` |
+| 标准工具集 | `from aicf.harness import install_standard_tools, ToolDeps` |
+| @ 指令采集 | `from aicf.harness import ContextGatherer` |
+| 会话管理 | `from aicf.harness import Conversation, ConversationManager` |
+| 依赖注入 | `from aicf.harness import Runtime` |
+| 配置命名空间 | `from aicf.harness import Settings` |
+| 持久化 | `from aicf.infra.store import SessionStore, SqliteStore` |
+| 用量统计 | `from aicf.infra.observability import UsageTracker` |
+| 模型路由策略 | `from aicf.infra.policy import ModelRouter, TokenMeter, TokenBudget` |
 
 ---
 
 ## 七、注意事项
 
-1. **单例副作用**：`infra.orchestrator` 里有 `ModelOrchestrator` / `ModelScheduler` 两个
+1. **单例副作用**：`aicf.infra.orchestrator` 里有 `ModelOrchestrator` / `ModelScheduler` 两个
    进程级单例。若你在同一进程里既用 SDK 又用别的方式建模型，注意它们会互相影响。
 
 2. **`run()` 与事件循环**：同步 API 内部 `asyncio.run`，异步上下文请用 `*_async` 版本。

@@ -7,9 +7,9 @@ import asyncio
 
 import pytest
 
-from harness import ToolRegistry
-from harness.agent import AgentLoop, StreamEvent
-from infra.models.base import ChatMessage, ChatResponse
+from aicf.harness import ToolRegistry
+from aicf.harness.agent import AgentLoop, StreamEvent
+from aicf.infra.models.base import ChatMessage, ChatResponse
 
 
 class StreamingClient:
@@ -92,7 +92,7 @@ def test_run_stream_fallback_invoke():
 
 def test_run_stream_toolbox_integration():
     """流式路径下 toolbox 两阶段激活生效：首轮只有 toolbox 索引。"""
-    from harness.tools.toolbox import RegistryIndexSource, ToolboxManager
+    from aicf.harness.tools.toolbox import RegistryIndexSource, ToolboxManager
 
     reg = ToolRegistry()
     reg.register_tool("demo.echo", "回声", lambda x: x,

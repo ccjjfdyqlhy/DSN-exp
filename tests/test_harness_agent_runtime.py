@@ -1,10 +1,10 @@
 # tests/test_harness_agent_runtime.py
 from __future__ import annotations
 
-from harness import AgentRuntime
-from infra.models.base import ChatResponse, ToolCall
-from infra.models.provider import ModelProviderRegistry
-from infra.models.stub import StubChatClient
+from aicf.harness import AgentRuntime
+from aicf.infra.models.base import ChatResponse, ToolCall
+from aicf.infra.models.provider import ModelProviderRegistry
+from aicf.infra.models.stub import StubChatClient
 
 
 def _two_step_client(tool_name, tool_args, final_text):

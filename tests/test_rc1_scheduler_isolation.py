@@ -12,19 +12,19 @@ import time
 
 import pytest
 
-from infra.runtime.isolation import (
+from aicf.infra.runtime.isolation import (
     IsolationError,
     WorkspaceManager,
     WorkspaceSpec,
     contains_path,
 )
-from infra.runtime.scheduler import (
+from aicf.infra.runtime.scheduler import (
     DEFAULT_LEASE_TTL,
     DeploymentScheduler,
     LeaseHeldError,
 )
-from infra.runtime.state import DeploymentStatus
-from infra.store.sqlite import SqliteStore
+from aicf.infra.runtime.state import DeploymentStatus
+from aicf.infra.store.sqlite import SqliteStore
 
 
 @pytest.fixture()
@@ -127,7 +127,7 @@ def test_deployment_status_transitions(scheduler):
 
 def test_lease_migration_is_idempotent(tmp_path):
     store = SqliteStore(str(tmp_path / 'm.db'))
-    from infra.runtime.scheduler import migrate_lease
+    from aicf.infra.runtime.scheduler import migrate_lease
     first = migrate_lease(store)
     assert first == ['rc2_lease_001']
     assert migrate_lease(store) == []
@@ -222,7 +222,7 @@ def test_workspace_spec_round_trip():
 
 def test_contains_path_matches_the_sandbox_judgement():
     """与 harness/tools/sandbox/paths.py 的判定钉在一起（R-10 模式）。"""
-    from harness.tools.sandbox.paths import is_within
+    from aicf.harness.tools.sandbox.paths import is_within
     root = '/tmp/rc1-cross-check/root'
     inside = '/tmp/rc1-cross-check/root/sub/file.txt'
     outside = '/tmp/rc1-cross-check/other/file.txt'

@@ -12,8 +12,8 @@
 
 ```text
 aicf-ui (separate repository) -> depends on aicf-core
-harness/                      -> agent logic: turn loop, tools, context, memory
-infra/                        -> resources: models, storage, gateway, policy
+aicf/harness/                      -> agent logic: turn loop, tools, context, memory
+aicf/infra/                        -> resources: models, storage, gateway, policy
 ```
 
 this repository contains only the two library layers. the web console lives in
@@ -24,25 +24,25 @@ its own repository.
 | question | yes -> |
 |---|---|
 | does it know about a user interface or a product feature? | `aicf-ui` repository |
-| does it care about messages in, tools out, or a context budget? | `harness/` |
-| does it only manage processes, http, vram, disk or secrets? | `infra/` |
+| does it care about messages in, tools out, or a context budget? | `aicf/harness/` |
+| does it only manage processes, http, vram, disk or secrets? | `aicf/infra/` |
 
 ### 曾经的两处违规（2026-10 已修复）
 
 | 文件 | 曾经的逆向依赖 | 现在的状态 |
 |---|---|---|
-| `infra/observability/core.py` | `from harness.pipeline.events import EventBus` | 已改掉；向量原语下沉到 `infra/vector.py`，`infra/cache.py` 不再依赖 `harness.memory.vector` |
-| `infra/cache.py` | `from harness.memory.vector import VectorIndex` | 已改掉，与 `harness/memory/vector.py` 的循环依赖消失 |
+| `aicf/infra/observability/core.py` | `from aicf.harness.pipeline.events import EventBus` | 已改掉；向量原语下沉到 `aicf/infra/vector.py`，`aicf/infra/cache.py` 不再依赖 `aicf.harness.memory.vector` |
+| `aicf/infra/cache.py` | `from aicf.harness.memory.vector import VectorIndex` | 已改掉，与 `aicf/harness/memory/vector.py` 的循环依赖消失 |
 
 **1.0.0-rc0 增加了两条硬规则，并有测试兜底**：
 
-1. `infra/eval/` 与 `infra/runtime/` **不得 import `harness`** ——
+1. `aicf/infra/eval/` 与 `aicf/infra/runtime/` **不得 import `harness`** ——
    评测层只认自己定义的 `Trace` / `ToolCall`，harness 事件流靠
    `trace_from_events()` 适配（只读 dict）。
-2. `harness/` 依赖 `infra/` 时**只允许依赖 Protocol** ——
+2. `aicf/harness/` 依赖 `aicf/infra/` 时**只允许依赖 Protocol** ——
    契约（`ToolSpec` / `PolicyEngine` / `ApprovalBroker` / `Sandbox` /
-   `TelemetryPort` / `RuntimeClient`）全部住在 `harness/`，
-   实现在 `infra/`，由应用装配时注入。
+   `TelemetryPort` / `RuntimeClient`）全部住在 `aicf/harness/`，
+   实现在 `aicf/infra/`，由应用装配时注入。
 
 代价是两处**同名契约**需要在两侧各写一份实现
 （幂等键公式、`UnknownOutcomeError` 的识别标记），
@@ -57,9 +57,9 @@ the typical path for one console message:
 1. the browser sends `POST /v1/chat/completions`.
 2. `aicf_ui/server.py` parses the request and picks `api_mode`.
 3. `aicf_ui/agent.py` assembles context, chooses a model and starts the stream.
-4. `harness/agent/loop.py` invokes the model, runs tool calls and feeds results back.
-5. `harness/tools/` executes tools; `harness/context_assembly.py` trims the budget.
-6. `infra/orchestrator` selects an endpoint, manages slots, sends http and reads sse.
+4. `aicf/harness/agent/loop.py` invokes the model, runs tool calls and feeds results back.
+5. `aicf/harness/tools/` executes tools; `aicf/harness/context_assembly.py` trims the budget.
+6. `aicf/infra/orchestrator` selects an endpoint, manages slots, sends http and reads sse.
 7. the stream returns to the browser.
 
 **The important boundary:** `api_mode` decides whether the console injects its
@@ -71,7 +71,7 @@ split.
 
 ## 三、模块地图
 
-### `infra/` —— 只关心资源，不认识业务
+### `aicf/infra/` —— 只关心资源，不认识业务
 
 | 子模块 | 职责 | 关键类 |
 |---|---|---|
@@ -88,13 +88,13 @@ split.
 | `runtime/di.py` | DI 容器 + 生命周期（原 `runtime.py` 迁入，见下方说明） | `Runtime` |
 | `runtime/` | **托管运行时**（D2）：状态模型 / journal / checkpoint / 幂等 / 恢复 | `ManagedRuntime` `Journal` `CheckpointStore` `recover` |
 | `eval/` | **评测闭环**（D6）：数据集 / 求值 / 四闸门 / run version / 回归 | `Evaluator` `GateEvaluator` `load_dataset` `RunVersion` |
-| `policy/engine.py` | **工具准入策略**（实现 `harness.policy.base.PolicyEngine`） | `RulePolicyEngine` |
+| `policy/engine.py` | **工具准入策略**（实现 `aicf.harness.policy.base.PolicyEngine`） | `RulePolicyEngine` |
 | `subapps.py` | 应用场景包 | `AppBundle` `AppBundleRegistry` |
 | `settings.py` | 命名空间化配置 | `Settings` `Namespace` |
 | `cache.py` | 语义缓存（L2 向量） | `SemanticCache` |
 | `models/` | ⚠️ **兼容 shim** | — |
 
-### `harness/` —— 只关心「消息进、事件出」
+### `aicf/harness/` —— 只关心「消息进、事件出」
 
 | 子模块 | 职责 | 关键类 |
 |---|---|---|
@@ -110,7 +110,7 @@ split.
 | `tools/spec.py` | **工具契约**（副作用等级 / 沙箱档位 / 授权范围） | `ToolSpec` `stricter_than` |
 | `tools/guard.py` | **工具调用的唯一入口**（策略 → 审批 → 幂等 → 沙箱） | `ToolGuard` `GuardResult` |
 | `tools/sandbox/` | 隔离执行（路径判定 / restricted / namespaced） | `Sandbox` `SandboxRequest` `SandboxResult` |
-| `policy/` | 准入策略的**协议**（实现住在 infra/policy/engine.py） | `PolicyEngine` `PolicyDecision` `PolicyRule` |
+| `policy/` | 准入策略的**协议**（实现住在 aicf/infra/policy/engine.py） | `PolicyEngine` `PolicyDecision` `PolicyRule` |
 | `approval/` | 审批（人在回路） | `ApprovalRequest` `ApprovalDecision` `ApprovalBroker` |
 | `kernel/` | **执行内核 SPI**（ReAct / Workflow / Planner 可替换） | `ExecutionKernel` `KernelContext` `CapabilitySet` |
 | `telemetry/` | 遥测协议与 span 工具 | `TelemetryPort` `Span` `SpanHandle` |
@@ -143,9 +143,9 @@ see [apps.md](apps.md) for the repository relationship.
 
 ### 1. `Runtime`：依赖注入容器
 
-`infra/runtime/di.py` 提供进程内的服务注册表，替代到处传参或读全局。
-（1.0.0-rc0 起 DI 容器迁入 `infra/runtime/` 包内 —— 同名包会遮蔽同名模块，
-`infra/runtime.py` 一旦存在就不会被加载。包级 `infra.runtime.Runtime` 仍指向它。）
+`aicf/infra/runtime/di.py` 提供进程内的服务注册表，替代到处传参或读全局。
+（1.0.0-rc0 起 DI 容器迁入 `aicf/infra/runtime/` 包内 —— 同名包会遮蔽同名模块，
+`aicf/infra/runtime.py` 一旦存在就不会被加载。包级 `aicf.infra.runtime.Runtime` 仍指向它。）
 
 ```python
 rt = Runtime(name="my_app")
@@ -162,7 +162,7 @@ Runtime.current()                  # 任意位置取当前运行时
 
 ### 2. `AppBundle`：应用的装配单元
 
-`infra/subapps.py` 定义应用的生命周期契约，`AppBundleRegistry` 按序驱动：
+`aicf/infra/subapps.py` 定义应用的生命周期契约，`AppBundleRegistry` 按序驱动：
 
 ```
 runtime 就绪 → bundle.install(runtime)   注册服务、技能、任务、路由
@@ -176,7 +176,7 @@ order. one bundle is enough for a small product.
 
 ### 3. `IChatClient`：唯一模型契约
 
-所有后端都实现同一个 Protocol（`infra/orchestrator/base.py:175`），因此上层
+所有后端都实现同一个 Protocol（`aicf/infra/orchestrator/base.py:175`），因此上层
 **永远不需要知道模型是本地进程还是远程 API**：
 
 ```python
@@ -203,15 +203,15 @@ editing. A repository is for code; those files were never code.
 
 1. **The state does not land in the project.** The engine's default moved
    from `<cwd>/sessions/agent.db` to a user level directory (`state_dir()`
-   in `harness/paths.py`: `$AICF_HOME` or `~/.aicf`). An app that wants
+   in `aicf/harness/paths.py`: `$AICF_HOME` or `~/.aicf`). An app that wants
    somewhere else passes its own path. This is the default, not a forced
    isolation.
-2. **Structured state goes into the database.** `infra/store/documents.py`
+2. **Structured state goes into the database.** `aicf/infra/store/documents.py`
    holds the generic **document store** (`DocumentStore`): one json
    document, read whole and written whole, with the bytes in the
    application's own database instead of in the project. `TodoStore(
-   backend=...)` in `harness/todo.py` and `DurationPredictor.load/save(
-   backend=...)` in `infra/policy/predictor.py` both use it.
+   backend=...)` in `aicf/harness/todo.py` and `DurationPredictor.load/save(
+   backend=...)` in `aicf/infra/policy/predictor.py` both use it.
 
 **Why it lives in infra**: the only allowed dependency direction is
 `harness -> infra`, and `infra` must not import `harness`. A generic
@@ -229,7 +229,7 @@ interface both layers can use has to sit on the infra side.
 | `SEG_VERBATIM`（当前话题原文） | ✅ 会被裁 | 提供完整的相关历史 |
 | `SEG_TAIL`（最近 N 轮） | ❌ 保底注入 | 保证「刚刚说过的话」永远在上下文里 |
 
-`harness/context_assembly.py::plan()` 对 `SEG_TAIL` 按 `unbounded` 语义原样保留。
+`aicf/harness/context_assembly.py::plan()` 对 `SEG_TAIL` 按 `unbounded` 语义原样保留。
 
 ### 一个曾经会丢消息的坑
 
@@ -252,11 +252,11 @@ interface both layers can use has to sit on the infra side.
 
 | 全局 | 位置 | 危害 |
 |---|---|---|
-| `ModelOrchestrator._instance` | `infra/orchestrator/router.py:82` | `get_instance()` 首次调用后**参数被忽略**；`reset_instance()` 会 shutdown 所有 launcher |
-| `ModelScheduler._instance` | `infra/orchestrator/scheduler.py:94` | 被 `ModelOrchestrator.__init__` 改写 `max_concurrent`（router.py:101） |
-| `_ACTIVE_LAUNCHERS` | `infra/orchestrator/local_engine.py:49` | 全局模型子进程回收点，配合 `atexit` 使用 |
+| `ModelOrchestrator._instance` | `aicf/infra/orchestrator/router.py:82` | `get_instance()` 首次调用后**参数被忽略**；`reset_instance()` 会 shutdown 所有 launcher |
+| `ModelScheduler._instance` | `aicf/infra/orchestrator/scheduler.py:94` | 被 `ModelOrchestrator.__init__` 改写 `max_concurrent`（router.py:101） |
+| `_ACTIVE_LAUNCHERS` | `aicf/infra/orchestrator/local_engine.py:49` | 全局模型子进程回收点，配合 `atexit` 使用 |
 | `local_http_session()` / `local_probe_session()` | `orchestrator/base.py:15/45` | **必须区分**：流式用前者、探针用后者；混用会误判未就绪并触发重拉 |
-| `Runtime._default_runtime` | `infra/runtime/di.py` | 全局兜底运行时，测试之间可能串味 |
+| `Runtime._default_runtime` | `aicf/infra/runtime/di.py` | 全局兜底运行时，测试之间可能串味 |
 
 there are two schedulers to watch: `ResourcePool` inherits from `ModelScheduler`
 but does not share its singleton. application code that also calls
@@ -269,7 +269,7 @@ one process.
 
 - code uses `snake_case` per pep 8. the only exceptions are vendored third-party
   packages and external api attribute names.
-- comments are a defect database: `infra/` carries no `TODO` or `FIXME`. instead,
+- comments are a defect database: `aicf/infra/` carries no `TODO` or `FIXME`. instead,
   each non-obvious workaround records the bug that caused it and why the current
   shape is required. preserve those comments when editing the code.
 - new comments, docstrings and user-facing strings are plain english.

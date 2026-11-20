@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import json
 
-from harness.tools.base import Tool, ToolRegistry, ToolResult
-from harness.tools.discovery import ToolDiscovery
-from harness.tools.registry import ManagedToolRegistry
-from harness.tools.spec import ToolSpec
+from aicf.harness.tools.base import Tool, ToolRegistry, ToolResult
+from aicf.harness.tools.discovery import ToolDiscovery
+from aicf.harness.tools.registry import ManagedToolRegistry
+from aicf.harness.tools.spec import ToolSpec
 
 
 def read_tool():
@@ -97,7 +97,7 @@ def test_resolve_refuses_silent_version_switch():
 # ── 文件扫描 ─────────────────────────────────────────────
 def test_scan_directory_imports_and_registers_tools(tmp_path):
     (tmp_path / 'custom_tools.py').write_text(
-        "from harness.tools.base import Tool, ToolResult\n"
+        "from aicf.harness.tools.base import Tool, ToolResult\n"
         "def _handler(**kw):\n"
         "    return ToolResult.ok('custom')\n"
         "custom = Tool(name='demo.custom', description='自定义',\n"
@@ -122,7 +122,7 @@ def test_scan_directory_imports_and_registers_tools(tmp_path):
 
 def test_scan_directory_namespaces_the_discovered_tools(tmp_path):
     (tmp_path / 'more.py').write_text(
-        "from harness.tools.base import Tool, ToolResult\n"
+        "from aicf.harness.tools.base import Tool, ToolResult\n"
         "t = Tool(name='demo.thing', description='',\n"
         "         handler=lambda: ToolResult.ok(1))\n",
         encoding='utf-8')

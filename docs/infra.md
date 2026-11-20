@@ -1,4 +1,4 @@
-# infra/ —— 基础设施层
+# aicf/infra/ —— 基础设施层
 
 > 读者：要改模型调度、资源管理、存储或策略的维护者。
 > 这一层**不知道任何业务**：只管进程、HTTP、显存、磁盘、密钥。
@@ -114,7 +114,7 @@ openai SDK 这时交回来的是原始字符串而不是 Completion 对象，
 不兜住就是 `'str' object has no attribute 'choices'`。
 网关是别人的，改不了，只能自己兜：`invoke` 发现响应没有 `choices` 时，
 自动改走流式请求再把增量拼成一次普通响应（工具调用也会按 index 拼回去）。
-这条路径影响面不小——**教师链路**（`harness/learning/teacher.py`）走的正是 `invoke`，
+这条路径影响面不小——**教师链路**（`aicf/harness/learning/teacher.py`）走的正是 `invoke`，
 远端教师一旦遇到这种网关就整条链断掉。
 
 ### 1.5 `LocalServerLauncher`：子进程的两个硬约束
@@ -223,23 +223,23 @@ with pool.acquire("tts") as lease:
 
 ## 五、finetune：训练子系统（框架层）
 
-> 本节只描述**框架层能力**（`infra/finetune/`）。具体实验应用、数据来源、
+> 本节只描述**框架层能力**（`aicf/infra/finetune/`）。具体实验应用、数据来源、
 > 混沌演练等属于本地实验，不在本仓库。
 
 ### 5.1 边界：主进程永远不 import torch
 
-neither `infra/` nor `harness/` imports torch. training therefore runs in a
+neither `aicf/infra/` nor `aicf/harness/` imports torch. training therefore runs in a
 separate interpreter with its own environment:
 
-- `infra/finetune/runner.py` writes `spec.json`;
-- a training interpreter runs `infra/finetune/train_sft.py`, which imports torch
+- `aicf/infra/finetune/runner.py` writes `spec.json`;
+- a training interpreter runs `aicf/infra/finetune/train_sft.py`, which imports torch
   and none of this repository;
 - the runner reads `result.json` and `train.log` back.
 
-`infra/finetune/probe.py` 是**独立脚本**（不 import 仓库任何模块），
-由 `infra/finetune/env.py` 用子进程调用来体检环境，主进程只拿到 JSON。
+`aicf/infra/finetune/probe.py` 是**独立脚本**（不 import 仓库任何模块），
+由 `aicf/infra/finetune/env.py` 用子进程调用来体检环境，主进程只拿到 JSON。
 测试 `tests/test_infra_finetune.py` 里有一条不变式测试：
-`import infra.finetune` 之后 `sys.modules` 里不能出现 `torch`。
+`import aicf.infra.finetune` 之后 `sys.modules` 里不能出现 `torch`。
 
 ### 5.2 模块分工
 
@@ -252,12 +252,12 @@ separate interpreter with its own environment:
 | `dataset.py` | 数据集**格式层**：角色归一、结构校验、train/val 切分、写盘 |
 | `train_sft.py` | 训练脚本（独立运行于训练解释器；QLoRA/LoRA/full 三种方法） |
 | `runner.py` | `FinetuneManager`：提交 / 查询 / 晋级 / 回滚；排队与等卡 |
-| `store.py` | 作业与槽位登记（SQLite，走 `infra/store` 的迁移机制） |
+| `store.py` | 作业与槽位登记（SQLite，走 `aicf/infra/store` 的迁移机制） |
 
 ### 5.3 公开 API
 
 ```python
-from infra.finetune import FinetuneManager, TrainSpec
+from aicf.infra.finetune import FinetuneManager, TrainSpec
 
 mgr = FinetuneManager()
 job = mgr.submit(TrainSpec(
@@ -271,13 +271,13 @@ mgr.promote(job.id, slot="student")   # 候选 -> 生效
 mgr.rollback("student")               # 生效 -> 上一个
 ```
 
-训练作业复用仓库既有的通用任务系统（`infra/tasks`）：作业就是一个
+训练作业复用仓库既有的通用任务系统（`aicf/infra/tasks`）：作业就是一个
 `Task(type="finetune.train")`，由**单 worker** 的 `TaskExecutorRegistry` 执行
 ——训练在本机天然串行（同时跑两个 QLoRA 必 OOM）。
 
 ### 5.4 显存闸门（`DeviceGate`）
 
-`DeviceGate` 在 `infra/orchestrator/scheduler.py` 里，**不新建** `device_pool.py`：
+`DeviceGate` 在 `aicf/infra/orchestrator/scheduler.py` 里，**不新建** `device_pool.py`：
 资源池管的是 ASR/TTS/VLM 这类**推理服务进程**，训练作业要抢的是**同一批卡**，
 必须由同一个仲裁点裁决，否则两边各自以为卡是空的，最后 OOM。LLM 的显存由编排器管。
 
@@ -291,7 +291,7 @@ mgr.rollback("student")               # 生效 -> 上一个
 
 ### 5.5 GGUF 容错读取
 
-`infra/finetune/gguf.py` 自带只读头部的 GGUF 解析器，因为**上游 gguf-py 读不了
+`aicf/infra/finetune/gguf.py` 自带只读头部的 GGUF 解析器，因为**上游 gguf-py 读不了
 私有量化类型**：`general.file_type` 与张量类型是**两套独立编号**
 （`LLAMA_FTYPE_*` vs `GGML_TYPE_*`），Bonsai-2 的 PQ2_0 用的张量类型 id 141/142
 越过了上游 `GGML_TYPE_COUNT`（本地 llama.cpp 为 43），上游会抛
@@ -302,7 +302,7 @@ mgr.rollback("student")               # 生效 -> 上一个
 ### 5.6 纪律
 
 - **训练期不开 thinking**：`TrainSpec.validate()` 直接拒绝 `enable_thinking=True`。
-- **训练标签不含推理内容**：剥离在 `harness/learning/dataset_builder.py` 做。
+- **训练标签不含推理内容**：剥离在 `aicf/harness/learning/dataset_builder.py` 做。
 - **教师只能改写/标注/打分**，不能定义行为、不能输出思维链标签、
   不能在未授权时把用户数据送出机器（见 `docs/harness.md` 的学习子系统一节）。
 
@@ -327,21 +327,21 @@ mgr.rollback("student")               # 生效 -> 上一个
 ```
 
 另有一条：`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 已在
-`infra/finetune/env.py` 的子进程环境里默认打开——11GB 卡上的碎片化能省下几百 MB。
+`aicf/infra/finetune/env.py` 的子进程环境里默认打开——11GB 卡上的碎片化能省下几百 MB。
 
-## 六、`infra.models` 是兼容 shim（重要）
+## 六、`aicf.infra.models` 是兼容 shim（重要）
 
-`infra/models/` 目录里**只有一个 `__init__.py`**，它把 `infra.orchestrator.*`
-镜像进 `sys.modules["infra.models.*"]`（`models/__init__.py:8-20`）。
+`aicf/infra/models/` 目录里**只有一个 `__init__.py`**，它把 `aicf.infra.orchestrator.*`
+镜像进 `sys.modules["aicf.infra.models.*"]`（`models/__init__.py:8-20`）。
 
 ```python
 # 这两个写法在运行时等价：
-from infra.models.base import ChatMessage      # 历史写法
-from infra.orchestrator.base import ChatMessage # 推荐写法
+from aicf.infra.models.base import ChatMessage      # 历史写法
+from aicf.infra.orchestrator.base import ChatMessage # 推荐写法
 ```
 
-**新代码一律写 `infra.orchestrator.*`。** 理由：shim 依赖 `sys.modules` 投毒，
-存在隐藏的导入顺序不变式；且它没有映射 `infra.models.router`，覆盖并不完整。
+**新代码一律写 `aicf.infra.orchestrator.*`。** 理由：shim 依赖 `sys.modules` 投毒，
+存在隐藏的导入顺序不变式；且它没有映射 `aicf.infra.models.router`，覆盖并不完整。
 
 ---
 

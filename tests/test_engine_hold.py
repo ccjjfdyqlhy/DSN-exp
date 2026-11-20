@@ -9,10 +9,10 @@ import asyncio
 
 import pytest
 
-from harness.agent.engine import UNFINISHED_NOTE, ConversationEngine
-from harness.agent.engine_config import EngineConfig, HoldSettings, ModelInfo
-from harness.agent.events import EventSink
-from harness.tools.registry import ManagedToolRegistry
+from aicf.harness.agent.engine import UNFINISHED_NOTE, ConversationEngine
+from aicf.harness.agent.engine_config import EngineConfig, HoldSettings, ModelInfo
+from aicf.harness.agent.events import EventSink
+from aicf.harness.tools.registry import ManagedToolRegistry
 
 
 class ScriptedClient:

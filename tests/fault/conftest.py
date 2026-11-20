@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 
 from faultkit import SideEffectCounter
-from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
-from infra.store.sqlite import SqliteStore
+from aicf.infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+from aicf.infra.store.sqlite import SqliteStore
 
 
 @pytest.fixture()

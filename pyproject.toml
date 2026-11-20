@@ -56,11 +56,11 @@ decisions = []
 learning = []
 # 本地 SFT / GGUF 导出：需要 torch。core 本身零 torch 依赖。
 finetune = ["torch>=2.0"]
-# 外部 MCP 工具源桥接（harness/tools/mcp.py，延迟导入，可选）
+# 外部 MCP 工具源桥接（aicf/harness/tools/mcp.py，延迟导入，可选）
 mcp = ["mcp>=1.2.0"]
-# anthropic 线（infra/orchestrator/anthropic.py，延迟导入，可选）
+# anthropic 线（aicf/infra/orchestrator/anthropic.py，延迟导入，可选）
 anthropic = ["anthropic>=1.0.0"]
-# SOCKS 代理穿透（infra/net.py，httpx 需要 socksio extra）
+# SOCKS 代理穿透（aicf/infra/net.py，httpx 需要 socksio extra）
 socks = ["httpx[socks]>=0.24"]
 # Web / 语音 / 多媒体相关的全套运行时（应用层常用，core 本身不需要）
 full = [
@@ -92,7 +92,7 @@ all = [
 [project.scripts]
 # aicf —— 核心库的命令行门面。
 # 装完 aicf-core 就有 aicf 命令，不需要再装第二个包。
-aicf = "harness.cli.main:main"
+aicf = "aicf.harness.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/ccjjfdyqlhy/aicf-core"
@@ -100,17 +100,24 @@ Repository = "https://github.com/ccjjfdyqlhy/aicf-core"
 Issues = "https://github.com/ccjjfdyqlhy/aicf-core/issues"
 
 [tool.setuptools.packages.find]
-include = ["harness", "harness.*", "infra", "infra.*"]
+# 顶层包只有一个：aicf。内部再分 aicf.harness（Agent 核心）与 aicf.infra（基础设施）。
+#
+# 为什么不再直接装顶层 harness/infra 这两个包：`harness` 与 `infra` 两个名字在 PyPI 上
+# 已被他人占用，装包时会在全局命名空间里打架。框架不占别人的名字。
+#
+# 注意：分发名仍是 aicf-core（PyPI 上 `aicf` 这个名字与本项目过于相似，
+# 申请新项目会被拒），import 名是 aicf.*，CLI 是 aicf —— 三者刻意不同。
+include = ["aicf", "aicf.*"]
 
 [tool.setuptools.package-data]
 # 评测集随包分发：装完 aicf-core 就有 `aicf eval --dataset basic` 可用，
 # 不需要再 clone 仓库才能跑通「90 秒上手」。
 #
-# 为什么放在 harness/ 而不是仓库根的 datasets/：
+# 为什么放在 aicf/harness/ 而不是仓库根的 datasets/：
 # 顶层 `datasets` 作为一个可 import 的包会污染全局命名空间，
 # 而且和 HuggingFace 的 `datasets` 同名 —— 装 aicf-core 就会和别人打架。
-# 放在 harness/ 下既是包数据，又不抢名字。
-harness = ["datasets/*.yaml"]
+# 放在 aicf/harness/ 下既是包数据，又不抢名字。
+"aicf.harness" = ["datasets/*.yaml"]
 
 [tool.pytest.ini_options]
 # testpaths 限定收集范围：此前在仓库根裸跑 pytest 会扫进 temp/，

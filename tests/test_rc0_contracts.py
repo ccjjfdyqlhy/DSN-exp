@@ -15,12 +15,12 @@ import pytest
 
 # ── 导入面 ──────────────────────────────────────────────
 CONTRACT_MODULES = [
-    'harness.tools.spec',
-    'harness.policy.base',
-    'harness.approval.base',
-    'harness.tools.sandbox.base',
-    'harness.telemetry.base',
-    'harness.runtime_client',
+    'aicf.harness.tools.spec',
+    'aicf.harness.policy.base',
+    'aicf.harness.approval.base',
+    'aicf.harness.tools.sandbox.base',
+    'aicf.harness.telemetry.base',
+    'aicf.harness.runtime_client',
 ]
 
 
@@ -33,14 +33,14 @@ def test_contract_modules_import(name):
 #:
 #: 端口与共享数据类型住在 infra（IChatClient、IStore、Identity、PolicyDecision
 #: 都是这个模式），harness 往上依赖它们是**允许**的方向。
-#: 反过来（infra import harness）才是违规。
+#: 反过来（infra import aicf.harness）才是违规。
 INFRA_DEPENDENCY_EXEMPT = {
     # 只是 infra/policy/base.py 的再导出薄壳，让 harness 侧能用短路径。
-    'harness.policy.base': '端口定义在 infra/policy/base.py，这里只做再导出',
+    'aicf.harness.policy.base': '端口定义在 aicf/infra/policy/base.py，这里只做再导出',
     # 同理：span 的数据形状与 id 生成住在 infra/observability/span.py
     # （共享原语住 infra，harness 往上依赖它），这里只做再导出。
     # TelemetryPort 协议本身仍然**定义**在内核侧，没有被搬走。
-    'harness.telemetry.base': '共享原语定义在 infra/observability/span.py，这里只做再导出',
+    'aicf.harness.telemetry.base': '共享原语定义在 aicf/infra/observability/span.py，这里只做再导出',
 }
 
 
@@ -49,13 +49,13 @@ def test_contract_modules_do_not_import_infra(name):
     """契约层属于 harness：它不得依赖 infra 的**实现**，否则依赖方向就反了。
 
     只允许在函数体里延迟 import（那是应用装配时的事），
-    模块级 import infra 一律不允许 —— 除非在白名单里且写明理由。
+    模块级 import aicf.infra 一律不允许 —— 除非在白名单里且写明理由。
     """
     module = importlib.import_module(name)
     source = open(module.__file__, encoding='utf-8').read()
     for line in source.splitlines():
         stripped = line.strip()
-        if stripped.startswith(('import infra', 'from infra')):
+        if stripped.startswith(('import aicf.infra', 'from aicf.infra')):
             if name in INFRA_DEPENDENCY_EXEMPT:
                 continue
             pytest.fail(f'{name} 在模块级依赖了 infra: {stripped}')
@@ -64,7 +64,7 @@ def test_contract_modules_do_not_import_infra(name):
 # ── ToolSpec ────────────────────────────────────────────
 def test_tool_spec_defaults_are_the_strictest():
     """未声明 = 最严格（策划案 §3.3.1「默认拒绝」）。"""
-    from harness.tools.spec import ToolSpec
+    from aicf.harness.tools.spec import ToolSpec
     spec = ToolSpec(name='x')
     assert spec.effect == 'effectful'
     assert spec.sandbox == 'isolated'
@@ -74,7 +74,7 @@ def test_tool_spec_defaults_are_the_strictest():
 
 
 def test_tool_spec_read_only_default_is_narrow():
-    from harness.tools.spec import ToolSpec
+    from aicf.harness.tools.spec import ToolSpec
     spec = ToolSpec.read_only_default('x')
     assert spec.effect == 'pure'
     assert spec.sandbox == 'readonly'
@@ -84,7 +84,7 @@ def test_tool_spec_read_only_default_is_narrow():
 
 def test_stricter_than_never_loosens():
     """合并两份声明时只能取更严格的那一份 —— 取宽松的等于静默放开权限。"""
-    from harness.tools.spec import ToolSpec, stricter_than
+    from aicf.harness.tools.spec import ToolSpec, stricter_than
     strict = ToolSpec(name='x', effect='effectful', sandbox='isolated',
                        network='none')
     loose = ToolSpec(name='x', effect='pure', sandbox='readonly',
@@ -104,7 +104,7 @@ def test_policy_decision_field_defaults_are_bools():
     类体里后定义的方法覆盖了字段默认值 False，于是每个 PolicyDecision
     的 needs_approval 都成了一个 bound method（真值），等于「永远需要审批」。
     """
-    from harness.policy.base import PolicyDecision
+    from aicf.harness.policy.base import PolicyDecision
     decision = PolicyDecision.deny('scope')
     assert decision.needs_approval is False
     assert isinstance(decision.needs_approval, bool)
@@ -113,7 +113,7 @@ def test_policy_decision_field_defaults_are_bools():
 
 
 def test_policy_rule_matching():
-    from harness.policy.base import PolicyRule
+    from aicf.harness.policy.base import PolicyRule
     rule = PolicyRule(action='deny', tool='shell')
     assert rule.matches('shell')
     assert not rule.matches('fs.read')
@@ -128,7 +128,7 @@ def test_policy_rule_matching():
 # ── Approval ────────────────────────────────────────────
 def test_approval_decision_timeout_is_not_approved():
     """超时 = 拒绝（fail-closed）。把 timeout 当成同意是安全事故。"""
-    from harness.approval.base import ApprovalDecision
+    from aicf.harness.approval.base import ApprovalDecision
     assert ApprovalDecision.timeout().approved is False
     assert ApprovalDecision.deny().approved is False
     assert ApprovalDecision.approve().approved is True
@@ -136,7 +136,7 @@ def test_approval_decision_timeout_is_not_approved():
 
 
 def test_approval_request_serialises():
-    from harness.approval.base import ApprovalRequest
+    from aicf.harness.approval.base import ApprovalRequest
     req = ApprovalRequest(id='r1', tool='shell', scopes_required=('fs.write',))
     data = req.to_dict()
     assert data['id'] == 'r1'
@@ -146,7 +146,7 @@ def test_approval_request_serialises():
 # ── Sandbox ─────────────────────────────────────────────
 def test_sandbox_result_reports_degradation():
     """降级必须如实标注 —— 绝不允许「以为自己在沙箱里」。"""
-    from harness.tools.sandbox.base import SandboxResult
+    from aicf.harness.tools.sandbox.base import SandboxResult
     degraded = SandboxResult(exit_code=0, degraded=True, backend='restricted')
     assert degraded.degraded is True
     assert degraded.ok is True
@@ -156,7 +156,7 @@ def test_sandbox_result_reports_degradation():
 
 # ── Telemetry ───────────────────────────────────────────
 def test_span_handle_emits_once():
-    from harness.telemetry.base import Span, SpanHandle, new_trace_id
+    from aicf.harness.telemetry.base import Span, SpanHandle, new_trace_id
 
     class Collector:
         def __init__(self):
@@ -179,12 +179,12 @@ def test_span_handle_emits_once():
 
 # ── RuntimeClient ───────────────────────────────────────
 def test_null_runtime_client_is_a_runtime_client():
-    from harness.runtime_client import NullRuntimeClient, RuntimeClient
+    from aicf.harness.runtime_client import NullRuntimeClient, RuntimeClient
     assert isinstance(NullRuntimeClient(), RuntimeClient)
 
 
 def test_null_runtime_client_does_nothing():
-    from harness.runtime_client import NullRuntimeClient, ToolIntent
+    from aicf.harness.runtime_client import NullRuntimeClient, ToolIntent
     client = NullRuntimeClient()
     assert client.emit('x', {}) is None
     assert client.record_tool_result('k', 'v') is None
@@ -197,7 +197,7 @@ def test_null_runtime_client_does_nothing():
 
 # ── 事件词表 v2 ─────────────────────────────────────────
 def test_event_vocabulary_added_without_breaking_old_kinds():
-    from harness.agent.events import EVENT_KINDS
+    from aicf.harness.agent.events import EVENT_KINDS
     # 既有 kind 必须还在（向后兼容）
     for kind in ('turn_start', 'tool_start', 'tool_end', 'usage', 'turn_end'):
         assert kind in EVENT_KINDS
@@ -211,9 +211,9 @@ def test_event_vocabulary_added_without_breaking_old_kinds():
 
 def test_contract_dataclasses_are_frozen_where_it_matters():
     """契约对象不可变：策略判定、审批决策被下游改掉会破坏审计可信度。"""
-    from harness.policy.base import PolicyDecision, PolicyRule
-    from harness.approval.base import ApprovalDecision, ApprovalRequest
-    from harness.tools.spec import ToolSpec
+    from aicf.harness.policy.base import PolicyDecision, PolicyRule
+    from aicf.harness.approval.base import ApprovalDecision, ApprovalRequest
+    from aicf.harness.tools.spec import ToolSpec
     for cls in (PolicyDecision, PolicyRule, ApprovalDecision, ApprovalRequest,
                 ToolSpec):
         assert dataclasses.is_dataclass(cls)

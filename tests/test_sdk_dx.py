@@ -15,20 +15,20 @@ import asyncio
 
 import pytest
 
-from harness import Agent, Team, create_agent, tool
-from harness.agent.loop import AgentRunResult
-from harness.tools import ToolDeps, current_deps
-from harness.tools.context import ToolContext
-from infra.models.base import ToolCall
-from infra.orchestrator import ChatResponse, StubChatClient
+from aicf.harness import Agent, Team, create_agent, tool
+from aicf.harness.agent.loop import AgentRunResult
+from aicf.harness.tools import ToolDeps, current_deps
+from aicf.harness.tools.context import ToolContext
+from aicf.infra.models.base import ToolCall
+from aicf.infra.orchestrator import ChatResponse, StubChatClient
 
 
 # ── ① 工具装饰器：三个导入路径都通 ──────────────────────────────────────
 
 def test_tool_decorator_is_importable_from_every_obvious_path():
-    from harness import tool as t_top
-    from harness.sdk import tool as t_sdk
-    from harness.tools import tool as t_tools
+    from aicf.harness import tool as t_top
+    from aicf.harness.sdk import tool as t_sdk
+    from aicf.harness.tools import tool as t_tools
 
     assert t_top is t_sdk is t_tools
 

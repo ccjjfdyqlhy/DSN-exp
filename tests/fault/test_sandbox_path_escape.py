@@ -25,9 +25,9 @@ import os
 
 import pytest
 
-from harness.tools.sandbox.base import SandboxRequest
-from harness.tools.sandbox.restricted import VIOLATION_PATH_ESCAPE
-from harness.tools.sandbox.paths import (
+from aicf.harness.tools.sandbox.base import SandboxRequest
+from aicf.harness.tools.sandbox.restricted import VIOLATION_PATH_ESCAPE
+from aicf.harness.tools.sandbox.paths import (
     PathPolicy,
     real_path,
     scan_path_violations,
@@ -314,13 +314,13 @@ def test_denied_escape_leaves_an_audit_trail(workspace, secret):
     工具按契约从 ToolContext 拿沙箱（由守卫注入），
     被拒后返回一个失败结果，守卫必须把它记成一次 audit.tool_call。
     """
-    from harness.policy.base import PolicyRule
-    from harness.runtime_client import NullRuntimeClient
-    from harness.tools.base import Tool, ToolResult
-    from harness.tools.context import current_context
-    from harness.tools.guard import ToolGuard
-    from harness.tools.spec import ToolSpec
-    from infra.policy.engine import RulePolicyEngine
+    from aicf.harness.policy.base import PolicyRule
+    from aicf.harness.runtime_client import NullRuntimeClient
+    from aicf.harness.tools.base import Tool, ToolResult
+    from aicf.harness.tools.context import current_context
+    from aicf.harness.tools.guard import ToolGuard
+    from aicf.harness.tools.spec import ToolSpec
+    from aicf.infra.policy.engine import RulePolicyEngine
 
     class Collector:
         def __init__(self):
@@ -401,13 +401,13 @@ def test_sandbox_denial_is_audited_as_audit_denied_with_reason_sandbox(
 
     这样复盘时才能一眼分清「被策略拦」「被审批拒」「被沙箱拦」。
     """
-    from harness.policy.base import PolicyRule
-    from harness.runtime_client import NullRuntimeClient
-    from harness.tools.base import Tool, ToolResult
-    from harness.tools.context import current_context
-    from harness.tools.guard import ToolGuard
-    from harness.tools.spec import ToolSpec
-    from infra.policy.engine import RulePolicyEngine
+    from aicf.harness.policy.base import PolicyRule
+    from aicf.harness.runtime_client import NullRuntimeClient
+    from aicf.harness.tools.base import Tool, ToolResult
+    from aicf.harness.tools.context import current_context
+    from aicf.harness.tools.guard import ToolGuard
+    from aicf.harness.tools.spec import ToolSpec
+    from aicf.infra.policy.engine import RulePolicyEngine
 
     class Collector:
         def __init__(self):

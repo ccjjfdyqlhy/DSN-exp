@@ -5,8 +5,8 @@ import re
 
 import pytest
 
-from harness import Tool, ToolResult, ToolRegistry
-from harness.tools import from_wire_name, to_wire_name
+from aicf.harness import Tool, ToolResult, ToolRegistry
+from aicf.harness.tools import from_wire_name, to_wire_name
 
 # 部分 OpenAI 兼容服务端强校验 function 名
 PROVIDER_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -96,7 +96,7 @@ def test_a_structured_tool_result_reaches_the_model_as_json():
     whole collaboration suite, ``project.todo``, ...) looked to the model like
     it returned nothing at all.
     """
-    from harness.tools.registry import AnnotatedTool, ManagedToolRegistry
+    from aicf.harness.tools.registry import AnnotatedTool, ManagedToolRegistry
 
     reg = ManagedToolRegistry()
     reg.register(AnnotatedTool(name='probe', description='probe',

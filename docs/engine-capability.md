@@ -1,7 +1,7 @@
 # the conversation engine: capability and sdk assessment
 
 Where the stateful conversation engine stands after the capability work, and
-what the existing sdk (harness/sdk.py) can and cannot drive yet.
+what the existing sdk (aicf/harness/sdk.py) can and cannot drive yet.
 
 ## what was added, layer by layer
 
@@ -10,27 +10,27 @@ an application. Application tools remain in the `aicf-ui` repository.
 
 | capability | where it lives | state |
 |---|---|---|
-| effort dial + per-wire reasoning params | `infra/orchestrator/base.py` (`resolve_effort`, `effort_stream_params`) | done |
-| stream-creation retry with visible retry events | `infra/orchestrator/base.py` (`retrying_stream`) | done |
+| effort dial + per-wire reasoning params | `aicf/infra/orchestrator/base.py` (`resolve_effort`, `effort_stream_params`) | done |
+| stream-creation retry with visible retry events | `aicf/infra/orchestrator/base.py` (`retrying_stream`) | done |
 | finish events (stop / length / incomplete) on all three wires | `openai.py`, `anthropic.py` | done |
-| proxy-aware http clients, SOCKS included | `infra/net.py`, `http_client` kwargs on both clients | done |
+| proxy-aware http clients, SOCKS included | `aicf/infra/net.py`, `http_client` kwargs on both clients | done |
 | prompt cache key passthrough (responses wire) | `openai.py` | done |
-| token estimation, usage normalization, budget math | `harness/usage.py` | done |
-| image references: `[image: path]` markers, files-api id cache, stores | `harness/images.py` | done |
-| file snapshots, unified diffs, work-tree diff | `harness/filediff.py` | done |
-| per-turn tool context (cwd, interrupt, live sink) | `harness/tools/context.py` | done |
-| registry ownership tracking + snapshot-diff execution | `harness/tools/registry.py` (`ManagedToolRegistry`) | done |
-| persistent shell sessions as a tool | `harness/tools/shell.py` (`ShellSessions`) | done |
-| draft-commit history, stable prefix fingerprints, compaction | `harness/conversation.py` (`ManagedConversation`) | done |
-| deterministic summary fallback when streamed compaction fails | `harness/conversation.py` (`structured_summary`) | done |
-| session persistence: transcript items, atomic JSON, rewind, fork | `harness/transcript.py` | done |
-| stateful engine: turn queue, status machine, 29 event kinds | `harness/agent/engine.py` (`ConversationEngine`) | done |
+| token estimation, usage normalization, budget math | `aicf/harness/usage.py` | done |
+| image references: `[image: path]` markers, files-api id cache, stores | `aicf/harness/images.py` | done |
+| file snapshots, unified diffs, work-tree diff | `aicf/harness/filediff.py` | done |
+| per-turn tool context (cwd, interrupt, live sink) | `aicf/harness/tools/context.py` | done |
+| registry ownership tracking + snapshot-diff execution | `aicf/harness/tools/registry.py` (`ManagedToolRegistry`) | done |
+| persistent shell sessions as a tool | `aicf/harness/tools/shell.py` (`ShellSessions`) | done |
+| draft-commit history, stable prefix fingerprints, compaction | `aicf/harness/conversation.py` (`ManagedConversation`) | done |
+| deterministic summary fallback when streamed compaction fails | `aicf/harness/conversation.py` (`structured_summary`) | done |
+| session persistence: transcript items, atomic JSON, rewind, fork | `aicf/harness/transcript.py` | done |
+| stateful engine: turn queue, status machine, 29 event kinds | `aicf/harness/agent/engine.py` (`ConversationEngine`) | done |
 | side questions that never touch main history | `engine.py` (`_run_aside`) | done |
 | auto compaction mid-turn + manual compaction mode | `engine.py` (`_run_compact`) | done |
 | continuation on `length` with a bounded retry of the answer | `engine.py` (`max_continuations`) | done |
 | partial commit of interrupted turns (tool results kept, repaired) | `engine.py` (`_commit_partial`) | done |
 | 30s session checkpoints + `__last__` resume | `engine.py` + `transcript.py` | done |
-| mailboxes, delegation, wait/interrupt for sub-agent teams | `harness/agent/collab.py` (`AgentManager`) | done |
+| mailboxes, delegation, wait/interrupt for sub-agent teams | `aicf/harness/agent/collab.py` (`AgentManager`) | done |
 
 Test coverage lives beside each layer: `tests/test_orchestrator_gaps.py`,
 `test_harness_utilities.py`, `test_tools_runtime.py`,
@@ -101,9 +101,9 @@ already injection points the engine reuses directly.
 ```python
 import asyncio
 
-from harness.agent import ConversationEngine, EngineConfig, ManagedToolRegistry
-from harness.transcript import SessionStore
-from infra.orchestrator.openai import OpenAICompatClient
+from aicf.harness.agent import ConversationEngine, EngineConfig, ManagedToolRegistry
+from aicf.harness.transcript import SessionStore
+from aicf.infra.orchestrator.openai import OpenAICompatClient
 
 
 async def main():

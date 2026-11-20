@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from infra.policy import (
+from aicf.infra.policy import (
     CacheWarmer,
     DurationPredictor,
     ModelConfig,

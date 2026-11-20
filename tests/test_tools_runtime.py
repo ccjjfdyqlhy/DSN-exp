@@ -10,13 +10,13 @@ from threading import Event, Thread
 
 import pytest
 
-from harness.filediff import make_file_diff, snapshot_file
-from harness.tools.base import Tool
-from harness.tools.context import (
+from aicf.harness.filediff import make_file_diff, snapshot_file
+from aicf.harness.tools.base import Tool
+from aicf.harness.tools.context import (
     ToolContext, current_context, pop_context, push_context, resolve_path,
 )
-from harness.tools.registry import AnnotatedTool, ManagedToolRegistry
-from harness.tools.shell import ShellSessions, session_shell_tool
+from aicf.harness.tools.registry import AnnotatedTool, ManagedToolRegistry
+from aicf.harness.tools.shell import ShellSessions, session_shell_tool
 
 
 # ── ToolContext ──────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ def test_context_isolates_threads():
 # ── ManagedToolRegistry ──────────────────────────────────────────────
 
 def _writer_tool():
-    from harness.tools.context import resolve_path
+    from aicf.harness.tools.context import resolve_path
 
     def handler(path, content):
         # real tools resolve their paths through the turn's ToolContext

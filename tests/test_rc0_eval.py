@@ -11,7 +11,7 @@
 #   - 断言语言不支持的东西必须在加载期报错
 #   - 数据集里每条 case 必须真的可满足（否则是永远失败的死题）
 #   - 安全闸门必须真的硬失败（不能被平均分掩盖）
-#   - infra/eval 不得 import harness（依赖方向）
+#   - infra/eval 不得 import aicf.harness（依赖方向）
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from infra.eval import (
+from aicf.infra.eval import (
     AgentTrajectoryEvaluator,
     AssertionRegistry,
     CaseResult,
@@ -45,42 +45,42 @@ from infra.eval import (
     trace_from_events,
     write_trace_jsonl,
 )
-from infra.eval.evaluators.agent_trajectory import L1_RULES
+from aicf.infra.eval.evaluators.agent_trajectory import L1_RULES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# 评测集随包分发，放在 harness/ 下（顶层 datasets 会和 HuggingFace 的
+# 评测集随包分发，放在 aicf/harness/ 下（顶层 datasets 会和 HuggingFace 的
 # datasets 抢名字，也污染全局命名空间）。
-DATASET_PATH = REPO_ROOT / "harness" / "datasets" / "basic.yaml"
+DATASET_PATH = REPO_ROOT / "aicf" / "harness" / "datasets" / "basic.yaml"
 
 
 # ── 依赖方向（§6.2）─────────────────────────────────────
 
 
 def test_eval_package_does_not_import_harness():
-    """infra/eval 不得 import harness。
+    """aicf/infra/eval 不得 import aicf.harness。
 
     这是硬约束（§6.2）：一旦 infra 反向依赖 harness，
     「内核可替换」就没了 —— 换个执行内核就得改评测层。
     """
     offenders = []
-    for path in sorted((REPO_ROOT / "infra" / "eval").rglob("*.py")):
+    for path in sorted((REPO_ROOT / "aicf" / "infra" / "eval").rglob("*.py")):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
-            if stripped.startswith(("import harness", "from harness")):
+            if stripped.startswith(("import aicf.harness", "from aicf.harness")):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {stripped}")
-    assert not offenders, "infra/eval 出现了对 harness 的模块级依赖:\n" + "\n".join(offenders)
+    assert not offenders, "aicf/infra/eval 出现了对 aicf.harness 的模块级依赖:\n" + "\n".join(offenders)
 
 
 def test_eval_package_does_not_import_harness_at_runtime():
-    """运行期也不能 import harness（延迟 import 也不行）。
+    """运行期也不能 import aicf.harness（延迟 import 也不行）。
 
-    放在子进程里跑：本仓库的其它测试会在收集期就 import harness，
+    放在子进程里跑：本仓库的其它测试会在收集期就 import aicf.harness，
     在同一个进程里断言 sys.modules 会被别的用例污染。
     """
     import subprocess
     import sys
 
-    code = "import infra.eval, sys; print(sorted(m for m in sys.modules if m.startswith('harness')))"
+    code = "import aicf.infra.eval, sys; print(sorted(m for m in sys.modules if m.startswith('aicf.harness')))"
     proc = subprocess.run(
         [sys.executable, "-c", code], cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120
     )
@@ -241,7 +241,7 @@ def test_max_tool_calls_assertion():
 
 def test_forbid_tools_assertion_is_a_security_rule():
     """被禁止的工具一旦被调用，规则名必须落在安全规则集合里（闸门要靠它硬失败）。"""
-    from infra.eval.gate import SECURITY_RULES
+    from aicf.infra.eval.gate import SECURITY_RULES
 
     ev = Evaluator()
     case = _case(expect=[{"forbid_tools": ["fs.delete"]}])

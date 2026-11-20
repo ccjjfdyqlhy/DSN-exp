@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.context_assembly import (
+from aicf.harness.context_assembly import (
     ContextBudget,
     ContextSegment,
     PRIORITY_ACTIVE,
@@ -128,7 +128,7 @@ def test_assemble_output_messages_and_tail():
 
 
 def test_assemble_accepts_chatmessage_tail():
-    from infra.models.base import ChatMessage
+    from aicf.infra.models.base import ChatMessage
 
     asm = SegmentedContextAssembler()
     msgs = asm.assemble([_memo("M")], tail=[ChatMessage.user("hi")])

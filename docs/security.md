@@ -214,8 +214,8 @@ class AgentIdentity:
 
 ### 脱敏只有一个出口
 
-`harness.telemetry.exporter.redact()` 是**唯一**的脱敏实现，
-`infra/observability/audit.py` 直接 re-export 它，并有测试断言两者是同一个函数
+`aicf.harness.telemetry.exporter.redact()` 是**唯一**的脱敏实现，
+`aicf/infra/observability/audit.py` 直接 re-export 它，并有测试断言两者是同一个函数
 （`audit_redact is exporter_redact`）。
 
 理由：脱敏逻辑散落在各处时，最先漏掉的一定是某个不起眼的分支。

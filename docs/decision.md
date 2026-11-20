@@ -30,8 +30,8 @@ if gate.evaluate(text).value and gate.evaluate(text).confident:
 |---|---|---|
 | emotional state (drives tone and speech rate) | choice | application policy layer |
 | crisis detection (keyword prefilter, then model check) | yes_no | application policy layer |
-| tool routing | choice | `harness/decisions/use_cases.py` |
-| retrieval gate | yes_no | `harness/decisions/use_cases.py` |
+| tool routing | choice | `aicf/harness/decisions/use_cases.py` |
+| retrieval gate | yes_no | `aicf/harness/decisions/use_cases.py` |
 
 ---
 
@@ -53,7 +53,7 @@ POST /v1/chat/completions
 
 1. **选项必须能落到单 token**（`Y`/`N`、`A`..`Z`、数字）。拿到子词碎片
    就拼不回概率。所以语义名（工具名、情绪名）要编号成字母，答完再映射回去
-   —— `harness/decisions/use_cases.py:route_tool` 就是这么做的。
+   —— `aicf/harness/decisions/use_cases.py:route_tool` 就是这么做的。
 2. **token 变体必须归并**。llama.cpp 的 tokenizer 里 `Y`、` Y`、`Yes`、`yes`
    是不同 token，只取完全相等的那个会漏掉概率质量。
 3. **关掉思维链**。`enable_thinking: false` —— 思考会污染第一步的分布。
@@ -89,13 +89,13 @@ IdleReaper 停掉进程 → 归还约 20GB 显存
 ## 四、代码地图
 
 ```
-infra/decision/client.py          传输：logprobs 通道 + /props 身份校验 + 探针
-infra/decision/jev.py             JEV 的发现/端口避让/启动配置（ngl 固定 99、mmproj 放 CPU）
-infra/decision/backends.py        两种取客户端的方式：池托管 / 编排器托管
-infra/resources/decision_service.py  作为外周资源托管（ResourceKind.DECISION）
-harness/decisions/core.py         语义：请求/结果/提示词/分布解释/置信度
-harness/decisions/service.py      门面：把传输与语义接起来
-harness/decisions/use_cases.py    用例：情绪、危机、工具路由、检索闸门、分类
+aicf/infra/decision/client.py          传输：logprobs 通道 + /props 身份校验 + 探针
+aicf/infra/decision/jev.py             JEV 的发现/端口避让/启动配置（ngl 固定 99、mmproj 放 CPU）
+aicf/infra/decision/backends.py        两种取客户端的方式：池托管 / 编排器托管
+aicf/infra/resources/decision_service.py  作为外周资源托管（ResourceKind.DECISION）
+aicf/harness/decisions/core.py         语义：请求/结果/提示词/分布解释/置信度
+aicf/harness/decisions/service.py      门面：把传输与语义接起来
+aicf/harness/decisions/use_cases.py    用例：情绪、危机、工具路由、检索闸门、分类
 aicf-ui 仓的 aicf_ui/system1_api.py        HTTP contract (/v1/decide, /v1/decide/capabilities)
 ```
 

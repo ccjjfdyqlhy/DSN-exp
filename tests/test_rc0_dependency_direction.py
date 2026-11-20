@@ -5,8 +5,8 @@
 # 仓库的依赖规则是「harness → infra，单向」。文档里写着这条规则，
 # 但**没有测试钉着它** —— 于是每次并行开发都可能悄悄新增一处反向依赖。
 # 本轮（1.0.0-rc0）就真的新增了三处：infra/policy/engine.py 依赖
-# harness.tools.spec，infra/observability/{trace,audit}.py 依赖
-# harness.telemetry.*。
+# aicf.harness.tools.spec，aicf/infra/observability/{trace,audit}.py 依赖
+# aicf.harness.telemetry.*。
 #
 # 文档说「注释即缺陷数据库」；这条测试让「依赖规则」也从文档变成事实。
 
@@ -18,8 +18,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-INFRA = ROOT / 'infra'
-HARNESS = ROOT / 'harness'
+INFRA = ROOT / 'aicf' / 'infra'
+HARNESS = ROOT / 'aicf' / 'harness'
 
 #: 允许 infra 反向依赖 harness 的模块（每个都要写明理由）。
 #:
@@ -46,14 +46,14 @@ def _module_imports(path: Path) -> list[str]:
 @pytest.mark.parametrize('path', sorted(INFRA.rglob('*.py')),
                          ids=lambda p: str(p.relative_to(ROOT)))
 def test_infra_never_imports_harness(path: Path):
-    """infra 不得 import harness。
+    """infra 不得 import aicf.harness。
 
-    历史上 infra/observability/core.py 反向 import harness.pipeline.events
+    历史上 infra/observability/core.py 反向 import aicf.harness.pipeline.events
     被当成违规清掉过（见 docs/architecture.md）。这条测试让同一个错误
     不再发生第二次。
     """
     for name in _module_imports(path):
-        if name == 'harness' or name.startswith('harness.'):
+        if name == 'aicf.harness' or name.startswith('aicf.harness.'):
             key = str(path.relative_to(ROOT))
             reason = INFRA_TO_HARNESS_EXEMPT.get(key)
             assert reason, (
@@ -75,7 +75,7 @@ except Exception as error:
     print(json.dumps({'error': str(error)}))
     raise SystemExit(0)
 leaked = sorted(n for n in sys.modules
-                if n == 'harness' or n.startswith('harness.'))
+                if n == 'aicf.harness' or n.startswith('aicf.harness.'))
 print(json.dumps({'leaked': leaked}))
 """
 

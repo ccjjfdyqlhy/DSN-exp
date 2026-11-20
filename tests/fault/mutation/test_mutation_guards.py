@@ -173,7 +173,7 @@ def test_meta_tool_detects_a_broken_patch_target():
         'import os, sys\n'
         f'sys.path.insert(0, {MUTATION_DIR!r})\n'
         'import plugin\n'
-        'import infra.runtime.managed as managed\n'
+        'import aicf.infra.runtime.managed as managed\n'
         'managed.ManagedRuntime._pending_intent = lambda self, key: None\n'
         'import mutations\n'
         'mutations.MUTATIONS["pending_intent"] = mutations.MUTATIONS["pending_intent"]\n'

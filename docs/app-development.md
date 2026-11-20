@@ -64,7 +64,7 @@ from __future__ import annotations
 def main() -> None:
     import os
 
-    from infra.orchestrator import OpenAICompatClient
+    from aicf.infra.orchestrator import OpenAICompatClient
     from my_app.app import MyApp
 
     client = OpenAICompatClient(
@@ -84,9 +84,9 @@ if __name__ == "__main__":
 ### direct `AgentLoop`
 
 ```python
-from harness import Tool, ToolRegistry
-from harness.agent import AgentLoop
-from infra.orchestrator import ChatMessage
+from aicf.harness import Tool, ToolRegistry
+from aicf.harness.agent import AgentLoop
+from aicf.infra.orchestrator import ChatMessage
 
 tools = ToolRegistry()
 tools.register(Tool(
@@ -113,7 +113,7 @@ notes:
 ### `AgentRuntime` facade
 
 ```python
-from harness import AgentRuntime
+from aicf.harness import AgentRuntime
 
 agent = AgentRuntime(
     client,
@@ -134,7 +134,7 @@ the context yourself if you need real recall.
 ### declarative `AgentSpec`
 
 ```python
-from harness.agent import AgentAssembler, AgentSpec
+from aicf.harness.agent import AgentAssembler, AgentSpec
 
 spec = AgentSpec(
     name="code-assistant",
@@ -162,7 +162,7 @@ print(agent.run("list the current directory").reply)
 ### generate a schema from a function
 
 ```python
-from harness import tool
+from aicf.harness import tool
 
 
 @tool
@@ -191,8 +191,8 @@ result.
 ```python
 from flask import Flask
 
-from harness import AgentRuntime, AppBundle, AppBundleRegistry, Runtime, Settings
-from infra.orchestrator import ModelProviderRegistry, OpenAICompatClient
+from aicf.harness import AgentRuntime, AppBundle, AppBundleRegistry, Runtime, Settings
+from aicf.infra.orchestrator import ModelProviderRegistry, OpenAICompatClient
 
 
 def create_application():
@@ -223,7 +223,7 @@ def create_application():
 override only the lifecycle methods you need:
 
 ```python
-from harness import AppBundle
+from aicf.harness import AppBundle
 
 
 class MyBundle(AppBundle):
@@ -268,7 +268,7 @@ tools:
     class: MyTool
 ```
 
-`harness/skills/` provides the base classes and the loader. an application can
+`aicf/harness/skills/` provides the base classes and the loader. an application can
 register semantic capabilities for dependency injection, as described in
 [skills.md](skills.md).
 
@@ -287,7 +287,7 @@ register semantic capabilities for dependency injection, as described in
 
 - [ ] `entry.py` exposes `main()` and `__main__.py` calls it
 - [ ] imports use `aicf_*` package paths, not `apps.*`
-- [ ] model clients come from `infra.orchestrator`
+- [ ] model clients come from `aicf.infra.orchestrator`
 - [ ] tools are registered in `ToolRegistry`, not called directly from business code
 - [ ] long tasks get a sensible `max_steps`; remember that 0 means no limit
 - [ ] configuration comes from environment variables with defaults in one module

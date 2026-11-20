@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from harness.todo import TodoItem, TodoPlan, TodoStore, default_todo_path
+from aicf.harness.todo import TodoItem, TodoPlan, TodoStore, default_todo_path
 
 
 def _plan(store, titles=('one', 'two')):

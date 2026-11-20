@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from infra.orchestrator import LlamaServerConfig, ModelOrchestrator
-from infra.orchestrator.local_engine import LaunchCancelled
+from aicf.infra.orchestrator import LlamaServerConfig, ModelOrchestrator
+from aicf.infra.orchestrator.local_engine import LaunchCancelled
 
 
 @pytest.fixture(autouse=True)

@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from infra.tasks import TaskScheduler
+from aicf.infra.tasks import TaskScheduler
 
 
 def test_schedule_one_shot_executes():

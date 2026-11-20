@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from infra.orchestrator.openai import OpenAICompatClient
+from aicf.infra.orchestrator.openai import OpenAICompatClient
 
 
 class _FakeDelta:

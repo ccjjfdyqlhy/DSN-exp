@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import asyncio
 
-from harness.agent import AgentLoop, NativeToolCallAdapter, TaggedToolCallAdapter
-from infra.models.base import ChatMessage, ChatResponse, ToolCall
-from infra.models.stub import StubChatClient
-from harness.tools import ToolRegistry
+from aicf.harness.agent import AgentLoop, NativeToolCallAdapter, TaggedToolCallAdapter
+from aicf.infra.models.base import ChatMessage, ChatResponse, ToolCall
+from aicf.infra.models.stub import StubChatClient
+from aicf.harness.tools import ToolRegistry
 
 
 def _make_loop(stub, tools, adapter=None, **kw):
@@ -54,7 +54,7 @@ def test_agent_loop_missing_tool_reports_error():
 
 
 def test_tool_result_status_hint_round_trip():
-    from harness.tools.base import ToolResult
+    from aicf.harness.tools.base import ToolResult
     stub = StubChatClient(responses=[
         ChatResponse(content="", tool_calls=[ToolCall(id="1", name="tool.check", arguments={})]),
         ChatResponse(content="已收到状态", model="stub"),
@@ -115,7 +115,7 @@ def test_hit_max_steps():
 
 def test_agent_loop_run_rounds_round_runner_skeleton():
     """run_rounds：应用提供轮次策略，harness 骨架驱动迭代/上限。"""
-    from harness.agent import RoundResult
+    from aicf.harness.agent import RoundResult
     calls = []
 
     async def runner(state, step, max_steps):
@@ -132,7 +132,7 @@ def test_agent_loop_run_rounds_round_runner_skeleton():
 
 
 def test_agent_loop_run_rounds_max_steps_enforced():
-    from harness.agent import RoundResult
+    from aicf.harness.agent import RoundResult
     calls = []
 
     async def always_continue(state, step, max_steps):

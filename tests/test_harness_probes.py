@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from harness.learning.evaluator import EvalPolicy, Evaluator
-from harness.learning.probes import Probe, ProbeReport, ProbeResult, ProbeRunner
+from aicf.harness.learning.evaluator import EvalPolicy, Evaluator
+from aicf.harness.learning.probes import Probe, ProbeReport, ProbeResult, ProbeRunner
 
 
 class _FakeResponse:

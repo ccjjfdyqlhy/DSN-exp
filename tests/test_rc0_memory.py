@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 
-from harness import create_agent
-from harness.memory.in_memory import InMemoryStore, keywords
-from infra.models.base import ChatResponse
-from infra.models.stub import StubChatClient
+from aicf.harness import create_agent
+from aicf.harness.memory.in_memory import InMemoryStore, keywords
+from aicf.infra.models.base import ChatResponse
+from aicf.infra.models.stub import StubChatClient
 
 
 def _agent(responses):

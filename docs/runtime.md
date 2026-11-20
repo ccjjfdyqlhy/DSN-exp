@@ -13,7 +13,7 @@
 
 ## 一、为什么需要它
 
-现有 `harness/transcript.py` 是「对话文本快照」：能恢复*说了什么*，
+现有 `aicf/harness/transcript.py` 是「对话文本快照」：能恢复*说了什么*，
 但不能保证*副作用不重复*。一次崩溃重放可能重复发请求、重复写文件、
 重复扣款。
 
@@ -105,17 +105,17 @@ idempotency_key = sha256(session_id | turn_seq | tool_name | canonical_args)
 ### 保护点在哪：执行前那一刻
 
 ```python
-# infra/runtime/managed.py
+# aicf/infra/runtime/managed.py
 if effect == EFFECT_EFFECTFUL and self._pending_intent(key) is not None:
     raise UnknownOutcomeError(unknown)
 ```
 
 保护必须落在**写 intent 的那一刻**，而不是只在 `execute_tool` 里。
-原因：`harness/tools/guard.py` 自己实现了
+原因：`aicf/harness/tools/guard.py` 自己实现了
 「查缓存 → 写 intent → 执行 → 写结果」这条路径，
 如果保护只在 `execute_tool`，这条路径就能绕过去 → 重复扣款。
 
-跨层识别（`infra` 不能 `import harness`）：两侧各有一份
+跨层识别（`aicf.infra` 不能 `import aicf.harness`）：两侧各有一份
 `UnknownOutcomeError`，靠 `unknown_outcome` 标记属性互相认出。
 **认不出来时一律按拒绝处理** —— 最坏后果只是错误文案不够精确。
 
@@ -133,7 +133,7 @@ load latest checkpoint → replay journal after checkpoint → 继续 turn
 ```
 
 ```python
-from infra.runtime import SqliteRuntimeStore, recover
+from aicf.infra.runtime import SqliteRuntimeStore, recover
 
 plan = recover(port, session_id)
 plan.replayable   # 可以安全重放的调用
@@ -185,8 +185,8 @@ rc0 只承诺**单机语义**（SQLite）。rc1 换 Postgres 不改上层调用�
 ## 八、用法
 
 ```python
-from infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
-from infra.store.sqlite import SqliteStore
+from aicf.infra.runtime import ManagedRuntime, SqliteRuntimeStore, migrate_runtime
+from aicf.infra.store.sqlite import SqliteStore
 
 store = SqliteStore('runtime.db')
 migrate_runtime(store)

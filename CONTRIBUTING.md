@@ -5,9 +5,9 @@ that keep the repository coherent, and how to land a change.
 
 ## what lives where
 
-- `harness/` - the scenario-agnostic agent core: turn engine, tool
+- `aicf/harness/` - the scenario-agnostic agent core: turn engine, tool
   abstractions, conversation state, sessions, collaboration
-- `infra/` - the layer under the core: model clients (openai compatible,
+- `aicf/infra/` - the layer under the core: model clients (openai compatible,
   responses, anthropic), storage, settings, networking
 - `tests/` - the pytest suite
 - `docs/` - the documentation you are reading
@@ -78,9 +78,9 @@ entries, and do not `git add -f` past the pre-commit hook.
 
 ## layering rules for the engine
 
-changes under `harness/` are the sensitive ones:
+changes under `aicf/harness/` are the sensitive ones:
 
-- `harness` imports `infra` and itself, never an application package
+- `aicf.harness` imports `aicf.infra` and itself, never an application package
 - new capabilities are mechanisms, not application features: if a name
   only makes sense for one scenario (coding, study, chat), it belongs in
   that app, not the core
