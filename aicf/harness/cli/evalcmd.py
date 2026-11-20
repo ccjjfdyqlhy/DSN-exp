@@ -97,6 +97,18 @@ def cmd_eval(args: Any) -> int:
         eprint(f'数据集加载失败: {error}')
         return 2
 
+    # --group 过滤：只评选中的组。数据集对象是冻结口径（hash 进 run version），
+    # 所以过滤发生在「装载之后、打分之前」，且过滤后的用例名单随 run 一起落盘
+    # —— 评审的人能看出这份 run 评的是全集还是子集。
+    selected_groups = _parse_groups(getattr(args, 'group', None))
+    if selected_groups:
+        dataset = dataset.filtered(selected_groups)
+        if not dataset.cases:
+            known = ', '.join(sorted(load_dataset(resolve_dataset(args.dataset)).groups()))
+            eprint(f'分组 {sorted(selected_groups)} 在数据集里没有用例'
+                   f'（可用: {known}）')
+            return 2
+
     traces: list[Trace] = []
     if args.traces:
         try:
@@ -151,6 +163,14 @@ def _aggregate(results: list) -> dict:
         'pass_rate': passed / total,
         'score': sum(r.score for r in results) / total,
     }
+
+
+def _parse_groups(groups: list[str] | None) -> set[str]:
+    """--group 可以重复、也可以逗号分隔（--group refusal,safety）。"""
+    selected: set[str] = set()
+    for item in groups or []:
+        selected.update(part.strip() for part in str(item).split(',') if part.strip())
+    return selected
 
 
 def cmd_gate(args: Any) -> int:
