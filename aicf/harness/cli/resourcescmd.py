@@ -61,6 +61,32 @@ def cmd_profile(args: Any) -> int:
     return 0
 
 
+def cmd_status(args: Any) -> int:
+    """Pool-side view (W6): resolved profile, per-kind effective timeouts,
+    and which resource kinds the pool knows about. A live pool lives inside
+    the app that owns it -- this command never spawns services."""
+    from aicf.infra.resources.profiles import describe_profile
+
+    info = describe_profile()
+    payload = dict(info)
+    try:
+        from aicf.infra.resources.pool import ResourceKind
+        payload['kinds'] = [k.value for k in ResourceKind]
+    except Exception:  # noqa: BLE001 -- the enum import must not break status
+        payload['kinds'] = []
+    payload['live_pool'] = False
+    if args.json:
+        out_json(payload)
+        return 0
+    print(f"策略档: {info['profile']}（来源: {info['source']}）")
+    for kind, seconds in sorted(info['idle_timeouts'].items()):
+        human = '永不卸载' if int(seconds) == 0 else f'{int(seconds)} 秒后卸载'
+        print(f'  {kind.ljust(10)}  {human}')
+    print(f"资源种类: {', '.join(payload['kinds']) or '-'}")
+    print('说明: 池实例归持有它的应用进程；本命令不拉起任何服务。')
+    return 0
+
+
 def register(sub: Any) -> None:
     resources = sub.add_parser('resources', help='资源策略档（随时可用 vs 显存）')
     resources_sub = resources.add_subparsers(dest='resources_command')
@@ -70,6 +96,9 @@ def register(sub: Any) -> None:
                          help='写入配置文件: resident / balanced / eco')
     profile.add_argument('--json', action='store_true')
     profile.set_defaults(func=cmd_profile)
+    status = resources_sub.add_parser('status', help='池侧视图：档位 + 各类资源生效超时')
+    status.add_argument('--json', action='store_true')
+    status.set_defaults(func=cmd_status)
 
 
-__all__ = ['cmd_profile', 'register']
+__all__ = ['cmd_profile', 'cmd_status', 'register']

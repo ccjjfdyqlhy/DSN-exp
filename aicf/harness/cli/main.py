@@ -198,7 +198,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command == 'resources':
         if args.resources_command == 'profile':
             return resourcescmd.cmd_profile(args)
-        print('用法: aicf resources profile [--set resident|balanced|eco]')
+        if args.resources_command == 'status':
+            return resourcescmd.cmd_status(args)
+        print('用法: aicf resources {profile|status}')
         return 2
     if command == 'finetune':
         func = getattr(args, 'func', None)
