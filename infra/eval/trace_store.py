@@ -674,3 +674,19 @@ class TraceStore:
             params.append(status)
         sql += " ORDER BY created_at DESC"
         return [dict(r) for r in self._conn.execute(sql, params)]
+
+    def set_badcase_status(self, badcase_id: str, status: str) -> bool:
+        """推进一条 badcase 的生命周期（new → labelled → queued / dismissed）。
+
+        回流管线（infra/eval/badcase.py）靠它把「记录」变成「回流」。
+        状态值由调用方带，这里只校验非空 —— 词表归管线管。
+        """
+        if not str(status or "").strip():
+            raise ValueError("badcase 状态不能为空")
+        cur = self._conn.execute(
+            "UPDATE eval_badcase SET status = ? WHERE id = ?",
+            (status, badcase_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+

@@ -68,6 +68,22 @@ from .regression import (
     compare_metrics,
 )
 from .run_version import RunVersion, capture_run_version, git_commit
+from .sampling import (
+    DEFAULT_SAMPLE_RATIO,
+    ReplayQueue,
+    ReplayQueueItem,
+    SamplingDecision,
+    SessionSampler,
+)
+from .badcase import (
+    HARD_CASE_GROUP,
+    STATUS_DISMISSED,
+    STATUS_LABELLED,
+    STATUS_NEW,
+    STATUS_QUEUED,
+    BadCaseIntake,
+    LabelledBadCase,
+)
 from .trace_store import (
     EFFECT_EFFECTFUL,
     EFFECT_IDEMPOTENT,
@@ -99,6 +115,12 @@ __all__ = [
     "DEFAULT_MAX_DROP", "MetricDelta", "RegressionReport", "compare_metrics",
     # run version
     "RunVersion", "capture_run_version", "git_commit",
+    # sampling（rc2 P2：线上抽样）
+    "DEFAULT_SAMPLE_RATIO", "ReplayQueue", "ReplayQueueItem",
+    "SamplingDecision", "SessionSampler",
+    # badcase（rc2 P2：坏样本回流）
+    "HARD_CASE_GROUP", "STATUS_DISMISSED", "STATUS_LABELLED", "STATUS_NEW",
+    "STATUS_QUEUED", "BadCaseIntake", "LabelledBadCase",
     # trace
     "EFFECT_EFFECTFUL", "EFFECT_IDEMPOTENT", "EFFECT_PURE", "EFFECT_UNKNOWN",
     "ToolCall", "Trace", "TraceStore", "read_trace_jsonl", "trace_from_events",
