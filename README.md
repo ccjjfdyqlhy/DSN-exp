@@ -82,6 +82,16 @@ one pool, scheduled by slot and reclaimed when they go idle. Text runs through
 inference want the same card, `DeviceGate` in
 `aicf/infra/orchestrator/scheduler.py` is the one place that arbitrates.
 
+And the interaction layer is in the framework now, not in a private app:
+`aicf/harness/voice/` streams TTS **sentence by sentence** (first sentence
+plays while the next synthesizes), filters fake ASR input (noise / humming /
+keyboard gibberish — a real classifier is a port, heuristics ship as the
+fallback), runs **perception mode** (continuous conversation where silence
+means listening) and a **heartbeat** (proactively speaks when idle, on your
+hook). Three profiles in `aicf resources profile` — `resident` / `balanced` /
+`eco` — make the always-available-vs-VRAM tradeoff explicit instead of
+implicit.
+
 ### Many agents, one floor
 
 `aicf/harness/agent/collab.py` gives you role types, delegation and a
@@ -103,32 +113,56 @@ Python. The framework validates them before an agent ever sees them.
 pip install aicf-core
 ```
 
-```bash
-# 1. What does each tool actually do? Effect level, declared write level, required scopes.
-aicf tool list
+Every step below runs **offline** — no API key — and each one shows the
+output you should actually see. The walkthrough ends **green**.
 
-# 2. Try to run a shell. It has side effects — so it waits for a human.
+```bash
+# 1. Scaffold a project: entry points wired, no business logic. Fill in the meat.
+aicf init demo && cd demo
+
+# 2. What does each tool actually do? Effect level, declared write level, required scopes.
+aicf tool list
+#    tool        effect      sandbox    net    destructive  version
+#    file.edit   effectful   workspace  none   false        1.0
+#    file.read   pure        readonly   none   false        1.0
+#    ...
+
+# 3. Try to run a shell. It has side effects — so it waits for a human.
 aicf tool exec proc.run --args '{"command":"rm -rf /"}' --policy strict
 #    Error: 工具 proc.run 被策略拒绝（approval）：CLI 未开启 --yes
-
-# 3. Run one turn. It leaves a trace.
-aicf run "summarize this repo" --trace trace.jsonl
-
-# 4. Score a dataset (it ships with the package). Traces are matched to cases
-#    by --case-id, so a dataset run records one trace per case:
-#      aicf run "<input>" --case-id <case_id> --trace traces/<case_id>.jsonl
-aicf eval --dataset basic --traces traces/ --out run.json
-
-# 5. Stop the release if anything regressed, got too expensive, or broke a rule.
-aicf gate --run run.json --out gate.json
 ```
 
-No API key required for any of the above — it runs offline against a stub model.
+Then your first success, still offline:
 
-One honest caveat: the stub model never calls a tool, so the dataset cases
-**do not pass locally**. `aicf gate` is a CI device: it expects one trace per
-case (that is what `--case-id` is for) and blocks a release whose critical
-cases are missing.
+```bash
+# 4. Run a whole dataset: one turn per case, one trace per case.
+aicf run --dataset offline --trace-dir traces/
+#    ✓ offline_pipeline_replies [offline] done
+#    … 6 case，trace 落 traces/
+
+# 5. Score it.
+aicf eval --dataset offline --traces traces/ --out run.json
+#    用例 6/6 通过（数据集 offline，hash …）
+
+# 6. Stop the release if anything regressed, got too expensive, or broke a rule.
+aicf gate --run run.json --out gate.json
+#    闸门判定: 通过
+#      [PASS] quality: 关键用例通过率 100.0%（1/1），达标
+#      [PASS] safety: 未发现安全违规（扫描 6 个用例）
+```
+
+Two datasets ship with the package, on purpose:
+
+- `offline` — pipeline smoke: reply arrives, no phantom tool calls, budget
+  fields recorded. **Passes offline by design.** It tells you the floor works.
+- `basic` — 40 quality cases (file io / computation / refusal / safety / …).
+  It needs a real model to pass: the stub never calls tools, and the eval
+  engine refuses to count an echo as an answer. That is not a bug — a smoke
+  dataset passing would tell you nothing about model quality.
+
+`aicf eval --group refusal,safety` scores a subset (the run record shows
+which subset it was). A 30-line, zero-dependency Python example that prints
+results lives at [examples/minimal.py](examples/minimal.py).
 
 ---
 
@@ -225,6 +259,25 @@ Any OpenAI-compatible endpoint works. For a local model, point `base_url` at you
 
 ---
 
+## When should you use what?
+
+Honest answer first: aicf is not the answer to everything. Against
+LangGraph / Temporal / CrewAI the difference is structural, not aesthetic:
+
+| | aicf-core | LangGraph | Temporal | CrewAI |
+|---|---|---|---|---|
+| Core idea | a **policy → approval → sandbox → audit** floor under every tool call, plus an idempotent, resumable runtime and a four-gate release report | graph orchestration over LLM steps | durable execution for long-running business workflows | role-based multi-agent scripting |
+| Choose it when | an agent touches real files, shells, or networks and every call must be attributable, resumable, and evaluable | you want explicit control flow over model steps | you need workflow guarantees for business logic, LLM or not | you want a fast role-play prototype |
+| Deliberately not its job | cross-machine orchestration (a deployment concern) and prompt engineering | safety rails, audit stores, idempotency — not its theme | LLM-native concepts (tool contracts, approvals, eval gates) | durable runtime, audits, release gates |
+| Migration path | tools are plain functions: guard **one** tool behind the policy engine, then the next | graph edges → `workflow` kernel declarations (`aicf run --kernel workflow`) | activities → tools with effect declarations | role prompts → skill packages ([spec](docs/skill-spec.md)) |
+| What the floor gives you that they don't | append-only audit store, `kill -9` recovery, crash-injection tests, offline eval + release gate in CI | — | — | — |
+
+Migration cost in one line: aicf asks for **declarations you would eventually
+want anyway** (a ToolSpec per tool, a policy file, a gate report) — start
+with one guarded tool and grow.
+
+---
+
 ## The repo in one minute
 
 Two layers, dependencies pointing **downward only**:
@@ -282,6 +335,18 @@ machine orchestration and the transport of the runtime you bring yourself.
 The plan, the acceptance criteria and the status of each workstream live in
 [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md).
 
+**Reproducible numbers** (every one comes with its reproduce command —
+`python benchmarks/run_benchmarks.py`):
+
+| Number | Reference value | What it measures |
+|---|---|---|
+| Guard-chain round trip | p50 ≈ 0.28 ms, p95 ≈ 0.38 ms | one local call through policy + idempotency check + audit (pure tool, N=300) |
+| Journal replay recovery | ≈ 1 ms / 200 events | full journal replay when no checkpoint is usable (worst-case recovery) |
+| Layered-memory L1 compaction | ≈ 3.35× | characters in vs out when the session layer summarizes |
+| Crash-recovery success rate | 46/46 = 100% | `tests/fault/` injection layer: real `kill -9`, duplicate delivery, corrupted checkpoints |
+
+Details and caveats: [benchmarks/README.md](benchmarks/README.md).
+
 ---
 
 ## Development
@@ -310,7 +375,22 @@ python -m pytest -q tests/
 | Go deeper into model routing / resources / storage | [docs/infra.md](docs/infra.md) |
 | Know which traps not to step into before changing code | [docs/maintenance.md](docs/maintenance.md) |
 | Configuration keys / environment variables | [docs/configuration.md](docs/configuration.md) |
+| The public skill-package spec (the ecosystem's interface) | [docs/skill-spec.md](docs/skill-spec.md) |
+| Community channels and contribution paths | [docs/community.md](docs/community.md) |
 | Known tech debt and its fix priority | [docs/technical-debt.md](docs/technical-debt.md) |
+
+Core docs also have English translations in [docs/en/](docs/en/)
+(security / runtime / evaluation / getting-started); the Chinese originals
+remain authoritative.
+
+---
+
+## Community
+
+- **Questions & discussions**: [GitHub Discussions](https://github.com/ccjjfdyqlhy/aicf-core/discussions)
+- **Bugs & features**: [GitHub Issues](https://github.com/ccjjfdyqlhy/aicf-core/issues) (templates provided)
+- **Security**: please follow [SECURITY.md](SECURITY.md) — do not open a public issue
+- Paths for a first contribution: [CONTRIBUTING.md](CONTRIBUTING.md) · [docs/community.md](docs/community.md)
 
 ---
 

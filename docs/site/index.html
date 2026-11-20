@@ -28,6 +28,7 @@
       <a href="#migration">迁移</a>
     </nav>
     <div class="topbar-actions">
+      <a class="btn btn-ghost" href="en/index.html" lang="en" hreflang="en">English</a>
       <a class="btn btn-ghost" href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">GitHub</a>
       <a class="btn" href="https://pypi.org/project/aicf-core/" target="_blank" rel="noopener">PyPI</a>
     </div>
@@ -82,17 +83,20 @@
         <p>
           语音与视觉的本地资源跑在<strong>同一个池子</strong>里：ASR（FunASR，进程内）、
           TTS（GPT-SoVITS，走 HTTP）、VLM（本地 llama-server）。按槽位调度、按需拉起；空闲超过阈值就自动停掉，把显存还回去，下次请求再拉起。
+          交互层也下沉进了框架：TTS <strong>逐句流式</strong>播放（第一句合成完就开口）、ASR 假语音过滤、
+          感知模式（连续通话，沉默 = 在听）与心跳主动开口——<code>aicf/harness/voice/</code>。
         </p>
         <ul class="chips">
           <li>aicf/infra/resources/</li>
+          <li>aicf/harness/voice/</li>
           <li>ResourcePool</li>
           <li>IdleReaper</li>
-          <li>InProcessModelLauncher</li>
-          <li>HTTPServiceLauncher</li>
+          <li>SentenceStreamSpeaker</li>
         </ul>
         <p class="expected">
           文本模型走 <code>aicf/infra/models/</code> 与 <code>aicf/infra/orchestrator/</code> 的路由；显存独占闸门（<code>DeviceGate</code>）在 <code>aicf/infra/orchestrator/scheduler.py</code>——
-          训练和推理抢同一批卡时，只有一个说了算。
+          训练和推理抢同一批卡时，只有一个说了算。「随时可用 vs 显存」用
+          <code>aicf resources profile</code> 的三档（resident / balanced / eco）显式取舍。
         </p>
       </div>
 
@@ -230,17 +234,22 @@ aicf gate --run run.json --out gate.json</code></pre>
   <div class="wrap">
     <h2>90 秒上手</h2>
     <p class="section-lede">
-      下面五条命令不需要任何 API key——它们跑在内置的离线 stub 模型上。
+      下面每一步都不需要 API key（离线可跑），并且给出了你实际会看到的输出。
+      走完的终点是绿的。
     </p>
 
     <ol class="steps">
       <li>
         <div class="step-head">
           <span class="step-no">01</span>
-          <h3>装上</h3>
+          <h3>装上，然后生成一个骨架项目</h3>
         </div>
-        <pre data-lang="bash"><code>pip install aicf-core</code></pre>
-        <p class="expected">分发名 <code>aicf-core</code>，命令入口 <code>aicf</code>，import 名 <code>aicf.*</code>。</p>
+        <pre data-lang="bash"><code>pip install aicf-core
+aicf init demo &amp;&amp; cd demo</code></pre>
+        <p class="expected">
+          分发名 <code>aicf-core</code>，命令入口 <code>aicf</code>，import 名 <code>aicf.*</code>。
+          骨架里接入点都接好了（agent.py / tools/ / policies/ / skills/）——没有业务，往里填肉。
+        </p>
       </li>
 
       <li>
@@ -249,7 +258,9 @@ aicf gate --run run.json --out gate.json</code></pre>
           <h3>看工具目录：副作用等级、声明的写口径、所需授权范围</h3>
         </div>
         <pre data-lang="bash"><code>aicf tool list</code></pre>
-        <p class="expected">先知道每个工具能干什么，再决定让 agent 用哪些。</p>
+        <p class="expected">
+          标准工具 + 你自己的 <code>tools/</code> 目录里的工具都在列——先知道每个工具能干什么，再决定让 agent 用哪些。
+        </p>
       </li>
 
       <li>
@@ -267,22 +278,29 @@ aicf gate --run run.json --out gate.json</code></pre>
       <li>
         <div class="step-head">
           <span class="step-no">04</span>
-          <h3>跑一轮，留下一份 trace</h3>
+          <h3>跑一整个离线数据集，打分，出闸门报告</h3>
         </div>
-        <pre data-lang="bash"><code>aicf run "summarize this repo" --trace trace.jsonl</code></pre>
-        <p class="expected">trace 是 JSONL，一行一个事件——后面的打分靠它。</p>
+        <pre data-lang="bash"><code>aicf run --dataset offline --trace-dir traces/
+aicf eval --dataset offline --traces traces/ --out run.json
+aicf gate --run run.json --out gate.json</code></pre>
+        <p class="expected">
+          每个用例一轮、一条 trace；<code>aicf eval</code> 打分；<code>aicf gate</code> 出四闸门报告——
+          质量、回归、成本、安全。<strong>终点是绿的</strong>：离线数据集 <code>offline</code>
+          检验的是链路本身（回复到达、没有凭空的工具调用、预算字段在记录），
+          用桩模型就能全过——这是设计，不是作弊。
+        </p>
       </li>
 
       <li>
         <div class="step-head">
           <span class="step-no">05</span>
-          <h3>打分，然后出四闸门报告</h3>
+          <h3>质量回归：换真模型跑 <code>basic</code></h3>
         </div>
-        <pre data-lang="bash"><code>aicf eval --dataset basic --traces trace.jsonl --out run.json
-aicf gate --run run.json --out gate.json</code></pre>
+        <pre data-lang="bash"><code>aicf eval --dataset basic --traces traces/ --group refusal,safety</code></pre>
         <p class="expected">
-          数据集 <code>basic</code> 随包发布。<code>gate.json</code> 里有四道闸门的逐项判定——
-          质量、回归、成本、安全。发布前先看这份报告。一句实话：离线桩模型只会把输入原样吐回来，<strong>不调工具</strong>，所以随包数据集的用例<strong>在本地不会通过</strong>——<code>aicf gate</code> 是 CI 用的闸门。
+          40 条质量用例（文件读写 / 计算 / 越权拒绝 / 安全 / 格式 / 多步）需要真模型才能全过：
+          桩模型不会调工具，评测器也不把回声算作答——冒烟数据集被桩模型「考过」就说明不了模型质量。
+          <code>--group</code> 可以只评子集（run 记录里看得出评的是哪个子集）。
         </p>
       </li>
     </ol>
@@ -536,6 +554,11 @@ aicf eval --dataset basic \
             <td class="col-when">要写一个技能包，或排查「技能不生效」</td>
           </tr>
           <tr>
+            <td><a href="../skill-spec.md"><code>skill-spec.md</code></a></td>
+            <td>技能包的公开规格（v1）：字段表、三条硬规则、版本承诺 —— 生态的接口</td>
+            <td class="col-when">要发布一个技能包给别人用</td>
+          </tr>
+          <tr>
             <td><a href="../control-plane.md"><code>control-plane.md</code></a></td>
             <td>控制面：Agent 身份、委派授权、资产生命周期、成本账本</td>
             <td class="col-when">要接多 Agent，或做 Agent 资产治理</td>
@@ -549,6 +572,11 @@ aicf eval --dataset basic \
             <td><a href="../configuration.md"><code>configuration.md</code></a></td>
             <td>配置来源、关键环境变量、优先级、凭据处理</td>
             <td class="col-when">要改配置，或排查配置不生效</td>
+          </tr>
+          <tr>
+            <td><a href="../community.md"><code>community.md</code></a></td>
+            <td>社区渠道、第一次贡献的路径、行为准则</td>
+            <td class="col-when">要提问或参与贡献</td>
           </tr>
           <tr>
             <td><a href="../maintenance.md"><code>maintenance.md</code></a></td>
