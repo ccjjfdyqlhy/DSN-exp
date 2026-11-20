@@ -368,6 +368,43 @@ def read_trace_jsonl(path: str | Path) -> list[Trace]:
     return out
 
 
+# ── Usage accounting from the event stream ────────────────
+#
+# The kernel emits one `usage` event per model call (loop._emit_usage wired
+# through the kernel telemetry port). The CLI run used to drop them, which
+# left every trace with usage={} and cost=0.0 -- so the cost gate judged
+# nothing. These helpers turn the event stream into the accounting a trace
+# carries; run and eval read the same numbers from this one place.
+
+
+def usage_from_events(events: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Aggregate `usage` events into one usage dict (Responses wire shape)."""
+    input_tokens = 0
+    output_tokens = 0
+    for event in events or []:
+        if not isinstance(event, Mapping) or event.get("kind") != "usage":
+            continue
+        payload = event.get("payload") or {}
+        input_tokens += int(payload.get("input_tokens") or payload.get("prompt_tokens") or 0)
+        output_tokens += int(payload.get("output_tokens") or payload.get("completion_tokens") or 0)
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens}
+
+
+def cost_from_events(events: Iterable[Mapping[str, Any]], pricing_name: str = "flash") -> float:
+    """Price the `usage` events with the shared TokenMeter pricing table."""
+    from aicf.infra.policy.token_meter import TokenMeter
+
+    meter = TokenMeter(pricing_name=pricing_name)
+    for event in events or []:
+        if not isinstance(event, Mapping) or event.get("kind") != "usage":
+            continue
+        payload = event.get("payload") or {}
+        if payload:
+            meter.record(payload)
+    return meter.cost
+
+
 # ── SQLite 持久化 ─────────────────────────────────────────
 #
 # 表结构照策划案 §5.1 原样建（eval_dataset / eval_case / eval_run /

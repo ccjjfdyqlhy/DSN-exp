@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aicf.harness.cli import main as cli_main
+from aicf.harness.cli.main import main as cli_main
 from aicf.harness.tools.local import (
     LocalToolsError,
     attach_local_tools,

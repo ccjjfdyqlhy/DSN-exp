@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -150,9 +151,19 @@ def _run_one_turn(kernel_cls, registry, model, *, session_id: str, turn_id: str,
     return result, duration_ms
 
 
+def _pricing_tier(args: Any) -> str:
+    """Stub runs are free (local tier); a real endpoint bills at the flash table."""
+    key = args.api_key or os.environ.get('OPENAI_API_KEY', '')
+    return 'flash' if (getattr(args, 'base_url', '') or key) else 'local'
+
+
 def _trace_payload(collector: _Collector, *, trace_id: str, session_id: str,
                    case_id: str, text: str, output: str,
-                   latency_ms: float) -> dict:
+                   latency_ms: float, pricing_name: str = 'local') -> dict:
+    # usage/cost come from the kernel's `usage` events (W0): the data was
+    # already in the collector -- dropping it made the cost gate judge 0
+    from aicf.infra.eval.trace_store import cost_from_events, usage_from_events
+
     return {
         'trace_id': trace_id,
         'session_id': session_id,
@@ -160,8 +171,8 @@ def _trace_payload(collector: _Collector, *, trace_id: str, session_id: str,
         'input': text,
         'output': output,
         'tool_calls': _tool_calls(collector.events),
-        'usage': {},
-        'cost': 0.0,
+        'usage': usage_from_events(collector.events),
+        'cost': cost_from_events(collector.events, pricing_name=pricing_name),
         'latency_ms': latency_ms,
         'events': collector.events,
     }
@@ -198,7 +209,7 @@ def cmd_run(args: Any) -> int:
     trace = _trace_payload(
         collector, trace_id=run_id, session_id=session_id,
         case_id=args.case_id or '', text=args.input, output=result.text,
-        latency_ms=duration_ms)
+        latency_ms=duration_ms, pricing_name=_pricing_tier(args))
     trace_path = Path(args.trace) if args.trace else None
     if trace_path is not None:
         _write_trace(trace, trace_path)
@@ -264,7 +275,8 @@ def _run_dataset(args: Any) -> int:
             trace = _trace_payload(
                 collector, trace_id=f'{run_id}-{case.id}',
                 session_id=session_id, case_id=case.id, text=case.input,
-                output=output, latency_ms=duration_ms)
+                output=output, latency_ms=duration_ms,
+                pricing_name=_pricing_tier(args))
             if error:
                 trace['error'] = error
             _write_trace(trace, trace_path)

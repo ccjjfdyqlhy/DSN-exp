@@ -84,6 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument('--run', required=True, help='运行结果文件')
     gate.add_argument('--baseline', default='', help='baseline 运行结果文件')
     gate.add_argument('--out', default='', help='报告输出路径')
+    gate.add_argument('--cost-budget', type=float, default=None,
+                      help='会话成本绝对上限（美元；不设且有 baseline 才判成本）')
     gate.add_argument('--db', default='',
                       help='报告落库位置（发布迁移从这里查报告；默认 aicf.db）')
     gate.add_argument('--json', action='store_true', help='输出 JSON')

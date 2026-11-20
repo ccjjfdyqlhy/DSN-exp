@@ -23,6 +23,7 @@ from aicf.infra.eval import (
     capture_run_version,
     load_dataset,
 )
+from aicf.infra.eval.trace_store import usage_from_events
 
 from .common import eprint, out_json, read_json, write_json
 
@@ -73,6 +74,11 @@ def _load_traces(source: str) -> list[Trace]:
 
 
 def _to_trace(payload: dict) -> Trace:
+    # older traces carry usage only inside the event stream -- fall back to
+    # it so eval sees the same numbers run wrote (W0)
+    usage = dict(payload.get('usage') or {})
+    if not usage:
+        usage = usage_from_events(payload.get('events') or [])
     return Trace(
         trace_id=str(payload.get('trace_id', '')),
         session_id=str(payload.get('session_id', '')),
@@ -82,7 +88,7 @@ def _to_trace(payload: dict) -> Trace:
         output=str(payload.get('output', '')),
         tool_calls=list(payload.get('tool_calls') or []),
         messages=list(payload.get('messages') or []),
-        usage=dict(payload.get('usage') or {}),
+        usage=usage,
         cost=float(payload.get('cost', 0.0) or 0.0),
         latency_ms=float(payload.get('latency_ms', 0.0) or 0.0),
         error=str(payload.get('error', '')),
@@ -181,7 +187,11 @@ def cmd_gate(args: Any) -> int:
         eprint(f'运行结果读取失败: {error}')
         return 2
 
-    evaluator = GateEvaluator()
+    thresholds = None
+    if getattr(args, 'cost_budget', None) is not None:
+        from aicf.infra.eval.gate import GateThresholds
+        thresholds = GateThresholds(cost_budget_per_session=args.cost_budget)
+    evaluator = GateEvaluator(thresholds=thresholds)
     report = evaluator.evaluate(_to_run_result(run), _to_run_result(baseline)
                                 if baseline else None)
     payload = report.to_dict()

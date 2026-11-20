@@ -116,18 +116,20 @@ def build_model(*, model: str = '', base_url: str = '', api_key: str = '',
                                                 'https://api.openai.com/v1'),
             api_key=key,
         )
-    from aicf.infra.orchestrator.stub import StubChatClient
+    from aicf.infra.orchestrator.stub import StubChatClient, stub_usage
     from aicf.infra.orchestrator.base import ChatResponse
 
     def respond(messages, tools):
-        # 桩模型：把用户输入回显出来，让 CLI 的离线演示有确定的结果。
+        # stub model: echo the last user message so the offline demo has a fixed
+        # result; usage rides along so the cost path is exercised without a key
         text = ''
         for message in reversed(messages or []):
             content = message.get('content') if isinstance(message, dict) else ''
             if content:
                 text = str(content)
                 break
-        return ChatResponse(content=f'[stub] {text}')
+        reply = f'[stub] {text}'
+        return ChatResponse(content=reply, usage=stub_usage(messages, reply))
 
     return StubChatClient(model=model or 'stub', respond=respond)
 
