@@ -1,0 +1,45 @@
+# 把 docs/site/ 作为站点根发布到 GitHub Pages。
+#
+# 为什么不用分支式部署（Settings → Pages → Deploy from a branch）：
+# 分支式部署的 source path 只接受 / 或 /docs，无法把 docs/site 单独作为站点根；
+# 而 docs/ 下还放着一堆 .md 文档，不适合直接当站点根。
+# Actions 部署支持任意子目录，是官方推荐的唯一解法。
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/site/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
