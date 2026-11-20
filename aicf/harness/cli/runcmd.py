@@ -101,15 +101,19 @@ class _Collector:
 def _setup_session(args: Any, *, session_id: str, collector: _Collector):
     """装配一次 run 需要的全部组件（单输入与数据集两条路径共用）。
 
-    返回 (registry, kernel_cls, runtime, store)。守卫/策略/审批/审计
-    都在这里挂好 —— CLI 不给任何绕过链路的旁路。
+    返回 (registry, kernel_cls, runtime, store, ports)。守卫/策略/审批/审计
+    都在这里挂好 —— CLI 不给任何绕过链路的旁路。ports 是 W4 的三个内核
+    端口（memory/approval/context），此前在所有装配路径上恒为 None。
     """
     from aicf.harness.approval.broker import LocalApprovalBroker
     from aicf.harness.approval.base import ApprovalDecision
+    from aicf.harness.context_assembly import SegmentedContextAssembler
+    from aicf.harness.memory.session_port import SessionMemoryStore
     from aicf.harness.tools.guard import ToolGuard
     from aicf.harness.policy.base import PolicyRule
     from aicf.infra.observability.audit import AuditLog
     from aicf.infra.policy.engine import RulePolicyEngine
+    from aicf.infra.store.chat_store import SessionStore
 
     registry = build_registry(include=args.include or None)
     # `aicf init` 骨架的约定：当前目录的 tools/ 也算工具表的一部分，
@@ -133,16 +137,26 @@ def _setup_session(args: Any, *, session_id: str, collector: _Collector):
                       runtime=runtime, audit=audit_log,
                       session_id=session_id)
     registry.attach_guard(guard)
-    return registry, _resolve_kernel(args), runtime, store
+    # kernel ports (W4): the same db hosts the session tables, so the memory
+    # port rides on it; the context port is the budgeted segment assembler
+    session_store = SessionStore(store)
+    ports = {
+        'memory': SessionMemoryStore(session_store=session_store),
+        'approval': approval,
+        'context': SegmentedContextAssembler(),
+    }
+    return registry, _resolve_kernel(args), runtime, store, ports
 
 
 def _run_one_turn(kernel_cls, registry, model, *, session_id: str, turn_id: str,
-                  text: str, collector: _Collector, runtime, max_steps: int):
+                  text: str, collector: _Collector, runtime, max_steps: int,
+                  ports: dict | None = None):
     """跑一轮（一个 case 或一次单输入），返回 (result, duration_ms)。"""
     from aicf.infra.orchestrator.base import ChatMessage
 
     kernel = kernel_cls(client=model, tools=registry, max_steps=max_steps) \
         if kernel_cls is ReactKernel else kernel_cls()
+    ports = ports or {}
     ctx = KernelContext(
         session_id=session_id,
         turn_id=turn_id,
@@ -151,6 +165,9 @@ def _run_one_turn(kernel_cls, registry, model, *, session_id: str, turn_id: str,
         model=model,
         telemetry=collector,
         runtime=runtime,
+        memory=ports.get('memory'),
+        approval=ports.get('approval'),
+        context=ports.get('context'),
         caps=CapabilitySet(),
         max_steps=max_steps,
     )
@@ -232,7 +249,7 @@ def cmd_run(args: Any) -> int:
     run_id = args.run_id or uuid.uuid4().hex[:12]
     session_id = args.session_id or run_id
     collector = _Collector(trace_id=run_id, run_id=run_id, session_id=session_id)
-    registry, kernel_cls, runtime, store = _setup_session(
+    registry, kernel_cls, runtime, store, ports = _setup_session(
         args, session_id=session_id, collector=collector)
     model = build_model(model=args.model, base_url=args.base_url,
                         api_key=args.api_key)
@@ -241,7 +258,8 @@ def cmd_run(args: Any) -> int:
         result, duration_ms = _run_one_turn(
             kernel_cls, registry, model,
             session_id=session_id, turn_id=run_id, text=args.input,
-            collector=collector, runtime=runtime, max_steps=args.max_steps)
+            collector=collector, runtime=runtime, max_steps=args.max_steps,
+            ports=ports)
     finally:
         store.close()
 
@@ -287,8 +305,8 @@ def _run_dataset(args: Any) -> int:
     run_id = args.run_id or uuid.uuid4().hex[:12]
     session_id = args.session_id or f'{run_id}-dataset'
     collector = _Collector(trace_id=run_id, run_id=run_id, session_id=session_id)
-    registry, kernel_cls, runtime, store = _setup_session(args, session_id=session_id,
-                                                          collector=collector)
+    registry, kernel_cls, runtime, store, ports = _setup_session(args, session_id=session_id,
+                                                                 collector=collector)
     model = build_model(model=args.model, base_url=args.base_url,
                         api_key=args.api_key)
 
@@ -304,7 +322,7 @@ def _run_dataset(args: Any) -> int:
                     kernel_cls, registry, model,
                     session_id=session_id, turn_id=f'{run_id}-{case.id}',
                     text=case.input, collector=collector, runtime=runtime,
-                    max_steps=args.max_steps)
+                    max_steps=args.max_steps, ports=ports)
                 status = 'done' if result.status == 'done' else result.status
                 output = result.text
                 error = ''
