@@ -11,6 +11,10 @@ on:
     branches: [main]
     paths:
       - 'docs/site/**'
+      # 徽章上的测试数要跟着代码走：改了代码或测试，数字可能变，
+      # 所以这两条路径也触发重建（只重建站点，不发布包）。
+      - 'aicf/**'
+      - 'tests/**'
   workflow_dispatch:
 
 permissions:
@@ -34,6 +38,20 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+
+      - name: Count the tests (feeds the README badge)
+        # 徽章上的「1288 passed」得是**这个 commit** 的数字，不能是抄来的。
+        # 所以在发布站点前真跑一遍测试，把结果写成 shields.io 的 endpoint JSON。
+        # 失败不阻断站点发布（站点是门面，不该被一个 flaky 测试卡住），
+        # 但失败会如实显示成红色的「N failed」—— 不藏。
+        continue-on-error: true
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[mcp,anthropic,socks]"
+          pip install pytest pytest-asyncio
+          python -m pytest -q tests/ -m "not known_broken and not fault and not mutation" > pytest.log 2>&1 || true
+          python scripts/write_tests_badge.py pytest.log > docs/site/tests.json
+          cat docs/site/tests.json
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -1,22 +1,24 @@
-<div align="center">
-<img src="docs/header.svg" width="1200" alt="aicf-core — 本地 Agent 的底层引擎">
-</div>
-
 # aicf-core
 
-> **是引擎，不是应用。** 场景无关的 Agent 内核：轮次循环、工具协议、上下文装配、
-> 记忆、会话持久化、多智能体协作——只有这些，没有别的。
+> **是地基，不是应用。** aicf 是 Agent 系统往下长的那一层：长期运行、持久、
+> 稳定、安全、可审计 —— 从下到上，跨模态，任务需要几个 Agent 就几个。
+
+私人伴侣、备考助手、值班运维、研究流水线 —— 底下踩的是同一块地基。
 
 **AICF** = Agent Infrastructure Cybernetics Framework · Apache-2.0
 
+[English](README.md) | [简体中文](README_zh.md)
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![CI](https://img.shields.io/github/actions/workflow/status/ccjjfdyqlhy/aicf-core/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fccjjfdyqlhy.github.io%2Faicf-core%2Ftests.json)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
 [![Local First](https://img.shields.io/badge/local--first-100%25-8A2BE2?style=for-the-badge)](docs/architecture.md)
+[![Modalities](https://img.shields.io/badge/modalities-text%20%C2%B7%20speech%20%C2%B7%20vision-8A2BE2?style=for-the-badge)](docs/infra.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](LICENSE)
-[![CI](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml/badge.svg)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
 
 ---
 
-## 一句话承诺
+## 三条保证
 
 > **安全、幂等、可评测地跑完一次长任务。**
 
@@ -27,6 +29,63 @@
 | **安全** | 每一次工具调用都过策略闸门；有副作用的要人点头。**判定不出来就是拒绝。** 会起进程的工具在启动前先被检查一遍（路径口径、出网目标、ulimit、环境变量白名单），但它仍以**操作者的权限**运行：**还没有 OS 级沙箱**（无容器 / 微虚机）。 | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → 被拒 |
 | **幂等** | 崩了能恢复，且不重复产生副作用。`effectful` 的调用**绝不**自动重放。 | `pytest tests/fault/` —— 子进程里真的 `kill -9` |
 | **可评测** | 每次运行产出 trace；每次改动都被数据集打分，并被四闸门报告拦住。 | `aicf eval` → `aicf gate` |
+
+---
+
+## 地基里有什么
+
+地基就是你的 Agent 系统往下踩的那一层。下面这些东西都住在它里面 —— 正因为都在，
+同一块地基才配得上任何你能叫出名字的场景。
+
+### 从下到上，不是从上往下
+
+应用不是从这个框架里切出来的，是在它**上面长出来**的。
+
+```
+你的应用        伴侣 · 备考助手 · 值班运维 · 研究 · 任何东西
+   ▲
+技能包          声明式、可外置、由框架校验
+   ▲
+aicf/harness    轮次循环 · 工具协议 · 上下文 · 记忆 · 会话 · 管线 · 多智能体
+   ▲
+aicf/infra      模型路由 · 资源池 · 存储 · 网关 · 认证 · 策略
+```
+
+`aicf/harness/` 不 import 任何应用；`aicf/infra/` 不 import 任何业务语义。
+依赖**单向向下**。
+
+### 长期运行，而且对「持久」有话说
+
+`aicf/infra/runtime/` 假设进程活不下来：journal 是真相来源，checkpoint 只是加速器，
+幂等键让 `effectful` 的调用不会被重放，租约 + 围栏令牌让另一个实例能接管，
+而不会出现两个实例同时写。记忆是分层的 —— 工作 / 情节 / 语义 / 画像
+（`aicf/harness/memory/`），经 `aicf/infra/store/` 落盘。
+
+### 默认安全，而且可审计
+
+`aicf/harness/policy/` 负责判定，`aicf/harness/approval/` 在有副作用时替人问一句，
+**判定不出来就是拒绝**。`aicf/infra/observability/audit.py` 留着业务也删不掉的记录。
+还没有 OS 级沙箱 —— [docs/security.md](docs/security.md) 写清楚了到底保护什么、
+不保护什么。
+
+### 全模态：文本、语音、视觉
+
+`aicf/infra/resources/` 在本地跑语音与视觉：ASR（FunASR，进程内）、
+TTS（GPT-SoVITS，走 HTTP）、VLM（本地 llama-server）在同一个池子里，
+按槽位调度，空闲了会被回收。文本走 `aicf/infra/models/` 与
+`aicf/infra/orchestrator/`。当训练与推理抢同一张卡时，
+`aicf/infra/orchestrator/scheduler.py` 里的 `DeviceGate` 是唯一的仲裁点。
+
+### 多个 Agent，一块地基
+
+`aicf/harness/agent/collab.py` 给你角色类型、委派与邮箱；`swarm.py` 加一块黑板；
+`team.py` 把它们组合起来。`aicf/infra/control/` 加身份 —— 每次委派都留痕，
+而一个产物只有在闸门报告通过之后才能发布。
+
+### 技能包就是生态
+
+`aicf/harness/skills/` 从仓库外加载技能包：一个带 JSON-Schema 工具声明的
+`skill.yaml`、一个提示词文件、加上普通 Python。框架会在 Agent 看到它们之前先校验。
 
 ---
 
@@ -70,16 +129,19 @@ aicf gate --run run.json --out gate.json
 pip install aicf-core
 ```
 
-> **先确认装到了哪个版本**：镜像同步会比 PyPI 慢几分钟到几小时，而 1.0.0
-> 之前的版本是**坏的**（没有 `aicf` 命令）。如果 `aicf --version` 打出
-> `0.6.x`，说明你的镜像还在发旧版本 —— 直接从官方源装：
+> **先确认装到了哪个版本**：`aicf --version` 必须打出 `1.0.0` 或更新。
+> 1.0.0 之前的版本**根本没有 `aicf` 命令**。它们在 PyPI 上已经撤下，
+> 但**有些镜像还在发** —— 而当镜像上只有它一个候选时，pip 会**一声不吭**
+> 地把撤下的版本装上。所以如果 `aicf --version` 打出 `0.6.x`，
+> 说明装坏了：直接从官方源装。
 >
 > ```bash
 > pip install -U --index-url https://pypi.org/simple aicf-core
 > ```
 
 装完就是整个库——Agent 内核 + 模型/工具/运行时层。
-**不含任何应用代码和界面**：Web 控制台在独立的仓库里（见下表）。
+库就是这块**地基**；**应用长在它上面**，各自独立仓库
+（Web 控制台是 [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui)，见下表）。
 
 可选 extra，用到哪块再装哪块：
 
@@ -113,7 +175,7 @@ pip install "aicf-core[all]"           # 全都要
 ## 只想写个 Agent？五个符号。
 
 ```python
-from aicf.harness import create_agent, tool   # 你真正会写的三个
+from aicf.harness import create_agent, tool   # 你真正会写的两个
 from aicf.harness.tools import ToolRegistry   # 自己管工具时才需要
 from aicf.infra.models.base import IChatClient # 模型接口
 ```
@@ -151,7 +213,7 @@ print(result)                        # 结果表现得像字符串
 
 ---
 
-## 仓库结构（30 秒）
+## 仓库结构（一分钟）
 
 两层，依赖**单向向下**：
 
@@ -162,15 +224,16 @@ aicf/harness/   Agent 核心     turn loop · 工具 · 上下文 · 记忆 · �
 aicf/infra/     基础设施层    模型路由 · 资源池 · 存储 · 网关 · 认证 · 策略
 ```
 
-```
-apps/  →  没了。Web 控制台在独立仓库：
-```
+它们之上还有：`aicf/harness/kernel/`（workflow + planner）、
+`aicf/infra/control/`（Agent 资产生命周期、成本账本）、
+`aicf/harness/skills/`（技能生态）、`aicf/infra/eval/`（数据集、四闸门）、
+`aicf/infra/runtime/`（journal、checkpoint、恢复）。
+
+用它的产品在各自的仓库里，只依赖 `aicf-core`，不依赖别的：
 
 | 仓库 | 是什么 |
 |---|---|
 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | Web 控制台 —— 模型、对话、资源、System-1 决策 |
-
-它只依赖 `aicf-core`，不依赖别的。
 
 ---
 
@@ -216,6 +279,7 @@ python -m pytest -q tests/
 
 | 我想… | 看这个 |
 |---|---|
+| 从零跑起一个 Agent | [docs/getting-started.md](docs/getting-started.md) |
 | 知道 1.0.0-rc0 在做什么、怎么验收 | [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md) |
 | 搞懂模块地图与依赖规则 | [docs/architecture.md](docs/architecture.md) |
 | 搞懂安全模型（默认拒绝 / 审批 / 沙箱档位 / 审计） | [docs/security.md](docs/security.md) |
@@ -233,3 +297,7 @@ python -m pytest -q tests/
 ## 许可证
 
 Apache-2.0
+
+---
+
+<sub>站点：<https://ccjjfdyqlhy.github.io/aicf-core/> · English: [README.md](README.md)</sub>

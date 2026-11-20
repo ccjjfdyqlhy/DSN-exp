@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>aicf-core — 安全、幂等、可度量的 Agent 运行时</title>
-<meta name="description" content="aicf-core 是一个本地优先的 Python Agent 运行时：每次工具调用都过策略闸门，进程被 kill -9 后可恢复且不重复副作用，每次运行产出 trace 并由四闸门报告拦发布。">
+<title>aicf-core — 是地基，不是应用</title>
+<meta name="description" content="aicf-core 是 Agent 系统往下长的那一层：长期运行、持久、稳定、安全、可审计——从下到上，跨模态，任务需要几个 Agent 就几个。全模态本地资源池、多 Agent 协作、外置的技能包生态，都住在同一块地基里。">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e14'/%3E%3Cpath d='M9 23 L16 9 L23 23' stroke='%235eead4' stroke-width='2.4' fill='none'/%3E%3Cpath d='M12.6 18 H19.4' stroke='%235eead4' stroke-width='2.4'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
@@ -19,6 +19,7 @@
       <span class="brand-mark">aicf</span><span class="brand-sub">core</span>
     </a>
     <nav class="nav" aria-label="主导航">
+      <a href="#floor">地基</a>
       <a href="#promise">承诺</a>
       <a href="#quickstart">90 秒上手</a>
       <a href="#python">Python</a>
@@ -39,10 +40,13 @@
 <section class="hero" id="top">
   <div class="wrap">
     <p class="kicker">aicf-core · Apache-2.0 · Python 3.10+ · local-first</p>
-    <h1>假设进程活不下来的<br>Agent 运行时。</h1>
+    <h1>是地基，<br>不是应用。</h1>
     <p class="lede">
-      一句话承诺：<strong>安全跑完一次长任务</strong>——每个工具调用过策略闸门，
-      崩溃后能恢复且不重复副作用，每次运行都留下可打分的 trace。
+      aicf 是 Agent 系统<strong>往下长的那一层</strong>：长期运行、持久、稳定、安全、可审计——
+      从下到上，跨模态，任务需要几个 Agent 就几个。
+    </p>
+    <p class="lede lede-sub">
+      私人伴侣、备考助手、值班运维、研究流水线——底下踩的是同一块地基。
     </p>
 
     <div class="install">
@@ -61,6 +65,91 @@
       <li><span class="tag">Idempotent</span>kill -9 可恢复 · 副作用不重放</li>
       <li><span class="tag">Measurable</span>trace → dataset 打分 → 四闸门报告</li>
     </ul>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 地基里有什么 ─────────────────────────── -->
+<section class="section section-alt" id="floor">
+  <div class="wrap">
+    <h2>地基里有什么</h2>
+    <p class="section-lede">
+      地基就是你的 Agent 系统往下踩的那一层。下面这些东西都住在它里面——正因为都在，同一块地基才配得上任何你能叫出名字的场景。每一项都标了模块路径，可以自己去翻。
+    </p>
+
+    <div class="grid-2 grid-dim">
+      <div class="card">
+        <h3>全模态：文本 · 语音 · 视觉</h3>
+        <p>
+          语音与视觉的本地资源跑在<strong>同一个池子</strong>里：ASR（FunASR，进程内）、
+          TTS（GPT-SoVITS，走 HTTP）、VLM（本地 llama-server）。按槽位调度、按需拉起；空闲超过阈值就自动停掉，把显存还回去，下次请求再拉起。
+        </p>
+        <ul class="chips">
+          <li>aicf/infra/resources/</li>
+          <li>ResourcePool</li>
+          <li>IdleReaper</li>
+          <li>InProcessModelLauncher</li>
+          <li>HTTPServiceLauncher</li>
+        </ul>
+        <p class="expected">
+          文本模型走 <code>aicf/infra/models/</code> 与 <code>aicf/infra/orchestrator/</code> 的路由；显存独占闸门（<code>DeviceGate</code>）在 <code>aicf/infra/orchestrator/scheduler.py</code>——
+          训练和推理抢同一批卡时，只有一个说了算。
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>多 Agent：任务需要几个，就派几个</h3>
+        <p>
+          角色类型、委派、邮箱与结算在 <code>collab.py</code>；平级协作加一块共享黑板在
+          <code>swarm.py</code>；把它们收成一行调用的是 <code>team.py</code>；主控→子代理的并发拆解在 <code>subagent.py</code>。
+        </p>
+        <ul class="chips">
+          <li>aicf/harness/agent/collab.py</li>
+          <li>aicf/harness/agent/swarm.py</li>
+          <li>aicf/harness/agent/team.py</li>
+          <li>aicf/harness/agent/subagent.py</li>
+        </ul>
+        <p class="expected">
+          身份与授权在 <code>aicf/infra/control/identity.py</code>：<code>AgentIdentity</code> 带完整
+          <code>delegation_chain</code>，子 scope 必须是父 scope 的子集，越权即拒；每次委派都留一份 <code>DelegationAudit</code>。
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>生态：技能包是外置的、声明式的</h3>
+        <p>
+          技能包住在仓库外：一个 <code>skill.yaml</code> 声明工具、提示词与依赖，加上普通的 Python。框架在 Agent 看到它们之前先校验一遍——
+          类、方法、参数、依赖对不上就报出来，而不是等到调用时才炸。
+        </p>
+        <ul class="chips">
+          <li>aicf/harness/skills/</li>
+          <li>Skill / SkillRegistry</li>
+          <li>SkillLoader</li>
+          <li>SkillValidator</li>
+          <li>CapabilityRegistry</li>
+        </ul>
+        <p class="expected">
+          声明式装载在 <code>aicf/harness/skills/yaml_loader.py</code>，运行时安装 / 启用 / 停用 / 追加技能目录在 <code>aicf/harness/skills/yaml_manager.py</code>——
+          装新技能不必重启应用。
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>长期 + 持久：崩了能接着跑</h3>
+        <p>
+          journal 是真相来源，checkpoint 只是加速器；幂等键让 <code>effectful</code> 的调用不会被重放；租约 + 围栏令牌让另一个实例能接管，而不会出现两个实例同时写。
+        </p>
+        <ul class="chips">
+          <li>aicf/infra/runtime/</li>
+          <li>journal / checkpoint</li>
+          <li>idempotency / recovery</li>
+          <li>lease + fencing token</li>
+        </ul>
+        <p class="expected">
+          记忆是分层的：工作 / 情节 / 语义 / 画像，在 <code>aicf/harness/memory/</code>
+          （L0–L3，L3 要显式授权才注入）；持久化的落点在 <code>aicf/infra/store/</code>。
+        </p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -85,9 +174,10 @@
           <tr>
             <td class="col-promise"><span class="tag tag-strong">Safe</span></td>
             <td>
-              每个工具调用都过<strong>策略闸门</strong>；有副作用的工具需要<strong>人批准</strong>；
-              起进程的工具在执行前查路径与出网目标（<strong>不是</strong> OS 级隔离，
-              也没有容器 / 微虚机）；<strong>未决即拒绝</strong>（deny-by-default）。
+              每个工具调用都过<strong>策略闸门</strong>；有副作用的工具需要<strong>人批准</strong>；起进程的工具在执行前查路径与出网目标、加 ulimit、只透传白名单里的环境变量，但仍以<strong>操作者的权限</strong>运行（<strong>不是</strong> OS 级沙箱，也没有容器 / 微虚机）；<strong>未决即拒绝</strong>（deny-by-default）。
+              <p class="expected">
+                策略协议在 <code>aicf/harness/policy/</code>（实现 <code>aicf/infra/policy/engine.py</code>），人在回路在 <code>aicf/harness/approval/</code>。
+              </p>
             </td>
             <td class="col-check">
               <pre class="mini" data-lang="bash"><code>aicf tool exec proc.run \
@@ -101,6 +191,10 @@
             <td>
               进程被 <code>kill -9</code> 之后能恢复，并且<strong>不会重复已发生的副作用</strong>；
               <code>effectful</code> 调用不会自动重放。Journal 是真相，checkpoint 只是加速器。
+              <p class="expected">
+                真相来源在 <code>aicf/infra/runtime/</code>：journal / checkpoint / idempotency /
+                recovery / 租约与围栏令牌。
+              </p>
             </td>
             <td class="col-check">
               <pre class="mini" data-lang="bash"><code>pytest tests/fault/</code></pre>
@@ -112,6 +206,10 @@
             <td>
               每次运行产出 <strong>trace</strong>；能对<strong>数据集</strong>打分；
               <strong>四闸门报告</strong>拦住回归、成本超标或规则破坏。
+              <p class="expected">
+                四道闸门在 <code>aicf/infra/eval/gate.py</code>；业务删不掉的审计与脱敏在
+                <code>aicf/infra/observability/</code>（<code>audit.py</code> / <code>redact.py</code>）。
+              </p>
             </td>
             <td class="col-check">
               <pre class="mini" data-lang="bash"><code>aicf run "..." --trace trace.jsonl
@@ -184,7 +282,7 @@ aicf gate --run run.json --out gate.json</code></pre>
 aicf gate --run run.json --out gate.json</code></pre>
         <p class="expected">
           数据集 <code>basic</code> 随包发布。<code>gate.json</code> 里有四道闸门的逐项判定——
-          质量、回归、成本、安全。发布前先看这份报告。
+          质量、回归、成本、安全。发布前先看这份报告。一句实话：离线桩模型只会把输入原样吐回来，<strong>不调工具</strong>，所以随包数据集的用例<strong>在本地不会通过</strong>——<code>aicf gate</code> 是 CI 用的闸门。
         </p>
       </li>
     </ol>
@@ -196,8 +294,7 @@ aicf gate --run run.json --out gate.json</code></pre>
   <div class="wrap">
     <h2>Python 快速上手</h2>
     <p class="section-lede">
-      三个符号：<code>tool</code>、<code>create_agent</code>、<code>Agent</code>。
-      任何 OpenAI 兼容端点都能接；本地模型就把 <code>base_url</code> 指向 <code>llama-server</code> / LM Studio。
+      三个符号：<code>tool</code>、<code>create_agent</code>、<code>Agent</code>。任何 OpenAI 兼容端点都能接；本地模型就把 <code>base_url</code> 指向 <code>llama-server</code> / LM Studio。
     </p>
 
     <pre data-lang="python"><code>from aicf.harness import create_agent, tool
@@ -229,7 +326,10 @@ from aicf.infra.models.base import IChatClient</code></pre>
         <pre class="mini" data-lang="bash"><code>aicf run "hello" --trace trace.jsonl
 aicf eval --dataset basic \
   --traces trace.jsonl --out run.json</code></pre>
-        <p class="expected">不配 API key 时 CLI 走内置 stub 模型，评测闭环照样跑得通。</p>
+        <p class="expected">
+          不配 API key 时 CLI 走内置 stub 模型，评测闭环照样跑得起来——
+          但桩模型不调工具，随包数据集的用例在本地不会通过。
+        </p>
       </div>
     </div>
   </div>
@@ -238,20 +338,63 @@ aicf eval --dataset basic \
 <!-- ──────────────────────────── 架构两层 ──────────────────────────── -->
 <section class="section section-alt" id="architecture">
   <div class="wrap">
-    <h2>架构：两层，依赖只向下</h2>
+    <h2>架构：从下到上，依赖只向下</h2>
     <p class="section-lede">
-      本仓库只有这两层。放代码前先回答一个问题：它关心业务语义，还是只管资源？
+      本仓库是下面那两层——<code>aicf/harness</code> 与 <code>aicf/infra</code>。放代码前先回答一个问题：它关心业务语义，还是只管资源？技能包与你的应用<strong>长在它上面</strong>，但依赖依然单向向下：上层知道下层，下层不知道上层。
     </p>
 
     <div class="arch">
+      <div class="arch-layer arch-layer-outside">
+        <div class="arch-head">
+          <span class="arch-path">你的应用</span>
+          <span class="arch-role">应用层 · 在本仓库之外</span>
+        </div>
+        <p class="arch-desc">
+          伴侣、备考助手、值班运维、研究流水线——应用不是从这个仓库里切出来的，是在它上面长出来的。它只依赖 <code>aicf-core</code>。
+        </p>
+      </div>
+
+      <div class="arch-link arch-link-up">
+        <span class="arch-arrow arch-arrow-up" aria-hidden="true"></span>
+        <span class="arch-link-text">长在上面 ↑</span>
+        <span class="arch-link-note">
+          <code>aicf/harness</code> 与 <code>aicf/infra</code> 都不 import 任何应用——
+          应用代码不在这个仓库里。
+        </span>
+      </div>
+
+      <div class="arch-layer arch-layer-top">
+        <div class="arch-head">
+          <span class="arch-path">技能包</span>
+          <span class="arch-role">aicf/harness/skills · 外置、声明式</span>
+        </div>
+        <p class="arch-desc">
+          一个 <code>skill.yaml</code> 声明工具、提示词与依赖，加上普通的 Python。框架在 Agent 看到它们之前先校验一遍；装进去、启用、停用，都不用改内核代码。
+        </p>
+        <ul class="chips">
+          <li>Skill / SkillRegistry</li>
+          <li>SkillLoader</li>
+          <li>SkillValidator</li>
+          <li>CapabilityRegistry</li>
+        </ul>
+      </div>
+
+      <div class="arch-link arch-link-up">
+        <span class="arch-arrow arch-arrow-up" aria-hidden="true"></span>
+        <span class="arch-link-text">长在上面 ↑</span>
+        <span class="arch-link-note">
+          技能包由框架装载与校验（<code>aicf/harness/skills/yaml_loader.py</code> /
+          <code>yaml_manager.py</code>），运行时追加技能目录即可，不用改内核。
+        </span>
+      </div>
+
       <div class="arch-layer">
         <div class="arch-head">
           <span class="arch-path">aicf/harness</span>
           <span class="arch-role">Agent 核心层</span>
         </div>
         <p class="arch-desc">
-          只处理「消息进、工具出」：轮次循环、工具协议与注册表、上下文装配与裁剪、
-          记忆、会话与 transcript、管线与事件。不认识任何业务。
+          只处理「消息进、工具出」：轮次循环、工具协议与注册表、上下文装配与裁剪、记忆、会话与 transcript、管线与事件。不认识任何业务。
         </p>
         <ul class="chips">
           <li>agent loop</li>
@@ -278,8 +421,7 @@ aicf eval --dataset basic \
           <span class="arch-role">资源与基础设施层</span>
         </div>
         <p class="arch-desc">
-          只管进程、HTTP、显存、磁盘、密钥与预算：模型路由、资源池、存储、网关、认证、策略。
-          不知道业务语义。
+          只管进程、HTTP、显存、磁盘、密钥与预算：模型路由、资源池、存储、网关、认证、策略。不知道业务语义。
         </p>
         <ul class="chips">
           <li>model routing</li>
@@ -288,6 +430,28 @@ aicf eval --dataset basic \
           <li>gateway</li>
           <li>auth</li>
           <li>policy</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="expected">两层里还住着这些子包，上面每一项主张都能在这里对号入座：</p>
+    <div class="modmap">
+      <div class="modmap-row">
+        <span class="modmap-label modmap-label-harness">harness</span>
+        <ul class="chips">
+          <li>aicf/harness/kernel/</li>
+          <li>aicf/harness/agent/</li>
+          <li>aicf/harness/skills/</li>
+          <li>aicf/harness/memory/</li>
+        </ul>
+      </div>
+      <div class="modmap-row">
+        <span class="modmap-label modmap-label-infra">infra</span>
+        <ul class="chips">
+          <li>aicf/infra/runtime/</li>
+          <li>aicf/infra/control/</li>
+          <li>aicf/infra/resources/</li>
+          <li>aicf/infra/eval/</li>
         </ul>
       </div>
     </div>
@@ -305,6 +469,10 @@ aicf eval --dataset basic \
         <h3>规则三：未判定 ≠ 通过</h3>
         <p>没有 baseline 时，回归与成本闸门明确标「未判定」，不会默默给一个 PASS。</p>
       </div>
+      <div class="rule">
+        <h3>规则四：应用长在上面，不切在里面</h3>
+        <p>本仓库不含应用代码：技能包外置（<code>aicf/harness/skills/</code>），产品在各自的仓库里，只依赖 <code>aicf-core</code>。</p>
+      </div>
     </div>
   </div>
 </section>
@@ -314,8 +482,7 @@ aicf eval --dataset basic \
   <div class="wrap">
     <h2>文档索引</h2>
     <p class="section-lede">
-      下面是仓库 <code>docs/</code> 下的维护者文档。链接使用相对路径（<code>../architecture.md</code>），
-      指向仓库内的 Markdown 源文件；站点部署到 GitHub Pages 后会自动改写到 GitHub 对应文件。
+      下面是仓库 <code>docs/</code> 下的维护者文档。链接使用相对路径（<code>../architecture.md</code>），指向仓库内的 Markdown 源文件；站点部署到 GitHub Pages 后会自动改写到 GitHub 对应文件。
     </p>
 
     <div class="table-scroll">
@@ -364,6 +531,16 @@ aicf eval --dataset basic \
             <td class="col-when">要改模型、资源或存储</td>
           </tr>
           <tr>
+            <td><a href="../skills.md"><code>skills.md</code></a></td>
+            <td>技能系统：声明式技能的目录布局、装载、校验与能力注入</td>
+            <td class="col-when">要写一个技能包，或排查「技能不生效」</td>
+          </tr>
+          <tr>
+            <td><a href="../control-plane.md"><code>control-plane.md</code></a></td>
+            <td>控制面：Agent 身份、委派授权、资产生命周期、成本账本</td>
+            <td class="col-when">要接多 Agent，或做 Agent 资产治理</td>
+          </tr>
+          <tr>
             <td><a href="../sdk_guide.md"><code>sdk_guide.md</code></a></td>
             <td>把 AICF 当 Python SDK 嵌入到别的项目里</td>
             <td class="col-when">要把它接到自己的系统</td>
@@ -404,8 +581,7 @@ aicf eval --dataset basic \
   <div class="wrap">
     <h2>迁移到 1.0.0</h2>
     <p class="section-lede">
-      1.0.0 起顶层不再占用 <code>harness</code> 与 <code>infra</code> 这两个名字，
-      全部收进 <code>aicf</code> 命名空间。分发名与命令行入口都不变。
+      1.0.0 起顶层不再占用 <code>harness</code> 与 <code>infra</code> 这两个名字，全部收进 <code>aicf</code> 命名空间。分发名与命令行入口都不变。
     </p>
 
     <div class="table-scroll">
@@ -458,8 +634,7 @@ aicf eval --dataset basic \
         </ul>
         <p class="expected">
           分发名不叫 <code>aicf</code>，是因为 PyPI 上这个名字与本项目过于相似、申请会被拒；
-          import 不叫顶层 <code>harness</code> / <code>infra</code>，是因为那两个名字已经让给别人了。
-          变的只有 Python 里的 import 路径，命令行参数与配置文件不受影响。
+          import 不叫顶层 <code>harness</code> / <code>infra</code>，是因为那两个名字已经让给别人了。变的只有 Python 里的 import 路径，命令行参数与配置文件不受影响。
         </p>
         <p class="expected">
           仓库地址：<a href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">github.com/ccjjfdyqlhy/aicf-core</a>
@@ -475,7 +650,7 @@ aicf eval --dataset basic \
     <h2>先跑那五条命令</h2>
     <p class="section-lede">
       装上，看工具目录，试着被拒一次，跑一轮，打分，出报告。
-      六分钟之内你会知道这套东西是不是你要的。
+      90 秒之内你会知道这套东西是不是你要的。
     </p>
     <p class="cta-actions">
       <a class="btn" href="https://pypi.org/project/aicf-core/" target="_blank" rel="noopener">PyPI · aicf-core</a>
@@ -491,7 +666,7 @@ aicf eval --dataset basic \
   <div class="wrap footer-inner">
     <div class="footer-col">
       <span class="footer-brand">aicf-core</span>
-      <p>Agent 运行时<br>安全 · 幂等 · 可度量<br>Apache-2.0 许可。</p>
+      <p>是地基，不是应用<br>长期 · 持久 · 稳定 · 安全可审计<br>Apache-2.0 许可。</p>
     </div>
     <div class="footer-col">
       <span class="footer-head">仓库</span>

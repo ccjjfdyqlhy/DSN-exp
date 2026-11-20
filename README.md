@@ -1,22 +1,26 @@
-<div align="center">
-<img src="docs/header.svg" width="1200" alt="aicf-core — the agent engine behind your local agent">
-</div>
-
 # aicf-core
 
-> **The engine, not the app.** A scenario-agnostic agent core: turn loop, tool protocol,
-> context assembly, memory, sessions, multi-agent collaboration — and nothing else.
+> **The floor, not the app.** aicf is the layer an agent system stands on:
+> long-running, persistent, stable, safe and auditable — bottom-up, across
+> modalities, with as many agents as the job needs.
+
+A private companion, a study assistant, an on-call ops agent, a research
+pipeline — the floor underneath is the same one.
 
 **AICF** = Agent Infrastructure Cybernetics Framework · Apache-2.0
 
+[English] | [简体中文](README_zh.md)
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![CI](https://img.shields.io/github/actions/workflow/status/ccjjfdyqlhy/aicf-core/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fccjjfdyqlhy.github.io%2Faicf-core%2Ftests.json)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
 [![Local First](https://img.shields.io/badge/local--first-100%25-8A2BE2?style=for-the-badge)](docs/architecture.md)
+[![Modalities](https://img.shields.io/badge/modalities-text%20%C2%B7%20speech%20%C2%B7%20vision-8A2BE2?style=for-the-badge)](docs/infra.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)](LICENSE)
-[![CI](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml/badge.svg)](https://github.com/ccjjfdyqlhy/aicf-core/actions/workflows/ci.yml)
 
 ---
 
-## One promise
+## Three guarantees
 
 > **Run one long task safely, idempotently, and measurably.**
 
@@ -27,6 +31,69 @@ Most agent frameworks assume the process lives. This one assumes it will not.
 | **Safe** | Every tool call goes through a policy gate and, when the tool has side effects, an approval step. Anything undecided is **denied**. A tool that starts a process is checked before it runs — path scope, network target, `ulimit`s, environment whitelist — but it still runs with the operator's privileges: there is **no OS-level sandbox** (no container / micro-vm) yet. | `aicf tool exec proc.run --args '{"command":"rm -rf /"}'` → refused |
 | **Idempotent** | A crashed run can be resumed without repeating side effects. `effectful` calls are never auto-replayed. | `pytest tests/fault/` — real `kill -9` in a subprocess |
 | **Measurable** | Every run produces a trace; every change is scored against a dataset and stopped by a four-gate report. | `aicf eval` → `aicf gate` |
+
+---
+
+## What is in the floor
+
+The floor is what your agent system stands on. Here is what lives on it —
+and because all of it lives here, the same floor serves any scenario.
+
+### Bottom-up, not top-down
+
+Applications are not carved out of this framework. They grow on top of it.
+
+```
+your app          companion · study assistant · on-call ops · research · anything
+   ▲
+skills            declarative packages, out-of-tree, validated by the framework
+   ▲
+aicf/harness      turn loop · tool protocol · context · memory · sessions · pipeline · multi-agent
+   ▲
+aicf/infra        model routing · resource pool · storage · gateway · auth · policy
+```
+
+`aicf/harness/` never imports an application; `aicf/infra/` never imports
+business semantics. Dependencies point **downward only**.
+
+### Long-running, and persistent about it
+
+`aicf/infra/runtime/` assumes the process will not survive: the journal is
+the source of truth, checkpoints only accelerate it, idempotency keys stop an
+`effectful` call from replaying, and a lease + fencing-token scheduler lets
+another instance take over without two of them writing at once. Memory is
+layered — working, episodic, semantic, profile (`aicf/harness/memory/`) — and
+persisted through `aicf/infra/store/`.
+
+### Safe by default, and auditable
+
+`aicf/harness/policy/` decides, `aicf/harness/approval/` asks a human when a
+call has side effects, and **anything undecided is denied**.
+`aicf/infra/observability/audit.py` keeps the record the business cannot
+delete. There is no OS-level sandbox yet — [docs/security.md](docs/security.md)
+states exactly what is and is not protected.
+
+### Full-modal: text, speech, vision
+
+`aicf/infra/resources/` runs speech and vision locally: ASR (FunASR,
+in-process), TTS (GPT-SoVITS over HTTP) and VLM (a local llama-server) sit in
+one pool, scheduled by slot and reclaimed when they go idle. Text runs through
+`aicf/infra/models/` and `aicf/infra/orchestrator/`. When training and
+inference want the same card, `DeviceGate` in
+`aicf/infra/orchestrator/scheduler.py` is the one place that arbitrates.
+
+### Many agents, one floor
+
+`aicf/harness/agent/collab.py` gives you role types, delegation and a
+mailbox; `swarm.py` adds a blackboard; `team.py` composes them.
+`aicf/infra/control/` adds agent identity — every delegation is recorded, and
+an artifact can only be released if its gate report passed.
+
+### Skills are the ecosystem
+
+`aicf/harness/skills/` loads skill packages from outside the repo: a
+`skill.yaml` with JSON-Schema tool declarations, a prompt file, and plain
+Python. The framework validates them before an agent ever sees them.
 
 ---
 
@@ -71,18 +138,20 @@ cases are missing.
 pip install aicf-core
 ```
 
-> **Check what you got.** Mirrors lag behind PyPI by minutes to hours, and
-> releases before `1.0.0` were broken (no `aicf` command). If `aicf --version`
-> prints `0.6.x`, your mirror is still serving an old release — install from
-> PyPI directly:
+> **Check what you got.** `aicf --version` must print `1.0.0` or newer.
+> Releases before `1.0.0` shipped **no `aicf` command at all**. They are yanked
+> on PyPI, but **some mirrors still serve them** — and pip installs a yanked
+> release without a word when it is the only candidate the mirror carries.
+> So if `aicf --version` prints `0.6.x`, your install is broken: take it from
+> PyPI directly.
 >
 > ```bash
 > pip install -U --index-url https://pypi.org/simple aicf-core
 > ```
 
 That is the whole library — the agent kernel and the model/tool/runtime layer.
-It has **no application code and no UI**: the web console lives in its own repository
-([`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui)).
+The floor is the library; **applications live on top of it**, in their own
+repositories (the web console is [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui)).
 
 Optional extras, installed only when you need them:
 
@@ -118,8 +187,8 @@ works too — it is the same symbol, forwarded lazily.)
 ## Just want to write an agent? Five symbols.
 
 ```python
-from aicf.harness import create_agent, tool   # the three you write with
-from aicf.harness.tools import ToolRegistry   # when you manage tools yourself
+from aicf.harness import create_agent, tool     # the two you write with
+from aicf.harness.tools import ToolRegistry     # when you manage tools yourself
 from aicf.infra.models.base import IChatClient # the model interface
 ```
 
@@ -156,7 +225,7 @@ Any OpenAI-compatible endpoint works. For a local model, point `base_url` at you
 
 ---
 
-## The repo in 30 seconds
+## The repo in one minute
 
 Two layers, dependencies pointing **downward only**:
 
@@ -167,15 +236,17 @@ aicf/harness/   Agent core    turn loop · tools · context · memory · pipelin
 aicf/infra/     Infra         model routing · resource pool · storage · gateway · auth · policy
 ```
 
-```
-apps/  →  gone. The web console now lives in its own repository:
-```
+On top of them: `aicf/harness/kernel/` (workflow + planner),
+`aicf/infra/control/` (agent artifacts, lifecycle, cost ledger),
+`aicf/harness/skills/` (the skill ecosystem), `aicf/infra/eval/` (dataset,
+four gates), `aicf/infra/runtime/` (journal, checkpoint, recovery).
+
+Products that use it live in their own repositories and depend on
+`aicf-core` and nothing else:
 
 | Repository | What it is |
 |---|---|
 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | Web console — models, chat, resources, System-1 decisions |
-
-It depends on `aicf-core` and nothing else.
 
 ---
 
@@ -228,6 +299,7 @@ python -m pytest -q tests/
 
 | I want to… | Read this |
 |---|---|
+| Get from zero to a running agent | [docs/getting-started.md](docs/getting-started.md) |
 | Know what 1.0.0-rc0 is doing and how it is verified | [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md) |
 | Learn the module map and dependency rules | [docs/architecture.md](docs/architecture.md) |
 | Understand the security model (deny-by-default, approval, sandbox tiers, audit) | [docs/security.md](docs/security.md) |
@@ -245,3 +317,7 @@ python -m pytest -q tests/
 ## License
 
 Apache-2.0
+
+---
+
+<sub>Site: <https://ccjjfdyqlhy.github.io/aicf-core/> · 中文版: [README_zh.md](README_zh.md)</sub>
