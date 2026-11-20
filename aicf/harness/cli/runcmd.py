@@ -74,13 +74,28 @@ def _resolve_kernel(args: Any):
 
 
 class _Collector:
-    """把事件流收进内存 —— trace 的 tool_calls 断言消费的就是它。"""
+    """Kernel telemetry sink with a dual fan-out.
 
-    def __init__(self) -> None:
+    The raw event list feeds the eval contract (tool_calls assertions, W0
+    usage); the same stream also feeds the real span machine
+    (infra TraceCollector, W1) so a run leaves an auditable span trail
+    instead of only the trimmed eval payload.
+    """
+
+    def __init__(self, *, trace_id: str = '', run_id: str = '',
+                 session_id: str = '') -> None:
+        from aicf.infra.observability.trace import TraceCollector
+
         self.events: list[dict] = []
+        self._spans = TraceCollector(trace_id=trace_id or None, run_id=run_id,
+                                     session_id=session_id)
 
     def emit(self, kind, payload) -> None:
         self.events.append({'kind': kind, 'payload': dict(payload or {})})
+        self._spans.emit(kind, payload)
+
+    def spans(self) -> list[dict]:
+        return self._spans.records()  # method on TraceCollector, not a property
 
 
 def _setup_session(args: Any, *, session_id: str, collector: _Collector):
@@ -179,10 +194,34 @@ def _trace_payload(collector: _Collector, *, trace_id: str, session_id: str,
 
 
 def _write_trace(trace: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('a', encoding='utf-8') as handle:
-        handle.write(json.dumps(trace, ensure_ascii=False, default=str))
-        handle.write('\n')
+    # redact only the free-form payloads inside events: the eval contract
+    # fields (usage tokens, cost) must survive verbatim, and a blanket
+    # redact_dict would mask numeric accounting values as '***' (W1)
+    from aicf.infra.observability.redact import redact_dict
+    from aicf.harness.telemetry.exporter import TraceExporter
+
+    payload = dict(trace)
+    payload['events'] = [
+        dict(event, payload={k: (redact_dict(v) if isinstance(v, dict) else v)
+                             for k, v in (event.get('payload') or {}).items()})
+        for event in trace.get('events') or []
+    ]
+    with TraceExporter(path, append=True, redact_values=False) as exporter:
+        exporter.write(payload)
+
+
+def _write_spans(collector: _Collector, path: Path, *, start: int = 0) -> None:
+    """Sidecar span trail for one run/case (<trace>.spans.jsonl).
+
+    Spans carry free-form tool args, so they get the blanket redact.
+    """
+    from aicf.harness.telemetry.exporter import TraceExporter
+
+    spans = collector.spans()[start:]
+    if not spans:
+        return
+    with TraceExporter(path.with_suffix('.spans.jsonl')) as exporter:
+        exporter.export(spans)
 
 
 def cmd_run(args: Any) -> int:
@@ -192,7 +231,7 @@ def cmd_run(args: Any) -> int:
 
     run_id = args.run_id or uuid.uuid4().hex[:12]
     session_id = args.session_id or run_id
-    collector = _Collector()
+    collector = _Collector(trace_id=run_id, run_id=run_id, session_id=session_id)
     registry, kernel_cls, runtime, store = _setup_session(
         args, session_id=session_id, collector=collector)
     model = build_model(model=args.model, base_url=args.base_url,
@@ -213,6 +252,7 @@ def cmd_run(args: Any) -> int:
     trace_path = Path(args.trace) if args.trace else None
     if trace_path is not None:
         _write_trace(trace, trace_path)
+        _write_spans(collector, trace_path)
         print(f'trace → {trace_path}')
     if args.json:
         out_json(trace)
@@ -246,7 +286,7 @@ def _run_dataset(args: Any) -> int:
 
     run_id = args.run_id or uuid.uuid4().hex[:12]
     session_id = args.session_id or f'{run_id}-dataset'
-    collector = _Collector()
+    collector = _Collector(trace_id=run_id, run_id=run_id, session_id=session_id)
     registry, kernel_cls, runtime, store = _setup_session(args, session_id=session_id,
                                                           collector=collector)
     model = build_model(model=args.model, base_url=args.base_url,
@@ -256,6 +296,7 @@ def _run_dataset(args: Any) -> int:
     try:
         for case in cases:
             collector.events.clear()
+            span_start = len(collector.spans())
             case_trace_dir = trace_dir / case.id
             trace_path = case_trace_dir.with_suffix('.jsonl')
             try:
@@ -280,6 +321,7 @@ def _run_dataset(args: Any) -> int:
             if error:
                 trace['error'] = error
             _write_trace(trace, trace_path)
+            _write_spans(collector, trace_path, start=span_start)
             rows.append({'case_id': case.id, 'group': case.group,
                          'status': status, 'trace': str(trace_path)})
             if not args.json:
