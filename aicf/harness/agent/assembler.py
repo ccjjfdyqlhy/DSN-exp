@@ -69,6 +69,8 @@ class AgentSpec:
     memory_budgets: Optional[dict] = None    # per-layer ratio overrides (must sum to 1.0)
     profile_authorized: Any = None           # L3 disclosure gate; None = L3 never injects (fail-closed)
     session_store: Any = None                # app-provided SessionStore for the memory_port registration
+    agent_identity: Any = None               # AgentIdentity: lands in audit records (W5.1)
+    decision_gate: Any = None                # optional System-1 consult before tool exec (W5.4, default off)
 
 
 class AssembledAgent:
@@ -314,6 +316,8 @@ class AgentAssembler:
                           sandbox=spec.security_sandbox,
                           audit=audit_log,
                           runtime=spec.runtime,
+                          identity=spec.agent_identity,
+                          decision_gate=spec.decision_gate,
                           mode=spec.security_mode or default_security_mode())
         tools.attach_guard(guard)
         runtime.register("guard", guard)

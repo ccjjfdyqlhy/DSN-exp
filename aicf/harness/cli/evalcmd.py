@@ -96,9 +96,45 @@ def _to_trace(payload: dict) -> Trace:
     )
 
 
+def _dataset_from_badcases(db_path: str):
+    """Labelled badcases -> a hard_cases regression dataset (W5.3).
+
+    Only rows with repro data (input_text) become cases; the rest are still
+    waiting for someone to label the repro.
+    """
+    from aicf.infra.eval.badcase import STATUS_LABELLED, BadCaseIntake, LabelledBadCase
+    from aicf.infra.eval.dataset import EvalDataset
+    from aicf.infra.eval.trace_store import TraceStore
+
+    store = TraceStore(db_path)
+    intake = BadCaseIntake(store)
+    records = []
+    for row in store.list_badcases(status=STATUS_LABELLED):
+        if not str(row.get('input_text') or '').strip():
+            continue
+        records.append(LabelledBadCase(
+            id=str(row['id']), session_id=str(row.get('session_id') or ''),
+            trace_id=str(row.get('trace_id') or ''),
+            reason=str(row.get('reason') or ''),
+            label=str(row.get('label') or ''), status=STATUS_LABELLED,
+            input_text=str(row.get('input_text') or ''),
+            expect=list(row.get('expect') or ()),
+            critical=bool(row.get('critical', True))))
+    if not records:
+        raise ValueError(f'{db_path} 里没有可回流的已标注坏样本')
+    return EvalDataset(id='badcases', version='1', path=db_path,
+                       cases=intake.to_dataset(records),
+                       description=f'hard cases from {db_path} ({len(records)} labelled)')
+
+
 def cmd_eval(args: Any) -> int:
+    if not getattr(args, 'dataset', '') and not getattr(args, 'from_badcases', ''):
+        eprint('Error: 需要 --dataset <名字|路径>（或 --from-badcases <db>）')
+        return 2
     try:
-        dataset = load_dataset(resolve_dataset(args.dataset))
+        dataset = (_dataset_from_badcases(args.from_badcases)
+                   if getattr(args, 'from_badcases', '')
+                   else load_dataset(resolve_dataset(args.dataset)))
     except Exception as error:  # noqa: BLE001
         eprint(f'数据集加载失败: {error}')
         return 2
@@ -195,6 +231,24 @@ def cmd_gate(args: Any) -> int:
     report = evaluator.evaluate(_to_run_result(run), _to_run_result(baseline)
                                 if baseline else None)
     payload = report.to_dict()
+    if not report.passed:
+        # gate FAIL feeds the badcase intake (W5.3): the loop the roadmap
+        # promised -- failures come back as labelled regression cases
+        try:
+            from aicf.infra.eval.badcase import BadCaseIntake
+            from aicf.infra.eval.trace_store import TraceStore
+
+            intake = BadCaseIntake(TraceStore(_gate_db_path(args)))
+            for item in run.get('results') or []:
+                if item.get('passed'):
+                    continue
+                rules = ','.join(item.get('failed_rules') or []) or 'failed'
+                intake.intake(session_id=str(run.get('run_id') or ''),
+                              trace_id=str(item.get('trace_id') or ''),
+                              source='gate',
+                              reason=f"{item.get('case_id')}:{rules}")
+        except Exception as error:  # noqa: BLE001
+            eprint(f'（badcase 回流未落库：{error}）')
     if args.out:
         path = write_json(args.out, payload)
         print(f'gate 报告 → {path}')

@@ -148,6 +148,7 @@ class ToolGuard:
                  runtime: Any = None,
                  identity: Any = None,
                  audit: Any = None,
+                 decision_gate: Any = None,
                  mode: SecurityMode = STRICT_MODE,
                  session_id: str = '',
                  turn_id: str = '',
@@ -165,6 +166,10 @@ class ToolGuard:
         self.telemetry = telemetry
         self.runtime = runtime or NullRuntimeClient()
         self.identity = identity
+        #: optional System-1 consult before execution (W5.4, default off).
+        #: Contract: check(tool=..., args=..., spec=...) returns None to pass
+        #: or {'allow': False, 'reason': ...} to refuse.
+        self.decision_gate = decision_gate
         #: 不可删审计存储（策划案 §4.4.7「同流但独立存储、不可被业务删除」）。
         #: 鸭子类型契约：只要提供 ``record(kind, payload)`` 一个方法 ——
         #: infra.observability.audit.AuditLog 满足它。audit.* 事件在这里
@@ -218,6 +223,21 @@ class ToolGuard:
             self._emit_denied(tool, decision)
             return GuardResult(result=self._blocked_result(tool, decision),
                                decision=decision)
+
+        # 2.5 decision gate (W5.4, default off): the System-1 mount point.
+        # None means byte-for-byte the old behavior; a gate returns None to
+        # pass or {'allow': False, 'reason': ...} to refuse.
+        if self.decision_gate is not None:
+            verdict = self.decision_gate.check(tool=tool.name, args=args,
+                                               spec=spec)
+            if verdict is not None and not verdict.get('allow', True):
+                denial = PolicyDecision.deny(
+                    'decision_gate',
+                    detail=str(verdict.get('reason') or 'decision gate refused'))
+                self._emit_blocked(tool, spec, denial)
+                self._emit_denied(tool, denial)
+                return GuardResult(result=self._blocked_result(tool, denial),
+                                   decision=denial)
 
         # 3. 审批
         approved = False
@@ -307,7 +327,7 @@ class ToolGuard:
                     'violation': str(violation.get('code', '')),
                 })
                 self._emit('audit.denied', {
-                    'identity': getattr(self.identity, 'uid', '') or '',
+                    'identity': self._identity_label(),
                     'tool': tool.name,
                     'reason': 'sandbox',
                     'violation': str(violation.get('code', '')),
@@ -315,7 +335,7 @@ class ToolGuard:
                 })
                 self._record_audit({
                     'kind': 'audit.denied',
-                    'identity': getattr(self.identity, 'uid', '') or '',
+                    'identity': self._identity_label(),
                     'tool': tool.name,
                     'reason': 'sandbox',
                     'violation': str(violation.get('code', '')),
@@ -504,6 +524,12 @@ class ToolGuard:
         except Exception:  # noqa: BLE001
             logger.exception('审计存储写入失败（trace 面的审计仍在）')
 
+    def _identity_label(self) -> str:
+        """Who the audit record is for: uid for user identities, agent_id for
+        AgentIdentity (two different classes, same audit field)."""
+        return (getattr(self.identity, 'uid', '')
+                or getattr(self.identity, 'agent_id', ''))
+
     def _emit_denied(self, tool: Tool, decision: PolicyDecision) -> None:
         """审计：一次被拒绝的调用。
 
@@ -512,14 +538,14 @@ class ToolGuard:
         让复盘时能按原因分组。
         """
         self._emit('audit.denied', {
-            'identity': getattr(self.identity, 'uid', '') or '',
+            'identity': self._identity_label(),
             'tool': tool.name,
             'reason': decision.reason,
             'detail': decision.detail,
         })
         self._record_audit({
             'kind': 'audit.denied',
-            'identity': getattr(self.identity, 'uid', '') or '',
+            'identity': self._identity_label(),
             'tool': tool.name,
             'reason': decision.reason,
             'detail': decision.detail,
@@ -538,7 +564,7 @@ class ToolGuard:
                     duration_ms: float, result: ToolResult,
                     approved: bool, args: dict[str, Any]) -> None:
         call_audit = {
-            'identity': getattr(self.identity, 'uid', '') or '',
+            'identity': self._identity_label(),
             'tool': tool.name,
             'version': spec.version,
             # The digest has to describe the real arguments, otherwise the

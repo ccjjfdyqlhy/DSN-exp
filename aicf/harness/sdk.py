@@ -74,6 +74,8 @@ class Agent:
         memory_budget: int = 12000,
         memory_budgets: Optional[dict] = None,
         profile_authorized: Optional[Any] = None,
+        agent_identity: Optional[Any] = None,
+        decision_gate: Optional[Any] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
@@ -127,6 +129,8 @@ class Agent:
             memory_budget=memory_budget,
             memory_budgets=memory_budgets,
             profile_authorized=profile_authorized,
+            agent_identity=agent_identity,
+            decision_gate=decision_gate,
         )
 
         assembler = AgentAssembler(self.client, embedding_client=embedding_client)
@@ -311,6 +315,7 @@ _AGENT_OPTIONS = (
     "enable_toolbox", "enable_memory", "memory_k", "mcp", "deps",
     "security_audit", "runtime", "embedding_client",
     "memory_mode", "memory_budget", "memory_budgets", "profile_authorized",
+    "agent_identity", "decision_gate",
 )
 
 
@@ -374,6 +379,8 @@ def create_agent(
     memory_budget = options.pop("memory_budget", 12000)
     memory_budgets = options.pop("memory_budgets", None)
     profile_authorized = options.pop("profile_authorized", None)
+    agent_identity = options.pop("agent_identity", None)
+    decision_gate = options.pop("decision_gate", None)
     deps = options.pop("deps", None)
 
     budget_cap = options.pop("budget_cap", None)
@@ -420,4 +427,6 @@ def create_agent(
         memory_budget=memory_budget,
         memory_budgets=memory_budgets,
         profile_authorized=profile_authorized,
+        agent_identity=agent_identity,
+        decision_gate=decision_gate,
     )

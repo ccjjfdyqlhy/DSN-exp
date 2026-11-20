@@ -96,8 +96,12 @@ def cmd_exec(args: Any) -> int:
     # 不可删审计（策划案 §4.4.7）：手工执行也落审计，不留旁路。
     from aicf.infra.observability.audit import AuditLog
     audit_log = AuditLog()
+    identity = None
+    if getattr(args, 'identity', ''):
+        from aicf.infra.control.identity import AgentIdentity
+        identity = AgentIdentity(agent_id=args.identity, delegated_by='user')
     guard = ToolGuard(policy=engine, approval=approval, mode=mode,
-                      identity=None, runtime=runtime, audit=audit_log,
+                      identity=identity, runtime=runtime, audit=audit_log,
                       session_id=args.name)
     registry.attach_guard(guard)
 

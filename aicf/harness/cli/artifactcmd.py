@@ -144,6 +144,29 @@ def cmd_publish(args: Any) -> int:
     return 0
 
 
+def cmd_cost(args: Any) -> int:
+    """Read the control_cost_ledger (W5.2): the table finally gets readers."""
+    from aicf.infra.control.store import ArtifactStore
+    from aicf.infra.eval.trace_store import TraceStore
+
+    store = ArtifactStore(TraceStore(args.db))
+    payload: dict = {}
+    if args.session:
+        payload['session'] = args.session
+        payload['total_cost'] = store.cost.session_total(args.session)
+    if args.agent:
+        payload['by_agent'] = store.cost.by_agent(args.agent)
+    if not payload:
+        eprint('用法: aicf artifact cost --session <id> 或 --agent <agent_id>')
+        return 2
+    if args.json:
+        out_json(payload)
+    else:
+        for key, value in payload.items():
+            eprint(f'{key}: {value}')
+    return 0
+
+
 def cmd_list(args: Any) -> int:
     store = _open_store(args.db)
     records = store.list_artifacts(artifact_id=args.id or '',
@@ -241,6 +264,13 @@ def register(sub: Any) -> None:
     rollback.add_argument('--db', default='aicf.db')
     rollback.add_argument('--json', action='store_true')
 
+    cost = artifact_sub.add_parser('cost', help='成本账本（control_cost_ledger，W5.2）')
+    cost.add_argument('--session', default='', help='按 session 查总成本')
+    cost.add_argument('--agent', default='', help='按 agent 归因')
+    cost.add_argument('--db', default='aicf.db')
+    cost.add_argument('--json', action='store_true')
+
+    cost.set_defaults(func=cmd_cost)
     validate.set_defaults(func=cmd_validate)
     show.set_defaults(func=cmd_show)
     publish.set_defaults(func=cmd_publish)

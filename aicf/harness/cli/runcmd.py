@@ -133,8 +133,12 @@ def _setup_session(args: Any, *, session_id: str, collector: _Collector):
     runtime, store = build_runtime(args.db, session_id)
     # 不可删审计（策划案 §4.4.7）：run 路径的 audit.* 事件落独立存储。
     audit_log = AuditLog()
+    identity = None
+    if getattr(args, 'identity', ''):
+        from aicf.infra.control.identity import AgentIdentity
+        identity = AgentIdentity(agent_id=args.identity, delegated_by='user')
     guard = ToolGuard(policy=engine, approval=approval, telemetry=collector,
-                      runtime=runtime, audit=audit_log,
+                      runtime=runtime, audit=audit_log, identity=identity,
                       session_id=session_id)
     registry.attach_guard(guard)
     # kernel ports (W4): the same db hosts the session tables, so the memory
@@ -241,6 +245,21 @@ def _write_spans(collector: _Collector, path: Path, *, start: int = 0) -> None:
         exporter.export(spans)
 
 
+def _record_cost(args: Any, session_id: str, tokens: int, cost: float) -> None:
+    """Best-effort cost attribution (W5.2): the ledger never breaks a run."""
+    try:
+        from aicf.infra.control.store import ArtifactStore
+        from aicf.infra.eval.trace_store import TraceStore
+
+        store = ArtifactStore(TraceStore(args.db))
+        store.cost.record(session_id=session_id,
+                          agent_id=getattr(args, 'identity', '') or '',
+                          model=args.model or 'stub',
+                          tokens=int(tokens), cost=float(cost))
+    except Exception as error:  # noqa: BLE001
+        eprint(f'[aicf] cost ledger write skipped: {error}')
+
+
 def cmd_run(args: Any) -> int:
     _apply_artifact(args)
     if getattr(args, 'dataset', ''):
@@ -272,6 +291,9 @@ def cmd_run(args: Any) -> int:
         _write_trace(trace, trace_path)
         _write_spans(collector, trace_path)
         print(f'trace → {trace_path}')
+    _record_cost(args, session_id,
+                 tokens=(trace.get('usage') or {}).get('total_tokens', 0),
+                 cost=trace.get('cost', 0.0))
     if args.json:
         out_json(trace)
     else:
@@ -311,6 +333,7 @@ def _run_dataset(args: Any) -> int:
                         api_key=args.api_key)
 
     rows: list[dict] = []
+    total_tokens, total_cost = 0, 0.0
     try:
         for case in cases:
             collector.events.clear()
@@ -340,6 +363,8 @@ def _run_dataset(args: Any) -> int:
                 trace['error'] = error
             _write_trace(trace, trace_path)
             _write_spans(collector, trace_path, start=span_start)
+            total_tokens += int((trace.get('usage') or {}).get('total_tokens', 0))
+            total_cost += float(trace.get('cost', 0.0))
             rows.append({'case_id': case.id, 'group': case.group,
                          'status': status, 'trace': str(trace_path)})
             if not args.json:
@@ -348,6 +373,7 @@ def _run_dataset(args: Any) -> int:
     finally:
         store.close()
 
+    _record_cost(args, session_id, tokens=total_tokens, cost=total_cost)
     if args.json:
         out_json({'dataset': dataset.id, 'cases': rows})
     else:

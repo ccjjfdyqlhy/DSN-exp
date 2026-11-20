@@ -63,14 +63,18 @@ def build_parser() -> argparse.ArgumentParser:
                      help='数据集模式下 trace 输出目录（默认 traces/）')
     run.add_argument('--workspace', default='.aicf-workspace',
                      help='数据集 setup 文件写入的工作区目录')
+    run.add_argument('--identity', default='',
+                     help='agent identity for the audit trail (W5.1)')
     run.add_argument('--db', default='aicf.db', help='运行时数据库')
     run.add_argument('--json', action='store_true', help='输出 JSON')
 
     # ── eval ─────────────────────────────────────────────
     evaluate = sub.add_parser('eval', help='对一批 trace 打分')
-    evaluate.add_argument('--dataset', required=True, help='数据集路径')
+    evaluate.add_argument('--dataset', default='', help='数据集路径（--from-badcases 时可省）')
     evaluate.add_argument('--group', action='append', default=[],
                           help='只评某几组（可重复、可逗号分隔，如 --group refusal,safety）')
+    evaluate.add_argument('--from-badcases', default='',
+                          help='从坏样本库构建回归集（db 路径；W5.3）')
     evaluate.add_argument('--traces', default='', help='trace 文件或目录')
     evaluate.add_argument('--artifact', default='', help='Agent 声明文件')
     evaluate.add_argument('--model', default='', help='模型名（进 run version）')
@@ -100,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     tool_exec.add_argument('name', help='工具名')
     tool_exec.add_argument('--args', dest='args_json', default='{}',
                            help='JSON 参数')
+    tool_exec.add_argument('--identity', default='',
+                           help='agent identity for the audit trail (W5.1)')
     tool_exec.add_argument('--policy', choices=['strict', 'legacy'],
                            default='strict', help='策略模式')
     tool_exec.add_argument('--allow', action='append', default=[],

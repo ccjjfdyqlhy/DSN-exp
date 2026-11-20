@@ -440,7 +440,9 @@ CREATE TABLE IF NOT EXISTS eval_gate_report (
     id TEXT PRIMARY KEY, run_version_id TEXT, verdict TEXT, report_json TEXT, created_at REAL
 );
 CREATE TABLE IF NOT EXISTS eval_badcase (
-    id TEXT PRIMARY KEY, session_id TEXT, trace_id TEXT, reason TEXT, status TEXT, created_at REAL
+    id TEXT PRIMARY KEY, session_id TEXT, trace_id TEXT, reason TEXT, status TEXT, created_at REAL,
+    label TEXT DEFAULT '', input_text TEXT DEFAULT '', expect_json TEXT DEFAULT '[]',
+    critical INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS eval_trace (
     trace_id TEXT PRIMARY KEY, run_version_id TEXT, session_id TEXT, case_id TEXT,
@@ -472,6 +474,14 @@ class TraceStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.executescript(_SCHEMA)
+        # label columns for older files (W5.3: the labelled fields must
+        # survive a restart, otherwise --from-badcases reads empty cases)
+        for column in ("label TEXT DEFAULT ''", "input_text TEXT DEFAULT ''",
+                       "expect_json TEXT DEFAULT '[]'", "critical INTEGER DEFAULT 1"):
+            try:
+                self._conn.execute(f"ALTER TABLE eval_badcase ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass  # column already there
         self._conn.commit()
 
     # ── 生命周期 ──
@@ -704,13 +714,39 @@ class TraceStore:
         return bid
 
     def list_badcases(self, *, status: str = "") -> list[dict[str, Any]]:
-        sql = "SELECT id, session_id, trace_id, reason, status, created_at FROM eval_badcase"
+        sql = ("SELECT id, session_id, trace_id, reason, status, created_at,"
+               " label, input_text, expect_json, critical FROM eval_badcase")
         params: list[Any] = []
         if status:
             sql += " WHERE status = ?"
             params.append(status)
         sql += " ORDER BY created_at DESC"
-        return [dict(r) for r in self._conn.execute(sql, params)]
+        rows = []
+        for r in self._conn.execute(sql, params):
+            row = dict(r)
+            try:
+                row["expect"] = json.loads(row.pop("expect_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                row["expect"] = []
+            row["critical"] = bool(row.get("critical", 1))
+            rows.append(row)
+        return rows
+
+    def label_badcase(self, badcase_id: str, *, label: str,
+                      input_text: str = '', expect: list | None = None,
+                      critical: bool = True) -> bool:
+        """Persist the labelled fields + status (W5.3).
+
+        The labelled fields used to live only in the returned object, so a
+        restart lost the repro steps -- the pipeline could not close.
+        """
+        cur = self._conn.execute(
+            "UPDATE eval_badcase SET status = 'labelled', label = ?, input_text = ?,"
+            " expect_json = ?, critical = ? WHERE id = ?",
+            (label, input_text, json.dumps(list(expect or []), ensure_ascii=False),
+             1 if critical else 0, badcase_id))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def set_badcase_status(self, badcase_id: str, status: str) -> bool:
         """推进一条 badcase 的生命周期（new → labelled → queued / dismissed）。
