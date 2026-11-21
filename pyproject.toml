@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicf-core"
-version = "1.0.0"
+version = "1.0.1"
 description = "AICF - Agent Infrastructure Cybernetics Framework: a scenario-agnostic agent engine (turn loop, tools, sqlite sessions, sub-agent collaboration)"
 readme = "README.md"
 requires-python = ">=3.10"

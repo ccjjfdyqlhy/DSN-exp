@@ -24,10 +24,15 @@ pip 装到的版本和仓库里的版本不一致，而**没有任何一道门**
 3. `aicf tool list` 能跑，且真的列出了工具。
 4. `aicf eval --dataset basic` 能跑，且**读到了随包分发的数据集**。
 5. `from aicf.harness import create_agent, tool` 能 import。
+6. 1.0.1 新增的能力确实在 wheel 里，而不是只在源码树里：
+   `aicf init` 能生成骨架、`offline` 评测集随包分发、语音层与记忆溯源能 import。
+7. **README 的完整流程端到端跑通并且是绿的**：
+   `aicf init demo` → `aicf run --dataset offline` → `aicf eval` → `aicf gate`
+   → 闸门判定「通过」。这一项是 1.0.1 的核心承诺（1.0.0 的 README 走完是红的）。
 
 ## 用法
 
-    python scripts/wheel_smoke.py --wheel dist/aicf_core-1.0.0-py3-none-any.whl
+    python scripts/wheel_smoke.py --wheel dist/aicf_core-1.0.1-py3-none-any.whl
 
 不传 --wheel 时会自动取 dist/ 里最新的 wheel。退出码 0 = 通过，
 非 0 = 阻断（release workflow 会因此拒绝发布）。
@@ -36,6 +41,7 @@ pip 装到的版本和仓库里的版本不一致，而**没有任何一道门**
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -56,8 +62,28 @@ def _declared_version() -> str:
     return match.group(1)
 
 
+def _clean_env() -> dict[str, str]:
+    """一个「干净机器」的环境。
+
+    为什么必须清 PYTHONPATH：闸门要验的是**用户真正装到的那份字节**。
+    如果环境里有 PYTHONPATH 指向仓库根，那么
+      · 仓库里的 editable 安装（aicf_core.egg-info）会被 pip 看见，
+        pip 于是认为「aicf-core 已经装好了」→ **不装 console_scripts**；
+      · 仓库源码树会在 sys.path 里抢在 venv 的 site-packages 前面，
+        测到的其实是源码，不是 wheel。
+    两种情况下闸门都会**假绿**：检查项全过，但用户装到的包其实是坏的。
+
+    真实用户的机器上不会有这个变量，所以闸门必须自己清掉。
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    return env
+
+
 def _run(cmd: list[str], cwd: str | None = None, timeout: int = 300) -> tuple[int, str, str]:
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                          timeout=timeout, env=_clean_env())
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -91,16 +117,6 @@ def check_entry_point(wheel: Path) -> tuple[bool, str]:
     if not re.search(r"^aicf\s*=", content, re.MULTILINE):
         return False, f"console_scripts 里没有 aicf 条目：{content.strip()!r}"
     return True, "console_scripts 里有 aicf"
-
-
-def check_datasets_shipped(wheel: Path) -> tuple[bool, str]:
-    """评测集必须随包分发 —— README 说它「ships with the package」。"""
-    with zipfile.ZipFile(wheel) as archive:
-        names = archive.namelist()
-    datasets = [n for n in names if n.endswith(".yaml") and "datasets/" in n]
-    if not datasets:
-        return False, "wheel 里没有随包分发的数据集（aicf/harness/datasets/*.yaml）"
-    return True, f"随包数据集 {len(datasets)} 个"
 
 
 def check_installed_cli(venv_python: Path, expected_version: str) -> tuple[bool, str]:
@@ -183,6 +199,99 @@ def check_installed_metadata(venv_python: Path, expected_version: str,
     return True, f"已安装版本 {installed}"
 
 
+def check_datasets_shipped(wheel: Path) -> tuple[bool, str]:
+    """两个评测集都要随包分发。"""
+    names = set()
+    with zipfile.ZipFile(wheel) as zf:
+        for name in zf.namelist():
+            if name.startswith("aicf/harness/datasets/") and name.endswith(".yaml"):
+                names.add(name.rsplit("/", 1)[-1])
+    missing = {"basic.yaml", "offline.yaml"} - names
+    if missing:
+        return False, f"缺少评测集 {sorted(missing)}（包里有 {sorted(names)}）"
+    return True, f"随包评测集 {sorted(names)}"
+
+
+def check_cli_commands(venv_python: Path) -> tuple[bool, str]:
+    """1.0.1 新增的子命令必须在装出来的包里。"""
+    exe = venv_python.parent / "aicf"
+    code, out, err = _run([str(exe), "--help"])
+    if code != 0:
+        return False, f"aicf --help 退出码 {code}：{(err or out).strip()[:200]}"
+    text = out + err
+    missing = [c for c in ("init", "resources", "learn", "finetune") if c not in text]
+    if missing:
+        return False, f"CLI 里没有 {missing} —— 1.0.1 的新能力没进 wheel"
+    return True, "CLI 含 init / resources / learn / finetune"
+
+
+def check_init_scaffold(venv_python: Path) -> tuple[bool, str]:
+    """`aicf init` 必须真的生成一套能跑的骨架。"""
+    exe = venv_python.parent / "aicf"
+    with tempfile.TemporaryDirectory() as work:
+        code, out, err = _run([str(exe), "init", "demo"], cwd=work, timeout=180)
+        if code != 0:
+            return False, f"aicf init 退出码 {code}：{(err or out).strip()[:300]}"
+        root = Path(work) / "demo"
+        if not root.is_dir():
+            return False, f"aicf init 没有生成 demo 目录：{(err or out).strip()[:200]}"
+        expected = ["agent.py", "README.md", "pyproject.toml", "tools", "policies"]
+        missing = [name for name in expected if not (root / name).exists()]
+        if missing:
+            return False, f"aicf init 的骨架缺 {missing}"
+        if not list((root / "tools").glob("*.py")):
+            return False, "aicf init 的 tools/ 里没有示例工具"
+        return True, f"aicf init 生成了 {len(expected)} 项骨架"
+
+
+def check_new_modules_import(venv_python: Path, cwd: Path) -> tuple[bool, str]:
+    """1.0.1 新模块必须能 import（语音层、记忆溯源、资源档位）。"""
+    code = (
+        "import aicf.harness.voice as v;"
+        "from aicf.harness.memory.provenance import "
+        "MemorySource, MemoryArtifact, EvidenceGate, DisclosureMatrix;"
+        "import aicf.infra.resources.profiles as p;"
+        "print(len(v.__all__ or []) if hasattr(v, '__all__') else 'ok')"
+    )
+    rc, out, err = _run([str(venv_python), "-c", code], cwd=str(cwd))
+    if rc != 0:
+        return False, f"新模块 import 失败：{(err or out).strip()[:300]}"
+    return True, "voice / memory.provenance / resources.profiles 均可 import"
+
+
+def check_readme_offline_flow(venv_python: Path) -> tuple[bool, str]:
+    """README 的完整流程必须跑通，且终点是**绿的**。
+
+    1.0.0 的 README 走完是一句红色的「闸门判定: 未通过」——
+    新用户的第一印象就是坏的。这一项就是守住那句「走完是绿的」。
+    """
+    exe = venv_python.parent / "aicf"
+    with tempfile.TemporaryDirectory() as work:
+        traces = Path(work) / "traces"
+        traces.mkdir()
+
+        code, out, err = _run([str(exe), "run", "--dataset", "offline",
+                               "--trace-dir", str(traces)], cwd=work, timeout=600)
+        if code != 0:
+            return False, f"aicf run --dataset offline 退出码 {code}：{(err or out).strip()[-400:]}"
+
+        code, out, err = _run([str(exe), "eval", "--dataset", "offline",
+                               "--traces", str(traces), "--out",
+                               str(Path(work) / "run.json")], cwd=work, timeout=300)
+        if code != 0:
+            return False, f"aicf eval --dataset offline 退出码 {code}：{(err or out).strip()[-400:]}"
+
+        code, out, err = _run([str(exe), "gate", "--run",
+                               str(Path(work) / "run.json"), "--out",
+                               str(Path(work) / "gate.json")], cwd=work, timeout=300)
+        combined = out + err
+        if code != 0 or "未通过" in combined:
+            return False, f"闸门没过（退出码 {code}）：{combined.strip()[-400:]}"
+        if "通过" not in combined:
+            return False, f"闸门输出里看不到判定：{combined.strip()[-300:]}"
+        return True, "README 全流程跑通，闸门判定：通过"
+
+
 # ── 主流程 ────────────────────────────────────────────────
 def pick_wheel(explicit: str | None) -> Path:
     if explicit:
@@ -214,7 +323,7 @@ def main() -> int:
     for name, fn in [
         ("顶层包只有 aicf", lambda: check_top_level_packages(wheel)),
         ("console_scripts 入口点", lambda: check_entry_point(wheel)),
-        ("评测集随包分发", lambda: check_datasets_shipped(wheel)),
+        ("两份评测集随包分发", lambda: check_datasets_shipped(wheel)),
     ]:
         ok, detail = fn()
         print(f"{'PASS' if ok else 'FAIL'}  {name:<24} {detail}")
@@ -257,6 +366,10 @@ def main() -> int:
         ("aicf --version / tool list", lambda: check_installed_cli(venv_python, expected)),
         ("aicf eval 能读随包数据集", lambda: check_eval_dataset(venv_python)),
         ("公开 import 路径", lambda: check_public_import(venv_python, neutral)),
+        ("1.0.1 新命令在 CLI 里", lambda: check_cli_commands(venv_python)),
+        ("aicf init 生成骨架", lambda: check_init_scaffold(venv_python)),
+        ("新模块可 import", lambda: check_new_modules_import(venv_python, neutral)),
+        ("README 全流程绿", lambda: check_readme_offline_flow(venv_python)),
     ]:
         ok, detail = fn()
         print(f"{'PASS' if ok else 'FAIL'}  {name:<24} {detail}")

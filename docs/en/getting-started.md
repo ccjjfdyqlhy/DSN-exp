@@ -35,7 +35,7 @@ pip install -e .                            # 只要内核的话，最小依赖�
 
 *(Inline comments: "install from source (with the three optional extras MCP / Anthropic / SOCKS)" / "for just the core, minimal dependencies suffice".)*
 
-Or install it directly (**the current release is 1.0.0**):
+Or install it directly (**the current release is 1.0.1**):
 
 ```bash
 pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
@@ -68,13 +68,13 @@ sensible defaults**. For the full breakdown see [configuration.md](../configurat
 ### 1.4 Confirm the install works
 
 ```bash
-python3 -c "import aicf; print('aicf', aicf.__version__)"           # 期望 1.0.0
+python3 -c "import aicf; print('aicf', aicf.__version__)"           # expected 1.0.1
 python3 -c "from aicf.harness import create_agent; print('harness ok')"
 python3 -c "import aicf.infra; print('infra ok')"
 python3 -m pytest -q tests/                                          # 跑测试
 ```
 
-*(Inline comments: "expected 1.0.0" / "run the tests".)*
+*(Inline comments: "expected 1.0.1" / "run the tests".)*
 
 ### 1.5 Run a minimal agent
 

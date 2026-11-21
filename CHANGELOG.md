@@ -10,103 +10,79 @@
 
 ## [Unreleased]
 
-把「可度量」这根支柱从**装饰**变成**真的可判定**。
+---
+
+## [1.0.1] — 2026-11-21
+
+**1.0.0 之后的第一个版本。核心变化：README 的上手流程走完是**绿的**，
+并且新增了四件此前只存在于设计稿里的能力 —— 记忆溯源、语音交互层、
+资源档位、`aicf init` 脚手架。
+
+### 新增
+
+- **`aicf init <name>` —— 空白脚手架。** 新建一个文件夹、跑一条命令，
+  得到一套**写好了接入点、但没有业务**的骨架（`agent.py` / `tools/` /
+  `policies/` / `traces/` + README + `pyproject.toml`），自己往里填肉。
+  每个接入点都是能直接跑的最小接线，不是 TODO 列表。
+- **语音交互层 `aicf/harness/voice/`。** 流式逐句朗读、假语音过滤、
+  感知模式（连续通话、沉默=在听）。此前这些只在应用层，框架层没有。
+- **记忆溯源 `aicf/harness/memory/provenance.py`。** Source（不可变证据）→
+  Artifact（可修订解释）两级模型，带 revision 链、**证据闸门**
+  （`EvidenceGate`）与**披露矩阵**（`DisclosureMatrix`）；记忆写入进审计轨。
+  这是「持久记忆**可审计**」这根支柱的实现。
+- **资源档位 `resident` / `balanced` / `eco`。** `resident` 显存换延迟、
+  永不自动卸载（第一次语音请求的延迟 == 常驻延迟）；`eco` 显存优先。
+  显式解决「随时可用」与显存的冲突。
+- **`aicf learn` 与 `benchmarks/`。** 轨迹 → 数据集 → 判官 → 晋级闭环，
+  以及**可复现的基准数字**（记忆压缩比、崩溃恢复成功率）。
+- **离线评测集 `offline.yaml`。** 零 API key 验证 run → trace → eval → gate
+  链路，**6/6 通过、闸门判定「通过」**。
+  与 `basic`（40 case，质量回归，需真模型）刻意分开 ——
+  不把「链路坏了」和「模型退步了」混进一张报告。
 
 ### 修复
 
-- **随包数据集里的工具断言有 26 条落不到真实注册表上。**
-  `aicf/harness/datasets/basic.yaml` 写的是抽象能力名（`fs.read` / `calc.eval` /
-  `web.search` …），而框架注册的工具叫 `file.read` / `web.fetch` —— 评测集刻意
-  不绑定具体实现，但**没人把抽象名落到真实工具上**。后果不是「用例失败」，
-  而是**用例永远不可能通过**，且失败原因会被误读成「模型没调用工具」。
-
-  现在由 `aicf/infra/eval/tool_vocab.py` 的 `TOOL_NAME_ALIASES` 统一绑定：
-  `fs.read → file.read`、`fs.write → file.write`、`fs.list → file.list`、
-  `fs.stat → file.read`（框架没有 stat，知道文件多大只能读出来自己数）、
-  `fs.delete → file.edit`、`shell.exec → proc.run`、`web.search → web.fetch`、
-  `web.fetch → web.fetch`、`json.parse → text.extract_json`。
-  评测集本身一个抽象名都没改 —— 换实现时只改词表右边那一列。
-
-- **六条用例断言了当前实现里不存在的工具**，已改为断言**结果**而非工具名：
-  `sum_two_numbers` / `unit_conversion` / `date_arithmetic`（框架没有注册纯计算
-  工具）、`choose_stat_tool` / `read_then_compute`（同因）、
-  `prefer_search_over_fetch`（原本要求 `web.search` 又禁止 `web.fetch`，
-  而现在 `web.search` 就落到 `web.fetch` —— **自相矛盾**，改为
-  「本地能回答时不要瞎出网」）。`search_then_answer` 改为只断言「去取了外部
-  信息」，不断言答案文本（答案取决于网络，离线不可判定）。
-
-- **回声输出会被算成通过。** 桩模型把输入原样吐回来时，如果期望内容恰好出现在
-  输入里（例：输入「200 的 10% 是多少」、期望输出含「20」），`output_contains`
-  会**假通过** —— 一个什么都没答的模型拿到了通过。现在评测器识别「输出 = 输入
-  （可带 `[stub]` 标记与标点）」这一种回声，并判它不满足
-  `output_contains` / `output_matches`。
-
-### 新增
-
-- **工具词表与绑定层** `aicf/infra/eval/tool_vocab.py`：抽象名 → 真实工具名
-  的唯一入口，`resolve_tool_names()` / `matches_tool_call()`。
-- **守卫测试** `tests/test_eval_dataset_bindings.py`：断言
-  ① 评测集里出现的每个工具名都能落到至少一个真实注册的工具上；
-  ② 词表的每个绑定目标都真实存在；
-  ③ 同一条用例不会「要求 A 又禁止 A 的绑定目标」；
-  ④ 用例 id 唯一。
-  这条测试**跑在修复前的代码上会红**（它指出 5 条幽灵工具断言 + 1 条自相矛盾
-  的用例）—— 1.0.0 之前 `tests/test_rc0_eval.py` 里的
-  `test_every_case_in_basic_dataset_is_satisfiable` 抓不到这个问题，
-  因为它**用数据集自己的抽象名造轨迹、再拿抽象名去比对，是循环论证**。
+- **评测集与注册表脱节。** 随包数据集里 27 条工具断言有 26 条指向不存在的
+  工具名（`fs.read` / `calc.eval` / `web.search` …），而注册表里叫
+  `file.read` / `web.fetch` —— 这些断言**永远不可能通过**，且失败原因会被
+  误读成「模型没调用工具」。现在由 `aicf/infra/eval/tool_vocab.py` 统一绑定，
+  评测集本身一个抽象名都没改。另有 6 条断言了当前实现里不存在的工具的用例
+  已改为断言结果而非工具名。
+- **回声算通过。** 桩模型把输入原样吐回来时，若期望内容恰好出现在输入里，
+  `output_contains` 会**假通过**。评测器现在识别回声并判它不满足断言。
+- **CI 的 eval 作业只跑 `--help`。** 「随包数据集能不能真的用」从来没被验证过
+  —— 这正是坏包能连发 6 个版本而没人发现的原因。现在真跑一次 eval 与闸门。
+- **沙箱说法自相矛盾。** README 承诺「and a sandbox」，而 `SECURITY.md`
+  写着「there is no sandbox」。已按代码事实统一：策略闸门 + 审批 + 默认拒绝 +
+  执行前检查，**没有 OS 级沙箱**。
 
 ### 变更
 
-- **CI 的 eval 作业现在真的跑一次评测与闸门**，而不是只跑 `--help`。
-  1.0.0 之前那一步是 `eval --dataset basic --help`，于是「随包数据集能不能真的
-  用」从来没被验证过 —— 这正是坏包能连发 6 个版本而没人发现的原因。
-  新步骤会真跑 `eval` 与 `gate`、产出 `run.json` / `gate.json`，并断言
-  「40 条用例全部读到 + 4 道闸门全部产出」。用例未通过属预期（离线桩模型不调
-  工具），但**崩溃（Traceback）必须让 CI 变红**。
+- **README / README_zh / 落地页的宣传口径统一为「是地基，不是应用」。**
+  之前三处卖的是「安全、幂等、可度量」—— 三条关于**一次长任务**的保证，
+  太窄，读起来像给后端团队用的 CI 器件。补上了此前三处都没提的四个维度：
+  全模态、多 Agent、技能生态、长期持久，每条给出真实模块路径。
+- **新增英文文档与英文落地页**（`docs/en/` 四份、`docs/site/en/`），
+  以及 `docs/community.md`、`docs/skill-spec.md`。
+- **README 新增简体中文互链**，并新增显示**具体测试数**的徽章
+  （Pages 工作流发布前真跑一遍测试，数字是当场跑出来的）。
+- **版本一致性做成测试**：`tests/test_version.py` 现在会扫描所有文档里的
+  「当前发布版是 X」声明，X 必须等于 pyproject 的版本；
+  下限声明（`1.0.0 or newer`）也不能高于当前版本。
+
+### 发布说明
+
+[docs/releases/v1.0.1.md](docs/releases/v1.0.1.md)
+
+### 发布闸门
+
+`scripts/wheel_smoke.py` 从 5 项扩到 **11 项**，新增覆盖 1.0.1 的新能力：
+两份评测集随包分发、CLI 含新命令、`aicf init` 真能生成骨架、
+新模块可 import，以及 **README 全流程端到端跑通且闸门判定「通过」**。
 
 ---
 
-## [Unreleased]
-
-### 文档
-
-- **README / README_zh / 落地页的宣传与「地基」定位对齐。**
-  之前三处卖的是「安全、幂等、可度量」—— 三条关于**一次长任务**的保证。
-  这话不假，但太窄：读起来像给后端团队用的 CI 器件，而不是「任何东西都能长在
-  上面」的地基。现在统一为：
-
-  > 是地基，不是应用。aicf 是 Agent 系统往下长的那一层：长期运行、持久、稳定、
-  > 安全、可审计 —— 从下到上，跨模态，任务需要几个 Agent 就几个。
-
-  并补上了之前**三处都没提**的四个维度，每条都给出真实模块路径：
-  全模态（`aicf/infra/resources/`）、多 Agent（`aicf/harness/agent/`、
-  `aicf/infra/control/identity.py`）、技能生态（`aicf/harness/skills/`）、
-  长期与持久（`aicf/infra/runtime/`、`aicf/harness/memory/`）。
-
-- **新增「地基里有什么」一节**（README 英/中）与落地页的「地基里有什么」区块。
-- **落地页 hero 改写**，导航加「地基」；架构图从「两层，依赖只向下」改成
-  「从下到上，依赖只向下」，并在上面长出「你的应用（仓库之外）」与「技能包」两层。
-- **修掉 README 内部矛盾**：「30 秒 / 九十秒」两套时间承诺 → 统一；
-  「五个符号」与「你真正会写的三个（实际 import 两个）」→ 改成两个。
-- **安装提示写实**：坏版本虽然已在 PyPI 撤下，但**镜像仍会发**，而 pip 在镜像上
-  只有它一个候选时会**一声不吭**地装上撤下的版本（实测中科大源仍会装到 0.6.2，
-  且没有 `aicf` 命令）。所以提示改成「`aicf --version` 必须打出 1.0.0 或更新」，
-  并给出从官方源装的命令。
-
-### 新增
-
-- **徽章统一风格 + 显示具体测试数**。CI 徽章从 GitHub 默认样式换成 shields.io，
-  与其它徽章同款。新增「Tests」徽章显示**这个 commit 的真实用例数** ——
-  `scripts/write_tests_badge.py` 解析 pytest 摘要，写出 shields.io endpoint
-  JSON（`docs/site/tests.json`），Pages 工作流在发布站点前真跑一遍测试。
-  数字是当场跑出来的，不是抄来的；跑挂了就显示红色的「N failed」，不藏。
-- Pages 工作流的触发路径加上 `aicf/**` 与 `tests/**`，这样徽章上的数字跟得上代码。
-
-### 移除
-
-- **扔掉 SVG banner**（`docs/header.svg`、`docs/header-v2.svg` 一并删除，
-  两者已无人引用）。README 顶部现在是纯文字定位 + 徽章。
-- **README 加简体中文互链**（`README.md` ↔ `README_zh.md`）。
+---
 
 ---
 

@@ -23,7 +23,7 @@ the console depends on the library, and the library depends on nothing above it.
 | [`aicf-core`](https://github.com/ccjjfdyqlhy/aicf-core) | `aicf/harness/` and `aicf/infra/` | `pip install aicf-core` | none |
 | [`aicf-ui`](https://github.com/ccjjfdyqlhy/aicf-ui) | web console | `pip install -e .` | aicf-core |
 
-`aicf-core` 1.0.0rc3 is the current release. while a version is unpublished, install
+`aicf-core` 1.0.1 is the current release. while a version is unpublished, install
 from git:
 
 ```bash

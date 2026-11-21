@@ -40,6 +40,7 @@ docs/app-development.md  -> write a new application
 
 | document | contents | read it when |
 |---|---|---|
+| [releases/](releases/) | release notes per version (latest: [v1.0.1](releases/v1.0.1.md)) | checking what changed in a version |
 | [roadmap_1.0.0-rc0.md](roadmap_1.0.0-rc0.md) | the 1.0.0-rc0 plan: workstreams, acceptance criteria, status, risks | planning or reviewing 1.0.0 work |
 | [architecture.md](architecture.md) | layers, dependency direction, module map, request path, global singletons, quality baseline | always first |
 | [security.md](security.md) | the security model: tool contracts, admission, approval, sandbox, identity, audit | touching anything that can cause side effects |
