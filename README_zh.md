@@ -16,6 +16,14 @@
 
 </div>
 
+<div align="center">
+
+```bash
+pip install aicf-core
+```
+
+</div>
+
 ## aicf-core 是什么
 
 aicf-core 是特化做一件事的 Agent 基础设施：**长期在线、随时响应的陪伴式
@@ -51,8 +59,6 @@ journal 里，`effectful` 的调用绝不重放，另一个实例可以接管。
 ## 九十秒
 
 ```bash
-pip install aicf-core
-
 # 生成一个骨架项目：接入点都接好了，没有业务
 aicf init demo && cd demo
 ```

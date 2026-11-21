@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>aicf-core — The floor, not the app</title>
-<meta name="description" content="aicf-core is the layer an agent system stands on: long-running, persistent, stable, safe and auditable — bottom-up, across modalities, with as many agents as the job needs. A full-modal local resource pool, multi-agent collaboration, and an external, declarative skill ecosystem all live in the same floor.">
+<title>aicf-core — The floor that makes an agent unkillable</title>
+<meta name="description" content="aicf-core is agent infrastructure specialized for one job: companion systems that stay online for the long haul and respond the moment you speak. It assumes the process will die — and the task still finishes. Policy gates and human approval, an audit trail that cannot be deleted, layered memory, local speech and vision, and a four-gate eval loop all live in the same floor.">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e14'/%3E%3Cpath d='M9 23 L16 9 L23 23' stroke='%235eead4' stroke-width='2.4' fill='none'/%3E%3Cpath d='M12.6 18 H19.4' stroke='%235eead4' stroke-width='2.4'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../assets/style.css">
@@ -41,14 +41,15 @@
 <section class="hero" id="top">
   <div class="wrap">
     <p class="kicker">aicf-core · Apache-2.0 · Python 3.10+ · local-first</p>
-    <h1>The floor,<br>not the app.</h1>
+    <h1>The floor that makes<br>an agent unkillable.</h1>
     <p class="lede">
-      aicf is <strong>the layer an agent system stands on</strong>: long-running, persistent,
-      stable, safe and auditable — bottom-up, across modalities, with as many agents as the job needs.
+      aicf is agent infrastructure specialized for one job: <strong>companion systems that stay
+      online for the long haul and respond the moment you speak</strong>. It assumes the process
+      will die — a crash, a power cut, a deploy restart — and the task still finishes.
     </p>
     <p class="lede lede-sub">
-      A private companion, a study assistant, an on-call ops agent, a research pipeline —
-      the floor underneath is the same one.
+      A system like that cannot go down with the machine or drop a sentence mid-conversation —
+      so the floor under it must be unkillable and always awake. The floor, not the app.
     </p>
 
     <div class="install">
@@ -65,7 +66,7 @@
 
     <ul class="promise-strip">
       <li><span class="tag">Safe</span>policy gates · human approval · path scope · undecided means denied</li>
-      <li><span class="tag">Idempotent</span>kill -9 recoverable · side effects never replayed</li>
+      <li><span class="tag">Unkillable</span>kill -9 recoverable · side effects never replayed · 46/46 fault-injection recoveries</li>
       <li><span class="tag">Measurable</span>trace → dataset scoring → four-gate report</li>
     </ul>
   </div>
@@ -77,8 +78,8 @@
     <h2>What's in the floor</h2>
     <p class="section-lede">
       The floor is the layer your agent system stands on. Everything below lives in it — and because
-      all of it lives there, the same floor is worthy of any scenario you can name. Every item carries
-      its module path, so you can go check it yourself.
+      all of it lives there, it can carry a companion system that stays online for the long haul and
+      answers on the first word. Every item carries its module path, so you can go check it yourself.
     </p>
 
     <div class="grid-2 grid-dim">
@@ -217,11 +218,12 @@
             </td>
           </tr>
           <tr>
-            <td class="col-promise"><span class="tag tag-strong">Idempotent</span></td>
+            <td class="col-promise"><span class="tag tag-strong">Unkillable</span></td>
             <td>
               After <code>kill -9</code> the process recovers, and <strong>side effects that already happened
               are not repeated</strong>; <code>effectful</code> calls are never auto-replayed. The journal is the
-              truth; checkpoints are only an accelerator.
+              truth; checkpoints are only an accelerator. Fault injection with a real <code>kill -9</code>:
+              46/46 recovered.
               <p class="expected">
                 The source of truth is in <code>aicf/infra/runtime/</code>: journal / checkpoint / idempotency /
                 recovery / leases and fencing tokens.
@@ -424,8 +426,8 @@ aicf eval --dataset offline \
           <span class="arch-role">Application layer · outside this repo</span>
         </div>
         <p class="arch-desc">
-          A companion, a study assistant, on-call ops, a research pipeline — applications are not carved
-          out of this repo; they grow on top of it. They depend only on <code>aicf-core</code>.
+          Companion systems — online for the long haul, responding the moment you speak — applications
+          are not carved out of this repo; they grow on top of it. They depend only on <code>aicf-core</code>.
         </p>
       </div>
 
@@ -763,7 +765,7 @@ aicf eval --dataset offline \
   <div class="wrap footer-inner">
     <div class="footer-col">
       <span class="footer-brand">aicf-core</span>
-      <p>The floor, not the app.<br>Long-running · persistent · stable · safe and auditable.<br>Apache-2.0 licensed.</p>
+      <p>The floor that makes an agent unkillable.<br>Online for the long haul · answering on the first word · safe and auditable.<br>Apache-2.0 licensed.</p>
     </div>
     <div class="footer-col">
       <span class="footer-head">Repository</span>

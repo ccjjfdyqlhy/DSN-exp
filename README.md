@@ -17,6 +17,14 @@ moment you speak.
 
 </div>
 
+<div align="center">
+
+```bash
+pip install aicf-core
+```
+
+</div>
+
 ## What is aicf-core
 
 aicf-core is agent infrastructure specialized for one job: **companion
@@ -60,8 +68,6 @@ protected.
 ## Ninety seconds
 
 ```bash
-pip install aicf-core
-
 # scaffold a project: entry points wired, no business logic
 aicf init demo && cd demo
 ```
