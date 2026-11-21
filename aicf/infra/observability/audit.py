@@ -68,6 +68,9 @@ AUDIT_KINDS = (
     'audit.denied',
     'audit.secret_access',
     'audit.delegation',
+    # 记忆写入也进审计轨（roadmap 段 4：愿景里「持久记忆的可审计」）。
+    # 「这条记忆从哪来、谁改过、为什么被给了模型」必须能从审计里回答。
+    'audit.memory_write',
 )
 
 #: 拒绝原因的合法取值 —— 回答「为什么被拒」时只允许这四种
@@ -359,6 +362,34 @@ class AuditLog:
         }
         payload.update(extra)
         return self.record('audit.delegation', payload)
+
+    def memory_write(self,
+                     *,
+                     action: str,
+                     artifact_id: str = '',
+                     revision: int | None = None,
+                     source_ids: Sequence[str] | Iterable[str] = (),
+                     content_digest: str = '',
+                     author: str = '',
+                     **extra: Any) -> AuditRecord:
+        """audit.memory_write —— 一次记忆写入 / 修订 / 撤回。
+
+        action ∈ source_added / artifact_written / artifact_revised /
+        artifact_retracted（写的人自己保证；这里不强制枚举，
+        但**原样记录**）。记忆**内容不进审计**（与 tool_call 的
+        args_digest 同一纪律）：只存摘要与 id —— 内容本身在
+        Source 层留证据，审计回答的是「谁在什么时候动了哪条」。
+        """
+        payload: dict[str, Any] = {
+            'action': action,
+            'artifact_id': artifact_id,
+            'revision': revision,
+            'source_ids': list(source_ids or ()),
+            'content_digest': content_digest,
+            'author': author,
+        }
+        payload.update(extra)
+        return self.record('audit.memory_write', payload)
 
     # ── 导出 ────────────────────────────────────────────
     def export(self, path: str | os.PathLike[str]) -> int:

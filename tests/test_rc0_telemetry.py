@@ -364,8 +364,11 @@ def test_args_digest_differs_for_different_args():
 # ── 5. 审计 ─────────────────────────────────────────────
 def test_audit_event_vocabulary():
     from aicf.infra.observability.audit import AUDIT_KINDS
+    # 词表只增不改：audit.memory_write 是 roadmap 段 4 新增的
+    # （记忆写入也进审计轨 —— 「这条记忆从哪来、谁改过」必须能从审计回答）。
     assert AUDIT_KINDS == ('audit.tool_call', 'audit.denied',
-                           'audit.secret_access', 'audit.delegation')
+                           'audit.secret_access', 'audit.delegation',
+                           'audit.memory_write')
 
 
 def test_audit_tool_call_has_the_agreed_fields():

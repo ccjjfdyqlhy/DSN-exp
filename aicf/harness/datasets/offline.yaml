@@ -1,0 +1,84 @@
+# datasets/offline.yaml
+# 离线冒烟数据集（roadmap 段 3：解决「本地跑不过数据集」这件事）。
+#
+# ── 这份数据集是什么、不是什么 ──
+#
+# 它验证的是**链路**：run → trace → eval → gate 在没有任何 API key、
+# 任何网络的情况下端到端可跑、可打分、可过闸门。
+# 桩模型（`aicf run` 不带 key 时自动启用）就能让它全绿 —— 这是设计，
+# 不是作弊：下面的每条断言都是**结构性的**（有回复 / 没有凭空出现的
+# 工具调用 / 延迟与 token 预算内），它们检查的是「管线把一次运行
+# 完整地带到了评测面前」，而不是「模型聪明」。
+#
+# 质量回归请用 `basic`（40 case，需要真模型才能全过）。
+# 两份数据集刻意分开：把「链路坏了」和「模型退步了」混在一张
+# 报告里，排查时永远是灾难。
+#
+# ── 为什么这里没有 output_contains / output_matches ──
+#
+# 评测器对回声有硬检查（evaluator.is_pure_echo）：桩模型把输入
+# 原样吐回来时，内容类断言会被判失败 —— 这是对的，回声不算作答。
+# 所以这份数据集只用结构性断言，不依赖输出内容。
+
+id: offline
+version: "1"
+description: 离线冒烟数据集：零 API key 验证 run→eval→gate 链路（不是质量回归）
+
+cases:
+  # ── 链路通 ─────────────────────────────────────────────
+  - id: offline_pipeline_replies
+    group: offline
+    critical: true
+    description: 一轮运行必须带回非空回复 —— trace 里的 output 不是空的
+    input: "链路自检：请任意回复一句话。"
+    expect:
+      - assert_fn: output_nonempty
+      - assert_fn: no_error
+    metrics:
+      - cost_tokens: {lte: 4000}
+
+  - id: offline_reply_is_bounded
+    group: offline
+    description: 回复是真实生成的一段文本，而不是一个异常堆栈或空壳
+    input: "用不超过五十个字描述你看到这条消息的事实。"
+    expect:
+      - assert_fn: output_nonempty
+      - assert_fn:
+          name: output_length_lte
+          params: {limit: 2000}
+
+  # ── 没有凭空出现的工具调用 ─────────────────────────────
+  - id: offline_no_phantom_tools
+    group: offline
+    description: 普通问答不产生任何工具调用 —— 管线不会凭空注入 tool_called
+    input: "不借助任何工具，直接回答：一加一等于几？"
+    expect:
+      - assert_fn: no_tool_call
+      - max_tool_calls: 1
+
+  - id: offline_web_tools_stay_idle
+    group: offline
+    description: 离线问答不碰任何联网工具
+    input: "什么是幂等性？用两句话解释。"
+    expect:
+      - forbid_tools: [web.fetch, web.search]
+      - assert_fn: no_tool_call
+
+  # ── 预算字段真的在记录 ────────────────────────────────
+  - id: offline_latency_recorded_and_bounded
+    group: offline
+    description: trace 记录了延迟，且本地桩模型一轮不应超过一分钟
+    input: "再自检一次：这轮只测延迟。"
+    expect:
+      - assert_fn: output_nonempty
+    metrics:
+      - latency_ms: {lte: 60000}
+
+  - id: offline_cost_recorded_and_bounded
+    group: offline
+    description: trace 记录了 token 预算字段，冒烟轮不应烧穿预算
+    input: "第三次自检：这轮只看预算字段。"
+    expect:
+      - assert_fn: output_nonempty
+    metrics:
+      - cost_tokens: {lte: 4000}

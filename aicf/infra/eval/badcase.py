@@ -108,7 +108,12 @@ class BadCaseIntake:
             critical=bool(critical),
             created_at=float(row.get('created_at') or 0.0),
         )
-        self._set_status(badcase_id, record.status)
+        if hasattr(self._store, 'label_badcase'):
+            self._store.label_badcase(
+                badcase_id, label=label, input_text=input_text,
+                expect=list(expect or ()), critical=bool(critical))
+        else:
+            self._set_status(badcase_id, record.status)
         return record
 
     def dismiss(self, badcase_id: str, *, note: str = '') -> None:

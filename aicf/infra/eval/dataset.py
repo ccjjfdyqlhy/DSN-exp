@@ -203,6 +203,26 @@ class EvalDataset:
     def critical_count(self) -> int:
         return len(self.critical_cases())
 
+    def filtered(self, groups: "set[str] | list[str] | tuple[str, ...]") -> "EvalDataset":
+        """按分组过滤出一份子集（不改动原对象，也不改用例本身）。
+
+        --group 的落点。注意：子集的 `hash` 与全集不同 —— 这是有意的，
+        「评了哪个子集」要能从 run 记录里看出来，不能悄悄把子集 run
+        冒充全集 run。
+        """
+        selected = {str(g) for g in groups if str(g).strip()}
+        if not selected:
+            return self
+        return EvalDataset(
+            id=self.id,
+            version=self.version,
+            path=self.path,
+            cases=[c for c in self.cases if c.group in selected],
+            created_at=self.created_at,
+            description=self.description,
+            meta=dict(self.meta, groups_selected=sorted(selected)),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,

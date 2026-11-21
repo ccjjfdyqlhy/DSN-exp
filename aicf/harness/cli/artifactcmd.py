@@ -84,6 +84,25 @@ def _open_store(db_path: str) -> ArtifactStore:
     return ArtifactStore(store, gate_lookup=gate_lookup)
 
 
+def validate_kernel_claim(spec_kernel: str) -> dict:
+    """Resolve the artifact's kernel claim against the registry (W4).
+
+    The KERNEL_REGISTRY comment says it serves the artifact control plane;
+    this is that reader. Raises ValueError for a kernel the registry does
+    not know, so a typo'd spec.kernel cannot publish.
+    """
+    from aicf.harness.kernel import kernel_by_name
+
+    kernel_cls = kernel_by_name(spec_kernel)
+    if kernel_cls is None:
+        raise ValueError(f'未知执行架构 {spec_kernel!r}（可选: react/workflow/planner）')
+    meta = kernel_cls().describe()
+    return {'kernel': meta.name, 'version': meta.version,
+            'requires_approval': meta.requires_approval,
+            'supports_parallel_tools': meta.supports_parallel_tools,
+            'resumable': meta.resumable}
+
+
 def cmd_publish(args: Any) -> int:
     try:
         artifact = load_artifact(args.path)
@@ -93,6 +112,11 @@ def cmd_publish(args: Any) -> int:
     if not (args.gate or '').strip():
         eprint('Error: 发布必须携带 Gate 报告（--gate <report_id>）。'
                '发布必须证明这次变更过了四道闸门（策划案 §4.5.2）')
+        return 2
+    try:
+        kernel_meta = validate_kernel_claim(artifact.spec_kernel)
+    except ValueError as error:
+        eprint(f'Error: {error}')
         return 2
     store = _open_store(args.db)
     try:
@@ -110,12 +134,36 @@ def cmd_publish(args: Any) -> int:
         'state': event.to_state,
         'gate_report': args.gate,
         'actor': event.actor,
+        'kernel': kernel_meta,
     }
     if args.json:
         out_json(payload)
     else:
         eprint(f"✔ {artifact.name}@{artifact.version} → {event.to_state}"
                f" (gate={args.gate})")
+    return 0
+
+
+def cmd_cost(args: Any) -> int:
+    """Read the control_cost_ledger (W5.2): the table finally gets readers."""
+    from aicf.infra.control.store import ArtifactStore
+    from aicf.infra.eval.trace_store import TraceStore
+
+    store = ArtifactStore(TraceStore(args.db))
+    payload: dict = {}
+    if args.session:
+        payload['session'] = args.session
+        payload['total_cost'] = store.cost.session_total(args.session)
+    if args.agent:
+        payload['by_agent'] = store.cost.by_agent(args.agent)
+    if not payload:
+        eprint('用法: aicf artifact cost --session <id> 或 --agent <agent_id>')
+        return 2
+    if args.json:
+        out_json(payload)
+    else:
+        for key, value in payload.items():
+            eprint(f'{key}: {value}')
     return 0
 
 
@@ -216,6 +264,13 @@ def register(sub: Any) -> None:
     rollback.add_argument('--db', default='aicf.db')
     rollback.add_argument('--json', action='store_true')
 
+    cost = artifact_sub.add_parser('cost', help='成本账本（control_cost_ledger，W5.2）')
+    cost.add_argument('--session', default='', help='按 session 查总成本')
+    cost.add_argument('--agent', default='', help='按 agent 归因')
+    cost.add_argument('--db', default='aicf.db')
+    cost.add_argument('--json', action='store_true')
+
+    cost.set_defaults(func=cmd_cost)
     validate.set_defaults(func=cmd_validate)
     show.set_defaults(func=cmd_show)
     publish.set_defaults(func=cmd_publish)

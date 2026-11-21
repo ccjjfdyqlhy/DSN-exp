@@ -78,6 +78,28 @@ def build_registry(include: Optional[list[str]] = None,
     return registry
 
 
+def attach_project_tools(registry: ManagedToolRegistry, *,
+                         quiet: bool = False) -> int:
+    """把当前目录 ./tools/ 下的项目本地工具挂进注册表（`aicf init` 的约定）。
+
+    只认带标记文件（tools/.aicf_tools）的目录 —— 世界上有一堆项目的
+    顶层 tools/ 是构建脚本，未经声明就执行别人的代码不可接受。
+    加载失败 / 重名 → 逐条报告到 stderr，不阻断其它工具。
+    返回成功挂载的数量。
+    """
+    local_dir = Path.cwd() / 'tools'
+    from aicf.harness.tools.local import attach_local_tools, is_project_tools_dir
+
+    if not is_project_tools_dir(local_dir):
+        return 0
+
+    def report(message: str) -> None:
+        if not quiet:
+            eprint(f'[aicf] {message}')
+
+    return attach_local_tools(registry, local_dir, on_error=report)
+
+
 def build_model(*, model: str = '', base_url: str = '', api_key: str = '',
                 prompt: str = ''):
     """建一个模型客户端。
@@ -94,18 +116,20 @@ def build_model(*, model: str = '', base_url: str = '', api_key: str = '',
                                                 'https://api.openai.com/v1'),
             api_key=key,
         )
-    from aicf.infra.orchestrator.stub import StubChatClient
+    from aicf.infra.orchestrator.stub import StubChatClient, stub_usage
     from aicf.infra.orchestrator.base import ChatResponse
 
     def respond(messages, tools):
-        # 桩模型：把用户输入回显出来，让 CLI 的离线演示有确定的结果。
+        # stub model: echo the last user message so the offline demo has a fixed
+        # result; usage rides along so the cost path is exercised without a key
         text = ''
         for message in reversed(messages or []):
             content = message.get('content') if isinstance(message, dict) else ''
             if content:
                 text = str(content)
                 break
-        return ChatResponse(content=f'[stub] {text}')
+        reply = f'[stub] {text}'
+        return ChatResponse(content=reply, usage=stub_usage(messages, reply))
 
     return StubChatClient(model=model or 'stub', respond=respond)
 
@@ -144,6 +168,7 @@ def security_mode(default: str = 'strict') -> str:
 
 __all__ = [
     'ToolCatalog',
+    'attach_project_tools',
     'build_model',
     'build_registry',
     'build_runtime',

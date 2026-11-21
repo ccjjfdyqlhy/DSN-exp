@@ -57,7 +57,18 @@ docs/app-development.md  -> write a new application
 | [maintenance.md](maintenance.md) | placement rules, invariants, checklists, repository hygiene | before touching code |
 | [technical-debt.md](technical-debt.md) | known debt by priority, verified bugs, fix order | planning work |
 | [sdk_guide.md](sdk_guide.md) | using aicf as a python sdk | embedding the framework |
+| [skill-spec.md](skill-spec.md) | the public `skill.yaml` spec: fields, hard rules, versioning promise | writing or publishing a skill package |
+| [community.md](community.md) | community channels, first-contribution paths | joining or routing contributors |
+| [decision.md](decision.md) | the System-1 decision model | touching emotion / crisis / routing judgements |
+| [engine-capability.md](engine-capability.md) | per-engine capability matrix | adding a model backend |
 | [split_migration.md](split_migration.md) | old paths to new paths, configuration changes | migrating from the monorepo |
+
+english translations of four core docs live in [en/](en/)
+(security / runtime / evaluation / getting-started); the chinese originals
+remain authoritative.
+
+reproducible benchmark numbers live in `benchmarks/` (repo root) —
+`python benchmarks/run_benchmarks.py`.
 
 ## conventions
 

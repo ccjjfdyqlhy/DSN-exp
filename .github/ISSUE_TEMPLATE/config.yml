@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用问题 / 怎么做（Usage questions）
+    url: https://github.com/ccjjfdyqlhy/aicf-core/discussions
+    about: 不确定是 bug 还是用法问题？先去 Discussions 问。
+  - name: 安全问题（Security）
+    url: https://github.com/ccjjfdyqlhy/aicf-core/blob/main/SECURITY.md
+    about: 请勿公开提交安全漏洞 —— 按 SECURITY.md 的渠道私下报告。

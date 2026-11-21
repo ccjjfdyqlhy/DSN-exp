@@ -62,6 +62,15 @@ class AgentSpec:
     security_sandbox: Any = None             # 沙箱后端（None = 用守卫默认档）
     security_mode: str = ""                  # strict | legacy；空 = 读环境变量
     security_audit: bool = True              # 不可删审计存储（§4.4.7；False = 仅 trace 面）
+    runtime: Any = None                      # ManagedRuntime: tool intents land in the journal; None = no idempotency
+    embedding_client: Any = None             # embedding backend for semantic recall; None = assembler-level client or none
+    memory_mode: str = "off"                 # off | layered: layered routes recall through the L0-L3 budget view
+    memory_budget: int = 12000               # total chars the layered view may inject per turn
+    memory_budgets: Optional[dict] = None    # per-layer ratio overrides (must sum to 1.0)
+    profile_authorized: Any = None           # L3 disclosure gate; None = L3 never injects (fail-closed)
+    session_store: Any = None                # app-provided SessionStore for the memory_port registration
+    agent_identity: Any = None               # AgentIdentity: lands in audit records (W5.1)
+    decision_gate: Any = None                # optional System-1 consult before tool exec (W5.4, default off)
 
 
 class AssembledAgent:
@@ -97,9 +106,10 @@ class AssembledAgent:
           * 每轮之后检查预算，超限会触发 TokenBudget 的 on_exceed 回调。
         """
         mode = self.router.select(task_type, self.budget.pressure()) if self.router else ""
-        loop = self.loop
-        if mode and hasattr(loop, "client"):
-            pass  # 路由选择由调用方结合 client 工厂使用
+        if mode and self.meter is not None:
+            # the router's choice prices this turn (W8): the selected mode is
+            # now the meter's pricing tier instead of a discarded value
+            self.meter.set_pricing(mode)
         result = loop.run([__import__("aicf.infra.models.base", fromlist=["ChatMessage"]).ChatMessage.user(message)])
         # usage 已由 on_usage 回调在每轮实时记账，这里只需做超限检查
         if self.budget is not None:
@@ -259,8 +269,26 @@ class AgentAssembler:
         # 7) 记忆
         memory = None
         if spec.memory:
-            memory = InMemoryStore(self.embedding_client)
+            base_memory = InMemoryStore(spec.embedding_client or self.embedding_client)
+            # 可审计记忆（roadmap 段 4）：愿景里「持久记忆的可审计」。
+            # security_audit=True（默认）时用两级模型包装 ——
+            # 每次写入自动留证据（Source）+ 解释（Artifact），并落
+            # audit.memory_write；召回结果过证据闸门（被撤回 / 证据
+            # 被篡改 / 证据缺失的一律不注入）。audit 对象第 8 步才创建，
+            # 这里晚绑定（写入发生在对话期，装配期没有记忆写入）。
+            if spec.security_audit:
+                from ..memory.provenance import ProvenanceMemoryStore
+                memory = ProvenanceMemoryStore(base_memory)
+            else:
+                memory = base_memory
             runtime.register("memory", memory)
+            # the MemoryStorePort has a framework default now (W3.2): apps that
+            # speak the port resolve something real instead of a dangling protocol
+            from ..memory.session_port import SessionMemoryStore
+            runtime.register("memory_port", SessionMemoryStore(
+                session_store=spec.session_store,
+                recall=base_memory,
+                embedding_client=spec.embedding_client or self.embedding_client))
 
         # 8) 安全守卫
         #
@@ -288,11 +316,19 @@ class AgentAssembler:
                           approval=spec.security_approval,
                           sandbox=spec.security_sandbox,
                           audit=audit_log,
+                          runtime=spec.runtime,
+                          identity=spec.agent_identity,
+                          decision_gate=spec.decision_gate,
                           mode=spec.security_mode or default_security_mode())
         tools.attach_guard(guard)
         runtime.register("guard", guard)
         if audit_log is not None:
             runtime.register("audit_log", audit_log)
+            # 记忆写入也进审计轨（roadmap 段 4）：与守卫共用同一个
+            # 不可删 AuditStore，audit.memory_write 与 audit.tool_call
+            # 在同一条审计轨上可对账。
+            if memory is not None and hasattr(memory, 'attach_audit'):
+                memory.attach_audit(audit_log)
 
         # 9) Agent 循环
         loop = AgentLoop(self.client, tools, max_steps=spec.max_steps,

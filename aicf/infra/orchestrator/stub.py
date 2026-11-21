@@ -13,6 +13,18 @@ from typing import Any, AsyncGenerator, Callable, Optional
 from .base import ChatResponse, ChatClientAdapter
 
 
+def stub_usage(messages: list[Any], reply: str) -> dict[str, int]:
+    """Deterministic usage estimate (chars//4) so offline runs exercise the cost path."""
+    prompt = 0
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+        prompt += len(str(content or ""))
+    input_tokens = max(1, prompt // 4)
+    output_tokens = max(1, len(reply) // 4)
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens}
+
+
 class StubChatClient(ChatClientAdapter):
     """可编程回复的桩对话客户端。支持按序脚本或动态回调。"""
 
@@ -40,7 +52,8 @@ class StubChatClient(ChatClientAdapter):
             return self._respond(msgs, tools)
         if self._responses:
             return self._responses.pop(0)
-        return ChatResponse(content="", model=self.model)
+        reply = ""#keep the scripted-empty default, but report usage so offline runs exercise the cost path
+        return ChatResponse(content=reply, model=self.model, usage=stub_usage(msgs, reply))
 
     async def stream(self, messages: list[Any], tools: Optional[list[dict]] = None,
                      **kwargs: Any) -> AsyncGenerator[str, None]:

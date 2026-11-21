@@ -67,6 +67,15 @@ class Agent:
         memory_k: int = 5,
         mcp: Optional[Union[list, dict, str]] = None,
         deps: Optional[Any] = None,
+        security_audit: Optional[bool] = None,
+        runtime: Optional[Any] = None,
+        embedding_client: Optional[Any] = None,
+        memory_mode: str = "off",
+        memory_budget: int = 12000,
+        memory_budgets: Optional[dict] = None,
+        profile_authorized: Optional[Any] = None,
+        agent_identity: Optional[Any] = None,
+        decision_gate: Optional[Any] = None,
     ):
         self.client = client
         self.system_prompt_text = system_prompt
@@ -111,10 +120,29 @@ class Agent:
             tool_deps=_deps_to_mapping(deps),
             memory=enable_memory,
             mcp=mcp_spec,
+            # 安全开关显式传递（None = 走 AgentSpec 默认 True）。
+            # security_audit=False 时记忆退回普通实现 —— 这必须是显式选择。
+            security_audit=True if security_audit is None else bool(security_audit),
+            runtime=runtime,
+            embedding_client=embedding_client,
+            memory_mode=memory_mode,
+            memory_budget=memory_budget,
+            memory_budgets=memory_budgets,
+            profile_authorized=profile_authorized,
+            agent_identity=agent_identity,
+            decision_gate=decision_gate,
         )
 
-        assembler = AgentAssembler(self.client)
+        assembler = AgentAssembler(self.client, embedding_client=embedding_client)
         self._assembled: AssembledAgent = assembler.assemble(self.spec)
+        # layered recall (W3): route hits through the L0-L3 budget view when
+        # asked; off keeps the flat block so the default path does not move
+        self.memory_budget = memory_budget
+        self._memory_view = None
+        if memory_mode == "layered" and enable_memory:
+            from .memory.layers import LayeredMemoryView
+            self._memory_view = LayeredMemoryView(
+                budgets=memory_budgets, profile_authorized=profile_authorized)
         # MCP 惰性预热标志：首个异步入口（chat_async/run_async/chat_stream）触发
         self._mcp_ready = False
 
@@ -208,7 +236,15 @@ class Agent:
             return []
         if not hits:
             return []
-        lines = '\n'.join(f'- {hit.text}' for hit in hits)
+        if self._memory_view is not None:
+            # layered mode: cut by the L0-L3 budget view, tag each line with
+            # its layer so the model can tell working memory from identity
+            pairs = self._memory_view.assemble(hits, self.memory_budget)
+            if not pairs:
+                return []
+            lines = '\n'.join(f'- [{layer}] {text}' for layer, text in pairs)
+        else:
+            lines = '\n'.join(f'- {hit.text}' for hit in hits)
         return [ChatMessage.system(f'Relevant memory:\n{lines}')]
 
     def _remember(self, message: str, reply: str) -> None:
@@ -277,6 +313,9 @@ class Agent:
 _AGENT_OPTIONS = (
     "max_steps", "workspace", "router_config", "budget_config",
     "enable_toolbox", "enable_memory", "memory_k", "mcp", "deps",
+    "security_audit", "runtime", "embedding_client",
+    "memory_mode", "memory_budget", "memory_budgets", "profile_authorized",
+    "agent_identity", "decision_gate",
 )
 
 
@@ -333,6 +372,15 @@ def create_agent(
     enable_memory = options.pop("enable_memory", False)
     memory_k = options.pop("memory_k", 5)
     mcp = options.pop("mcp", None)
+    security_audit = options.pop("security_audit", None)
+    runtime = options.pop("runtime", None)
+    embedding_client = options.pop("embedding_client", None)
+    memory_mode = options.pop("memory_mode", "off")
+    memory_budget = options.pop("memory_budget", 12000)
+    memory_budgets = options.pop("memory_budgets", None)
+    profile_authorized = options.pop("profile_authorized", None)
+    agent_identity = options.pop("agent_identity", None)
+    decision_gate = options.pop("decision_gate", None)
     deps = options.pop("deps", None)
 
     budget_cap = options.pop("budget_cap", None)
@@ -372,4 +420,13 @@ def create_agent(
         memory_k=memory_k,
         mcp=mcp,
         deps=deps,
+        security_audit=security_audit,
+        runtime=runtime,
+        embedding_client=embedding_client,
+        memory_mode=memory_mode,
+        memory_budget=memory_budget,
+        memory_budgets=memory_budgets,
+        profile_authorized=profile_authorized,
+        agent_identity=agent_identity,
+        decision_gate=decision_gate,
     )

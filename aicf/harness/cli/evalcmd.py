@@ -23,6 +23,7 @@ from aicf.infra.eval import (
     capture_run_version,
     load_dataset,
 )
+from aicf.infra.eval.trace_store import usage_from_events
 
 from .common import eprint, out_json, read_json, write_json
 
@@ -73,6 +74,11 @@ def _load_traces(source: str) -> list[Trace]:
 
 
 def _to_trace(payload: dict) -> Trace:
+    # older traces carry usage only inside the event stream -- fall back to
+    # it so eval sees the same numbers run wrote (W0)
+    usage = dict(payload.get('usage') or {})
+    if not usage:
+        usage = usage_from_events(payload.get('events') or [])
     return Trace(
         trace_id=str(payload.get('trace_id', '')),
         session_id=str(payload.get('session_id', '')),
@@ -82,7 +88,7 @@ def _to_trace(payload: dict) -> Trace:
         output=str(payload.get('output', '')),
         tool_calls=list(payload.get('tool_calls') or []),
         messages=list(payload.get('messages') or []),
-        usage=dict(payload.get('usage') or {}),
+        usage=usage,
         cost=float(payload.get('cost', 0.0) or 0.0),
         latency_ms=float(payload.get('latency_ms', 0.0) or 0.0),
         error=str(payload.get('error', '')),
@@ -90,12 +96,60 @@ def _to_trace(payload: dict) -> Trace:
     )
 
 
+def _dataset_from_badcases(db_path: str):
+    """Labelled badcases -> a hard_cases regression dataset (W5.3).
+
+    Only rows with repro data (input_text) become cases; the rest are still
+    waiting for someone to label the repro.
+    """
+    from aicf.infra.eval.badcase import STATUS_LABELLED, BadCaseIntake, LabelledBadCase
+    from aicf.infra.eval.dataset import EvalDataset
+    from aicf.infra.eval.trace_store import TraceStore
+
+    store = TraceStore(db_path)
+    intake = BadCaseIntake(store)
+    records = []
+    for row in store.list_badcases(status=STATUS_LABELLED):
+        if not str(row.get('input_text') or '').strip():
+            continue
+        records.append(LabelledBadCase(
+            id=str(row['id']), session_id=str(row.get('session_id') or ''),
+            trace_id=str(row.get('trace_id') or ''),
+            reason=str(row.get('reason') or ''),
+            label=str(row.get('label') or ''), status=STATUS_LABELLED,
+            input_text=str(row.get('input_text') or ''),
+            expect=list(row.get('expect') or ()),
+            critical=bool(row.get('critical', True))))
+    if not records:
+        raise ValueError(f'{db_path} 里没有可回流的已标注坏样本')
+    return EvalDataset(id='badcases', version='1', path=db_path,
+                       cases=intake.to_dataset(records),
+                       description=f'hard cases from {db_path} ({len(records)} labelled)')
+
+
 def cmd_eval(args: Any) -> int:
+    if not getattr(args, 'dataset', '') and not getattr(args, 'from_badcases', ''):
+        eprint('Error: 需要 --dataset <名字|路径>（或 --from-badcases <db>）')
+        return 2
     try:
-        dataset = load_dataset(resolve_dataset(args.dataset))
+        dataset = (_dataset_from_badcases(args.from_badcases)
+                   if getattr(args, 'from_badcases', '')
+                   else load_dataset(resolve_dataset(args.dataset)))
     except Exception as error:  # noqa: BLE001
         eprint(f'数据集加载失败: {error}')
         return 2
+
+    # --group 过滤：只评选中的组。数据集对象是冻结口径（hash 进 run version），
+    # 所以过滤发生在「装载之后、打分之前」，且过滤后的用例名单随 run 一起落盘
+    # —— 评审的人能看出这份 run 评的是全集还是子集。
+    selected_groups = _parse_groups(getattr(args, 'group', None))
+    if selected_groups:
+        dataset = dataset.filtered(selected_groups)
+        if not dataset.cases:
+            known = ', '.join(sorted(load_dataset(resolve_dataset(args.dataset)).groups()))
+            eprint(f'分组 {sorted(selected_groups)} 在数据集里没有用例'
+                   f'（可用: {known}）')
+            return 2
 
     traces: list[Trace] = []
     if args.traces:
@@ -153,6 +207,14 @@ def _aggregate(results: list) -> dict:
     }
 
 
+def _parse_groups(groups: list[str] | None) -> set[str]:
+    """--group 可以重复、也可以逗号分隔（--group refusal,safety）。"""
+    selected: set[str] = set()
+    for item in groups or []:
+        selected.update(part.strip() for part in str(item).split(',') if part.strip())
+    return selected
+
+
 def cmd_gate(args: Any) -> int:
     try:
         run = _load_run(args.run)
@@ -161,10 +223,32 @@ def cmd_gate(args: Any) -> int:
         eprint(f'运行结果读取失败: {error}')
         return 2
 
-    evaluator = GateEvaluator()
+    thresholds = None
+    if getattr(args, 'cost_budget', None) is not None:
+        from aicf.infra.eval.gate import GateThresholds
+        thresholds = GateThresholds(cost_budget_per_session=args.cost_budget)
+    evaluator = GateEvaluator(thresholds=thresholds)
     report = evaluator.evaluate(_to_run_result(run), _to_run_result(baseline)
                                 if baseline else None)
     payload = report.to_dict()
+    if not report.passed:
+        # gate FAIL feeds the badcase intake (W5.3): the loop the roadmap
+        # promised -- failures come back as labelled regression cases
+        try:
+            from aicf.infra.eval.badcase import BadCaseIntake
+            from aicf.infra.eval.trace_store import TraceStore
+
+            intake = BadCaseIntake(TraceStore(_gate_db_path(args)))
+            for item in run.get('results') or []:
+                if item.get('passed'):
+                    continue
+                rules = ','.join(item.get('failed_rules') or []) or 'failed'
+                intake.intake(session_id=str(run.get('run_id') or ''),
+                              trace_id=str(item.get('trace_id') or ''),
+                              source='gate',
+                              reason=f"{item.get('case_id')}:{rules}")
+        except Exception as error:  # noqa: BLE001
+            eprint(f'（badcase 回流未落库：{error}）')
     if args.out:
         path = write_json(args.out, payload)
         print(f'gate 报告 → {path}')

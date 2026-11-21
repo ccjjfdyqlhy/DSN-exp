@@ -76,6 +76,13 @@ TTS（GPT-SoVITS，走 HTTP）、VLM（本地 llama-server）在同一个池子�
 `aicf/infra/orchestrator/`。当训练与推理抢同一张卡时，
 `aicf/infra/orchestrator/scheduler.py` 里的 `DeviceGate` 是唯一的仲裁点。
 
+交互层现在也在框架里了，不再只在私有应用：`aicf/harness/voice/`
+把 TTS **逐句流式**播放（第一句合成完就开口，不等整段）、过滤 ASR
+假语音（噪声 / 哼鸣 / 键盘乱敲 —— 真 1B 分类器是端口，启发式兜底）、
+跑**感知模式**（连续通话，沉默 = 在听）与**心跳**（空闲时按你的 hook
+主动开口）。`aicf resources profile` 的三档 —— `resident` / `balanced` /
+`eco` —— 把「随时可用 vs 显存」从口号变成显式取舍。
+
 ### 多个 Agent，一块地基
 
 `aicf/harness/agent/collab.py` 给你角色类型、委派与邮箱；`swarm.py` 加一块黑板；
@@ -95,31 +102,55 @@ TTS（GPT-SoVITS，走 HTTP）、VLM（本地 llama-server）在同一个池子�
 pip install aicf-core
 ```
 
-```bash
-# 1. 每个工具到底能干什么？副作用等级、声明的写口径、需要的授权范围。
-aicf tool list
+下面每一步都**不需要 API key**（离线可跑），并且都给出了你**实际会看到的输出**。
+走完的终点是绿的。
 
-# 2. 试着跑个 shell。它有副作用 —— 所以要等人点头。
+```bash
+# 1. 生成一个骨架项目：接入点都接好了，没有业务，往里填肉。
+aicf init demo && cd demo
+
+# 2. 每个工具到底能干什么？副作用等级、声明的写口径、需要的授权范围。
+aicf tool list
+#    tool        effect      sandbox    net    destructive  version
+#    file.edit   effectful   workspace  none   false        1.0
+#    file.read   pure        readonly   none   false        1.0
+#    ...
+
+# 3. 试着跑个 shell。它有副作用 —— 所以要等人点头。
 aicf tool exec proc.run --args '{"command":"rm -rf /"}' --policy strict
 #    Error: 工具 proc.run 被策略拒绝（approval）：CLI 未开启 --yes
-
-# 3. 跑一轮，留下 trace。
-aicf run "总结一下这个仓库" --trace trace.jsonl
-
-# 4. 用数据集打分（数据集随包分发）。trace 按 --case-id 与用例对齐，
-#    所以跑一遍数据集就是「每个用例一条 trace」：
-#      aicf run "<输入>" --case-id <case_id> --trace traces/<case_id>.jsonl
-aicf eval --dataset basic --traces traces/ --out run.json
-
-# 5. 任何回归、成本超标或安全违规都会拦住发布。
-aicf gate --run run.json --out gate.json
 ```
 
-上面每一步都**不需要 API key** —— 走桩模型离线可跑。
+然后是第一个成功，依然离线：
 
-一句实话：桩模型不会调工具，所以数据集用例**在本地不会通过**。
-`aicf gate` 是 CI 用的闸门：它要求每个用例都有一条 trace（这就是 `--case-id` 的用途），
-关键用例缺失时会拦住发布。
+```bash
+# 4. 跑一整个数据集：每个用例一轮、一条 trace。
+aicf run --dataset offline --trace-dir traces/
+#    ✓ offline_pipeline_replies [offline] done
+#    … 6 case，trace 落 traces/
+
+# 5. 打分。
+aicf eval --dataset offline --traces traces/ --out run.json
+#    用例 6/6 通过（数据集 offline，hash …）
+
+# 6. 任何回归、成本超标或安全违规都会拦住发布。
+aicf gate --run run.json --out gate.json
+#    闸门判定: 通过
+#      [PASS] quality: 关键用例通过率 100.0%（1/1），达标
+#      [PASS] safety: 未发现安全违规（扫描 6 个用例）
+```
+
+包里**故意**带两份数据集：
+
+- `offline` —— 链路冒烟：回复到达、没有凭空出现的工具调用、预算字段在记录。
+  **离线就能全过**，它证明的是「地基通」。
+- `basic` —— 40 条质量用例（文件读写 / 计算 / 越权拒绝 / 安全 / …）。
+  需要真模型才能全过：桩模型不会调工具，评测器也不会把回声算作答。
+  这不是缺陷 —— 冒烟数据集如果被桩模型「考过」，它就说明不了模型质量。
+
+`aicf eval --group refusal,safety` 可以只评子集（run 记录里看得出评的是哪个子集）。
+一个 30 行、零依赖、直接打印结果的 Python 例在
+[examples/minimal.py](examples/minimal.py)。
 
 ---
 
@@ -213,6 +244,25 @@ print(result)                        # 结果表现得像字符串
 
 ---
 
+## 什么时候该用哪个？
+
+先说实话：aicf 不是万能答案。和 LangGraph / Temporal / CrewAI 比，
+差异是结构性的，不是审美性的：
+
+| | aicf-core | LangGraph | Temporal | CrewAI |
+|---|---|---|---|---|
+| 核心思想 | 每次工具调用下面垫一层**策略 → 审批 → 沙箱 → 审计**，外加幂等可恢复的运行时与四闸门发布报告 | 对 LLM 步骤做图编排 | 长时业务工作流的持久化执行 | 角色扮演式多 Agent 脚本 |
+| 什么时候选它 | Agent 要碰真实文件 / shell / 网络，且每次调用都要可归因、可恢复、可评测 | 想对模型步骤做显式控制流 | 需要业务逻辑的工作流保证（无论是不是 LLM） | 想快速搭一个角色扮演原型 |
+| 刻意不做 | 跨机编排（那是部署形态）与提示词工程 | 安全闸门 / 审计 / 幂等 —— 不是它的主题 | LLM 原生概念（工具契约、审批、评测闸门） | 持久运行时、审计、发布闸门 |
+| 迁移路径 | 工具就是普通函数：先把**一个**工具挂到策略引擎后面，再迁下一个 | 图的边 → `workflow` 内核声明（`aicf run --kernel workflow`） | activity → 带副作用声明的工具 | 角色提示词 → 技能包（[规格](docs/skill-spec.md)） |
+| 地基里有、它们没有的 | 只追加的审计存储、`kill -9` 恢复、故障注入测试、CI 里的离线评测 + 发布闸门 | — | — | — |
+
+迁移成本一句话：aicf 要的声明（每个工具的 ToolSpec、一份策略文件、
+一份闸门报告）都是**你迟早想要的东西** —— 从一个受守卫的工具起步，
+逐步长出全链路。
+
+---
+
 ## 仓库结构（一分钟）
 
 两层，依赖**单向向下**：
@@ -262,6 +312,17 @@ Agent 身份与委托授权、线上抽样与 bad case 回流、调度器与工�
 跨机编排、BYO 的传输通道。计划、验收标准与每条工作流的状态都在
 [docs/roadmap_1.0.0-rc0.md](docs/roadmap_1.0.0-rc0.md)。
 
+**可复现的数字**（每个数字都带复现命令 —— `python benchmarks/run_benchmarks.py`）：
+
+| 数字 | 参考值 | 口径 |
+|---|---|---|
+| 守卫链路单次往返 | p50 ≈ 0.28 ms，p95 ≈ 0.38 ms | 一次本地调用走完 策略求值 + 幂等检查 + 审计（纯工具，N=300） |
+| journal 重放恢复 | ≈ 1 ms / 200 事件 | checkpoint 不可用时的全量重放（最坏恢复路径） |
+| 分层记忆 L1 压缩比 | ≈ 3.35× | 会话层摘要压缩前后的字符量之比 |
+| 崩溃恢复成功率 | 46/46 = 100% | `tests/fault/` 故障注入层：真 `kill -9`、重复投递、损坏 checkpoint |
+
+口径与注意事项：[benchmarks/README.md](benchmarks/README.md)。
+
 ---
 
 ## 开发
@@ -290,7 +351,21 @@ python -m pytest -q tests/
 | 深入模型路由 / 资源 / 存储 | [docs/infra.md](docs/infra.md) |
 | 改代码前先知道哪些坑别踩 | [docs/maintenance.md](docs/maintenance.md) |
 | 配置项与环境变量 | [docs/configuration.md](docs/configuration.md) |
+| 技能包公开规格（生态的接口） | [docs/skill-spec.md](docs/skill-spec.md) |
+| 社区渠道与贡献路径 | [docs/community.md](docs/community.md) |
 | 已知技术债与修复优先级 | [docs/technical-debt.md](docs/technical-debt.md) |
+
+核心文档另有英文译文（[docs/en/](docs/en/)：security / runtime /
+evaluation / getting-started）；中文原版是权威口径。
+
+---
+
+## 社区
+
+- **提问与讨论**：[GitHub Discussions](https://github.com/ccjjfdyqlhy/aicf-core/discussions)
+- **Bug 与功能请求**：[GitHub Issues](https://github.com/ccjjfdyqlhy/aicf-core/issues)（有模板）
+- **安全漏洞**：请走 [SECURITY.md](SECURITY.md) 的渠道，不要开公开 issue
+- 第一次贡献的路径：[CONTRIBUTING.md](CONTRIBUTING.md) · [docs/community.md](docs/community.md)
 
 ---
 

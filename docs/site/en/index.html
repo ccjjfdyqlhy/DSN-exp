@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aicf-core — The floor, not the app</title>
+<meta name="description" content="aicf-core is the layer an agent system stands on: long-running, persistent, stable, safe and auditable — bottom-up, across modalities, with as many agents as the job needs. A full-modal local resource pool, multi-agent collaboration, and an external, declarative skill ecosystem all live in the same floor.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e14'/%3E%3Cpath d='M9 23 L16 9 L23 23' stroke='%235eead4' stroke-width='2.4' fill='none'/%3E%3Cpath d='M12.6 18 H19.4' stroke='%235eead4' stroke-width='2.4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="#top">
+      <span class="brand-mark">aicf</span><span class="brand-sub">core</span>
+    </a>
+    <nav class="nav" aria-label="Main navigation">
+      <a href="#floor">Floor</a>
+      <a href="#promise">Promises</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#python">Python</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#docs">Docs</a>
+      <a href="#migration">Migration</a>
+      <a href="../index.html" lang="zh-CN" hreflang="zh-CN">中文</a>
+    </nav>
+    <div class="topbar-actions">
+      <a class="btn btn-ghost" href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn" href="https://pypi.org/project/aicf-core/" target="_blank" rel="noopener">PyPI</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ───────────────────────────── HERO ───────────────────────────── -->
+<section class="hero" id="top">
+  <div class="wrap">
+    <p class="kicker">aicf-core · Apache-2.0 · Python 3.10+ · local-first</p>
+    <h1>The floor,<br>not the app.</h1>
+    <p class="lede">
+      aicf is <strong>the layer an agent system stands on</strong>: long-running, persistent,
+      stable, safe and auditable — bottom-up, across modalities, with as many agents as the job needs.
+    </p>
+    <p class="lede lede-sub">
+      A private companion, a study assistant, an on-call ops agent, a research pipeline —
+      the floor underneath is the same one.
+    </p>
+
+    <div class="install">
+      <span class="install-prompt">$</span>
+      <code class="install-cmd">pip install aicf-core</code>
+      <button class="copy" type="button" data-copy="pip install aicf-core" title="Copy">copy</button>
+    </div>
+
+    <p class="hero-note">
+      This repo contains only two library layers: <code>aicf/harness</code> (the agent core) and
+      <code>aicf/infra</code> (models, resources, storage, policy). The web console lives in a
+      separate repo, <a href="https://github.com/ccjjfdyqlhy/aicf-ui" target="_blank" rel="noopener">aicf-ui</a>.
+    </p>
+
+    <ul class="promise-strip">
+      <li><span class="tag">Safe</span>policy gates · human approval · path scope · undecided means denied</li>
+      <li><span class="tag">Idempotent</span>kill -9 recoverable · side effects never replayed</li>
+      <li><span class="tag">Measurable</span>trace → dataset scoring → four-gate report</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ─────────────────────────── WHAT'S IN THE FLOOR ─────────────────────────── -->
+<section class="section section-alt" id="floor">
+  <div class="wrap">
+    <h2>What's in the floor</h2>
+    <p class="section-lede">
+      The floor is the layer your agent system stands on. Everything below lives in it — and because
+      all of it lives there, the same floor is worthy of any scenario you can name. Every item carries
+      its module path, so you can go check it yourself.
+    </p>
+
+    <div class="grid-2 grid-dim">
+      <div class="card">
+        <h3>Full-modal: text · speech · vision</h3>
+        <p>
+          Local speech and vision models run in <strong>the same pool</strong>: ASR (FunASR, in-process),
+          TTS (GPT-SoVITS, over HTTP), VLM (a local llama-server). Scheduled by slot, launched on demand;
+          idle past a threshold they are stopped automatically, their VRAM handed back, and relaunched on
+          the next request.
+        </p>
+        <ul class="chips">
+          <li>aicf/infra/resources/</li>
+          <li>aicf/harness/voice/</li>
+          <li>ResourcePool</li>
+          <li>IdleReaper</li>
+          <li>SentenceStreamSpeaker</li>
+        </ul>
+        <p class="expected">
+          Text models route through <code>aicf/infra/models/</code> and <code>aicf/infra/orchestrator/</code>;
+          the VRAM-exclusive gate (<code>DeviceGate</code>) lives in <code>aicf/infra/orchestrator/scheduler.py</code> —
+          when training and inference contend for the same cards, exactly one of them decides. The
+          always-available-vs-VRAM tradeoff is explicit: the three tiers of <code>aicf resources profile</code>
+          (resident / balanced / eco).
+        </p>
+        <p class="expected">
+          The interaction layer has also sunk into the framework: a voice layer at <code>aicf/harness/voice</code> —
+          sentence-streamed TTS playback (it starts speaking as soon as the first sentence is synthesized),
+          fake-speech filtering, a perception mode (a continuous call where silence means listening), and
+          heartbeat proactive speech. Full-modal is now interactive — not just resource management.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Multi-agent: as many as the task needs</h3>
+        <p>
+          Role types, delegation, mailboxes, and settlement live in <code>collab.py</code>; peer collaboration
+          adds a shared blackboard in <code>swarm.py</code>; <code>team.py</code> folds them into a single call;
+          master→subagent concurrent decomposition is <code>subagent.py</code>.
+        </p>
+        <ul class="chips">
+          <li>aicf/harness/agent/collab.py</li>
+          <li>aicf/harness/agent/swarm.py</li>
+          <li>aicf/harness/agent/team.py</li>
+          <li>aicf/harness/agent/subagent.py</li>
+        </ul>
+        <p class="expected">
+          Identity and authorization live in <code>aicf/infra/control/identity.py</code>: an <code>AgentIdentity</code>
+          carries a full <code>delegation_chain</code>, a child scope must be a subset of its parent scope, and
+          stepping outside it is rejected; every delegation leaves a <code>DelegationAudit</code>.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Ecosystem: skill packs are external and declarative</h3>
+        <p>
+          Skill packs live outside the repo: one <code>skill.yaml</code> declares tools, prompts, and
+          dependencies, plus plain Python. The framework validates them before an agent ever sees them —
+          if a class, method, parameter, or dependency does not line up, it says so up front instead of
+          blowing up at call time.
+        </p>
+        <ul class="chips">
+          <li>aicf/harness/skills/</li>
+          <li>Skill / SkillRegistry</li>
+          <li>SkillLoader</li>
+          <li>SkillValidator</li>
+          <li>CapabilityRegistry</li>
+        </ul>
+        <p class="expected">
+          Declarative loading is in <code>aicf/harness/skills/yaml_loader.py</code>; runtime install / enable /
+          disable / append-skill-directory is in <code>aicf/harness/skills/yaml_manager.py</code> — installing a
+          new skill does not require restarting the app.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Long-running + persistent: a crash does not end the run</h3>
+        <p>
+          The journal is the source of truth; checkpoints are only an accelerator. Idempotency keys keep
+          <code>effectful</code> calls from being replayed; leases + fencing tokens let another instance take
+          over without two instances ever writing at once.
+        </p>
+        <ul class="chips">
+          <li>aicf/infra/runtime/</li>
+          <li>journal / checkpoint</li>
+          <li>idempotency / recovery</li>
+          <li>lease + fencing token</li>
+        </ul>
+        <p class="expected">
+          Memory is layered — working / episodic / semantic / profile — in <code>aicf/harness/memory/</code>
+          (L0–L3; L3 is injected only with explicit authorization); persistence lands in <code>aicf/infra/store/</code>.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────── PROMISES / TABLE ─────────────────────────── -->
+<section class="section" id="promise">
+  <div class="wrap">
+    <h2>Three promises — and how to check them yourself</h2>
+    <p class="section-lede">
+      You don't have to take the docs at their word. Each promise has a command or a test behind it;
+      run it and you'll know.
+    </p>
+
+    <div class="table-scroll">
+      <table class="promise-table">
+        <thead>
+          <tr>
+            <th class="col-promise">Promise</th>
+            <th>What it actually guarantees</th>
+            <th class="col-check">How to check it yourself</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-promise"><span class="tag tag-strong">Safe</span></td>
+            <td>
+              Every tool call passes a <strong>policy gate</strong>; tools with side effects require
+              <strong>human approval</strong>; a tool that starts processes is checked before it runs —
+              path scope and egress targets, ulimits, only whitelisted environment variables passed
+              through — but it still runs with <strong>the operator's privileges</strong> (<strong>not</strong>
+              an OS-level sandbox, and no containers / microVMs); <strong>undecided means denied</strong>
+              (deny-by-default).
+              <p class="expected">
+                The policy protocol is in <code>aicf/harness/policy/</code> (implemented by
+                <code>aicf/infra/policy/engine.py</code>), human-in-the-loop in <code>aicf/harness/approval/</code>.
+              </p>
+            </td>
+            <td class="col-check">
+              <pre class="mini" data-lang="bash"><code>aicf tool exec proc.run \
+  --args '{"command":"rm -rf /"}' \
+  --policy strict</code></pre>
+              <p class="expected">→ Denied by policy with a non-zero exit code; a pending approval counts as a denial too.</p>
+            </td>
+          </tr>
+          <tr>
+            <td class="col-promise"><span class="tag tag-strong">Idempotent</span></td>
+            <td>
+              After <code>kill -9</code> the process recovers, and <strong>side effects that already happened
+              are not repeated</strong>; <code>effectful</code> calls are never auto-replayed. The journal is the
+              truth; checkpoints are only an accelerator.
+              <p class="expected">
+                The source of truth is in <code>aicf/infra/runtime/</code>: journal / checkpoint / idempotency /
+                recovery / leases and fencing tokens.
+              </p>
+            </td>
+            <td class="col-check">
+              <pre class="mini" data-lang="bash"><code>pytest tests/fault/</code></pre>
+              <p class="expected">→ Really kills a subprocess with kill -9, then recovers from the journal; <code>aicf session resume</code> continues the unfinished turn.</p>
+            </td>
+          </tr>
+          <tr>
+            <td class="col-promise"><span class="tag tag-strong">Measurable</span></td>
+            <td>
+              Every run produces a <strong>trace</strong>; changes can be scored against a <strong>dataset</strong>;
+              a <strong>four-gate report</strong> blocks regressions, cost overruns, and rule violations.
+              <p class="expected">
+                The four gates are in <code>aicf/infra/eval/gate.py</code>; audit and redaction the business
+                cannot delete are in <code>aicf/infra/observability/</code> (<code>audit.py</code> / <code>redact.py</code>).
+              </p>
+            </td>
+            <td class="col-check">
+              <pre class="mini" data-lang="bash"><code>aicf run --dataset offline --trace-dir traces/
+aicf eval --dataset offline \
+  --traces traces/ --out run.json
+aicf gate --run run.json --out gate.json</code></pre>
+              <p class="expected">→ Four gates: <strong>quality / regression / cost / safety</strong>. Any gate failing blocks a release; the safety gate has zero tolerance.</p>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────── QUICKSTART ──────────────────────────── -->
+<section class="section section-alt" id="quickstart">
+  <div class="wrap">
+    <h2>Quickstart in 90 seconds</h2>
+    <p class="section-lede">
+      Every step below runs offline — no API key anywhere — and the walkthrough ends green.
+    </p>
+
+    <ol class="steps">
+      <li>
+        <div class="step-head">
+          <span class="step-no">01</span>
+          <h3>Install it</h3>
+        </div>
+        <pre data-lang="bash"><code>pip install aicf-core</code></pre>
+        <p class="expected">Distribution name <code>aicf-core</code>, CLI entry point <code>aicf</code>, import name <code>aicf.*</code>.</p>
+      </li>
+
+      <li>
+        <div class="step-head">
+          <span class="step-no">02</span>
+          <h3>Scaffold a project</h3>
+        </div>
+        <pre data-lang="bash"><code>aicf init demo &amp;&amp; cd demo</code></pre>
+        <p class="expected">Entry points wired, no business logic — fill in the meat.</p>
+      </li>
+
+      <li>
+        <div class="step-head">
+          <span class="step-no">03</span>
+          <h3>Read the tool catalog: effect level, declared write level, required scopes</h3>
+        </div>
+        <pre data-lang="bash"><code>aicf tool list  # your own tools are visible</code></pre>
+        <p class="expected">Know what each tool can do before you decide which ones an agent may use.</p>
+      </li>
+
+      <li>
+        <div class="step-head">
+          <span class="step-no">04</span>
+          <h3>Try a call that gets denied</h3>
+        </div>
+        <pre data-lang="bash"><code>aicf tool exec proc.run --args '{"command":"rm -rf /"}' --policy strict
+# → denied: waits for a human</code></pre>
+        <p class="expected">
+          A tool with side effects does not start on its own. Under a strict policy the call is denied
+          and waits for a human — a pending approval counts as a denial too.
+        </p>
+      </li>
+
+      <li>
+        <div class="step-head">
+          <span class="step-no">05</span>
+          <h3>Run the offline dataset</h3>
+        </div>
+        <pre data-lang="bash"><code>aicf run --dataset offline --trace-dir traces/  # one trace per case</code></pre>
+        <p class="expected">One turn per case, one trace per case. Traces are JSONL, one event per line — the scoring step runs on them.</p>
+      </li>
+
+      <li>
+        <div class="step-head">
+          <span class="step-no">06</span>
+          <h3>Score it</h3>
+        </div>
+        <pre data-lang="bash"><code>aicf eval --dataset offline --traces traces/ --out run.json  # 6/6 passed</code></pre>
+        <p class="expected"><code>run.json</code> records the run. On the offline dataset the bundled stub model scores 6/6.</p>
+      </li>
+
+      <li>
+        <div class="step-head">
+          <span class="step-no">07</span>
+          <h3>Ship the gate report</h3>
+        </div>
+        <pre data-lang="bash"><code>aicf gate --run run.json --out gate.json  # verdict: pass</code></pre>
+        <p class="expected">
+          <code>gate.json</code> holds the per-gate verdicts — quality, regression, cost, safety.
+          Look at this report before any release. The walkthrough ends green.
+        </p>
+      </li>
+    </ol>
+
+    <p class="expected">Two datasets ship with the package — on purpose:</p>
+    <div class="grid-2">
+      <div class="card">
+        <h3><code>offline</code> — pipeline smoke</h3>
+        <p>
+          A reply arrives, no phantom tool calls, budget fields recorded. It <strong>passes with the
+          bundled stub model by design</strong> — it tells you the floor works.
+        </p>
+      </div>
+      <div class="card">
+        <h3><code>basic</code> — 40 quality cases</h3>
+        <p>
+          File io, computation, out-of-scope refusal, safety, format, multi-step. It <strong>needs a real
+          model</strong>: the stub never calls tools, and the eval engine refuses to count an echo as an
+          answer. <code>aicf eval --group refusal,safety</code> scores a subset — the run record shows
+          which subset was scored.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── PYTHON ───────────────────────────── -->
+<section class="section" id="python">
+  <div class="wrap">
+    <h2>Python quickstart</h2>
+    <p class="section-lede">
+      Three symbols: <code>tool</code>, <code>create_agent</code>, <code>Agent</code>. Any OpenAI-compatible
+      endpoint works; for local models point <code>base_url</code> at <code>llama-server</code> / LM Studio.
+    </p>
+
+    <pre data-lang="python"><code>from aicf.harness import create_agent, tool
+
+@tool
+def add(a: int, b: int) -&gt; int:
+    """Add two numbers."""
+    return a + b
+
+agent = create_agent(
+    model="deepseek-chat",
+    base_url="https://api.deepseek.com/v1",
+    api_key="sk-...",                 # or just export OPENAI_API_KEY
+    tools=[add],
+)
+
+print(agent.run("what is 17 + 25?"))</code></pre>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3>Common imports</h3>
+        <pre class="mini" data-lang="python"><code>from aicf.harness import create_agent, tool, Agent
+from aicf.harness.tools import ToolRegistry
+from aicf.infra.models.base import IChatClient</code></pre>
+        <p class="expected">Use <code>ToolRegistry</code> when you manage the tool table yourself; implement <code>IChatClient</code> to plug in your own backend.</p>
+      </div>
+      <div class="card">
+        <h3>Runs offline too</h3>
+        <pre class="mini" data-lang="bash"><code>aicf run --dataset offline --trace-dir traces/
+aicf eval --dataset offline \
+  --traces traces/ --out run.json</code></pre>
+        <p class="expected">
+          With no API key configured, the CLI falls back to the bundled stub model and the eval loop
+          still closes — the offline smoke dataset passes by design. The <code>basic</code> quality
+          dataset needs a real model: the stub does not call tools.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────── ARCHITECTURE ──────────────────────────── -->
+<section class="section section-alt" id="architecture">
+  <div class="wrap">
+    <h2>Architecture: bottom-up, dependencies point down</h2>
+    <p class="section-lede">
+      This repo is the bottom two layers — <code>aicf/harness</code> and <code>aicf/infra</code>. Before
+      adding code, answer one question: does it care about business semantics, or only about resources?
+      Skill packs and your application <strong>grow on top of it</strong>, but dependencies still point one
+      way, down: upper layers know lower layers; lower layers don't know upper layers.
+    </p>
+
+    <div class="arch">
+      <div class="arch-layer arch-layer-outside">
+        <div class="arch-head">
+          <span class="arch-path">Your application</span>
+          <span class="arch-role">Application layer · outside this repo</span>
+        </div>
+        <p class="arch-desc">
+          A companion, a study assistant, on-call ops, a research pipeline — applications are not carved
+          out of this repo; they grow on top of it. They depend only on <code>aicf-core</code>.
+        </p>
+      </div>
+
+      <div class="arch-link arch-link-up">
+        <span class="arch-arrow arch-arrow-up" aria-hidden="true"></span>
+        <span class="arch-link-text">Grows on top ↑</span>
+        <span class="arch-link-note">
+          Neither <code>aicf/harness</code> nor <code>aicf/infra</code> imports any application —
+          application code is not in this repo.
+        </span>
+      </div>
+
+      <div class="arch-layer arch-layer-top">
+        <div class="arch-head">
+          <span class="arch-path">Skill packs</span>
+          <span class="arch-role">aicf/harness/skills · external, declarative</span>
+        </div>
+        <p class="arch-desc">
+          One <code>skill.yaml</code> declares tools, prompts, and dependencies, plus plain Python. The
+          framework validates them before an agent sees them; install, enable, disable — no kernel code
+          changes.
+        </p>
+        <ul class="chips">
+          <li>Skill / SkillRegistry</li>
+          <li>SkillLoader</li>
+          <li>SkillValidator</li>
+          <li>CapabilityRegistry</li>
+        </ul>
+      </div>
+
+      <div class="arch-link arch-link-up">
+        <span class="arch-arrow arch-arrow-up" aria-hidden="true"></span>
+        <span class="arch-link-text">Grows on top ↑</span>
+        <span class="arch-link-note">
+          Skill packs are loaded and validated by the framework (<code>aicf/harness/skills/yaml_loader.py</code> /
+          <code>yaml_manager.py</code>); append a skill directory at runtime — no kernel changes.
+        </span>
+      </div>
+
+      <div class="arch-layer">
+        <div class="arch-head">
+          <span class="arch-path">aicf/harness</span>
+          <span class="arch-role">Agent core layer</span>
+        </div>
+        <p class="arch-desc">
+          Handles exactly "messages in, tools out": the turn loop, the tool protocol and registry, context
+          assembly and trimming, memory, sessions and transcripts, pipelines and events. It knows no business.
+        </p>
+        <ul class="chips">
+          <li>agent loop</li>
+          <li>tools</li>
+          <li>context assembly</li>
+          <li>memory</li>
+          <li>sessions</li>
+          <li>pipeline / events</li>
+        </ul>
+      </div>
+
+      <div class="arch-link">
+        <span class="arch-arrow" aria-hidden="true"></span>
+        <span class="arch-link-text">Dependencies point down ↓</span>
+        <span class="arch-link-note">
+          harness depends on infra only through <strong>Protocols</strong>: the contracts (ToolSpec / PolicyEngine /
+          ApprovalBroker / Sandbox / TelemetryPort / RuntimeClient) live in harness, the implementations in
+          infra, injected at application assembly time.
+        </span>
+      </div>
+
+      <div class="arch-layer arch-layer-infra">
+        <div class="arch-head">
+          <span class="arch-path">aicf/infra</span>
+          <span class="arch-role">Resources and infrastructure layer</span>
+        </div>
+        <p class="arch-desc">
+          Handles only processes, HTTP, VRAM, disk, secrets, and budgets: model routing, the resource pool,
+          storage, gateway, auth, policy. It knows no business semantics.
+        </p>
+        <ul class="chips">
+          <li>model routing</li>
+          <li>resource pool</li>
+          <li>storage</li>
+          <li>gateway</li>
+          <li>auth</li>
+          <li>policy</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="expected">These subpackages also live in the two layers — every claim above can be pinned to one of them:</p>
+    <div class="modmap">
+      <div class="modmap-row">
+        <span class="modmap-label modmap-label-harness">harness</span>
+        <ul class="chips">
+          <li>aicf/harness/kernel/</li>
+          <li>aicf/harness/agent/</li>
+          <li>aicf/harness/skills/</li>
+          <li>aicf/harness/memory/</li>
+          <li>aicf/harness/voice/</li>
+        </ul>
+      </div>
+      <div class="modmap-row">
+        <span class="modmap-label modmap-label-infra">infra</span>
+        <ul class="chips">
+          <li>aicf/infra/runtime/</li>
+          <li>aicf/infra/control/</li>
+          <li>aicf/infra/resources/</li>
+          <li>aicf/infra/eval/</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="rules">
+      <div class="rule">
+        <h3>Rule 1: dependencies point down</h3>
+        <p>Cares about business → belongs in the <code>aicf-ui</code> repo; messages and tools → <code>aicf/harness</code>; only processes / HTTP / VRAM / disk / secrets → <code>aicf/infra</code>.</p>
+      </div>
+      <div class="rule">
+        <h3>Rule 2: <code>aicf/infra/eval</code> and <code>aicf/infra/runtime</code> must not import <code>aicf.harness</code></h3>
+        <p>The eval layer only knows its own <code>Trace</code> / <code>ToolCall</code>; <code>trace_from_events()</code> does a read-only adaptation.</p>
+      </div>
+      <div class="rule">
+        <h3>Rule 3: undecided ≠ pass</h3>
+        <p>Without a baseline, the regression and cost gates are explicitly marked "undecided" — never a silent PASS.</p>
+      </div>
+      <div class="rule">
+        <h3>Rule 4: applications grow on top, they are not carved out of it</h3>
+        <p>This repo contains no application code: skill packs live outside (<code>aicf/harness/skills/</code>), products live in their own repos and depend only on <code>aicf-core</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────── DOCS INDEX ──────────────────────────── -->
+<section class="section" id="docs">
+  <div class="wrap">
+    <h2>Documentation index</h2>
+    <p class="section-lede">
+      These are the maintainer documents under the repo's <code>docs/</code>. Links use relative paths
+      (<code>../../architecture.md</code> from this page) pointing at the Markdown sources in the repo;
+      once the site is deployed to GitHub Pages, they are rewritten automatically to the matching GitHub files.
+    </p>
+
+    <div class="table-scroll">
+      <table class="doc-table">
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>What's inside</th>
+            <th class="col-when">When to read it</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="../../README.md"><code>README.md</code></a></td>
+            <td>Doc index: reading paths organized by "day one / before changing code / going deeper into a layer"</td>
+            <td class="col-when">First time in this repo</td>
+          </tr>
+          <tr>
+            <td><a href="../../architecture.md"><code>architecture.md</code></a></td>
+            <td>The two layers and dependency direction, module map, request path, global singletons, quality baseline</td>
+            <td class="col-when">Always read this one first</td>
+          </tr>
+          <tr>
+            <td><a href="../../security.md"><code>security.md</code></a></td>
+            <td>Security model: tool contracts, admission, approval, sandbox tiers, identity, audit</td>
+            <td class="col-when">Before touching anything with side effects</td>
+          </tr>
+          <tr>
+            <td><a href="../../runtime.md"><code>runtime.md</code></a></td>
+            <td>Managed runtime: journal, checkpoint, idempotency, recovery</td>
+            <td class="col-when">Before touching session state or recovery behavior</td>
+          </tr>
+          <tr>
+            <td><a href="../../evaluation.md"><code>evaluation.md</code></a></td>
+            <td>The eval loop: dataset language, the four gates, run version, regression</td>
+            <td class="col-when">Before touching anything that changes agent behavior</td>
+          </tr>
+          <tr>
+            <td><a href="../../harness.md"><code>harness.md</code></a></td>
+            <td>Agent loop control flow and events, <code>AgentSpec</code>, tools, context trimming, hooks</td>
+            <td class="col-when">Before changing agent behavior</td>
+          </tr>
+          <tr>
+            <td><a href="../../infra.md"><code>infra.md</code></a></td>
+            <td>Orchestrator layering, scheduler, providers, resource pool, policy, storage, finetune, device gate</td>
+            <td class="col-when">Before changing models, resources, or storage</td>
+          </tr>
+          <tr>
+            <td><a href="../../skills.md"><code>skills.md</code></a></td>
+            <td>The skill system: directory layout for declarative skills, loading, validation, capability injection</td>
+            <td class="col-when">Writing a skill pack, or debugging "my skill isn't taking effect"</td>
+          </tr>
+          <tr>
+            <td><a href="../../skill-spec.md"><code>skill-spec.md</code></a></td>
+            <td>The public skill-pack spec (v1): field tables, three hard rules, version promises — the ecosystem's interface</td>
+            <td class="col-when">Publishing a skill pack for others to use</td>
+          </tr>
+          <tr>
+            <td><a href="../../control-plane.md"><code>control-plane.md</code></a></td>
+            <td>Control plane: agent identity, delegation authority, asset lifecycle, cost ledger</td>
+            <td class="col-when">Wiring up multi-agent, or governing agent assets</td>
+          </tr>
+          <tr>
+            <td><a href="../../sdk_guide.md"><code>sdk_guide.md</code></a></td>
+            <td>Embedding AICF into another project as a Python SDK</td>
+            <td class="col-when">Hooking it into your own system</td>
+          </tr>
+          <tr>
+            <td><a href="../../configuration.md"><code>configuration.md</code></a></td>
+            <td>Configuration sources, key environment variables, precedence, credential handling</td>
+            <td class="col-when">Changing config, or debugging config that isn't taking effect</td>
+          </tr>
+          <tr>
+            <td><a href="../../community.md"><code>community.md</code></a></td>
+            <td>Community channels, the path to a first contribution, the code of conduct</td>
+            <td class="col-when">Asking questions or starting to contribute</td>
+          </tr>
+          <tr>
+            <td><a href="../../maintenance.md"><code>maintenance.md</code></a></td>
+            <td>Placement rules, invariants, checklists by change location, repo hygiene</td>
+            <td class="col-when">Before touching the code</td>
+          </tr>
+          <tr>
+            <td><a href="../../technical-debt.md"><code>technical-debt.md</code></a></td>
+            <td>Known technical debt by priority, verified defects, fix order</td>
+            <td class="col-when">Planning the work</td>
+          </tr>
+          <tr>
+            <td><a href="../../roadmap_1.0.0-rc0.md"><code>roadmap_1.0.0-rc0.md</code></a></td>
+            <td>The 1.0.0 workflow, acceptance criteria, current status, risks</td>
+            <td class="col-when">Planning or reviewing 1.0.0</td>
+          </tr>
+          <tr>
+            <td><a href="../../releases/v1.0.0rc3.md"><code>releases/v1.0.0rc3.md</code></a></td>
+            <td>v1.0.0rc3 release notes: control plane, identity and delegation, audit trails, and more</td>
+            <td class="col-when">Before upgrading to 1.0.0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────── MIGRATION ──────────────────────────── -->
+<section class="section section-alt" id="migration">
+  <div class="wrap">
+    <h2>Migrating to 1.0.0</h2>
+    <p class="section-lede">
+      As of 1.0.0 the top level no longer occupies the names <code>harness</code> and <code>infra</code>;
+      everything moves into the <code>aicf</code> namespace. The distribution name and the CLI entry point
+      are unchanged.
+    </p>
+
+    <div class="table-scroll">
+      <table class="migration-table">
+        <thead>
+          <tr>
+            <th>Old (before 1.0.0)</th>
+            <th class="col-arrow"></th>
+            <th>New (1.0.0+)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>from harness import create_agent, tool</code></td>
+            <td class="col-arrow">→</td>
+            <td><code>from aicf.harness import create_agent, tool</code></td>
+          </tr>
+          <tr>
+            <td><code>from harness.tools import ToolRegistry</code></td>
+            <td class="col-arrow">→</td>
+            <td><code>from aicf.harness.tools import ToolRegistry</code></td>
+          </tr>
+          <tr>
+            <td><code>from infra.models.base import IChatClient</code></td>
+            <td class="col-arrow">→</td>
+            <td><code>from aicf.infra.models.base import IChatClient</code></td>
+          </tr>
+          <tr>
+            <td><code>from infra.x import y</code></td>
+            <td class="col-arrow">→</td>
+            <td><code>from aicf.infra.x import y</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3>One command finds every import that needs changing</h3>
+        <pre class="mini" data-lang="bash"><code>grep -rn --include='*.py' \
+  -E '(^|\s)(from|import)\s+(harness|infra)\b' .</code></pre>
+        <p class="expected">The top-level names are no longer occupied, so they cannot collide with a <code>harness</code> / <code>infra</code> from some other project.</p>
+      </div>
+      <div class="card">
+        <h3>Three names, deliberately different</h3>
+        <ul class="plain-list">
+          <li>Distribution name (pip): <code>aicf-core</code></li>
+          <li>Import name (Python): <code>aicf.*</code></li>
+          <li>CLI entry point: <code>aicf</code></li>
+        </ul>
+        <p class="expected">
+          The distribution is not named <code>aicf</code> because that name on PyPI is too similar to this
+          project and the claim would be rejected; the import is not top-level <code>harness</code> /
+          <code>infra</code> because those two names already belong to someone else. Only the Python import
+          paths change — CLI arguments and config files are unaffected.
+        </p>
+        <p class="expected">
+          Repository: <a href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">github.com/ccjjfdyqlhy/aicf-core</a>
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────── CLOSING CTA ──────────────────────────── -->
+<section class="section cta">
+  <div class="wrap">
+    <h2>Run the walkthrough first</h2>
+    <p class="section-lede">
+      Install it, scaffold a project, read the tool catalog, get denied once, run the offline dataset,
+      score it, ship the gate report. Ninety seconds is enough to know whether this is the thing you need.
+    </p>
+    <p class="cta-actions">
+      <a class="btn" href="https://pypi.org/project/aicf-core/" target="_blank" rel="noopener">PyPI · aicf-core</a>
+      <a class="btn btn-ghost" href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">GitHub source</a>
+      <a class="btn btn-ghost" href="https://github.com/ccjjfdyqlhy/aicf-core/blob/main/README.md" target="_blank" rel="noopener">README</a>
+    </p>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div class="footer-col">
+      <span class="footer-brand">aicf-core</span>
+      <p>The floor, not the app.<br>Long-running · persistent · stable · safe and auditable.<br>Apache-2.0 licensed.</p>
+    </div>
+    <div class="footer-col">
+      <span class="footer-head">Repository</span>
+      <a href="https://github.com/ccjjfdyqlhy/aicf-core" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/ccjjfdyqlhy/aicf-core/blob/main/README.md" target="_blank" rel="noopener">README</a>
+      <a href="https://github.com/ccjjfdyqlhy/aicf-core/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-head">Distribution</span>
+      <a href="https://pypi.org/project/aicf-core/" target="_blank" rel="noopener">PyPI · aicf-core</a>
+      <a href="https://pypi.org/project/aicf-core/#history" target="_blank" rel="noopener">Release history</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-head">Docs</span>
+      <a href="../../architecture.md">architecture.md</a>
+      <a href="../../security.md">security.md</a>
+      <a href="../../evaluation.md">evaluation.md</a>
+    </div>
+  </div>
+  <div class="wrap footer-base">
+    <p>Apache-2.0 · Python 3.10+ · local-first. The docs site is a purely static page — no build step, no external dependencies. This page is the English mirror of the <a href="../index.html" lang="zh-CN" hreflang="zh-CN">Chinese landing page</a>.</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // When the site is deployed to GitHub Pages, the deploy scope is docs/site/ only — the
+  // repo's docs/*.md files are not part of the site. Source links stay relative
+  // (../../architecture.md from this en/ page); on github.io they are rewritten to the
+  // matching GitHub blob URLs.
+  if (location.hostname.endsWith('github.io')) {
+    var base = 'https://github.com/ccjjfdyqlhy/aicf-core/blob/main/docs/';
+    Array.prototype.forEach.call(document.querySelectorAll('a[href]'), function (a) {
+      var href = a.getAttribute('href') || '';
+      if (href.indexOf('../../') === 0 && href.slice(-3) === '.md') {
+        a.setAttribute('href', base + href.slice(6));
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener');
+      }
+    });
+  }
+
+  // Copy buttons: pure front-end, no external dependencies.
+  Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy') || '';
+      var done = function () {
+        var old = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(function () { btn.textContent = old; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'absolute';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

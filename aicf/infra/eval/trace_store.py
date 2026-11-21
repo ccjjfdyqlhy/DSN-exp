@@ -368,6 +368,43 @@ def read_trace_jsonl(path: str | Path) -> list[Trace]:
     return out
 
 
+# ── Usage accounting from the event stream ────────────────
+#
+# The kernel emits one `usage` event per model call (loop._emit_usage wired
+# through the kernel telemetry port). The CLI run used to drop them, which
+# left every trace with usage={} and cost=0.0 -- so the cost gate judged
+# nothing. These helpers turn the event stream into the accounting a trace
+# carries; run and eval read the same numbers from this one place.
+
+
+def usage_from_events(events: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Aggregate `usage` events into one usage dict (Responses wire shape)."""
+    input_tokens = 0
+    output_tokens = 0
+    for event in events or []:
+        if not isinstance(event, Mapping) or event.get("kind") != "usage":
+            continue
+        payload = event.get("payload") or {}
+        input_tokens += int(payload.get("input_tokens") or payload.get("prompt_tokens") or 0)
+        output_tokens += int(payload.get("output_tokens") or payload.get("completion_tokens") or 0)
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens}
+
+
+def cost_from_events(events: Iterable[Mapping[str, Any]], pricing_name: str = "flash") -> float:
+    """Price the `usage` events with the shared TokenMeter pricing table."""
+    from aicf.infra.policy.token_meter import TokenMeter
+
+    meter = TokenMeter(pricing_name=pricing_name)
+    for event in events or []:
+        if not isinstance(event, Mapping) or event.get("kind") != "usage":
+            continue
+        payload = event.get("payload") or {}
+        if payload:
+            meter.record(payload)
+    return meter.cost
+
+
 # ── SQLite 持久化 ─────────────────────────────────────────
 #
 # 表结构照策划案 §5.1 原样建（eval_dataset / eval_case / eval_run /
@@ -403,7 +440,9 @@ CREATE TABLE IF NOT EXISTS eval_gate_report (
     id TEXT PRIMARY KEY, run_version_id TEXT, verdict TEXT, report_json TEXT, created_at REAL
 );
 CREATE TABLE IF NOT EXISTS eval_badcase (
-    id TEXT PRIMARY KEY, session_id TEXT, trace_id TEXT, reason TEXT, status TEXT, created_at REAL
+    id TEXT PRIMARY KEY, session_id TEXT, trace_id TEXT, reason TEXT, status TEXT, created_at REAL,
+    label TEXT DEFAULT '', input_text TEXT DEFAULT '', expect_json TEXT DEFAULT '[]',
+    critical INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS eval_trace (
     trace_id TEXT PRIMARY KEY, run_version_id TEXT, session_id TEXT, case_id TEXT,
@@ -435,6 +474,14 @@ class TraceStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.executescript(_SCHEMA)
+        # label columns for older files (W5.3: the labelled fields must
+        # survive a restart, otherwise --from-badcases reads empty cases)
+        for column in ("label TEXT DEFAULT ''", "input_text TEXT DEFAULT ''",
+                       "expect_json TEXT DEFAULT '[]'", "critical INTEGER DEFAULT 1"):
+            try:
+                self._conn.execute(f"ALTER TABLE eval_badcase ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass  # column already there
         self._conn.commit()
 
     # ── 生命周期 ──
@@ -667,13 +714,39 @@ class TraceStore:
         return bid
 
     def list_badcases(self, *, status: str = "") -> list[dict[str, Any]]:
-        sql = "SELECT id, session_id, trace_id, reason, status, created_at FROM eval_badcase"
+        sql = ("SELECT id, session_id, trace_id, reason, status, created_at,"
+               " label, input_text, expect_json, critical FROM eval_badcase")
         params: list[Any] = []
         if status:
             sql += " WHERE status = ?"
             params.append(status)
         sql += " ORDER BY created_at DESC"
-        return [dict(r) for r in self._conn.execute(sql, params)]
+        rows = []
+        for r in self._conn.execute(sql, params):
+            row = dict(r)
+            try:
+                row["expect"] = json.loads(row.pop("expect_json") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                row["expect"] = []
+            row["critical"] = bool(row.get("critical", 1))
+            rows.append(row)
+        return rows
+
+    def label_badcase(self, badcase_id: str, *, label: str,
+                      input_text: str = '', expect: list | None = None,
+                      critical: bool = True) -> bool:
+        """Persist the labelled fields + status (W5.3).
+
+        The labelled fields used to live only in the returned object, so a
+        restart lost the repro steps -- the pipeline could not close.
+        """
+        cur = self._conn.execute(
+            "UPDATE eval_badcase SET status = 'labelled', label = ?, input_text = ?,"
+            " expect_json = ?, critical = ? WHERE id = ?",
+            (label, input_text, json.dumps(list(expect or []), ensure_ascii=False),
+             1 if critical else 0, badcase_id))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def set_badcase_status(self, badcase_id: str, status: str) -> bool:
         """推进一条 badcase 的生命周期（new → labelled → queued / dismissed）。

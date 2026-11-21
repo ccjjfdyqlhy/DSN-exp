@@ -16,6 +16,7 @@ from typing import Any
 
 from .common import (
     ToolCatalog,
+    attach_project_tools,
     build_registry,
     build_runtime,
     eprint,
@@ -26,6 +27,9 @@ from .common import (
 
 def cmd_list(args: Any) -> int:
     registry = build_registry(include=args.include or None)
+    found = attach_project_tools(registry)
+    if found:
+        eprint(f'[aicf] 已从 ./tools/ 装载 {found} 个项目本地工具')
     rows = ToolCatalog(registry).entries()
     if args.json:
         out_json(rows)
@@ -54,6 +58,7 @@ def cmd_exec(args: Any) -> int:
         return 2
 
     registry = build_registry(include=args.include or None)
+    attach_project_tools(registry)
     tool = registry.get(args.name)
     if tool is None:
         eprint(f'工具不存在: {args.name}')
@@ -91,8 +96,12 @@ def cmd_exec(args: Any) -> int:
     # 不可删审计（策划案 §4.4.7）：手工执行也落审计，不留旁路。
     from aicf.infra.observability.audit import AuditLog
     audit_log = AuditLog()
+    identity = None
+    if getattr(args, 'identity', ''):
+        from aicf.infra.control.identity import AgentIdentity
+        identity = AgentIdentity(agent_id=args.identity, delegated_by='user')
     guard = ToolGuard(policy=engine, approval=approval, mode=mode,
-                      identity=None, runtime=runtime, audit=audit_log,
+                      identity=identity, runtime=runtime, audit=audit_log,
                       session_id=args.name)
     registry.attach_guard(guard)
 
