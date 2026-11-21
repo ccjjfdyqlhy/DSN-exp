@@ -33,7 +33,7 @@ pip install -e .                            # 只要内核的话，最小依赖�
 pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
 ```
 
-extra 说明见 [README](../README_zh.md#-安装)：`personality` / `decisions` / `learning` /
+extra 说明见 [README](../README_zh.md#安装)：`personality` / `decisions` / `learning` /
 `finetune` / `mcp` / `anthropic` / `socks` / `all`。
 
 ### 1.3 配置

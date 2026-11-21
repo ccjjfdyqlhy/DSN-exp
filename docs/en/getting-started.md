@@ -41,7 +41,7 @@ Or install it directly (**the current release is 1.0.0**):
 pip install "aicf-core @ git+https://github.com/ccjjfdyqlhy/aicf-core.git"
 ```
 
-For the extras, see the [README](../../README_zh.md#-安装): `personality` / `decisions` / `learning` /
+For the extras, see the [README](../../README_zh.md#安装): `personality` / `decisions` / `learning` /
 `finetune` / `mcp` / `anthropic` / `socks` / `all`.
 
 ### 1.3 Configuration
